@@ -1,19 +1,31 @@
 const express = require('express');
 const bcrypt = require('bcryptjs');
 
-const { sequelize, User, StaffProfile, AppSetting, DocumentType, ShiftTemplate, ShiftBreak, ShiftRotationalSlot, StaffShiftAssignment, SalaryAccess, AttendanceTemplate, StaffAttendanceAssignment, SalaryTemplate, StaffSalaryAssignment, Site, WorkUnit, Route, RouteStop, StaffRouteAssignment, SiteCheckpoint, PatrolLog, LeaveTemplate, LeaveTemplateCategory, StaffLeaveAssignment, LeaveBalance, AIAnomaly, ReliabilityScore, SalaryForecast, Attendance, Client, AssignedJob, SalesTarget, HolidayTemplate, HolidayDate, StaffHolidayAssignment } = require('../models');
+const { sequelize, User, StaffProfile, AppSetting, DocumentType, ShiftTemplate, ShiftBreak, ShiftRotationalSlot, StaffShiftAssignment, SalaryAccess, AttendanceTemplate, StaffAttendanceAssignment, SalaryTemplate, StaffSalaryAssignment, Site, WorkUnit, Route, RouteStop, StaffRouteAssignment, SiteCheckpoint, PatrolLog, LeaveTemplate, LeaveTemplateCategory, StaffLeaveAssignment, LeaveBalance, AIAnomaly, ReliabilityScore, SalaryForecast, Attendance, Client, AssignedJob, SalesTarget, HolidayTemplate, HolidayDate, StaffHolidayAssignment, Subscription, Plan } = require('../models');
 const multer = require('multer');
 const fs = require('fs');
 const path = require('path');
 const { authRequired } = require('../middleware/auth');
 const { requireRole } = require('../middleware/roles');
+const { tenantEnforce } = require('../middleware/tenant');
 const ai = require('../services/aiProvider');
 const { Op } = require('sequelize');
 
 const router = express.Router();
 
+// One-liner org guard
+function requireOrg(req, res) {
+  const orgId = req.tenantOrgAccountId || null;
+  if (!orgId) {
+    res.status(403).json({ success: false, message: 'No organization in context' });
+    return null;
+  }
+  return orgId;
+}
+
 router.use(authRequired);
 router.use(requireRole(['admin', 'superadmin']));
+router.use(tenantEnforce);
 
 // Uploads: ensure folder exists and configure multer
 const uploadsDir = path.join(process.cwd(), 'uploads', 'claims');
@@ -27,12 +39,15 @@ const storage = multer.diskStorage({
   },
 });
 
-// Bulk mark selected payroll lines as paid with provided details
+
+
+// Bulk mark selected payroll lines as paid with provided details (org-scoped)
 router.post('/payroll/:cycleId/lines/mark-paid', async (req, res) => {
   try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
     const { PayrollCycle, PayrollLine } = require('../models');
     const id = Number(req.params.cycleId);
-    const cycle = await PayrollCycle.findByPk(id);
+    const cycle = await PayrollCycle.findOne({ where: { id, orgAccountId: orgId } });
     if (!cycle) return res.status(404).json({ success: false, message: 'Cycle not found' });
     if (cycle.status === 'PAID') return res.status(409).json({ success: false, message: 'Cycle already paid' });
     const body = req.body || {};
@@ -48,19 +63,27 @@ router.post('/payroll/:cycleId/lines/mark-paid', async (req, res) => {
     };
 
     const rows = await PayrollLine.findAll({ where: { id: lineIds, cycleId: id } });
-    for (const r of rows) { await r.update(payload); }
+    for (const r of rows) { 
+      const finalPayload = { ...payload };
+      // If paidAmount is null, use net salary from totals
+      if (payload.paidAmount == null && r.totals && r.totals.netSalary) {
+        finalPayload.paidAmount = r.totals.netSalary;
+      }
+      await r.update(finalPayload); 
+    }
     return res.json({ success: true, updated: rows.length });
   } catch (e) {
     return res.status(500).json({ success: false, message: 'Failed to mark selected paid' });
   }
 });
 
-// Export payroll cycle as CSV
+// Export payroll cycle as CSV (org-scoped)
 router.get('/payroll/:cycleId/export', async (req, res) => {
   try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
     const { PayrollCycle, PayrollLine, User, StaffProfile } = require('../models');
     const id = Number(req.params.cycleId);
-    const cycle = await PayrollCycle.findByPk(id);
+    const cycle = await PayrollCycle.findOne({ where: { id, orgAccountId: orgId } });
     if (!cycle) return res.status(404).json({ success: false, message: 'Cycle not found' });
     const lines = await PayrollLine.findAll({ where: { cycleId: id } });
 
@@ -70,7 +93,7 @@ router.get('/payroll/:cycleId/export', async (req, res) => {
     const nameById = new Map(users.map(u => [u.id, (u.profile?.name || u.phone || `User ${u.id}`)]));
 
     const header = [
-      'user_id','name','status',
+      'user_id','name',
       'total_earnings','total_incentives','total_deductions','gross_salary','net_salary','ratio',
       'present','half','paid_leave','unpaid_leave','weekly_off','holidays','absent'
     ];
@@ -81,7 +104,6 @@ router.get('/payroll/:cycleId/export', async (req, res) => {
       const row = [
         l.userId,
         JSON.stringify(nameById.get(l.userId) || ''),
-        l.status || 'INCLUDED',
         Number(t.totalEarnings || 0),
         Number(t.totalIncentives || 0),
         Number(t.totalDeductions || 0),
@@ -107,13 +129,14 @@ router.get('/payroll/:cycleId/export', async (req, res) => {
   }
 });
 
-// Update a payroll line values (earnings/deductions/incentives/adjustments/status/remarks)
+// Update a payroll line values (earnings/deductions/incentives/adjustments/status/remarks) (org-scoped)
 router.put('/payroll/:cycleId/line/:lineId', async (req, res) => {
   try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
     const { PayrollCycle, PayrollLine } = require('../models');
     const cycleId = Number(req.params.cycleId);
     const lineId = Number(req.params.lineId);
-    const cycle = await PayrollCycle.findByPk(cycleId);
+    const cycle = await PayrollCycle.findOne({ where: { id: cycleId, orgAccountId: orgId } });
     if (!cycle) return res.status(404).json({ success: false, message: 'Cycle not found' });
     if (cycle.status === 'PAID') return res.status(409).json({ success: false, message: 'Cannot edit after cycle is PAID' });
     const line = await PayrollLine.findOne({ where: { id: lineId, cycleId } });
@@ -250,12 +273,13 @@ router.get('/staff/:id/salary-compute', async (req, res) => {
   }
 });
 
-// Lock a payroll cycle
+// Lock a payroll cycle (org-scoped)
 router.post('/payroll/:cycleId/lock', async (req, res) => {
   try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
     const { PayrollCycle } = require('../models');
     const id = Number(req.params.cycleId);
-    const cycle = await PayrollCycle.findByPk(id);
+    const cycle = await PayrollCycle.findOne({ where: { id, orgAccountId: orgId } });
     if (!cycle) return res.status(404).json({ success: false, message: 'Cycle not found' });
     await cycle.update({ status: 'LOCKED' });
     return res.json({ success: true, cycle });
@@ -264,12 +288,13 @@ router.post('/payroll/:cycleId/lock', async (req, res) => {
   }
 });
 
-// Unlock a payroll cycle back to DRAFT
+// Unlock a payroll cycle back to DRAFT (org-scoped)
 router.post('/payroll/:cycleId/unlock', async (req, res) => {
   try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
     const { PayrollCycle } = require('../models');
     const id = Number(req.params.cycleId);
-    const cycle = await PayrollCycle.findByPk(id);
+    const cycle = await PayrollCycle.findOne({ where: { id, orgAccountId: orgId } });
     if (!cycle) return res.status(404).json({ success: false, message: 'Cycle not found' });
     await cycle.update({ status: 'DRAFT' });
     return res.json({ success: true, cycle });
@@ -278,13 +303,33 @@ router.post('/payroll/:cycleId/unlock', async (req, res) => {
   }
 });
 
-// Mark a payroll cycle as PAID
+// Mark a payroll cycle as PAID (org-scoped)
 router.post('/payroll/:cycleId/mark-paid', async (req, res) => {
   try {
-    const { PayrollCycle } = require('../models');
+    const orgId = requireOrg(req, res); if (!orgId) return;
+    const { PayrollCycle, PayrollLine } = require('../models');
     const id = Number(req.params.cycleId);
-    const cycle = await PayrollCycle.findByPk(id);
+    const cycle = await PayrollCycle.findOne({ where: { id, orgAccountId: orgId } });
     if (!cycle) return res.status(404).json({ success: false, message: 'Cycle not found' });
+    
+    // Mark all lines as paid
+    const lines = await PayrollLine.findAll({ where: { cycleId: id } });
+    const payload = {
+      paidAt: new Date(),
+      paidMode: 'CASH',
+      paidRef: null,
+      paidBy: req.user?.id || null,
+    };
+    
+    for (const line of lines) {
+      const finalPayload = { ...payload };
+      // Use net salary from totals
+      if (line.totals && line.totals.netSalary) {
+        finalPayload.paidAmount = line.totals.netSalary;
+      }
+      await line.update(finalPayload);
+    }
+    
     await cycle.update({ status: 'PAID' });
     return res.json({ success: true, cycle });
   } catch (e) {
@@ -293,30 +338,69 @@ router.post('/payroll/:cycleId/mark-paid', async (req, res) => {
 });
 const upload = multer({ storage });
 
-// --- Payroll (admin) ---
+// --- Payroll (admin) --- (org-scoped)
 router.get('/payroll', async (req, res) => {
   try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
     const { PayrollCycle, PayrollLine } = require('../models');
     const monthKey = (req.query?.monthKey || req.query?.month || '').toString().slice(0, 7);
     if (!/^\d{4}-\d{2}$/.test(monthKey)) {
       return res.status(400).json({ success: false, message: 'monthKey (YYYY-MM) required' });
     }
-    let cycle = await PayrollCycle.findOne({ where: { monthKey } });
+    let cycle = await PayrollCycle.findOne({ where: { monthKey, orgAccountId: orgId } });
     if (!cycle) {
-      cycle = await PayrollCycle.create({ monthKey, status: 'DRAFT' });
+      cycle = await PayrollCycle.create({ monthKey, status: 'DRAFT', orgAccountId: orgId });
     }
     const lines = await PayrollLine.findAll({ where: { cycleId: cycle.id } });
     return res.json({ success: true, cycle, lines });
   } catch (e) {
-    return res.status(500).json({ success: false, message: 'Failed to load payroll' });
+    console.error('Payroll GET error:', e);
+    return res.status(500).json({ success: false, message: 'Failed to load payroll', error: e.message });
+  }
+});
+
+// Get user's payroll payment status (user-accessible)
+router.get('/my-payroll-status', async (req, res) => {
+  try {
+    const userId = requireUser(req, res); if (!userId) return;
+    const orgId = requireOrg(req, res); if (!orgId) return;
+    const { PayrollCycle, PayrollLine } = require('../models');
+    const monthKey = (req.query?.monthKey || req.query?.month || '').toString().slice(0, 7);
+    if (!/^\d{4}-\d{2}$/.test(monthKey)) {
+      return res.status(400).json({ success: false, message: 'monthKey (YYYY-MM) required' });
+    }
+    
+    const cycle = await PayrollCycle.findOne({ where: { monthKey, orgAccountId: orgId } });
+    if (!cycle) {
+      return res.json({ success: true, paymentStatus: 'DUE', paidAmount: 0 });
+    }
+    
+    const line = await PayrollLine.findOne({ where: { cycleId: cycle.id, userId } });
+    if (!line) {
+      return res.json({ success: true, paymentStatus: 'DUE', paidAmount: 0 });
+    }
+    
+    if (line.paidAt) {
+      return res.json({ 
+        success: true, 
+        paymentStatus: 'PAID', 
+        paidAmount: line.paidAmount || 0 
+      });
+    } else {
+      return res.json({ success: true, paymentStatus: 'DUE', paidAmount: 0 });
+    }
+  } catch (e) {
+    console.error('My payroll status error:', e);
+    return res.status(500).json({ success: false, message: 'Failed to get payroll status' });
   }
 });
 
 router.post('/payroll/:cycleId/compute', async (req, res) => {
   try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
     const { PayrollCycle, PayrollLine, User, Attendance, LeaveRequest } = require('../models');
     const cycleId = Number(req.params.cycleId);
-    const cycle = await PayrollCycle.findByPk(cycleId);
+    const cycle = await PayrollCycle.findOne({ where: { id: cycleId, orgAccountId: orgId } });
     if (!cycle) return res.status(404).json({ success: false, message: 'Cycle not found' });
     const monthKey = cycle.monthKey;
     const [yy, mm] = monthKey.split('-').map(Number);
@@ -324,7 +408,7 @@ router.post('/payroll/:cycleId/compute', async (req, res) => {
     const end = new Date(yy, mm, 0); // last day
     const endKey = `${end.getFullYear()}-${String(end.getMonth() + 1).padStart(2, '0')}-${String(end.getDate()).padStart(2, '0')}`;
 
-    const staff = await User.findAll({ where: { role: 'staff', active: true } });
+    const staff = await User.findAll({ where: { role: 'staff', active: true, orgAccountId: orgId } });
 
     const parseMaybe = (v) => {
       if (!v) return v;
@@ -509,13 +593,14 @@ router.post('/payroll/:cycleId/compute', async (req, res) => {
   }
 });
 
-// Upload business logo
+// Upload business logo (org-scoped)
 router.post('/settings/business-info/logo', upload.single('file'), async (req, res) => {
   try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
     if (!req.file) return res.status(400).json({ success: false, message: 'file is required' });
     const fileUrl = `/uploads/claims/${req.file.filename}`;
-    let row = await sequelize.models.OrgBusinessInfo.findOne({ where: { active: true } });
-    if (!row) row = await sequelize.models.OrgBusinessInfo.create({ active: true });
+    let row = await sequelize.models.OrgBusinessInfo.findOne({ where: { active: true, orgAccountId: orgId } });
+    if (!row) row = await sequelize.models.OrgBusinessInfo.create({ active: true, orgAccountId: orgId });
     await row.update({ logoUrl: fileUrl });
     return res.json({ success: true, url: fileUrl });
   } catch (e) {
@@ -523,9 +608,10 @@ router.post('/settings/business-info/logo', upload.single('file'), async (req, r
   }
 });
 
-// Upcoming holidays for dashboard
-router.get('/dashboard/upcoming-holidays', async (_req, res) => {
+// Upcoming holidays for dashboard (org-scoped)
+router.get('/dashboard/upcoming-holidays', async (req, res) => {
   try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
     const today = new Date();
     const yyyy = today.getFullYear();
     const mm = String(today.getMonth() + 1).padStart(2, '0');
@@ -539,11 +625,15 @@ router.get('/dashboard/upcoming-holidays', async (_req, res) => {
     const d2 = String(in90.getDate()).padStart(2, '0');
     const untilKey = `${y2}-${m2}-${d2}`;
 
+    // Get org's holiday templates
+    const orgTemplateIds = (await HolidayTemplate.findAll({ where: { orgAccountId: orgId }, attributes: ['id'] })).map(t => t.id);
+
     let rows = await HolidayDate.findAll({
       where: {
         // include rows where active is true or null (treat null as active)
         active: { [Op.not]: false },
         date: { [Op.gte]: todayKey, [Op.lte]: untilKey },
+        holidayTemplateId: orgTemplateIds,
       },
       order: [['date', 'ASC']],
       attributes: ['id', 'name', 'date', 'holidayTemplateId'],
@@ -552,7 +642,7 @@ router.get('/dashboard/upcoming-holidays', async (_req, res) => {
     // Fallback: if no direct HolidayDate rows, derive from templates
     if (!rows || rows.length === 0) {
       try {
-        const tpls = await HolidayTemplate.findAll({ include: [{ model: HolidayDate, as: 'holidays' }] });
+        const tpls = await HolidayTemplate.findAll({ where: { orgAccountId: orgId }, include: [{ model: HolidayDate, as: 'holidays' }] });
         const list = [];
         for (const tpl of (tpls || [])) {
           const hs = Array.isArray(tpl.holidays) ? tpl.holidays : [];
@@ -578,11 +668,13 @@ router.get('/dashboard/upcoming-holidays', async (_req, res) => {
   }
 });
 
-// --- Sales Visits (admin) ---
-router.get('/sales/visits', async (_req, res) => {
+// --- Sales Visits (admin) --- (org-scoped)
+router.get('/sales/visits', async (req, res) => {
   try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
     const { SalesVisit, User } = sequelize.models;
-    const rows = await SalesVisit.findAll({ order: [['id','DESC']], limit: 500 });
+    const orgStaffIds = (await User.findAll({ where: { orgAccountId: orgId, role: 'staff' }, attributes: ['id'] })).map(u => u.id);
+    const rows = await SalesVisit.findAll({ where: { userId: orgStaffIds }, order: [['id','DESC']], limit: 500 });
     // Resolve user names safely
     const userIds = Array.from(new Set(rows.map(r => (r.userId ?? r.user_id)).filter(v => Number.isFinite(Number(v))))).map(Number);
     const userMap = {};
@@ -610,13 +702,15 @@ router.get('/sales/visits', async (_req, res) => {
   }
 });
 
-// Update a sales visit's verified flag
+// Update a sales visit's verified flag (org-scoped)
 router.put('/sales/visits/:id', async (req, res) => {
   try {
-    const { SalesVisit } = sequelize.models;
+    const orgId = requireOrg(req, res); if (!orgId) return;
+    const { SalesVisit, User } = sequelize.models;
+    const orgStaffIds = (await User.findAll({ where: { orgAccountId: orgId, role: 'staff' }, attributes: ['id'] })).map(u => u.id);
     const id = Number(req.params.id);
     if (!Number.isFinite(id)) return res.status(400).json({ success: false, message: 'invalid id' });
-    const row = await SalesVisit.findByPk(id);
+    const row = await SalesVisit.findOne({ where: { id, userId: orgStaffIds } });
     if (!row) return res.status(404).json({ success: false, message: 'Not found' });
 
     const { verified } = req.body || {};
@@ -628,11 +722,13 @@ router.put('/sales/visits/:id', async (req, res) => {
   }
 });
 
-// --- Sales Orders (admin) ---
-router.get('/sales/orders', async (_req, res) => {
+// --- Sales Orders (admin) --- (org-scoped)
+router.get('/sales/orders', async (req, res) => {
   try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
     const { Order, User, Client, OrderItem } = sequelize.models;
-    const rows = await Order.findAll({ order: [['id','DESC']], limit: 500 });
+    const orgStaffIds = (await User.findAll({ where: { orgAccountId: orgId, role: 'staff' }, attributes: ['id'] })).map(u => u.id);
+    const rows = await Order.findAll({ where: { userId: orgStaffIds }, order: [['id','DESC']], limit: 500 });
     const userIds = Array.from(new Set(rows.map(r => (r.userId ?? r.user_id)).filter(v => Number.isFinite(Number(v))))).map(Number);
     const clientIds = Array.from(new Set(rows.map(r => r.clientId).filter(v => Number.isFinite(Number(v))))).map(Number);
     const userMap = {}; const clientMap = {}; const itemsCount = {};
@@ -676,10 +772,12 @@ router.get('/sales/orders', async (_req, res) => {
 
 router.put('/sales/targets/:id', async (req, res) => {
   try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
     const { SalesTarget, User } = sequelize.models;
+    const orgStaffIds = (await User.findAll({ where: { orgAccountId: orgId, role: 'staff' }, attributes: ['id'] })).map(u => u.id);
     const id = Number(req.params.id);
     if (!Number.isFinite(id)) return res.status(400).json({ success: false, message: 'invalid id' });
-    const row = await SalesTarget.findByPk(id);
+    const row = await SalesTarget.findOne({ where: { id, staffUserId: orgStaffIds } });
     if (!row) return res.status(404).json({ success: false, message: 'Not found' });
 
     const { staffUserId, period, periodDate, targetAmount, targetOrders } = req.body || {};
@@ -687,10 +785,8 @@ router.put('/sales/targets/:id', async (req, res) => {
     if (staffUserId !== undefined) {
       const sid = Number(staffUserId);
       if (!Number.isFinite(sid)) return res.status(400).json({ success: false, message: 'invalid staffUserId' });
-      // Optional validation if User model is present
-      if (User) {
-        try { const u = await User.findByPk(sid); if (!u) return res.status(400).json({ success: false, message: 'Staff not found' }); } catch (_) {}
-      }
+      // Validate staff belongs to org
+      if (!orgStaffIds.includes(sid)) return res.status(400).json({ success: false, message: 'Staff not found' });
       patch.staff_user_id = sid; patch.staffUserId = sid;
     }
     if (period !== undefined) patch.period = ['daily','weekly','monthly'].includes(String(period)) ? String(period) : 'monthly';
@@ -707,10 +803,12 @@ router.put('/sales/targets/:id', async (req, res) => {
 
 router.delete('/sales/targets/:id', async (req, res) => {
   try {
-    const { SalesTarget } = sequelize.models;
+    const orgId = requireOrg(req, res); if (!orgId) return;
+    const { SalesTarget, User } = sequelize.models;
+    const orgStaffIds = (await User.findAll({ where: { orgAccountId: orgId, role: 'staff' }, attributes: ['id'] })).map(u => u.id);
     const id = Number(req.params.id);
     if (!Number.isFinite(id)) return res.status(400).json({ success: false, message: 'invalid id' });
-    const row = await SalesTarget.findByPk(id);
+    const row = await SalesTarget.findOne({ where: { id, staffUserId: orgStaffIds } });
     if (!row) return res.status(404).json({ success: false, message: 'Not found' });
     await row.destroy();
     return res.json({ success: true });
@@ -721,9 +819,12 @@ router.delete('/sales/targets/:id', async (req, res) => {
 
 router.get('/sales/orders/:id', async (req, res) => {
   try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
     const { Order, Client, AssignedJob, OrderItem, User } = sequelize.models;
+    const orgStaffIds = (await User.findAll({ where: { orgAccountId: orgId, role: 'staff' }, attributes: ['id'] })).map(u => u.id);
     const id = Number(req.params.id);
-    const row = await Order.findByPk(id, {
+    const row = await Order.findOne({
+      where: { id, userId: orgStaffIds },
       include: [
         { model: Client, as: 'client' },
         { model: AssignedJob, as: 'assignedJob' },
@@ -737,7 +838,7 @@ router.get('/sales/orders/:id', async (req, res) => {
     const uid = row.userId ?? row.user_id;
     if (User && Number.isFinite(Number(uid))) {
       try {
-        const u = await User.findByPk(Number(uid), { attributes: ['id','name','phone'] });
+        const u = await User.findOne({ where: { id: Number(uid), orgAccountId: orgId }, attributes: ['id','name','phone'] });
         staffName = u ? (u.name || u.phone || `User #${u.id}`) : null;
       } catch (_) {}
     }
@@ -763,10 +864,11 @@ router.get('/sales/orders/:id', async (req, res) => {
   }
 });
 
-// Clear business logo
-router.delete('/settings/business-info/logo', async (_req, res) => {
+// Clear business logo (org-scoped)
+router.delete('/settings/business-info/logo', async (req, res) => {
   try {
-    const row = await sequelize.models.OrgBusinessInfo.findOne({ where: { active: true } });
+    const orgId = requireOrg(req, res); if (!orgId) return;
+    const row = await sequelize.models.OrgBusinessInfo.findOne({ where: { active: true, orgAccountId: orgId } });
     if (!row) return res.json({ success: true });
     await row.update({ logoUrl: null });
     return res.json({ success: true });
@@ -775,10 +877,11 @@ router.delete('/settings/business-info/logo', async (_req, res) => {
   }
 });
 
-// Organization Business Info (state & city)
-router.get('/settings/business-info', async (_req, res) => {
+// Organization Business Info (state & city) (org-scoped)
+router.get('/settings/business-info', async (req, res) => {
   try {
-    const row = await sequelize.models.OrgBusinessInfo.findOne({ where: { active: true }, order: [['updatedAt','DESC']] });
+    const orgId = requireOrg(req, res); if (!orgId) return;
+    const row = await sequelize.models.OrgBusinessInfo.findOne({ where: { active: true, orgAccountId: orgId }, order: [['updatedAt','DESC']] });
     if (!row) return res.json({ success: true, info: null });
     return res.json({ success: true, info: {
       state: row.state || null,
@@ -789,23 +892,25 @@ router.get('/settings/business-info', async (_req, res) => {
       logoUrl: row.logoUrl || null,
     } });
   } catch (e) {
+    console.error('[business-info GET]', e);
     return res.status(500).json({ success: false, message: 'Failed to load business info' });
   }
 });
 
 router.put('/settings/business-info', async (req, res) => {
   try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
     const state = req.body?.state ? String(req.body.state) : null;
     const city = req.body?.city ? String(req.body.city) : null;
     const addressLine1 = req.body?.addressLine1 ? String(req.body.addressLine1) : null;
     const addressLine2 = req.body?.addressLine2 ? String(req.body.addressLine2) : null;
     const pincode = req.body?.pincode ? String(req.body.pincode) : null;
-    const existing = await sequelize.models.OrgBusinessInfo.findOne({ where: { active: true } });
+    const existing = await sequelize.models.OrgBusinessInfo.findOne({ where: { active: true, orgAccountId: orgId } });
     if (existing) {
       await existing.update({ state, city, addressLine1, addressLine2, pincode });
       return res.json({ success: true });
     }
-    await sequelize.models.OrgBusinessInfo.create({ state, city, addressLine1, addressLine2, pincode, active: true });
+    await sequelize.models.OrgBusinessInfo.create({ state, city, addressLine1, addressLine2, pincode, active: true, orgAccountId: orgId });
     return res.json({ success: true });
   } catch (e) {
     return res.status(500).json({ success: false, message: 'Failed to save business info' });
@@ -825,14 +930,15 @@ const KYB_DOC_KEYS = {
 
 router.post('/settings/kyb/doc/:key', upload.single('file'), async (req, res) => {
   try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
     const key = String(req.params.key || '').toLowerCase();
     const field = KYB_DOC_KEYS[key];
     if (!field) return res.status(400).json({ success: false, message: 'Invalid document key' });
     if (!req.file) return res.status(400).json({ success: false, message: 'file is required' });
     const fileUrl = `/uploads/claims/${req.file.filename}`;
 
-    let row = await sequelize.models.OrgKyb.findOne({ where: { active: true } });
-    if (!row) row = await sequelize.models.OrgKyb.create({ active: true });
+    let row = await sequelize.models.OrgKyb.findOne({ where: { active: true, orgAccountId: orgId } });
+    if (!row) row = await sequelize.models.OrgKyb.create({ active: true, orgAccountId: orgId });
     await row.update({ [field]: fileUrl });
     return res.json({ success: true, key, url: fileUrl });
   } catch (e) {
@@ -840,10 +946,11 @@ router.post('/settings/kyb/doc/:key', upload.single('file'), async (req, res) =>
   }
 });
 
-// Organization KYB settings (details only, no file uploads)
-router.get('/settings/kyb', async (_req, res) => {
+// Organization KYB settings (details only, no file uploads) (org-scoped)
+router.get('/settings/kyb', async (req, res) => {
   try {
-    const row = await sequelize.models.OrgKyb.findOne({ where: { active: true }, order: [['updatedAt','DESC']] });
+    const orgId = requireOrg(req, res); if (!orgId) return;
+    const row = await sequelize.models.OrgKyb.findOne({ where: { active: true, orgAccountId: orgId }, order: [['updatedAt','DESC']] });
     if (!row) return res.json({ success: true, kyb: null });
     return res.json({ success: true, kyb: {
       businessType: row.businessType || null,
@@ -872,6 +979,7 @@ router.get('/settings/kyb', async (_req, res) => {
 
 router.put('/settings/kyb', async (req, res) => {
   try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
     const {
       businessType,
       gstin,
@@ -896,22 +1004,23 @@ router.put('/settings/kyb', async (req, res) => {
       ifsc: ifsc ? String(ifsc).toUpperCase() : null,
     };
 
-    const existing = await sequelize.models.OrgKyb.findOne({ where: { active: true } });
+    const existing = await sequelize.models.OrgKyb.findOne({ where: { active: true, orgAccountId: orgId } });
     if (existing) {
       await existing.update(payload);
       return res.json({ success: true });
     }
-    await sequelize.models.OrgKyb.create({ ...payload, active: true });
+    await sequelize.models.OrgKyb.create({ ...payload, active: true, orgAccountId: orgId });
     return res.json({ success: true });
   } catch (e) {
     return res.status(500).json({ success: false, message: 'Failed to save KYB settings' });
   }
 });
 
-// Organization business bank account
-router.get('/settings/bank-account', async (_req, res) => {
+// Organization business bank account (org-scoped)
+router.get('/settings/bank-account', async (req, res) => {
   try {
-    const row = await sequelize.models.OrgBankAccount.findOne({ where: { active: true }, order: [['updatedAt','DESC']] });
+    const orgId = requireOrg(req, res); if (!orgId) return;
+    const row = await sequelize.models.OrgBankAccount.findOne({ where: { active: true, orgAccountId: orgId }, order: [['updatedAt','DESC']] });
     if (!row) return res.json({ success: true, bank: null });
     const masked = row.accountNumber && row.accountNumber.length >= 4
       ? `${'*'.repeat(Math.max(0, row.accountNumber.length - 4))}${row.accountNumber.slice(-4)}`
@@ -929,6 +1038,7 @@ router.get('/settings/bank-account', async (_req, res) => {
 
 router.put('/settings/bank-account', async (req, res) => {
   try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
     const { accountHolderName, accountNumber, confirmAccountNumber, ifsc } = req.body || {};
     const holder = String(accountHolderName || '').trim();
     const acc = String(accountNumber || '').trim();
@@ -938,22 +1048,23 @@ router.put('/settings/bank-account', async (req, res) => {
     if (acc !== acc2) return res.status(400).json({ success: false, message: 'Account number mismatch' });
 
     // Upsert single active row
-    const existing = await sequelize.models.OrgBankAccount.findOne({ where: { active: true } });
+    const existing = await sequelize.models.OrgBankAccount.findOne({ where: { active: true, orgAccountId: orgId } });
     if (existing) {
       await existing.update({ accountHolderName: holder, accountNumber: acc, ifsc: ifscCode });
       return res.json({ success: true });
     }
-    await sequelize.models.OrgBankAccount.create({ accountHolderName: holder, accountNumber: acc, ifsc: ifscCode, active: true });
+    await sequelize.models.OrgBankAccount.create({ accountHolderName: holder, accountNumber: acc, ifsc: ifscCode, active: true, orgAccountId: orgId });
     return res.json({ success: true });
   } catch (e) {
     return res.status(500).json({ success: false, message: 'Failed to save bank account' });
   }
 });
 
-// --- Salary Templates (admin scope) ---
-router.get('/salary-templates', async (_req, res) => {
+// --- Salary Templates (admin scope) --- (org-scoped)
+router.get('/salary-templates', async (req, res) => {
   try {
-    const rows = await SalaryTemplate.findAll({ where: { active: true }, order: [['name','ASC']] });
+    const orgId = requireOrg(req, res); if (!orgId) return;
+    const rows = await SalaryTemplate.findAll({ where: { active: true, orgAccountId: orgId }, order: [['name','ASC']] });
     return res.json({ success: true, data: rows });
   } catch (e) {
     return res.status(500).json({ success: false, message: 'Failed to fetch salary templates' });
@@ -962,7 +1073,8 @@ router.get('/salary-templates', async (_req, res) => {
 
 router.get('/salary-templates/:id', async (req, res) => {
   try {
-    const row = await SalaryTemplate.findByPk(req.params.id);
+    const orgId = requireOrg(req, res); if (!orgId) return;
+    const row = await SalaryTemplate.findOne({ where: { id: req.params.id, orgAccountId: orgId } });
     if (!row) return res.status(404).json({ success: false, message: 'Salary template not found' });
     return res.json({ success: true, data: row });
   } catch (e) {
@@ -972,7 +1084,8 @@ router.get('/salary-templates/:id', async (req, res) => {
 
 router.post('/salary-templates', async (req, res) => {
   try {
-    const row = await SalaryTemplate.create(req.body || {});
+    const orgId = requireOrg(req, res); if (!orgId) return;
+    const row = await SalaryTemplate.create({ ...(req.body || {}), orgAccountId: orgId });
     return res.json({ success: true, data: row });
   } catch (e) {
     return res.status(500).json({ success: false, message: 'Failed to create salary template' });
@@ -981,7 +1094,8 @@ router.post('/salary-templates', async (req, res) => {
 
 router.put('/salary-templates/:id', async (req, res) => {
   try {
-    const row = await SalaryTemplate.findByPk(req.params.id);
+    const orgId = requireOrg(req, res); if (!orgId) return;
+    const row = await SalaryTemplate.findOne({ where: { id: req.params.id, orgAccountId: orgId } });
     if (!row) return res.status(404).json({ success: false, message: 'Salary template not found' });
     await row.update(req.body || {});
     return res.json({ success: true, data: row });
@@ -992,7 +1106,8 @@ router.put('/salary-templates/:id', async (req, res) => {
 
 router.delete('/salary-templates/:id', async (req, res) => {
   try {
-    const row = await SalaryTemplate.findByPk(req.params.id);
+    const orgId = requireOrg(req, res); if (!orgId) return;
+    const row = await SalaryTemplate.findOne({ where: { id: req.params.id, orgAccountId: orgId } });
     if (!row) return res.status(404).json({ success: false, message: 'Salary template not found' });
     await row.destroy();   
     return res.json({ success: true, deleted: true });
@@ -1001,20 +1116,22 @@ router.delete('/salary-templates/:id', async (req, res) => {
   }
 });
 
-// --- Document Types management ---
+// --- Document Types management --- (org-scoped)
 // List document types
-router.get('/document-types', async (_req, res) => {
+router.get('/document-types', async (req, res) => {
   try {
-    const rows = await DocumentType.findAll({ order: [['createdAt', 'DESC']] });
+    const orgId = requireOrg(req, res); if (!orgId) return;
+    const rows = await DocumentType.findAll({ where: { orgAccountId: orgId }, order: [['createdAt', 'DESC']] });
     return res.json({ success: true, data: rows });
   } catch (e) {
     return res.status(500).json({ success: false, message: 'Failed to load document types' });
   }
 });
 
-// Create document type
+// Create document type (org-scoped)
 router.post('/document-types', async (req, res) => {
-  try {            
+  try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
     const { key, name, required, allowed_mime, active } = req.body || {};
     if (!key || !name) return res.status(400).json({ success: false, message: 'key and name are required' });
     const row = await DocumentType.create({
@@ -1023,6 +1140,7 @@ router.post('/document-types', async (req, res) => {
       required: !!required,
       allowed_mime: allowed_mime ? String(allowed_mime) : null,
       active: active === undefined ? true : !!active,
+      orgAccountId: orgId,
     });
     return res.json({ success: true, type: row });
   } catch (e) {
@@ -1030,11 +1148,12 @@ router.post('/document-types', async (req, res) => {
   }
 });
 
-// Update document type
+// Update document type (org-scoped)
 router.put('/document-types/:id', async (req, res) => {
   try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
     const id = Number(req.params.id);
-    const row = await DocumentType.findByPk(id);
+    const row = await DocumentType.findOne({ where: { id, orgAccountId: orgId } });
     if (!row) return res.status(404).json({ success: false, message: 'Not found' });
     const { key, name, required, allowed_mime, active } = req.body || {};
     const patch = {};
@@ -1070,10 +1189,11 @@ function isWeeklyOffForDate(configArray, jsDate) {
   } catch (_) { return false; }
 }
 
-// List templates
-router.get('/weekly-off/templates', async (_req, res) => {
+// List templates (org-scoped)
+router.get('/weekly-off/templates', async (req, res) => {
   try {
-    const rows = await sequelize.models.WeeklyOffTemplate.findAll({ order: [['createdAt', 'DESC']], include: [{ model: sequelize.models.StaffWeeklyOffAssignment, as: 'assignments', attributes: ['id'] }] });
+    const orgId = requireOrg(req, res); if (!orgId) return;
+    const rows = await sequelize.models.WeeklyOffTemplate.findAll({ where: { orgAccountId: orgId }, order: [['createdAt', 'DESC']], include: [{ model: sequelize.models.StaffWeeklyOffAssignment, as: 'assignments', attributes: ['id'] }] });
     const data = rows.map(r => ({ id: r.id, name: r.name, config: r.config || [], active: r.active !== false, assignedCount: (r.assignments || []).length }));
     return res.json({ success: true, templates: data });
   } catch (e) {
@@ -1081,24 +1201,26 @@ router.get('/weekly-off/templates', async (_req, res) => {
   }
 });
 
-// Create template
+// Create template (org-scoped)
 router.post('/weekly-off/templates', async (req, res) => {
   try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
     const { name, config, active } = req.body || {};
     if (!name) return res.status(400).json({ success: false, message: 'name required' });
     const norm = Array.isArray(config) ? config.filter(x => x && x.day != null).map(x => ({ day: Number(x.day), weeks: x.weeks === 'all' ? 'all' : Array.isArray(x.weeks) ? x.weeks.map(Number) : [] })) : [];
-    const row = await sequelize.models.WeeklyOffTemplate.create({ name: String(name), config: norm, active: active === undefined ? true : !!active });
+    const row = await sequelize.models.WeeklyOffTemplate.create({ name: String(name), config: norm, active: active === undefined ? true : !!active, orgAccountId: orgId });
     return res.json({ success: true, template: row });
   } catch (e) {
     return res.status(500).json({ success: false, message: 'Failed to create weekly off template' });
   }
 });
 
-// Update template
+// Update template (org-scoped)
 router.put('/weekly-off/templates/:id', async (req, res) => {
   try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
     const id = Number(req.params.id);
-    const row = await sequelize.models.WeeklyOffTemplate.findByPk(id);
+    const row = await sequelize.models.WeeklyOffTemplate.findOne({ where: { id, orgAccountId: orgId } });
     if (!row) return res.status(404).json({ success: false, message: 'not found' });
     const { name, config, active } = req.body || {};
     const patch = {};
@@ -1115,12 +1237,15 @@ router.put('/weekly-off/templates/:id', async (req, res) => {
   }
 });
 
-// Assign weekly off template to staff (single or multiple)
+// Assign weekly off template to staff (single or multiple) (org-scoped)
 router.post('/weekly-off/assign', async (req, res) => {
   try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
     const { userId, userIds, weeklyOffTemplateId, effectiveFrom, effectiveTo } = req.body || {};
     const tplId = Number(weeklyOffTemplateId);
     if (!Number.isFinite(tplId)) return res.status(400).json({ success: false, message: 'weeklyOffTemplateId required' });
+    const tpl = await sequelize.models.WeeklyOffTemplate.findOne({ where: { id: tplId, orgAccountId: orgId } });
+    if (!tpl) return res.status(404).json({ success: false, message: 'Weekly off template not found' });
     const users = Array.isArray(userIds) ? userIds : (userId ? [userId] : []);
     if (!users.length) return res.status(400).json({ success: false, message: 'userId(s) required' });
     const from = String(effectiveFrom || '').trim();
@@ -1193,10 +1318,12 @@ if (!BusinessFunction || !BusinessFunctionValue) {
   } catch (_) {}
 }
 
-// List all business functions with values
-router.get('/business-functions', async (_req, res) => {
+// List all business functions with values (org-scoped)
+router.get('/business-functions', async (req, res) => {
   try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
     const rows = await BusinessFunction.findAll({
+      where: { orgAccountId: orgId },
       order: [['createdAt', 'DESC']],
       include: [{ model: BusinessFunctionValue, as: 'values' }],
     });
@@ -1214,11 +1341,12 @@ router.get('/business-functions', async (_req, res) => {
   }
 });
 
-// Get a single business function
+// Get a single business function (org-scoped)
 router.get('/business-functions/:id', async (req, res) => {
   try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
     const id = Number(req.params.id);
-    const row = await BusinessFunction.findByPk(id, { include: [{ model: BusinessFunctionValue, as: 'values' }] });
+    const row = await BusinessFunction.findOne({ where: { id, orgAccountId: orgId }, include: [{ model: BusinessFunctionValue, as: 'values' }] });
     if (!row) return res.status(404).json({ success: false, message: 'not found' });
     const payload = {
       id: row.id,
@@ -1234,12 +1362,13 @@ router.get('/business-functions/:id', async (req, res) => {
   }
 });
 
-// Create business function
+// Create business function (org-scoped)
 router.post('/business-functions', async (req, res) => {
   try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
     const { name, active, values } = req.body || {};
     if (!name) return res.status(400).json({ success: false, message: 'name required' });
-    const row = await BusinessFunction.create({ name: String(name), active: active === undefined ? true : !!active });
+    const row = await BusinessFunction.create({ name: String(name), active: active === undefined ? true : !!active, orgAccountId: orgId });
     if (Array.isArray(values) && values.length) {
       const payload = values.filter(x => x && x.value).map((x, idx) => ({
         businessFunctionId: row.id,
@@ -1256,11 +1385,12 @@ router.post('/business-functions', async (req, res) => {
   }
 });
 
-// Update business function and replace values if provided
+// Update business function and replace values if provided (org-scoped)
 router.put('/business-functions/:id', async (req, res) => {
   try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
     const id = Number(req.params.id);
-    const row = await BusinessFunction.findByPk(id);
+    const row = await BusinessFunction.findOne({ where: { id, orgAccountId: orgId } });
     if (!row) return res.status(404).json({ success: false, message: 'not found' });
     const { name, active, values } = req.body || {};
     const patch = {};
@@ -1284,11 +1414,12 @@ router.put('/business-functions/:id', async (req, res) => {
   }
 });
 
-// Delete a business function (and its values)
+// Delete a business function (and its values) (org-scoped)
 router.delete('/business-functions/:id', async (req, res) => {
   try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
     const id = Number(req.params.id);
-    const row = await BusinessFunction.findByPk(id);
+    const row = await BusinessFunction.findOne({ where: { id, orgAccountId: orgId } });
     if (!row) return res.status(404).json({ success: false, message: 'not found' });
     await BusinessFunctionValue.destroy({ where: { businessFunctionId: id } });
     await row.destroy();
@@ -1326,11 +1457,13 @@ router.get('/settings/attendance-templates/effective/:userId', async (req, res) 
   }
 });
 
-// --- Leave Templates & Assignments ---
+// --- Leave Templates & Assignments --- (org-scoped)
 // List leave templates with categories and assigned count
-router.get('/leave/templates', async (_req, res) => {
+router.get('/leave/templates', async (req, res) => {
   try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
     const rows = await LeaveTemplate.findAll({
+      where: { orgAccountId: orgId },
       order: [['createdAt', 'DESC']],
       include: [{ model: LeaveTemplateCategory, as: 'categories' }, { model: StaffLeaveAssignment, as: 'assignments', attributes: ['id'] }],
     });
@@ -1352,9 +1485,10 @@ router.get('/leave/templates', async (_req, res) => {
   }
 });
 
-// Create leave template
+// Create leave template (org-scoped)
 router.post('/leave/templates', async (req, res) => {
   try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
     const { name, cycle, countSandwich, approvalLevel, active, categories } = req.body || {};
     if (!name) return res.status(400).json({ success: false, message: 'name required' });
     const row = await LeaveTemplate.create({
@@ -1363,6 +1497,7 @@ router.post('/leave/templates', async (req, res) => {
       countSandwich: !!countSandwich,
       approvalLevel: Number.isFinite(Number(approvalLevel)) ? Number(approvalLevel) : 1,
       active: active === undefined ? true : !!active,
+      orgAccountId: orgId,
     });
     if (Array.isArray(categories) && categories.length) {
       const payload = categories.filter(c => c && c.name && c.key).map(c => ({
@@ -1383,12 +1518,13 @@ router.post('/leave/templates', async (req, res) => {
   }
 });
 
-// Update leave template
+// Update leave template (org-scoped)
 router.put('/leave/templates/:id', async (req, res) => {
   try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
     const id = Number(req.params.id);
     if (!Number.isFinite(id)) return res.status(400).json({ success: false, message: 'invalid id' });
-    const row = await LeaveTemplate.findByPk(id);
+    const row = await LeaveTemplate.findOne({ where: { id, orgAccountId: orgId } });
     if (!row) return res.status(404).json({ success: false, message: 'not found' });
 
     const { name, cycle, countSandwich, approvalLevel, active, categories } = req.body || {};
@@ -1421,12 +1557,15 @@ router.put('/leave/templates/:id', async (req, res) => {
   }
 });
 
-// Assign leave template
+// Assign leave template (org-scoped)
 router.post('/leave/assign', async (req, res) => {
   try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
     const { userId, userIds, leaveTemplateId, effectiveFrom, effectiveTo } = req.body || {};
     const tplId = Number(leaveTemplateId);
     if (!Number.isFinite(tplId)) return res.status(400).json({ success: false, message: 'leaveTemplateId required' });
+    const tpl = await LeaveTemplate.findOne({ where: { id: tplId, orgAccountId: orgId } });
+    if (!tpl) return res.status(404).json({ success: false, message: 'Leave template not found' });
     const users = Array.isArray(userIds) ? userIds : (userId ? [userId] : []);
     if (!users.length) return res.status(400).json({ success: false, message: 'userId(s) required' });
     const from = String(effectiveFrom || '').trim();
@@ -1441,11 +1580,13 @@ router.post('/leave/assign', async (req, res) => {
   }
 });
 
-// --- Holiday Templates & Assignments ---
+// --- Holiday Templates & Assignments --- (org-scoped)
 // List holiday templates with holidays and assigned count
-router.get('/holidays/templates', async (_req, res) => {
+router.get('/holidays/templates', async (req, res) => {
   try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
     const rows = await HolidayTemplate.findAll({
+      where: { orgAccountId: orgId },
       order: [['createdAt', 'DESC']],
       include: [{ model: HolidayDate, as: 'holidays' }, { model: StaffHolidayAssignment, as: 'assignments', attributes: ['id'] }],
     });
@@ -1466,9 +1607,10 @@ router.get('/holidays/templates', async (_req, res) => {
   }
 });
 
-// Create holiday template
+// Create holiday template (org-scoped)
 router.post('/holidays/templates', async (req, res) => {
   try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
     const { name, startMonth, endMonth, active, holidays } = req.body || {};
     if (!name) return res.status(400).json({ success: false, message: 'name required' });
     const row = await HolidayTemplate.create({
@@ -1476,6 +1618,7 @@ router.post('/holidays/templates', async (req, res) => {
       startMonth: Number.isFinite(Number(startMonth)) ? Number(startMonth) : null,
       endMonth: Number.isFinite(Number(endMonth)) ? Number(endMonth) : null,
       active: active === undefined ? true : !!active,
+      orgAccountId: orgId,
     });
     if (Array.isArray(holidays) && holidays.length) {
       const payload = holidays
@@ -1490,12 +1633,13 @@ router.post('/holidays/templates', async (req, res) => {
   }
 });
 
-// Update holiday template
+// Update holiday template (org-scoped)
 router.put('/holidays/templates/:id', async (req, res) => {
   try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
     const id = Number(req.params.id);
     if (!Number.isFinite(id)) return res.status(400).json({ success: false, message: 'invalid id' });
-    const row = await HolidayTemplate.findByPk(id);
+    const row = await HolidayTemplate.findOne({ where: { id, orgAccountId: orgId } });
     if (!row) return res.status(404).json({ success: false, message: 'not found' });
 
     const { name, startMonth, endMonth, active, holidays } = req.body || {};
@@ -1521,12 +1665,15 @@ router.put('/holidays/templates/:id', async (req, res) => {
   }
 });
 
-// Assign holiday template to staff (single or multiple)
+// Assign holiday template to staff (single or multiple) (org-scoped)
 router.post('/holidays/assign', async (req, res) => {
   try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
     const { userId, userIds, holidayTemplateId, effectiveFrom, effectiveTo } = req.body || {};
     const tplId = Number(holidayTemplateId);
     if (!Number.isFinite(tplId)) return res.status(400).json({ success: false, message: 'holidayTemplateId required' });
+    const tpl = await HolidayTemplate.findOne({ where: { id: tplId, orgAccountId: orgId } });
+    if (!tpl) return res.status(404).json({ success: false, message: 'Holiday template not found' });
     const users = Array.isArray(userIds) ? userIds : (userId ? [userId] : []);
     if (!users.length) return res.status(400).json({ success: false, message: 'userId(s) required' });
     const from = String(effectiveFrom || '').trim();
@@ -1541,11 +1688,12 @@ router.post('/holidays/assign', async (req, res) => {
   }
 });
 
-// Staff stats: total, active, newHires (last 7 days), onLeave (today overlaps)
-router.get('/staff/stats', async (_req, res) => {
+// Staff stats: total, active, newHires (last 7 days), onLeave (today overlaps) (org-scoped)
+router.get('/staff/stats', async (req, res) => {
   try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
     // Totals and active
-    const users = await User.findAll({ attributes: ['id', 'active', 'createdAt'] });
+    const users = await User.findAll({ where: { orgAccountId: orgId, role: 'staff' }, attributes: ['id', 'active', 'createdAt'] });
     const total = users.length;
     const active = users.filter(u => u.active === undefined ? true : !!u.active).length;
     const sevenDaysAgo = new Date();
@@ -1582,54 +1730,56 @@ router.get('/staff/stats', async (_req, res) => {
   }
 });
 
-// --- Attendance Templates & Assignments ---
+// --- Attendance Templates & Assignments --- (org-scoped)
 // List templates
-router.get('/settings/attendance-templates', async (_req, res) => {
+router.get('/settings/attendance-templates', async (req, res) => {
   try {
-    const rows = await AttendanceTemplate.findAll({ order: [['createdAt', 'DESC']] });
+    const orgId = requireOrg(req, res); if (!orgId) return;
+    const rows = await AttendanceTemplate.findAll({ where: { orgAccountId: orgId }, order: [['createdAt', 'DESC']] });
     return res.json({ success: true, data: rows });
   } catch (e) {
     return res.status(500).json({ success: false, message: 'Failed to load templates' });
   }
 });
 
-// Create template
+// Create template (org-scoped)
 router.post('/settings/attendance-templates', async (req, res) => {
+  console.log('POST /settings/attendance-templates called', req.body);
   try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
+    console.log('orgId:', orgId);
     const b = req.body || {};
-    // Accept both snake_case and camelCase, but set model attributes in camelCase
+    // Accept both snake_case and camelCase, use only camelCase for model
     const payload = {
       name: b.name || 'Template',
-      code: b.code ?? null,
-      attendanceMode: b.attendance_mode ?? b.attendanceMode ?? null,
-      attendance_mode: b.attendance_mode ?? b.attendanceMode ?? null,
-      holidaysRule: b.holidays_rule ?? b.holidaysRule ?? null,
-      holidays_rule: b.holidays_rule ?? b.holidaysRule ?? null,
-      trackInOutEnabled: b.track_in_out_enabled ?? b.trackInOutEnabled ?? null,
-      track_in_out_enabled: b.track_in_out_enabled ?? b.trackInOutEnabled ?? null,
-      requirePunchOut: b.require_punch_out ?? b.requirePunchOut ?? null,
-      require_punch_out: b.require_punch_out ?? b.requirePunchOut ?? null,
-      allowMultiplePunches: b.allow_multiple_punches ?? b.allowMultiplePunches ?? null,
-      allow_multiple_punches: b.allow_multiple_punches ?? b.allowMultiplePunches ?? null,
-      markAbsentPrevDaysEnabled: b.mark_absent_prev_days_enabled ?? b.markAbsentPrevDaysEnabled ?? null,
-      mark_absent_prev_days_enabled: b.mark_absent_prev_days_enabled ?? b.markAbsentPrevDaysEnabled ?? null,
-      markAbsentRule: b.mark_absent_rule ?? b.markAbsentRule ?? null,
-      mark_absent_rule: b.mark_absent_rule ?? b.markAbsentRule ?? null,
-      effectiveHoursRule: b.effective_hours_rule ?? b.effectiveHoursRule ?? null,
-      effective_hours_rule: b.effective_hours_rule ?? b.effectiveHoursRule ?? null,
+      orgAccountId: orgId,
+      code: b.code || null,
+      attendanceMode: b.attendance_mode || b.attendanceMode || 'manual',
+      holidaysRule: b.holidays_rule || b.holidaysRule || 'disallow',
+      trackInOutEnabled: !!(b.track_in_out_enabled ?? b.trackInOutEnabled),
+      requirePunchOut: !!(b.require_punch_out ?? b.requirePunchOut),
+      allowMultiplePunches: !!(b.allow_multiple_punches ?? b.allowMultiplePunches),
+      markAbsentPrevDaysEnabled: !!(b.mark_absent_prev_days_enabled ?? b.markAbsentPrevDaysEnabled),
+      markAbsentRule: b.mark_absent_rule || b.markAbsentRule || 'none',
+      effectiveHoursRule: b.effective_hours_rule || b.effectiveHoursRule || null,
+      active: b.active !== false,
     };
+    console.log('Creating template with payload:', payload);
     const row = await AttendanceTemplate.create(payload);
+    console.log('Template created:', row.id);
     return res.json({ success: true, template: row });
   } catch (e) {
-    return res.status(500).json({ success: false, message: 'Failed to create template' });
+    console.error('Create attendance template error:', e);
+    return res.status(500).json({ success: false, message: 'Failed to create template', error: e.message });
   }
 });
 
-// Update template
+// Update template (org-scoped)
 router.put('/settings/attendance-templates/:id', async (req, res) => {
   try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
     const id = Number(req.params.id);
-    const row = await AttendanceTemplate.findByPk(id);
+    const row = await AttendanceTemplate.findOne({ where: { id, orgAccountId: orgId } });
     if (!row) return res.status(404).json({ success: false, message: 'Template not found' });
     const b = req.body || {};
     // Build patch in camelCase expected by the model
@@ -1682,9 +1832,10 @@ router.post('/settings/attendance-templates/:id/assign', async (req, res) => {
   }
 });
 
-// Staff list (full details)
-router.get('/staff', async (_req, res) => {
+// Staff list (full details) (org-scoped)
+router.get('/staff', async (req, res) => {
   try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
     let rows;
     try {
       [rows] = await sequelize.query(
@@ -1697,12 +1848,15 @@ router.get('/staff', async (_req, res) => {
                 sp.staff_id AS staffId,
                 COALESCE(sp.department, '') AS department
          FROM users u
-         INNER JOIN staff_profiles sp ON sp.user_id = u.id`
+         INNER JOIN staff_profiles sp ON sp.user_id = u.id
+         WHERE u.org_account_id = :orgId AND u.role = 'staff'`,
+        { replacements: { orgId } }
       );
     } catch (eRaw) {
       console.warn('Raw JOIN query failed:', eRaw?.message || eRaw);
       // Fallback via ORM without associations to avoid alias issues
-      const profs = await StaffProfile.findAll({ attributes: ['userId', 'name', 'staffId', 'department', 'phone', 'email', 'createdAt'] });
+      const orgStaffIds = (await User.findAll({ where: { orgAccountId: orgId, role: 'staff' }, attributes: ['id'] })).map(u => u.id);
+      const profs = await StaffProfile.findAll({ where: { userId: orgStaffIds }, attributes: ['userId', 'name', 'staffId', 'department', 'phone', 'email', 'createdAt'] });
       rows = profs.map(p => ({ id: p.userId, name: p.name, staffId: p.staffId, department: p.department, phone: p.phone, email: p.email, active: 1, createdAt: p.createdAt }));
     }
     const data = (rows || []).map(r => ({
@@ -1764,9 +1918,10 @@ if (!Loan) {
 
 router.get('/staff/:id/loans', async (req, res) => {
   try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
     const id = Number(req.params.id);
-    const user = await User.findByPk(id);
-    if (!user || user.role !== 'staff') return res.status(404).json({ success: false, message: 'Staff not found' });
+    const user = await User.findOne({ where: { id, orgAccountId: orgId, role: 'staff' } });
+    if (!user) return res.status(404).json({ success: false, message: 'Staff not found' });
     const rows = await Loan.findAll({ where: { userId: id }, order: [['date', 'DESC'], ['createdAt', 'DESC']] });
     return res.json({ success: true, data: rows });
   } catch (e) {
@@ -1796,12 +1951,13 @@ if (!ExpenseClaim) {
   }, { tableName: 'expense_claims', timestamps: true });
 }
 
-// List expense claims for a staff
+// List expense claims for a staff (org-scoped)
 router.get('/staff/:id/expenses', async (req, res) => {
   try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
     const id = Number(req.params.id);
-    const user = await User.findByPk(id);
-    if (!user || user.role !== 'staff') return res.status(404).json({ success: false, message: 'Staff not found' });
+    const user = await User.findOne({ where: { id, orgAccountId: orgId, role: 'staff' } });
+    if (!user) return res.status(404).json({ success: false, message: 'Staff not found' });
     const rows = await ExpenseClaim.findAll({ where: { userId: id }, order: [['createdAt', 'DESC']] });
     return res.json({ success: true, data: rows });
   } catch (e) {
@@ -1825,12 +1981,13 @@ if (!StaffDocument) {
   }, { tableName: 'staff_documents', timestamps: true, createdAt: 'created_at', updatedAt: 'updated_at' });
 }
 
-// List staff documents
+// List staff documents (org-scoped)
 router.get('/staff/:id/documents', async (req, res) => {
   try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
     const id = Number(req.params.id);
-    const user = await User.findByPk(id);
-    if (!user || user.role !== 'staff') return res.status(404).json({ success: false, message: 'Staff not found' });
+    const user = await User.findOne({ where: { id, orgAccountId: orgId, role: 'staff' } });
+    if (!user) return res.status(404).json({ success: false, message: 'Staff not found' });
     const rows = await StaffDocument.findAll({ where: { userId: id }, order: [['createdAt', 'DESC']] });
     return res.json({ success: true, data: rows });
   } catch (e) {
@@ -1838,13 +1995,14 @@ router.get('/staff/:id/documents', async (req, res) => {
   }
 });
 
-// Create/upload document
+// Create/upload document (org-scoped)
 router.post('/staff/:id/documents', uploadDoc.single('file'), async (req, res) => {
   try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
     const id = Number(req.params.id);
     const { docType, title, expiresAt, notes } = req.body || {};
-    const user = await User.findByPk(id);
-    if (!user || user.role !== 'staff') return res.status(404).json({ success: false, message: 'Staff not found' });
+    const user = await User.findOne({ where: { id, orgAccountId: orgId, role: 'staff' } });
+    if (!user) return res.status(404).json({ success: false, message: 'Staff not found' });
     if (!req.file) return res.status(400).json({ success: false, message: 'File required' });
     const rel = path.join('uploads', 'staff-docs', req.file.filename).replace(/\\/g, '/');
     const row = await StaffDocument.create({
@@ -1900,16 +2058,17 @@ router.delete('/documents/:docId', async (req, res) => {
   }
 });
 
-// Admin: upload once and assign to all staff
+// Admin: upload once and assign to all staff (org-scoped)
 router.post('/documents/assign-all', uploadDoc.single('file'), async (req, res) => {
   try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
     const { docType, title, expiresAt, notes } = req.body || {};
     if (!req.file) return res.status(400).json({ success: false, message: 'File required' });
     const rel = path.join('uploads', 'staff-docs', req.file.filename).replace(/\\/g, '/');
     const fileUrl = `/admin/${rel}`;
 
-    // Fetch all staff user IDs
-    const staffUsers = await User.findAll({ where: { role: 'staff' }, attributes: ['id'] });
+    // Fetch all staff user IDs for this org
+    const staffUsers = await User.findAll({ where: { role: 'staff', orgAccountId: orgId }, attributes: ['id'] });
     if (!staffUsers.length) return res.json({ success: true, assigned: 0, fileUrl });
 
     // Prepare bulk insert payload
@@ -1930,10 +2089,12 @@ router.post('/documents/assign-all', uploadDoc.single('file'), async (req, res) 
   }
 });
 
-// Admin: list recent staff documents (for Manage Documents page)
-router.get('/documents/recent', async (_req, res) => {
+// Admin: list recent staff documents (for Manage Documents page) (org-scoped)
+router.get('/documents/recent', async (req, res) => {
   try {
-    const rows = await StaffDocument.findAll({ order: [['createdAt', 'DESC']], limit: 100 });
+    const orgId = requireOrg(req, res); if (!orgId) return;
+    const orgStaffIds = (await User.findAll({ where: { orgAccountId: orgId, role: 'staff' }, attributes: ['id'] })).map(u => u.id);
+    const rows = await StaffDocument.findAll({ where: { userId: orgStaffIds }, order: [['createdAt', 'DESC']], limit: 100 });
     return res.json({ success: true, data: rows });
   } catch (e) {
     return res.status(500).json({ success: false, message: 'Failed to load documents' });
@@ -1941,13 +2102,14 @@ router.get('/documents/recent', async (_req, res) => {
 });
 
 
-// Create expense claim
+// Create expense claim (org-scoped)
 router.post('/staff/:id/expenses', upload.single('attachment'), async (req, res) => {
   try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
     const id = Number(req.params.id);
     const { expenseType, expenseDate, billNumber, amount, description } = req.body || {};
-    const user = await User.findByPk(id);
-    if (!user || user.role !== 'staff') return res.status(404).json({ success: false, message: 'Staff not found' });
+    const user = await User.findOne({ where: { id, orgAccountId: orgId, role: 'staff' } });
+    if (!user) return res.status(404).json({ success: false, message: 'Staff not found' });
     const amt = Number(amount);
     if (!Number.isFinite(amt) || amt <= 0) return res.status(400).json({ success: false, message: 'Valid amount required' });
     let attachmentUrl = null;
@@ -1974,16 +2136,19 @@ router.post('/staff/:id/expenses', upload.single('attachment'), async (req, res)
 
 
 
-// Approve/Reject/Settle expense claim
+// Approve/Reject/Settle expense claim (org-scoped)
 router.put('/expenses/:claimId/status', async (req, res) => {
   try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
     const id = Number(req.params.claimId);
     const { status, approvedAmount, approvedBy } = req.body || {};
     const s = String(status || '').toLowerCase();
     if (!['approved', 'rejected', 'pending', 'settled'].includes(s)) {
       return res.status(400).json({ success: false, message: 'Invalid status' });
     }
-    const row = await ExpenseClaim.findByPk(id);
+    // Verify claim belongs to org staff
+    const orgStaffIds = (await User.findAll({ where: { orgAccountId: orgId, role: 'staff' }, attributes: ['id'] })).map(u => u.id);
+    const row = await ExpenseClaim.findOne({ where: { id, userId: orgStaffIds } });
     if (!row) return res.status(404).json({ success: false, message: 'Claim not found' });
     const patch = { status: s };
     if (s === 'approved') {
@@ -2001,9 +2166,10 @@ router.put('/expenses/:claimId/status', async (req, res) => {
 
 router.get('/staff/:id/loans/summary', async (req, res) => {
   try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
     const id = Number(req.params.id);
-    const user = await User.findByPk(id);
-    if (!user || user.role !== 'staff') return res.status(404).json({ success: false, message: 'Staff not found' });
+    const user = await User.findOne({ where: { id, orgAccountId: orgId, role: 'staff' } });
+    if (!user) return res.status(404).json({ success: false, message: 'Staff not found' });
     const rows = await Loan.findAll({ where: { userId: id } });
     let totalLoan = 0, totalPayment = 0;
     rows.forEach(r => {
@@ -2019,10 +2185,11 @@ router.get('/staff/:id/loans/summary', async (req, res) => {
 
 router.post('/staff/:id/loans', async (req, res) => {
   try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
     const id = Number(req.params.id);
     const { date, amount, description, type, notifySms } = req.body || {};
-    const user = await User.findByPk(id);
-    if (!user || user.role !== 'staff') return res.status(404).json({ success: false, message: 'Staff not found' });
+    const user = await User.findOne({ where: { id, orgAccountId: orgId, role: 'staff' } });
+    if (!user) return res.status(404).json({ success: false, message: 'Staff not found' });
     const t = ['loan', 'payment'].includes(String(type)) ? String(type) : 'loan';
     const dt = date || new Date().toISOString().slice(0, 10);
     const amt = Number(amount);
@@ -2073,12 +2240,13 @@ if (!LeaveRequest) {
   }, { tableName: 'leave_request', timestamps: true });
 }
 
-// List leaves for a staff
+// List leaves for a staff (org-scoped)
 router.get('/staff/:id/leaves', async (req, res) => {
   try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
     const id = Number(req.params.id);
-    const user = await User.findByPk(id);
-    if (!user || user.role !== 'staff') return res.status(404).json({ success: false, message: 'Staff not found' });
+    const user = await User.findOne({ where: { id, orgAccountId: orgId, role: 'staff' } });
+    if (!user) return res.status(404).json({ success: false, message: 'Staff not found' });
     const rows = await LeaveRequest.findAll({ where: { userId: id }, order: [['createdAt', 'DESC']] });
     const data = rows.map((r) => {
       const o = r.get ? r.get({ plain: true }) : r;
@@ -2092,16 +2260,19 @@ router.get('/staff/:id/leaves', async (req, res) => {
   }
 });
 
-// Approve/Reject a leave
+// Approve/Reject a leave (org-scoped)
 router.put('/leaves/:leaveId/status', async (req, res) => {
   try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
     const id = Number(req.params.leaveId);
     const { status } = req.body || {};
     const s = String(status || '').toLowerCase();
     if (!['approved', 'rejected', 'pending'].includes(s)) {
       return res.status(400).json({ success: false, message: 'Invalid status' });
     }
-    const row = await LeaveRequest.findByPk(id);
+    // Verify leave belongs to org staff
+    const orgStaffIds = (await User.findAll({ where: { orgAccountId: orgId, role: 'staff' }, attributes: ['id'] })).map(u => u.id);
+    const row = await LeaveRequest.findOne({ where: { id, userId: orgStaffIds } });
     if (!row) return res.status(404).json({ success: false, message: 'Leave not found' });
     await row.update({ status: s });
     return res.json({ success: true, leave: row });
@@ -2401,16 +2572,17 @@ function computeItemAmount(item, ctx) {
         return res.status(500).json({ success: false, message: 'Failed to load attendance' });
       }
     });
-    // Month-wise attendance for a staff member
+    // Month-wise attendance for a staff member (org-scoped)
     router.get('/staff/:id/attendance', async (req, res) => {
       try {
+        const orgId = requireOrg(req, res); if (!orgId) return;
         const { id } = req.params;
         const { month } = req.query; // YYYY-MM
         if (!month || !/^\d{4}-\d{2}$/.test(String(month))) {
           return res.status(400).json({ success: false, message: 'month (YYYY-MM) required' });
         }
-        const user = await User.findByPk(id);
-        if (!user || user.role !== 'staff') {
+        const user = await User.findOne({ where: { id: Number(id), orgAccountId: orgId, role: 'staff' } });
+        if (!user) {
           return res.status(404).json({ success: false, message: 'Staff not found' });
         }
 
@@ -2576,28 +2748,30 @@ function computePayableDays(settings, year, month /* 1-12 */) {
   }
 }
 
-router.get('/settings/work-hours', async (_req, res) => {
+router.get('/settings/work-hours', async (req, res) => {
   try {
-    const s = await AppSetting.findOne({ where: { key: 'required_work_hours' } });
+    const orgId = requireOrg(req, res); if (!orgId) return;
+    const s = await AppSetting.findOne({ where: { key: 'required_work_hours', orgAccountId: orgId } });
     return res.json({ success: true, value: s ? s.value : null });
   } catch (e) {
     return res.status(500).json({ success: false, message: 'Failed to load work hours setting' });
   }
 });
-// Top 5 users needing review today based on anomaly counts
-router.get('/ai/anomalies/top-today', async (_req, res) => {
+// Top 5 users needing review today based on anomaly counts (org-scoped)
+router.get('/ai/anomalies/top-today', async (req, res) => {
   try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
     const today = new Date().toISOString().slice(0, 10);
     const rows = await AIAnomaly.findAll({
       where: { date: today },
       attributes: [
         'userId',
-        [sequelize.fn('COUNT', sequelize.col('id')), 'count']
+        [sequelize.fn('COUNT', sequelize.col('AIAnomaly.id')), 'count']
       ],
       group: ['userId'],
       order: [[sequelize.literal('count'), 'DESC']],
       limit: 5,
-      include: [{ model: User, as: 'user', attributes: ['id', 'phone'], include: [{ model: StaffProfile, as: 'profile', attributes: ['name', 'staffId'] }] }],
+      include: [{ model: User, as: 'user', where: { orgAccountId: orgId }, attributes: ['id', 'phone'], include: [{ model: StaffProfile, as: 'profile', attributes: ['name', 'staffId'] }] }],
     });
     // Normalize output
     const items = rows.map((r) => ({
@@ -2613,10 +2787,12 @@ router.get('/ai/anomalies/top-today', async (_req, res) => {
   }
 });
 
-// List salary templates
-router.get('/salary-templates', async (_req, res) => {
+// List salary templates (org-scoped)
+router.get('/salary-templates', async (req, res) => {
   try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
     const templates = await SalaryTemplate.findAll({
+      where: { orgAccountId: orgId },
       attributes: ['id', 'name']
     });
     return res.json({ success: true, data: templates });
@@ -2626,10 +2802,12 @@ router.get('/salary-templates', async (_req, res) => {
   }
 });
 
-// List attendance templates
-router.get('/attendance-templates', async (_req, res) => {
+// List attendance templates (org-scoped)
+router.get('/attendance-templates', async (req, res) => {
   try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
     const templates = await AttendanceTemplate.findAll({
+      where: { orgAccountId: orgId },
       attributes: ['id', 'name']
     });
     return res.json({ success: true, data: templates });
@@ -2639,10 +2817,11 @@ router.get('/attendance-templates', async (_req, res) => {
   }
 });
 
-// Smart Geo-Fence Logic settings (stored in AppSetting: key 'smart_geo_fence')
-router.get('/settings/geo-fence', async (_req, res) => {
+// Smart Geo-Fence Logic settings (stored in AppSetting: key 'smart_geo_fence') (org-scoped)
+router.get('/settings/geo-fence', async (req, res) => {
   try {
-    const row = await AppSetting.findOne({ where: { key: 'smart_geo_fence' } });
+    const orgId = requireOrg(req, res); if (!orgId) return;
+    const row = await AppSetting.findOne({ where: { key: 'smart_geo_fence', orgAccountId: orgId } });
     const value = row?.value ? JSON.parse(row.value) : { dynamicRoutes: true, tempLocations: true, multiSiteShifts: true, timeRules: true };
     return res.json({ success: true, settings: value });
   } catch (e) {
@@ -2652,6 +2831,7 @@ router.get('/settings/geo-fence', async (_req, res) => {
 
 router.put('/settings/geo-fence', async (req, res) => {
   try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
     const body = req.body || {};
     const next = {
       dynamicRoutes: !!body.dynamicRoutes,
@@ -2660,7 +2840,7 @@ router.put('/settings/geo-fence', async (req, res) => {
       timeRules: !!body.timeRules,
     };
     const payload = JSON.stringify(next);
-    const [row] = await AppSetting.findOrCreate({ where: { key: 'smart_geo_fence' }, defaults: { value: payload } });
+    const [row] = await AppSetting.findOrCreate({ where: { key: 'smart_geo_fence', orgAccountId: orgId }, defaults: { value: payload, orgAccountId: orgId } });
     if (row.value !== payload) await row.update({ value: payload });
     return res.json({ success: true, settings: next });
   } catch (e) {
@@ -2668,11 +2848,13 @@ router.put('/settings/geo-fence', async (req, res) => {
   }
 });
 
-// AI Attendance Anomaly: list recent and compute stub
+// AI Attendance Anomaly: list recent and compute stub (org-scoped)
 router.get('/ai/anomalies', async (req, res) => {
   try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
+    const orgStaffIds = (await User.findAll({ where: { orgAccountId: orgId, role: 'staff' }, attributes: ['id'] })).map(u => u.id);
     const userId = req.query.userId ? Number(req.query.userId) : null;
-    const where = userId ? { userId } : {};
+    const where = userId ? { userId } : { userId: orgStaffIds };
     const rows = await AIAnomaly.findAll({ where, order: [['date', 'DESC'], ['createdAt', 'DESC']], limit: 200 });
     return res.json({ success: true, anomalies: rows });
   } catch (e) {
@@ -2682,8 +2864,10 @@ router.get('/ai/anomalies', async (req, res) => {
 
 router.post('/ai/anomalies/compute', async (req, res) => {
   try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
+    const orgStaffIds = (await User.findAll({ where: { orgAccountId: orgId, role: 'staff' }, attributes: ['id'] })).map(u => u.id);
     const dateIso = String(req.body?.date || new Date().toISOString().slice(0, 10));
-    const att = await Attendance.findAll({ where: { date: dateIso }, order: [['userId', 'ASC'], ['createdAt', 'ASC']] });
+    const att = await Attendance.findAll({ where: { date: dateIso, userId: orgStaffIds }, order: [['userId', 'ASC'], ['createdAt', 'ASC']] });
 
     // Try AI provider first
     let created = 0;
@@ -2903,10 +3087,11 @@ router.post('/leave/allocate', async (req, res) => {
   }
 });
 
-// --- Leave Templates CRUD ---
-router.get('/leave/templates', async (_req, res) => {
+// --- Leave Templates CRUD --- (org-scoped duplicate block)
+router.get('/leave/templates', async (req, res) => {
   try {
-    const rows = await LeaveTemplate.findAll({ include: [{ model: LeaveTemplateCategory, as: 'categories' }], order: [['createdAt', 'DESC']] });
+    const orgId = requireOrg(req, res); if (!orgId) return;
+    const rows = await LeaveTemplate.findAll({ where: { orgAccountId: orgId }, include: [{ model: LeaveTemplateCategory, as: 'categories' }], order: [['createdAt', 'DESC']] });
     return res.json({ success: true, templates: rows });
   } catch (e) {
     return res.status(500).json({ success: false, message: 'Failed to load leave templates' });
@@ -2915,11 +3100,12 @@ router.get('/leave/templates', async (_req, res) => {
 
 router.post('/leave/templates', async (req, res) => {
   try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
     const { name, cycle, countSandwich, approvalLevel, categories } = req.body || {};
     if (!name) return res.status(400).json({ success: false, message: 'name required' });
     const cyc = ['monthly', 'quarterly', 'yearly'].includes(String(cycle)) ? String(cycle) : 'monthly';
     const lvl = [1, 2, 3].includes(Number(approvalLevel)) ? Number(approvalLevel) : 1;
-    const tpl = await LeaveTemplate.create({ name: String(name), cycle: cyc, countSandwich: !!countSandwich, approvalLevel: lvl, active: true });
+    const tpl = await LeaveTemplate.create({ name: String(name), cycle: cyc, countSandwich: !!countSandwich, approvalLevel: lvl, active: true, orgAccountId: orgId });
     if (Array.isArray(categories)) {
       for (const c of categories) {
         await LeaveTemplateCategory.create({
@@ -2942,8 +3128,9 @@ router.post('/leave/templates', async (req, res) => {
 
 router.put('/leave/templates/:id', async (req, res) => {
   try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
     const id = Number(req.params.id);
-    const row = await LeaveTemplate.findByPk(id);
+    const row = await LeaveTemplate.findOne({ where: { id, orgAccountId: orgId } });
     if (!row) return res.status(404).json({ success: false, message: 'Template not found' });
     const { name, cycle, countSandwich, approvalLevel, active } = req.body || {};
     await row.update({
@@ -2962,8 +3149,9 @@ router.put('/leave/templates/:id', async (req, res) => {
 
 router.post('/leave/templates/:id/categories-bulk', async (req, res) => {
   try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
     const id = Number(req.params.id);
-    const tpl = await LeaveTemplate.findByPk(id);
+    const tpl = await LeaveTemplate.findOne({ where: { id, orgAccountId: orgId } });
     if (!tpl) return res.status(404).json({ success: false, message: 'Template not found' });
     const items = Array.isArray(req.body?.categories) ? req.body.categories : [];
     await LeaveTemplateCategory.destroy({ where: { leaveTemplateId: id } });
@@ -2987,6 +3175,7 @@ router.post('/leave/templates/:id/categories-bulk', async (req, res) => {
 
 router.post('/leave/assign', async (req, res) => {
   try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
     const userId = Number(req.body?.userId);
     const templateId = Number(req.body?.leaveTemplateId || req.body?.templateId);
     const effectiveFrom = String(req.body?.effectiveFrom || '').slice(0, 10);
@@ -2994,9 +3183,9 @@ router.post('/leave/assign', async (req, res) => {
     if (!Number.isFinite(userId) || !Number.isFinite(templateId) || !effectiveFrom) {
       return res.status(400).json({ success: false, message: 'userId, leaveTemplateId, effectiveFrom required' });
     }
-    const user = await User.findByPk(userId);
-    if (!user || user.role !== 'staff') return res.status(404).json({ success: false, message: 'Staff not found' });
-    const tpl = await LeaveTemplate.findByPk(templateId);
+    const user = await User.findOne({ where: { id: userId, orgAccountId: orgId, role: 'staff' } });
+    if (!user) return res.status(404).json({ success: false, message: 'Staff not found' });
+    const tpl = await LeaveTemplate.findOne({ where: { id: templateId, orgAccountId: orgId } });
     if (!tpl) return res.status(404).json({ success: false, message: 'Leave template not found' });
     const row = await StaffLeaveAssignment.create({ userId, leaveTemplateId: templateId, effectiveFrom, effectiveTo });
     return res.json({ success: true, assignment: row });
@@ -3005,11 +3194,12 @@ router.post('/leave/assign', async (req, res) => {
   }
 });
 
-// --- Site Checkpoints CRUD (Security)
+// --- Site Checkpoints CRUD (Security) (org-scoped)
 router.get('/sites/:siteId/checkpoints', async (req, res) => {
   try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
     const siteId = Number(req.params.siteId);
-    const site = await Site.findByPk(siteId);
+    const site = await Site.findOne({ where: { id: siteId, orgAccountId: orgId } });
     if (!site) return res.status(404).json({ success: false, message: 'Site not found' });
     const rows = await SiteCheckpoint.findAll({ where: { siteId }, order: [['createdAt', 'DESC']] });
     return res.json({ success: true, checkpoints: rows });
@@ -3020,8 +3210,9 @@ router.get('/sites/:siteId/checkpoints', async (req, res) => {
 
 router.post('/sites/:siteId/checkpoints', async (req, res) => {
   try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
     const siteId = Number(req.params.siteId);
-    const site = await Site.findByPk(siteId);
+    const site = await Site.findOne({ where: { id: siteId, orgAccountId: orgId } });
     if (!site) return res.status(404).json({ success: false, message: 'Site not found' });
     const { name, qrCode, lat, lng, radiusM, active } = req.body || {};
     if (!name) return res.status(400).json({ success: false, message: 'name required' });
@@ -3042,7 +3233,10 @@ router.post('/sites/:siteId/checkpoints', async (req, res) => {
 
 router.put('/sites/:siteId/checkpoints/:id', async (req, res) => {
   try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
     const siteId = Number(req.params.siteId);
+    const site = await Site.findOne({ where: { id: siteId, orgAccountId: orgId } });
+    if (!site) return res.status(404).json({ success: false, message: 'Site not found' });
     const id = Number(req.params.id);
     const row = await SiteCheckpoint.findOne({ where: { id, siteId } });
     if (!row) return res.status(404).json({ success: false, message: 'Checkpoint not found' });
@@ -3063,7 +3257,10 @@ router.put('/sites/:siteId/checkpoints/:id', async (req, res) => {
 
 router.delete('/sites/:siteId/checkpoints/:id', async (req, res) => {
   try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
     const siteId = Number(req.params.siteId);
+    const site = await Site.findOne({ where: { id: siteId, orgAccountId: orgId } });
+    if (!site) return res.status(404).json({ success: false, message: 'Site not found' });
     const id = Number(req.params.id);
     const row = await SiteCheckpoint.findOne({ where: { id, siteId } });
     if (!row) return res.status(404).json({ success: false, message: 'Checkpoint not found' });
@@ -3118,10 +3315,11 @@ router.patch('/security/patrol/:id/adjust', async (req, res) => {
   }
 });
 
-// --- Routes CRUD (Logistics)
-router.get('/routes', async (_req, res) => {
+// --- Routes CRUD (Logistics) (org-scoped)
+router.get('/routes', async (req, res) => {
   try {
-    const rows = await Route.findAll({ include: [{ model: RouteStop, as: 'stops', order: [['seqNo', 'ASC']] }], order: [['createdAt', 'DESC']] });
+    const orgId = requireOrg(req, res); if (!orgId) return;
+    const rows = await Route.findAll({ where: { orgAccountId: orgId }, include: [{ model: RouteStop, as: 'stops', order: [['seqNo', 'ASC']] }], order: [['createdAt', 'DESC']] });
     return res.json({ success: true, routes: rows });
   } catch (e) {
     return res.status(500).json({ success: false, message: 'Failed to load routes' });
@@ -3130,9 +3328,10 @@ router.get('/routes', async (_req, res) => {
 
 router.post('/routes', async (req, res) => {
   try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
     const { name, code, active } = req.body || {};
     if (!name) return res.status(400).json({ success: false, message: 'name required' });
-    const created = await Route.create({ name: String(name), code: code ? String(code) : null, active: active === undefined ? true : !!active });
+    const created = await Route.create({ name: String(name), code: code ? String(code) : null, active: active === undefined ? true : !!active, orgAccountId: orgId });
     return res.json({ success: true, route: created });
   } catch (e) {
     return res.status(500).json({ success: false, message: 'Failed to create route' });
@@ -3141,8 +3340,9 @@ router.post('/routes', async (req, res) => {
 
 router.post('/routes/:id/stops-bulk', async (req, res) => {
   try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
     const id = Number(req.params.id);
-    const route = await Route.findByPk(id);
+    const route = await Route.findOne({ where: { id, orgAccountId: orgId } });
     if (!route) return res.status(404).json({ success: false, message: 'Route not found' });
     const stops = Array.isArray(req.body?.stops) ? req.body.stops : [];
     if (stops.length === 0) return res.status(400).json({ success: false, message: 'stops required' });
@@ -3170,6 +3370,7 @@ router.post('/routes/:id/stops-bulk', async (req, res) => {
 
 router.post('/routes/assign', async (req, res) => {
   try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
     const userId = Number(req.body?.userId);
     const routeId = Number(req.body?.routeId);
     const effectiveDate = String(req.body?.effectiveDate || '').slice(0, 10);
@@ -3187,10 +3388,11 @@ router.post('/routes/assign', async (req, res) => {
   }
 });
 
-// --- Sites CRUD (Construction)
-router.get('/sites', async (_req, res) => {
+// --- Sites CRUD (Construction) (org-scoped)
+router.get('/sites', async (req, res) => {
   try {
-    const rows = await Site.findAll({ order: [['createdAt', 'DESC']] });
+    const orgId = requireOrg(req, res); if (!orgId) return;
+    const rows = await Site.findAll({ where: { orgAccountId: orgId }, order: [['createdAt', 'DESC']] });
     return res.json({ success: true, sites: rows });
   } catch (e) {
     return res.status(500).json({ success: false, message: 'Failed to load sites' });
@@ -3199,6 +3401,7 @@ router.get('/sites', async (_req, res) => {
 
 router.post('/sites', async (req, res) => {
   try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
     const { name, address, lat, lng, geofenceRadiusM, active } = req.body || {};
     if (!name) return res.status(400).json({ success: false, message: 'name required' });
     const created = await Site.create({
@@ -3208,6 +3411,7 @@ router.post('/sites', async (req, res) => {
       lng: lng !== undefined && lng !== null && lng !== '' ? Number(lng) : null,
       geofenceRadiusM: geofenceRadiusM !== undefined && geofenceRadiusM !== null && geofenceRadiusM !== '' ? Number(geofenceRadiusM) : null,
       active: active === undefined ? true : !!active,
+      orgAccountId: orgId,
     });
     return res.json({ success: true, site: created });
   } catch (e) {
@@ -3217,8 +3421,9 @@ router.post('/sites', async (req, res) => {
 
 router.put('/sites/:id', async (req, res) => {
   try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
     const id = Number(req.params.id);
-    const row = await Site.findByPk(id);
+    const row = await Site.findOne({ where: { id, orgAccountId: orgId } });
     if (!row) return res.status(404).json({ success: false, message: 'Site not found' });
     const { name, address, lat, lng, geofenceRadiusM, active } = req.body || {};
     await row.update({
@@ -3237,8 +3442,9 @@ router.put('/sites/:id', async (req, res) => {
 
 router.delete('/sites/:id', async (req, res) => {
   try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
     const id = Number(req.params.id);
-    const row = await Site.findByPk(id);
+    const row = await Site.findOne({ where: { id, orgAccountId: orgId } });
     if (!row) return res.status(404).json({ success: false, message: 'Site not found' });
     await row.update({ active: false });
     return res.json({ success: true });
@@ -3261,10 +3467,11 @@ router.post('/construction/work-units/:id/verify', async (req, res) => {
   }
 });
 
-// Organization/tenant configuration: industryType and feature flags
-router.get('/settings/org', async (_req, res) => {
+// Organization/tenant configuration: industryType and feature flags (org-scoped)
+router.get('/settings/org', async (req, res) => {
   try {
-    const row = await AppSetting.findOne({ where: { key: 'org_config' } });
+    const orgId = requireOrg(req, res); if (!orgId) return;
+    const row = await AppSetting.findOne({ where: { key: 'org_config', orgAccountId: orgId } });
     let config = { industryType: 'field_sales', features: {} };
     if (row?.value) {
       try { config = JSON.parse(row.value); } catch (_) { }
@@ -3277,13 +3484,14 @@ router.get('/settings/org', async (_req, res) => {
 
 router.put('/settings/org', async (req, res) => {
   try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
     const allowedIndustries = ['field_sales', 'construction', 'logistics', 'security'];
     const body = req.body || {};
     const industryType = allowedIndustries.includes(String(body.industryType)) ? String(body.industryType) : 'field_sales';
     const features = body.features && typeof body.features === 'object' ? body.features : {};
     const payload = JSON.stringify({ industryType, features });
 
-    const [row] = await AppSetting.findOrCreate({ where: { key: 'org_config' }, defaults: { value: payload } });
+    const [row] = await AppSetting.findOrCreate({ where: { key: 'org_config', orgAccountId: orgId }, defaults: { value: payload, orgAccountId: orgId } });
     if (row.value !== payload) await row.update({ value: payload });
     return res.json({ success: true, config: { industryType, features } });
   } catch (e) {
@@ -3385,10 +3593,11 @@ router.get('/salary/compute/:userId', async (req, res) => {
   }
 });
 
-// --- Salary Templates CRUD ---
-router.get('/salary/templates', async (_req, res) => {
+// --- Salary Templates CRUD --- (org-scoped)
+router.get('/salary/templates', async (req, res) => {
   try {
-    const rows = await SalaryTemplate.findAll({ order: [['createdAt', 'DESC']] });
+    const orgId = requireOrg(req, res); if (!orgId) return;
+    const rows = await SalaryTemplate.findAll({ where: { orgAccountId: orgId }, order: [['createdAt', 'DESC']] });
     return res.json({ success: true, templates: rows });
   } catch (e) {
     return res.status(500).json({ success: false, message: 'Failed to load salary templates' });
@@ -3397,6 +3606,7 @@ router.get('/salary/templates', async (_req, res) => {
 
 router.post('/salary/templates', async (req, res) => {
   try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
     const payload = {
       name: String(req.body?.name || '').trim(),
       code: req.body?.code ? String(req.body.code).trim() : null,
@@ -3408,6 +3618,7 @@ router.post('/salary/templates', async (req, res) => {
       incentives: Array.isArray(req.body?.incentives) ? req.body.incentives : [],
       deductions: Array.isArray(req.body?.deductions) ? req.body.deductions : [],
       metadata: req.body?.metadata && typeof req.body.metadata === 'object' ? req.body.metadata : null,
+      orgAccountId: orgId,
     };
     if (!payload.name) return res.status(400).json({ success: false, message: 'Name is required' });
     if (!Number.isFinite(payload.hoursPerDay) || payload.hoursPerDay <= 0 || payload.hoursPerDay > 24) payload.hoursPerDay = 8;
@@ -3420,8 +3631,9 @@ router.post('/salary/templates', async (req, res) => {
 
 router.put('/salary/templates/:id', async (req, res) => {
   try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
     const id = Number(req.params.id);
-    const row = await SalaryTemplate.findByPk(id);
+    const row = await SalaryTemplate.findOne({ where: { id, orgAccountId: orgId } });
     if (!row) return res.status(404).json({ success: false, message: 'Salary template not found' });
     const updates = {
       name: req.body?.name !== undefined ? String(req.body.name).trim() : row.name,
@@ -3445,8 +3657,9 @@ router.put('/salary/templates/:id', async (req, res) => {
 
 router.delete('/salary/templates/:id', async (req, res) => {
   try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
     const id = Number(req.params.id);
-    const row = await SalaryTemplate.findByPk(id);
+    const row = await SalaryTemplate.findOne({ where: { id, orgAccountId: orgId } });
     if (!row) return res.status(404).json({ success: false, message: 'Salary template not found' });
     await row.destroy();
     return res.json({ success: true });
@@ -3455,9 +3668,10 @@ router.delete('/salary/templates/:id', async (req, res) => {
   }
 });
 
-// Assign salary template to a staff
+// Assign salary template to a staff (org-scoped)
 router.post('/salary/assign', async (req, res) => {
   try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
     const userId = Number(req.body?.userId);
     const templateId = Number(req.body?.salaryTemplateId || req.body?.templateId);
     const effectiveFrom = String(req.body?.effectiveFrom || '').slice(0, 10);
@@ -3465,9 +3679,9 @@ router.post('/salary/assign', async (req, res) => {
     if (!Number.isFinite(userId) || !Number.isFinite(templateId) || !effectiveFrom) {
       return res.status(400).json({ success: false, message: 'userId, salaryTemplateId, effectiveFrom are required' });
     }
-    const user = await User.findByPk(userId);
-    if (!user || user.role !== 'staff') return res.status(404).json({ success: false, message: 'Staff not found' });
-    const tpl = await SalaryTemplate.findByPk(templateId);
+    const user = await User.findOne({ where: { id: userId, orgAccountId: orgId, role: 'staff' } });
+    if (!user) return res.status(404).json({ success: false, message: 'Staff not found' });
+    const tpl = await SalaryTemplate.findOne({ where: { id: templateId, orgAccountId: orgId } });
     if (!tpl) return res.status(404).json({ success: false, message: 'Salary template not found' });
 
     const row = await StaffSalaryAssignment.create({ userId, salaryTemplateId: templateId, effectiveFrom, effectiveTo });
@@ -3477,10 +3691,11 @@ router.post('/salary/assign', async (req, res) => {
   }
 });
 
-// --- Attendance Templates CRUD ---
-router.get('/attendance/templates', async (_req, res) => {
+// --- Attendance Templates CRUD --- (org-scoped)
+router.get('/attendance/templates', async (req, res) => {
   try {
-    const rows = await AttendanceTemplate.findAll({ order: [['createdAt', 'DESC']] });
+    const orgId = requireOrg(req, res); if (!orgId) return;
+    const rows = await AttendanceTemplate.findAll({ where: { orgAccountId: orgId }, order: [['createdAt', 'DESC']] });
     return res.json({ success: true, templates: rows });
   } catch (e) {
     return res.status(500).json({ success: false, message: 'Failed to load templates' });
@@ -3488,11 +3703,19 @@ router.get('/attendance/templates', async (_req, res) => {
 });
 
 router.post('/attendance/templates', async (req, res) => {
+  console.log('POST /attendance/templates called', req.body);
   try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
+    console.log('orgId:', orgId);
+    // Map frontend values to model ENUM values
+    const modeMap = { 'mark_present': 'mark_present_by_default', 'manual': 'manual', 'location': 'location_based', 'selfie': 'selfie_location' };
+    const rawMode = req.body?.attendanceMode || 'manual';
+    const attendanceMode = modeMap[rawMode] || rawMode;
+    
     const payload = {
       name: String(req.body?.name || '').trim(),
       code: req.body?.code ? String(req.body.code).trim() : null,
-      attendanceMode: req.body?.attendanceMode || 'manual',
+      attendanceMode,
       holidaysRule: req.body?.holidaysRule || 'disallow',
       trackInOutEnabled: !!req.body?.trackInOutEnabled,
       requirePunchOut: !!req.body?.requirePunchOut,
@@ -3501,19 +3724,22 @@ router.post('/attendance/templates', async (req, res) => {
       markAbsentRule: req.body?.markAbsentRule || 'none',
       effectiveHoursRule: req.body?.effectiveHoursRule || null,
       active: req.body?.active === undefined ? true : !!req.body.active,
+      orgAccountId: orgId,
     };
     if (!payload.name) return res.status(400).json({ success: false, message: 'Name is required' });
     const row = await AttendanceTemplate.create(payload);
     return res.json({ success: true, template: row });
   } catch (e) {
-    return res.status(500).json({ success: false, message: 'Failed to create template' });
+    console.error('Create attendance template error:', e);
+    return res.status(500).json({ success: false, message: 'Failed to create template', error: e.message, stack: e.stack });
   }
 });
 
 router.put('/attendance/templates/:id', async (req, res) => {
   try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
     const id = Number(req.params.id);
-    const row = await AttendanceTemplate.findByPk(id);
+    const row = await AttendanceTemplate.findOne({ where: { id, orgAccountId: orgId } });
     if (!row) return res.status(404).json({ success: false, message: 'Template not found' });
     const updates = {
       name: req.body?.name !== undefined ? String(req.body.name).trim() : row.name,
@@ -3537,8 +3763,9 @@ router.put('/attendance/templates/:id', async (req, res) => {
 
 router.delete('/attendance/templates/:id', async (req, res) => {
   try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
     const id = Number(req.params.id);
-    const row = await AttendanceTemplate.findByPk(id);
+    const row = await AttendanceTemplate.findOne({ where: { id, orgAccountId: orgId } });
     if (!row) return res.status(404).json({ success: false, message: 'Template not found' });
     await row.destroy();
     return res.json({ success: true });
@@ -3547,9 +3774,10 @@ router.delete('/attendance/templates/:id', async (req, res) => {
   }
 });
 
-// Assign attendance template to a staff
+// Assign attendance template to a staff (org-scoped)
 router.post('/attendance/assign', async (req, res) => {
   try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
     const userId = Number(req.body?.userId);
     const templateId = Number(req.body?.attendanceTemplateId || req.body?.templateId);
     const effectiveFrom = String(req.body?.effectiveFrom || '').slice(0, 10);
@@ -3557,9 +3785,9 @@ router.post('/attendance/assign', async (req, res) => {
     if (!Number.isFinite(userId) || !Number.isFinite(templateId) || !effectiveFrom) {
       return res.status(400).json({ success: false, message: 'userId, attendanceTemplateId, effectiveFrom are required' });
     }
-    const user = await User.findByPk(userId);
-    if (!user || user.role !== 'staff') return res.status(404).json({ success: false, message: 'Staff not found' });
-    const tpl = await AttendanceTemplate.findByPk(templateId);
+    const user = await User.findOne({ where: { id: userId, orgAccountId: orgId, role: 'staff' } });
+    if (!user) return res.status(404).json({ success: false, message: 'Staff not found' });
+    const tpl = await AttendanceTemplate.findOne({ where: { id: templateId, orgAccountId: orgId } });
     if (!tpl) return res.status(404).json({ success: false, message: 'Template not found' });
 
     const row = await StaffAttendanceAssignment.create({ userId, attendanceTemplateId: templateId, effectiveFrom, effectiveTo });
@@ -3569,11 +3797,12 @@ router.post('/attendance/assign', async (req, res) => {
   }
 });
 
-// --- Salary details access to staff ---
-router.get('/salary/access', async (_req, res) => {
+// --- Salary details access to staff --- (org-scoped)
+router.get('/salary/access', async (req, res) => {
   try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
     const staff = await User.findAll({
-      where: { role: 'staff' },
+      where: { role: 'staff', orgAccountId: orgId },
       include: [
         { model: StaffProfile, as: 'profile' },
         { model: SalaryAccess, as: 'salaryAccess' },
@@ -3596,12 +3825,13 @@ router.get('/salary/access', async (_req, res) => {
 
 router.put('/salary/access/:userId', async (req, res) => {
   try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
     const userId = Number(req.params.userId);
     if (!Number.isFinite(userId) || userId <= 0) return res.status(400).json({ success: false, message: 'Invalid userId' });
     const allow = !!req.body?.allowCurrentCycle;
 
-    const user = await User.findByPk(userId);
-    if (!user || user.role !== 'staff') return res.status(404).json({ success: false, message: 'Staff not found' });
+    const user = await User.findOne({ where: { id: userId, orgAccountId: orgId, role: 'staff' } });
+    if (!user) return res.status(404).json({ success: false, message: 'Staff not found' });
 
     if (allow) {
       const [row] = await SalaryAccess.findOrCreate({ where: { userId }, defaults: { allowCurrentCycle: true, active: true } });
@@ -3618,11 +3848,12 @@ router.put('/salary/access/:userId', async (req, res) => {
 
 router.put('/salary/access-bulk', async (req, res) => {
   try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
     const userIds = Array.isArray(req.body?.userIds) ? req.body.userIds.map((x) => Number(x)).filter((n) => Number.isFinite(n) && n > 0) : [];
     const allow = !!req.body?.allowCurrentCycle;
     if (userIds.length === 0) return res.status(400).json({ success: false, message: 'userIds required' });
 
-    const staff = await User.findAll({ where: { id: userIds, role: 'staff' } });
+    const staff = await User.findAll({ where: { id: userIds, role: 'staff', orgAccountId: orgId } });
     const updated = [];
     if (allow) {
       for (const u of staff) {
@@ -3640,10 +3871,11 @@ router.put('/salary/access-bulk', async (req, res) => {
   }
 });
 
-// Salary calculation settings
-router.get('/settings/salary', async (_req, res) => {
+// Salary calculation settings (org-scoped)
+router.get('/settings/salary', async (req, res) => {
   try {
-    const row = await AppSetting.findOne({ where: { key: 'salary_settings' } });
+    const orgId = requireOrg(req, res); if (!orgId) return;
+    const row = await AppSetting.findOne({ where: { key: 'salary_settings', orgAccountId: orgId } });
     const value = row?.value ? JSON.parse(row.value) : getDefaultSalarySettings();
     return res.json({ success: true, settings: coerceSalarySettings(value) });
   } catch (e) {
@@ -3653,13 +3885,20 @@ router.get('/settings/salary', async (_req, res) => {
 
 router.put('/settings/salary', async (req, res) => {
   try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
     const settings = coerceSalarySettings(req.body || {});
     const payload = JSON.stringify(settings);
 
-    const [row] = await AppSetting.findOrCreate({ where: { key: 'salary_settings' }, defaults: { value: payload } });
-    if (row.value !== payload) await row.update({ value: payload });
+    // Check if record exists first
+    let row = await AppSetting.findOne({ where: { key: 'salary_settings', orgAccountId: orgId } });
+    if (row) {
+      await row.update({ value: payload });
+    } else {
+      row = await AppSetting.create({ key: 'salary_settings', value: payload, orgAccountId: orgId });
+    }
     return res.json({ success: true, settings });
   } catch (e) {
+    console.error('Save salary settings error:', e);
     return res.status(500).json({ success: false, message: 'Failed to save salary settings' });
   }
 });
@@ -3669,9 +3908,10 @@ function getDefaultBrandSettings() {
   return { displayName: 'ThinkTech' };
 }
 
-router.get('/settings/brand', async (_req, res) => {
+router.get('/settings/brand', async (req, res) => {
   try {
-    const row = await sequelize.models.OrgBrand.findOne({ where: { active: true }, order: [['updatedAt','DESC']] });
+    const orgId = requireOrg(req, res); if (!orgId) return;
+    const row = await sequelize.models.OrgBrand.findOne({ where: { active: true, orgAccountId: orgId }, order: [['updatedAt','DESC']] });
     const name = row?.displayName || getDefaultBrandSettings().displayName;
     return res.json({ success: true, brand: { displayName: String(name) } });
   } catch (e) {
@@ -3681,29 +3921,31 @@ router.get('/settings/brand', async (_req, res) => {
 
 router.put('/settings/brand', async (req, res) => {
   try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
     const displayName = String(req.body?.displayName || '').trim();
     if (!displayName) return res.status(400).json({ success: false, message: 'displayName required' });
-    const existing = await sequelize.models.OrgBrand.findOne({ where: { active: true } });
+    const existing = await sequelize.models.OrgBrand.findOne({ where: { active: true, orgAccountId: orgId } });
     if (existing) {
       await existing.update({ displayName });
       return res.json({ success: true, brand: { displayName } });
     }
-    const created = await sequelize.models.OrgBrand.create({ displayName, active: true });
+    const created = await sequelize.models.OrgBrand.create({ displayName, active: true, orgAccountId: orgId });
     return res.json({ success: true, brand: { displayName: created.displayName } });
   } catch (e) {
     return res.status(500).json({ success: false, message: 'Failed to save brand settings' });
   }
 });
 
-// Helper: compute payable days for a given month using saved settings
+// Helper: compute payable days for a given month using saved settings (org-scoped)
 router.get('/salary/payable-days', async (req, res) => {
   try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
     const year = Number(req.query.year);
     const month = Number(req.query.month);
     if (!Number.isInteger(year) || !Number.isInteger(month) || month < 1 || month > 12) {
       return res.status(400).json({ success: false, message: 'year and month required (e.g., year=2026&month=1)' });
     }
-    const row = await AppSetting.findOne({ where: { key: 'salary_settings' } });
+    const row = await AppSetting.findOne({ where: { key: 'salary_settings', orgAccountId: orgId } });
     const settings = row?.value ? JSON.parse(row.value) : getDefaultSalarySettings();
     const payableDays = computePayableDays(settings, year, month);
     return res.json({ success: true, payableDays, settings: coerceSalarySettings(settings) });
@@ -3712,9 +3954,10 @@ router.get('/salary/payable-days', async (req, res) => {
   }
 });
 
-router.get('/shifts/templates', async (_req, res) => {
+router.get('/shifts/templates', async (req, res) => {
   try {
-    const rows = await ShiftTemplate.findAll({ order: [['createdAt', 'DESC']], include: [{ model: ShiftBreak, as: 'breaks' }] });
+    const orgId = requireOrg(req, res); if (!orgId) return;
+    const rows = await ShiftTemplate.findAll({ where: { orgAccountId: orgId }, order: [['createdAt', 'DESC']], include: [{ model: ShiftBreak, as: 'breaks' }] });
     return res.json({
       success: true,
       templates: rows.map((t) => (
@@ -3753,6 +3996,7 @@ router.get('/shifts/templates', async (_req, res) => {
 
 router.post('/shifts/templates', async (req, res) => {
   try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
     const {
       shiftType,
       name,
@@ -3815,6 +4059,7 @@ router.post('/shifts/templates', async (req, res) => {
       minPunchOutAfterMinutes: minPunchOutAfterMinutes != null ? Number(minPunchOutAfterMinutes) : null,
       maxPunchOutAfterMinutes: maxPunchOutAfterMinutes != null ? Number(maxPunchOutAfterMinutes) : null,
       active: active === undefined ? true : !!active,
+      orgAccountId: orgId,
     });
 
     if (Array.isArray(breaks) && breaks.length > 0) {
@@ -3840,8 +4085,9 @@ router.post('/shifts/templates', async (req, res) => {
 
 router.put('/shifts/templates/:id', async (req, res) => {
   try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
     const id = Number(req.params.id);
-    const row = await ShiftTemplate.findByPk(id);
+    const row = await ShiftTemplate.findOne({ where: { id, orgAccountId: orgId } });
     if (!row) return res.status(404).json({ success: false, message: 'Not found' });
 
     const {
@@ -3939,8 +4185,9 @@ router.put('/shifts/templates/:id', async (req, res) => {
 
 router.delete('/shifts/templates/:id', async (req, res) => {
   try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
     const id = Number(req.params.id);
-    const row = await ShiftTemplate.findByPk(id);
+    const row = await ShiftTemplate.findOne({ where: { id, orgAccountId: orgId } });
     if (!row) return res.status(404).json({ success: false, message: 'Not found' });
     await row.update({ active: false });
     return res.json({ success: true });
@@ -3951,6 +4198,7 @@ router.delete('/shifts/templates/:id', async (req, res) => {
 
 router.post('/shifts/assign', async (req, res) => {
   try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
     const { userId, shiftTemplateId, effectiveFrom, effectiveTo } = req.body || {};
     const uid = Number(userId);
     const tid = Number(shiftTemplateId);
@@ -3964,10 +4212,10 @@ router.post('/shifts/assign', async (req, res) => {
       return res.status(400).json({ success: false, message: 'effectiveTo invalid' });
     }
 
-    const user = await User.findByPk(uid);
-    if (!user || user.role !== 'staff') return res.status(404).json({ success: false, message: 'Staff not found' });
-    const template = await ShiftTemplate.findByPk(tid);
-    if (!template || template.active === false) return res.status(404).json({ success: false, message: 'Shift template not found' });
+    const user = await User.findOne({ where: { id: uid, orgAccountId: orgId, role: 'staff' } });
+    if (!user) return res.status(404).json({ success: false, message: 'Staff not found' });
+    const template = await ShiftTemplate.findOne({ where: { id: tid, orgAccountId: orgId, active: true } });
+    if (!template) return res.status(404).json({ success: false, message: 'Shift template not found' });
 
     const created = await StaffShiftAssignment.create({
       userId: uid,
@@ -3987,9 +4235,10 @@ router.post('/shifts/assign', async (req, res) => {
   }
 });
 
-router.get('/document-types', async (_req, res) => {
+router.get('/document-types', async (req, res) => {
   try {
-    const rows = await DocumentType.findAll({ order: [['createdAt', 'DESC']] });
+    const orgId = requireOrg(req, res); if (!orgId) return;
+    const rows = await DocumentType.findAll({ where: { orgAccountId: orgId }, order: [['createdAt', 'DESC']] });
     return res.json({
       success: true,
       documentTypes: rows.map((r) => ({
@@ -4008,18 +4257,20 @@ router.get('/document-types', async (_req, res) => {
 
 router.post('/document-types', async (req, res) => {
   try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
     const { key, name, required, active, allowedMime } = req.body || {};
     if (!key || !name) {
       return res.status(400).json({ success: false, message: 'key and name required' });
     }
 
-    const existing = await DocumentType.findOne({ where: { key: String(key) } });
+    const existing = await DocumentType.findOne({ where: { key: String(key), orgAccountId: orgId } });
     if (existing) {
       return res.status(409).json({ success: false, message: 'Key already exists' });
     }
 
     const created = await DocumentType.create({
       key: String(key),
+      orgAccountId: orgId,
       name: String(name),
       required: !!required,
       active: active === undefined ? true : !!active,
@@ -4034,8 +4285,9 @@ router.post('/document-types', async (req, res) => {
 
 router.put('/document-types/:id', async (req, res) => {
   try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
     const id = Number(req.params.id);
-    const row = await DocumentType.findByPk(id);
+    const row = await DocumentType.findOne({ where: { id, orgAccountId: orgId } });
     if (!row) return res.status(404).json({ success: false, message: 'Not found' });
 
     const { name, required, active, allowedMime } = req.body || {};
@@ -4054,8 +4306,9 @@ router.put('/document-types/:id', async (req, res) => {
 
 router.delete('/document-types/:id', async (req, res) => {
   try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
     const id = Number(req.params.id);
-    const row = await DocumentType.findByPk(id);
+    const row = await DocumentType.findOne({ where: { id, orgAccountId: orgId } });
     if (!row) return res.status(404).json({ success: false, message: 'Not found' });
     await row.update({ active: false });
     return res.json({ success: true });
@@ -4066,14 +4319,15 @@ router.delete('/document-types/:id', async (req, res) => {
 
 router.put('/settings/work-hours', async (req, res) => {
   try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
     const v = Number(req.body?.requiredWorkHours);
     if (!Number.isFinite(v) || v <= 0 || v > 24) {
       return res.status(400).json({ success: false, message: 'requiredWorkHours must be between 1 and 24' });
     }
 
     const [row] = await AppSetting.findOrCreate({
-      where: { key: 'required_work_hours' },
-      defaults: { value: String(v) },
+      where: { key: 'required_work_hours', orgAccountId: orgId },
+      defaults: { value: String(v), orgAccountId: orgId },
     });
 
     if (String(row.value) !== String(v)) {
@@ -4109,9 +4363,10 @@ router.get('/admins', async (req, res) => {
   });
 });
 
-router.get('/staff', async (_req, res) => {
+router.get('/staff', async (req, res) => {
+  const orgId = requireOrg(req, res); if (!orgId) return;
   const staff = await User.findAll({
-    where: { role: 'staff' },
+    where: { role: 'staff', orgAccountId: orgId },
     include: [{ model: StaffProfile, as: 'profile' }],
     order: [['createdAt', 'DESC']],
   });
@@ -4120,7 +4375,7 @@ router.get('/staff', async (_req, res) => {
     success: true,
     staff: staff.map((u) => ({
       id: u.id,
-      active: u.active === true, // Explicitly check for true
+      active: u.active === true,
       createdAt: u.createdAt,
       staffId: u.profile?.staffId || null,
       phone: u.phone,
@@ -4131,14 +4386,16 @@ router.get('/staff', async (_req, res) => {
   });
 });
 
-// Fetch a single staff with full profile details
+// Fetch a single staff with full profile details (org-scoped)
 router.get('/staff/:id', async (req, res) => {
   try {
-    const id = req.params.id;
-    const user = await User.findByPk(id, {
+    const orgId = requireOrg(req, res); if (!orgId) return;
+    const id = Number(req.params.id);
+    const user = await User.findOne({
+      where: { id, orgAccountId: orgId, role: 'staff' },
       include: [{ model: StaffProfile, as: 'profile' }]
     });
-    if (!user || user.role !== 'staff') {
+    if (!user) {
       return res.status(404).json({ success: false, message: 'Staff not found' });
     }
     // Safe salaryValues extraction (handles JSON and double-encoded JSON strings)
@@ -4185,12 +4442,13 @@ router.get('/staff/:id', async (req, res) => {
   }
 });
 
-// Update StaffProfile fields for a staff
+// Update StaffProfile fields for a staff (org-scoped)
 router.put('/staff/:id/profile', async (req, res) => {
   try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
     const id = req.params.id;
-    const user = await User.findByPk(id);
-    if (!user || user.role !== 'staff') {
+    const user = await User.findOne({ where: { id: Number(id), orgAccountId: orgId, role: 'staff' } });
+    if (!user) {
       return res.status(404).json({ success: false, message: 'Staff not found' });
     }
     const profile = await StaffProfile.findOne({ where: { userId: id } });
@@ -4218,13 +4476,15 @@ router.put('/staff/:id/profile', async (req, res) => {
   }
 });
 
-// Attendance list for a given date and optional staff filter
+// Attendance list for a given date and optional staff filter (org-scoped)
 router.get('/attendance', async (req, res) => {
   try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
     const { date, staffId } = req.query || {};
     if (!date) return res.status(400).json({ success: false, message: 'date required' });
 
-    const where = { date: String(date) };
+    const orgStaffIds = (await User.findAll({ where: { orgAccountId: orgId, role: 'staff' }, attributes: ['id'] })).map(u => u.id);
+    const where = { date: String(date), userId: orgStaffIds };
     if (staffId && Number(staffId) > 0) where.userId = Number(staffId);
 
     const rows = await Attendance.findAll({
@@ -4262,13 +4522,15 @@ router.get('/attendance', async (req, res) => {
   }
 });
 
-// Attendance export as CSV
+// Attendance export as CSV (org-scoped)
 router.get('/attendance/export', async (req, res) => {
   try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
     const { date, staffId } = req.query || {};
     if (!date) return res.status(400).json({ success: false, message: 'date required' });
 
-    const where = { date: String(date) };
+    const orgStaffIds = (await User.findAll({ where: { orgAccountId: orgId, role: 'staff' }, attributes: ['id'] })).map(u => u.id);
+    const where = { date: String(date), userId: orgStaffIds };
     if (staffId && Number(staffId) > 0) where.userId = Number(staffId);
 
     const rows = await Attendance.findAll({
@@ -4314,9 +4576,10 @@ router.get('/attendance/export', async (req, res) => {
   }
 });
 
-// Create/Update attendance record for a staff on a given date
+// Create/Update attendance record for a staff on a given date (org-scoped)
 router.post('/attendance', async (req, res) => {
   try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
     const body = req.body || {};
     const uid = Number(body.userId || body.staffId);
     const dateIso = toIsoDateOnly(body.date || body.dateIso || body.onDate);
@@ -4332,8 +4595,8 @@ router.post('/attendance', async (req, res) => {
       return res.status(400).json({ success: false, message: 'Valid date required' });
     }
 
-    const user = await User.findByPk(uid);
-    if (!user || user.role !== 'staff') {
+    const user = await User.findOne({ where: { id: uid, orgAccountId: orgId, role: 'staff' } });
+    if (!user) {
       return res.status(404).json({ success: false, message: 'Staff not found' });
     }
 
@@ -4367,12 +4630,13 @@ router.post('/attendance', async (req, res) => {
   }
 });
 
-// Get salary template fields for staff creation
+// Get salary template fields for staff creation (org-scoped)
 router.get('/salary-template-fields/:templateId', async (req, res) => {
   try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
     const { templateId } = req.params;
 
-    const template = await SalaryTemplate.findByPk(templateId);
+    const template = await SalaryTemplate.findOne({ where: { id: Number(templateId), orgAccountId: orgId } });
     if (!template) {
       return res.status(404).json({ success: false, message: 'Salary template not found' });
     }
@@ -4470,6 +4734,21 @@ router.post('/staff', async (req, res) => {
       }
     }
 
+    // Tenancy & staff limit enforcement
+    const orgId = req.tenantOrgAccountId || null;
+    if (!orgId) {
+      return res.status(403).json({ success: false, message: 'No organization in context' });
+    }
+    const activeSub = req.activeSubscription || null;
+    if (!activeSub || !activeSub.plan) {
+      return res.status(402).json({ success: false, message: 'Active subscription required' });
+    }
+    const currentActiveStaff = await User.count({ where: { role: 'staff', orgAccountId: orgId, active: true } });
+    const staffLimit = Number(((activeSub && (activeSub.staffLimit ?? (activeSub.meta ? activeSub.meta.staffLimit : undefined))) ?? (activeSub.plan ? activeSub.plan.staffLimit : 0)) || 0);
+    if (staffLimit > 0 && currentActiveStaff >= staffLimit) {
+      return res.status(403).json({ success: false, message: `Staff limit reached (${staffLimit}). Upgrade plan to add more staff.` });
+    }
+
     const passwordHash = await bcrypt.hash(String(password || '123456'), 10);
 
     // Helper to map request keys to User model attributes
@@ -4498,7 +4777,8 @@ router.post('/staff', async (req, res) => {
       phone: String(phoneInput),
       passwordHash,
       active: active !== false, // Default to true if not specified
-      salaryTemplateId: salaryTemplateId || null
+      salaryTemplateId: salaryTemplateId || null,
+      orgAccountId: orgId
     };
 
     // Persist full salaryValues JSON sent from the form (including dynamic fields)
@@ -4679,14 +4959,15 @@ router.post('/staff', async (req, res) => {
   }
 });
 
-// Update staff
+// Update staff (org-scoped)
 router.put('/staff/:id', async (req, res) => {
   try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
     const staffId = req.params.id;
     const { staffId: newStaffId, phone, name, email, active } = req.body || {};
 
-    const staff = await User.findByPk(staffId);
-    if (!staff || staff.role !== 'staff') {
+    const staff = await User.findOne({ where: { id: Number(staffId), orgAccountId: orgId, role: 'staff' } });
+    if (!staff) {
       return res.status(404).json({ success: false, message: 'Staff not found' });
     }
 
@@ -4737,13 +5018,14 @@ router.put('/staff/:id', async (req, res) => {
   }
 });
 
-// Delete staff
+// Delete staff (org-scoped)
 router.delete('/staff/:id', async (req, res) => {
   try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
     const staffId = req.params.id;
 
-    const staff = await User.findByPk(staffId);
-    if (!staff || staff.role !== 'staff') {
+    const staff = await User.findOne({ where: { id: Number(staffId), orgAccountId: orgId, role: 'staff' } });
+    if (!staff) {
       return res.status(404).json({ success: false, message: 'Staff not found' });
     }
 
@@ -4759,11 +5041,12 @@ router.delete('/staff/:id', async (req, res) => {
   }
 });
 
-// Dashboard endpoints
-router.get('/dashboard/stats', async (_req, res) => {
+// Dashboard endpoints (org-scoped)
+router.get('/dashboard/stats', async (req, res) => {
   try {
-    const totalStaff = await User.count({ where: { role: 'staff' } });
-    const activeStaff = await User.count({ where: { role: 'staff', active: true } });
+    const orgId = requireOrg(req, res); if (!orgId) return;
+    const totalStaff = await User.count({ where: { role: 'staff', orgAccountId: orgId } });
+    const activeStaff = await User.count({ where: { role: 'staff', active: true, orgAccountId: orgId } });
 
     // Get today's attendance
     const today = new Date().toISOString().slice(0, 10);
@@ -4773,7 +5056,7 @@ router.get('/dashboard/stats', async (_req, res) => {
 
     // Get total salary for active staff
     const staffWithSalary = await User.findAll({
-      where: { role: 'staff', active: true },
+      where: { role: 'staff', active: true, orgAccountId: orgId },
       attributes: ['gross_salary']
     });
     const totalSalary = staffWithSalary.reduce((sum, staff) => sum + (staff.gross_salary || 0), 0);
@@ -4794,10 +5077,12 @@ router.get('/dashboard/stats', async (_req, res) => {
   }
 });
 
-router.get('/dashboard/attendance-chart', async (_req, res) => {
+router.get('/dashboard/attendance-chart', async (req, res) => {
   try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
     // Get last 7 days attendance data
     const attendanceData = [];
+    const orgStaffIds = (await User.findAll({ where: { role: 'staff', orgAccountId: orgId }, attributes: ['id'] })).map(u => u.id);
     for (let i = 6; i >= 0; i--) {
       const date = new Date();
       date.setDate(date.getDate() - i);
@@ -4805,9 +5090,9 @@ router.get('/dashboard/attendance-chart', async (_req, res) => {
       const dayName = date.toLocaleDateString('en-US', { weekday: 'short' });
 
       const present = await Attendance.count({
-        where: { date: dateStr, punchedInAt: { [Op.ne]: null } }
+        where: { date: dateStr, punchedInAt: { [Op.ne]: null }, userId: orgStaffIds }
       });
-      const absent = await User.count({ where: { role: 'staff' } }) - present;
+      const absent = orgStaffIds.length - present;
 
       attendanceData.push({
         day: dayName,
@@ -4827,11 +5112,12 @@ router.get('/dashboard/attendance-chart', async (_req, res) => {
   }
 });
 
-router.get('/dashboard/salary-chart', async (_req, res) => {
+router.get('/dashboard/salary-chart', async (req, res) => {
   try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
     // Get salary distribution by department
     const staffWithDept = await User.findAll({
-      where: { role: 'staff', active: true },
+      where: { role: 'staff', active: true, orgAccountId: orgId },
       include: [{ model: StaffProfile, as: 'profile', attributes: ['department'] }],
       attributes: ['gross_salary']
     });
@@ -4861,17 +5147,18 @@ router.get('/dashboard/salary-chart', async (_req, res) => {
   }
 });
 
-router.get('/dashboard/late-arrivals', async (_req, res) => {
+router.get('/dashboard/late-arrivals', async (req, res) => {
   try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
     const today = new Date().toISOString().slice(0, 10);
 
     // Get today's attendance with late arrivals (after 11:00 AM)
     const todayAttendance = await Attendance.findAll({
       where: { date: today },
-      include: [{ model: User, as: 'user', where: { role: 'staff' } }]
+      include: [{ model: User, as: 'user', where: { role: 'staff', orgAccountId: orgId } }]
     });
 
-    const totalStaff = await User.count({ where: { role: 'staff', active: true } });
+    const totalStaff = await User.count({ where: { role: 'staff', active: true, orgAccountId: orgId } });
 
     // Count late arrivals (punched in after 11:00 AM)
     const lateArrivals = todayAttendance.filter(att => {
@@ -4899,16 +5186,32 @@ router.get('/dashboard/late-arrivals', async (_req, res) => {
   }
 });
 
-router.get('/dashboard/department-distribution', async (_req, res) => {
+router.get('/dashboard/department-distribution', async (req, res) => {
   try {
-    // Get staff distribution by department
+    const orgId = requireOrg(req, res); if (!orgId) return;
+    
+    // Get all business function values for "department" type
+    const { BusinessFunction, BusinessFunctionValue } = sequelize.models;
+    let deptFunction = null;
+    if (BusinessFunction) {
+      deptFunction = await BusinessFunction.findOne({ 
+        where: { name: { [Op.like]: '%department%' }, orgAccountId: orgId },
+        include: [{ model: BusinessFunctionValue, as: 'values' }]
+      });
+    }
+    const validDepts = deptFunction?.values?.map(v => v.value) || [];
+    
+    // Get staff distribution by department from profile
     const staffByDept = await User.findAll({
-      where: { role: 'staff', active: true },
+      where: { role: 'staff', active: true, orgAccountId: orgId },
       include: [{ model: StaffProfile, as: 'profile', attributes: ['department'] }],
       attributes: ['id']
     });
 
     const deptCounts = {};
+    // Initialize counts for all defined departments
+    validDepts.forEach(d => { deptCounts[d] = 0; });
+    
     staffByDept.forEach(staff => {
       const dept = staff.profile?.department || 'General';
       deptCounts[dept] = (deptCounts[dept] || 0) + 1;
@@ -4934,20 +5237,21 @@ router.get('/dashboard/department-distribution', async (_req, res) => {
   }
 });
 
-// Update staff salary template
+// Update staff salary template (org-scoped)
 router.put('/staff/:id/salary-template', async (req, res) => {
   try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
     const { salaryTemplateId } = req.body || {};
     const staffId = req.params.id;
 
-    const staff = await User.findByPk(staffId);
-    if (!staff || staff.role !== 'staff') {
+    const staff = await User.findOne({ where: { id: Number(staffId), orgAccountId: orgId, role: 'staff' } });
+    if (!staff) {
       return res.status(404).json({ success: false, message: 'Staff not found' });
     }
 
     // Validate salary template if provided
     if (salaryTemplateId) {
-      const template = await SalaryTemplate.findByPk(salaryTemplateId);
+      const template = await SalaryTemplate.findOne({ where: { id: salaryTemplateId, orgAccountId: orgId } });
       if (!template) {
         return res.status(400).json({ success: false, message: 'Invalid salary template' });
       }
@@ -5000,13 +5304,14 @@ router.put('/staff/:id/salary-template', async (req, res) => {
   }
 });
 
-// Get staff with salary details
+// Get staff with salary details (org-scoped)
 router.get('/staff/:id/salary-details', async (req, res) => {
   try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
     const staffId = req.params.id;
 
     const staff = await User.findOne({
-      where: { id: staffId, role: 'staff' },
+      where: { id: Number(staffId), orgAccountId: orgId, role: 'staff' },
       include: [
         {
           model: StaffProfile,
@@ -5061,14 +5366,15 @@ router.get('/staff/:id/salary-details', async (req, res) => {
   }
 });
 
-// Recalculate staff salary
+// Recalculate staff salary (org-scoped)
 router.post('/staff/:id/recalculate-salary', async (req, res) => {
   try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
     const staffId = req.params.id;
     const { workingDays = 26, presentDays = 26 } = req.body || {};
 
     const staff = await User.findOne({
-      where: { id: staffId, role: 'staff' }
+      where: { id: Number(staffId), orgAccountId: orgId, role: 'staff' }
     });
 
     if (!staff) {
@@ -5094,22 +5400,24 @@ router.post('/staff/:id/recalculate-salary', async (req, res) => {
   }
 });
 
-// Create client
+// Create client (org-scoped)
 router.post('/clients', async (req, res) => {
   try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
     const { name, phone, clientType, location, extra } = req.body || {};
     if (!name) return res.status(400).json({ success: false, message: 'name required' });
-    const client = await Client.create({ name, phone: phone || null, clientType: clientType || null, location: location || null, extra: extra || null, createdBy: req.user.id });
+    const client = await Client.create({ name, phone: phone || null, clientType: clientType || null, location: location || null, extra: extra || null, createdBy: req.user.id, orgAccountId: orgId });
     return res.json({ success: true, client });
   } catch (e) {
     return res.status(500).json({ success: false, message: 'Failed to create client' });
   }
 });
 
-// Update client
+// Update client (org-scoped)
 router.put('/clients/:id', async (req, res) => {
   try {
-    const client = await Client.findByPk(req.params.id);
+    const orgId = requireOrg(req, res); if (!orgId) return;
+    const client = await Client.findOne({ where: { id: Number(req.params.id), orgAccountId: orgId } });
     if (!client) return res.status(404).json({ success: false, message: 'Not found' });
     const { name, phone, clientType, location, extra } = req.body || {};
     await client.update({
@@ -5125,12 +5433,18 @@ router.put('/clients/:id', async (req, res) => {
   }
 });
 
-// Create assignment
+// Create assignment (org-scoped)
 router.post('/assignments', async (req, res) => {
   try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
     const { clientId, staffUserId, title, description, dueDate } = req.body || {};
     if (!clientId || !staffUserId) return res.status(400).json({ success: false, message: 'clientId and staffUserId required' });
-    const job = await AssignedJob.create({ clientId, staffUserId, title: title || null, description: description || null, status: 'pending', assignedOn: new Date(), dueDate: dueDate ? new Date(dueDate) : null });
+    // Verify client and staff belong to org
+    const client = await Client.findOne({ where: { id: clientId, orgAccountId: orgId } });
+    if (!client) return res.status(404).json({ success: false, message: 'Client not found' });
+    const staff = await User.findOne({ where: { id: staffUserId, orgAccountId: orgId, role: 'staff' } });
+    if (!staff) return res.status(404).json({ success: false, message: 'Staff not found' });
+    const job = await AssignedJob.create({ clientId, staffUserId, title: title || null, description: description || null, status: 'pending', assignedOn: new Date(), dueDate: dueDate ? new Date(dueDate) : null, orgAccountId: orgId });
     const withClient = await AssignedJob.findByPk(job.id, { include: [{ model: Client, as: 'client' }] });
     return res.json({ success: true, job: withClient });
   } catch (e) {
@@ -5138,10 +5452,11 @@ router.post('/assignments', async (req, res) => {
   }
 });
 
-// Update assignment
+// Update assignment (org-scoped)
 router.put('/assignments/:id', async (req, res) => {
   try {
-    const job = await AssignedJob.findByPk(req.params.id);
+    const orgId = requireOrg(req, res); if (!orgId) return;
+    const job = await AssignedJob.findOne({ where: { id: Number(req.params.id), orgAccountId: orgId } });
     if (!job) return res.status(404).json({ success: false, message: 'Not found' });
     const { title, description, status, dueDate } = req.body || {};
     await job.update({
@@ -5157,23 +5472,27 @@ router.put('/assignments/:id', async (req, res) => {
   }
 });
 
-// Create target
+// Create target (org-scoped)
 router.post('/targets', async (req, res) => {
   try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
     const { staffUserId, period, periodDate, targetAmount, targetOrders } = req.body || {};
     if (!staffUserId || !period || !periodDate) return res.status(400).json({ success: false, message: 'staffUserId, period, periodDate required' });
-    const tgt = await SalesTarget.create({ staffUserId, period, periodDate, targetAmount: Number(targetAmount || 0) || 0, targetOrders: targetOrders ? Number(targetOrders) : null });
+    const staff = await User.findOne({ where: { id: staffUserId, orgAccountId: orgId, role: 'staff' } });
+    if (!staff) return res.status(404).json({ success: false, message: 'Staff not found' });
+    const tgt = await SalesTarget.create({ staffUserId, period, periodDate, targetAmount: Number(targetAmount || 0) || 0, targetOrders: targetOrders ? Number(targetOrders) : null, orgAccountId: orgId });
     return res.json({ success: true, target: tgt });
   } catch (e) {
     return res.status(500).json({ success: false, message: 'Failed to set target' });
   }
 });
 
-// List targets
+// List targets (org-scoped)
 router.get('/targets', async (req, res) => {
   try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
     const { staffUserId, period, periodDate } = req.query || {};
-    const where = {};
+    const where = { orgAccountId: orgId };
     if (staffUserId) where.staffUserId = Number(staffUserId);
     if (period) where.period = String(period);
     if (periodDate) where.periodDate = String(periodDate);
@@ -5183,13 +5502,16 @@ router.get('/targets', async (req, res) => {
     return res.status(500).json({ success: false, message: 'Failed to load targets' });
   }
 });
-// Incentive targets CRUD
+// Incentive targets CRUD (org-scoped)
 router.post('/incentives', async (req, res) => {
   try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
     const { staffUserId, period, periodDate, ordersThreshold, rewardAmount, title, note, active } = req.body || {};
     if (!staffUserId || !period || !periodDate || !ordersThreshold) {
       return res.status(400).json({ success: false, message: 'staffUserId, period, periodDate, ordersThreshold required' });
     }
+    const staff = await User.findOne({ where: { id: staffUserId, orgAccountId: orgId, role: 'staff' } });
+    if (!staff) return res.status(404).json({ success: false, message: 'Staff not found' });
     const row = await IncentiveTarget.create({
       staffUserId,
       period,
@@ -5199,6 +5521,7 @@ router.post('/incentives', async (req, res) => {
       title: title || null,
       note: note || null,
       active: active !== undefined ? !!active : true,
+      orgAccountId: orgId,
     });
     return res.json({ success: true, incentive: row });
   } catch (e) {
@@ -5208,7 +5531,8 @@ router.post('/incentives', async (req, res) => {
 
 router.put('/incentives/:id', async (req, res) => {
   try {
-    const row = await IncentiveTarget.findByPk(req.params.id);
+    const orgId = requireOrg(req, res); if (!orgId) return;
+    const row = await IncentiveTarget.findOne({ where: { id: Number(req.params.id), orgAccountId: orgId } });
     if (!row) return res.status(404).json({ success: false, message: 'Not found' });
     const { staffUserId, period, periodDate, ordersThreshold, rewardAmount, title, note, active } = req.body || {};
     await row.update({
@@ -5229,7 +5553,8 @@ router.put('/incentives/:id', async (req, res) => {
 
 router.get('/incentives', async (req, res) => {
   try {
-    const where = {};
+    const orgId = requireOrg(req, res); if (!orgId) return;
+    const where = { orgAccountId: orgId };
     const { staffUserId, period, active } = req.query || {};
     if (staffUserId) where.staffUserId = Number(staffUserId);
     if (period) where.period = String(period);
@@ -5244,11 +5569,13 @@ router.get('/incentives', async (req, res) => {
 // --- Geofence Templates & Assignments ---
 function num(x, d = null) { const n = Number(x); return Number.isFinite(n) ? n : d; }
 
-// List templates with sites
-router.get('/geofence/templates', async (_req, res) => {
+// List templates with sites (org-scoped)
+router.get('/geofence/templates', async (req, res) => {
   try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
     const { GeofenceTemplate, GeofenceSite } = sequelize.models;
     const list = await GeofenceTemplate.findAll({
+      where: { orgAccountId: orgId },
       include: [{ model: GeofenceSite, as: 'sites' }],
       order: [['createdAt', 'DESC']],
     });
@@ -5258,9 +5585,10 @@ router.get('/geofence/templates', async (_req, res) => {
   }
 });
 
-// Create template (+ optional sites)
+// Create template (+ optional sites) (org-scoped)
 router.post('/geofence/templates', async (req, res) => {
   try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
     const { GeofenceTemplate, GeofenceSite } = sequelize.models;
     const { name, approvalRequired, active, sites } = req.body || {};
     if (!name) return res.status(400).json({ success: false, message: 'name required' });
@@ -5269,6 +5597,7 @@ router.post('/geofence/templates', async (req, res) => {
       name: String(name).trim(),
       approvalRequired: !!approvalRequired,                                      
       active: active !== false,
+      orgAccountId: orgId,
     });
 
     if (Array.isArray(sites)) {
@@ -5297,12 +5626,13 @@ router.post('/geofence/templates', async (req, res) => {
   }
 });
 
-// Update template and replace/update sites
+// Update template and replace/update sites (org-scoped)
 router.put('/geofence/templates/:id', async (req, res) => {
   try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
     const { GeofenceTemplate, GeofenceSite } = sequelize.models;
     const id = Number(req.params.id);
-    const row = await GeofenceTemplate.findByPk(id);
+    const row = await GeofenceTemplate.findOne({ where: { id, orgAccountId: orgId } });
     if (!row) return res.status(404).json({ success: false, message: 'Not found' });
 
     const { name, approvalRequired, active, sites } = req.body || {};
@@ -5360,12 +5690,13 @@ router.put('/geofence/templates/:id', async (req, res) => {
   }
 });
 
-// Delete template (and its sites)
+// Delete template (and its sites) (org-scoped)
 router.delete('/geofence/templates/:id', async (req, res) => {
   try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
     const { GeofenceTemplate, GeofenceSite } = sequelize.models;
     const id = Number(req.params.id);
-    const row = await GeofenceTemplate.findByPk(id);
+    const row = await GeofenceTemplate.findOne({ where: { id, orgAccountId: orgId } });
     if (!row) return res.status(404).json({ success: false, message: 'Not found' });
     await GeofenceSite.destroy({ where: { geofenceTemplateId: row.id } });
     await row.destroy();
@@ -5375,14 +5706,20 @@ router.delete('/geofence/templates/:id', async (req, res) => {
   }
 });
 
-// Assign geofence template to a staff
+// Assign geofence template to a staff (org-scoped)
 router.post('/geofence/assign', async (req, res) => {
   try {
-    const { StaffGeofenceAssignment } = sequelize.models;
+    const orgId = requireOrg(req, res); if (!orgId) return;
+    const { StaffGeofenceAssignment, GeofenceTemplate } = sequelize.models;
     const { userId, geofenceTemplateId, effectiveFrom, effectiveTo } = req.body || {};
     if (!Number(userId) || !Number(geofenceTemplateId)) {
       return res.status(400).json({ success: false, message: 'userId & geofenceTemplateId required' });
     }
+    // Verify staff and template belong to org
+    const staff = await User.findOne({ where: { id: Number(userId), orgAccountId: orgId, role: 'staff' } });
+    if (!staff) return res.status(404).json({ success: false, message: 'Staff not found' });
+    const tpl = await GeofenceTemplate.findOne({ where: { id: Number(geofenceTemplateId), orgAccountId: orgId } });
+    if (!tpl) return res.status(404).json({ success: false, message: 'Geofence template not found' });
     const row = await StaffGeofenceAssignment.create({
       userId: Number(userId),
       geofenceTemplateId: Number(geofenceTemplateId),
@@ -5396,11 +5733,15 @@ router.post('/geofence/assign', async (req, res) => {
   }
 });
 
-// List assignments for a user (with template and sites)
+// List assignments for a user (with template and sites) (org-scoped)
 router.get('/geofence/assignments/:userId', async (req, res) => {
   try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
     const { StaffGeofenceAssignment, GeofenceTemplate, GeofenceSite } = sequelize.models;
     const userId = Number(req.params.userId);
+    // Verify staff belongs to org
+    const staff = await User.findOne({ where: { id: userId, orgAccountId: orgId, role: 'staff' } });
+    if (!staff) return res.status(404).json({ success: false, message: 'Staff not found' });
     const rows = await StaffGeofenceAssignment.findAll({
       where: { userId },
       order: [['createdAt', 'DESC']],
@@ -5412,16 +5753,12 @@ router.get('/geofence/assignments/:userId', async (req, res) => {
   }
 });
 
-// --- Sales: Clients CRUD ---
-router.get('/sales/clients', async (_req, res) => {
+// --- Sales: Clients CRUD --- (org-scoped)
+router.get('/sales/clients', async (req, res) => {
   try {
-    const rows = await sequelize.models.Client.findAll({ order: [['createdAt','DESC']] });
+    const orgId = requireOrg(req, res); if (!orgId) return;
+    const rows = await sequelize.models.Client.findAll({ where: { orgAccountId: orgId }, order: [['createdAt','DESC']] });
     const data = rows.map(r => {
-      let ex = r.extra || {};
-      if (typeof ex === 'string') {
-        try { ex = JSON.parse(ex); } catch (_) { ex = {}; }
-      }
-      const active = ex && ex.active === false ? false : true;
       return {
         id: r.id,
         name: r.name,
@@ -5429,7 +5766,7 @@ router.get('/sales/clients', async (_req, res) => {
         clientType: r.client_type || r.clientType || null,
         location: r.location || null,
         extra: r.extra || null,
-        active,
+        active: r.active !== false,
         createdAt: r.createdAt,
       };
     });
@@ -5441,6 +5778,7 @@ router.get('/sales/clients', async (_req, res) => {
 
 router.post('/sales/clients', async (req, res) => {
   try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
     const { name, phone, clientType, location, extra } = req.body || {};
     if (!name) return res.status(400).json({ success: false, message: 'name required' });
     let baseExtra = (extra && typeof extra === 'object') ? extra : {};
@@ -5453,6 +5791,7 @@ router.post('/sales/clients', async (req, res) => {
       client_type: clientType ? String(clientType) : null,
       location: location ? String(location) : null,
       extra: JSON.stringify({ ...baseExtra, active: true }),
+      orgAccountId: orgId,
       created_by: req.user?.id || null,
     });
     return res.json({ success: true, client: row });
@@ -5463,36 +5802,37 @@ router.post('/sales/clients', async (req, res) => {
 
 router.put('/sales/clients/:id', async (req, res) => {
   try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
     const id = Number(req.params.id);
-    const row = await sequelize.models.Client.findByPk(id);
+    const row = await sequelize.models.Client.findOne({ where: { id, orgAccountId: orgId } });
     if (!row) return res.status(404).json({ success: false, message: 'Not found' });
     const { name, phone, clientType, location, extra, active } = req.body || {};
-    const mergedExtra = (() => {
+    const updateData = {};
+    if (name !== undefined) updateData.name = String(name);
+    if (phone !== undefined) updateData.phone = String(phone);
+    if (clientType !== undefined) updateData.clientType = String(clientType);
+    if (location !== undefined) updateData.location = String(location);
+    if (active !== undefined) updateData.active = !!active;
+    if (extra !== undefined) {
       let current = row.extra || {};
       if (typeof current === 'string') { try { current = JSON.parse(current); } catch (_) { current = {}; } }
       let incoming = (extra && typeof extra === 'object') ? extra : {};
       if (typeof extra === 'string') { try { incoming = JSON.parse(extra); } catch (_) { incoming = {}; } }
-      const patch = { ...current, ...incoming };
-      if (active !== undefined) patch.active = !!active;
-      return patch;
-    })();
-    await row.update({
-      name: name !== undefined ? String(name) : row.name,
-      phone: phone !== undefined ? String(phone) : row.phone,
-      client_type: clientType !== undefined ? String(clientType) : row.client_type,
-      location: location !== undefined ? String(location) : row.location,
-      extra: JSON.stringify(mergedExtra),
-    });
+      updateData.extra = { ...current, ...incoming };
+    }
+    if (Object.keys(updateData).length) await row.update(updateData);
     return res.json({ success: true, client: row });
   } catch (e) {
+    console.error('Update client error:', e);
     return res.status(500).json({ success: false, message: 'Failed to update client' });
   }
 });
 
 router.delete('/sales/clients/:id', async (req, res) => {
   try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
     const id = Number(req.params.id);
-    const row = await sequelize.models.Client.findByPk(id);
+    const row = await sequelize.models.Client.findOne({ where: { id, orgAccountId: orgId } });
     if (!row) return res.status(404).json({ success: false, message: 'Not found' });
     await row.destroy();
     return res.json({ success: true });
@@ -5501,11 +5841,13 @@ router.delete('/sales/clients/:id', async (req, res) => {
   }
 });
 
-// List assigned jobs with client and staff info
-router.get('/sales/assignments', async (_req, res) => {
+// List assigned jobs with client and staff info (org-scoped)
+router.get('/sales/assignments', async (req, res) => {
   try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
     const { AssignedJob, Client, User } = sequelize.models;
     const rows = await AssignedJob.findAll({
+      where: { orgAccountId: orgId },
       order: [['createdAt','DESC']],
       include: [
         { model: Client, as: 'client', required: false },
@@ -5534,51 +5876,58 @@ router.get('/sales/assignments', async (_req, res) => {
 
 router.post('/sales/assignments', async (req, res) => {
   try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
     const { AssignedJob } = sequelize.models;
     const { clientId, staffUserId, title, description, status, assignedOn, dueDate } = req.body || {};
     const payload = {
-      client_id: Number(clientId) || null,
-      staff_user_id: Number(staffUserId) || null,
+      clientId: Number(clientId) || null,
+      staffUserId: Number(staffUserId) || null,
       title: title ? String(title) : null,
       description: description ? String(description) : null,
       status: status ? String(status) : 'pending',
-      assigned_on: assignedOn ? String(assignedOn) : new Date().toISOString().slice(0,10),
-      due_date: dueDate ? String(dueDate) : null,
+      assignedOn: assignedOn ? new Date(assignedOn) : new Date(),
+      dueDate: dueDate ? new Date(dueDate) : null,
+      orgAccountId: orgId,
     };
     const row = await AssignedJob.create(payload);
     return res.json({ success: true, assignment: row });
   } catch (e) {
+    console.error('Create assignment error:', e);
     return res.status(500).json({ success: false, message: 'Failed to create assignment' });
   }
 });
 
 router.put('/sales/assignments/:id', async (req, res) => {
   try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
     const { AssignedJob } = sequelize.models;
     const id = Number(req.params.id);
-    const row = await AssignedJob.findByPk(id);
+    const row = await AssignedJob.findOne({ where: { id, orgAccountId: orgId } });
     if (!row) return res.status(404).json({ success: false, message: 'Not found' });
     const { clientId, staffUserId, title, description, status, assignedOn, dueDate } = req.body || {};
     const patch = {};
-    if (clientId !== undefined) patch.client_id = Number(clientId) || null;
-    if (staffUserId !== undefined) patch.staff_user_id = Number(staffUserId) || null;
+    if (clientId !== undefined) patch.clientId = Number(clientId) || null;
+    if (staffUserId !== undefined) patch.staffUserId = Number(staffUserId) || null;
     if (title !== undefined) patch.title = title ? String(title) : null;
     if (description !== undefined) patch.description = description ? String(description) : null;
     if (status !== undefined) patch.status = status ? String(status) : 'pending';
-    if (assignedOn !== undefined) patch.assigned_on = assignedOn ? String(assignedOn) : null;
-    if (dueDate !== undefined) patch.due_date = dueDate ? String(dueDate) : null;
+    if (assignedOn !== undefined) patch.assignedOn = assignedOn ? new Date(assignedOn) : null;
+    if (dueDate !== undefined) patch.dueDate = dueDate ? new Date(dueDate) : null;
     await row.update(patch);
     return res.json({ success: true, assignment: row });
   } catch (e) {
+    console.error('Update assignment error:', e);
     return res.status(500).json({ success: false, message: 'Failed to update assignment' });
   }
 });
 
-// --- Sales Targets (admin) ---
-router.get('/sales/targets', async (_req, res) => {
+// --- Sales Targets (admin) --- (org-scoped)
+router.get('/sales/targets', async (req, res) => {
   try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
     const { SalesTarget, User } = sequelize.models;
-    const rows = await SalesTarget.findAll({ order: [['id','DESC']], limit: 1000 });
+    const orgStaffIds = (await User.findAll({ where: { orgAccountId: orgId, role: 'staff' }, attributes: ['id'] })).map(u => u.id);
+    const rows = await SalesTarget.findAll({ where: { staffUserId: orgStaffIds }, order: [['id','DESC']], limit: 1000 });
 
     // Build staff map safely (no joins)
     const staffIds = Array.from(new Set(rows
@@ -5635,17 +5984,14 @@ router.get('/sales/targets', async (_req, res) => {
 
 router.post('/sales/targets', async (req, res) => {
   try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
     const { SalesTarget, User } = sequelize.models;
     const { staffUserId, period, periodDate, targetAmount, targetOrders } = req.body || {};
     const sid = Number(staffUserId);
     if (!Number.isFinite(sid)) return res.status(400).json({ success: false, message: 'staffUserId required' });
-    // Optional: validate staff exists if User is available
-    if (User) {
-      try {
-        const u = await User.findByPk(sid);
-        if (!u) return res.status(400).json({ success: false, message: 'Staff not found' });
-      } catch (_) {}
-    }
+    // Validate staff belongs to org
+    const staff = await User.findOne({ where: { id: sid, orgAccountId: orgId, role: 'staff' } });
+    if (!staff) return res.status(404).json({ success: false, message: 'Staff not found' });
     const p = ['daily','weekly','monthly'].includes(String(period)) ? String(period) : 'monthly';
     const pd = periodDate ? String(periodDate) : null;
     const ta = Number(targetAmount || 0);
@@ -5668,13 +6014,14 @@ router.post('/sales/targets', async (req, res) => {
   }
 });
 
-// --- Staff salary structure (admin) ---
+// --- Staff salary structure (admin) --- (org-scoped)
 // Save dynamic salary JSON (earnings/incentives/deductions) to users.salary_values and update rollup totals
 router.put('/staff/:id/salary', async (req, res) => {
   try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
     const uid = Number(req.params.id);
     if (!Number.isFinite(uid)) return res.status(400).json({ success: false, message: 'invalid user id' });
-    const user = await sequelize.models.User.findByPk(uid);
+    const user = await sequelize.models.User.findOne({ where: { id: uid, orgAccountId: orgId, role: 'staff' } });
     if (!user) return res.status(404).json({ success: false, message: 'User not found' });
 
     // Accept month-wise update: month/year or monthKey = 'YYYY-MM'

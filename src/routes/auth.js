@@ -60,8 +60,8 @@ router.post('/send-otp', async (req, res) => {
     }
 
     const user = await User.findOne({ where: { phone: String(normalizedPhone) } });
-    if (!user || user.active === false) {
-      return res.status(404).json({ success: false, message: 'User not found' });
+    if (user && user.active === false) {
+      return res.status(403).json({ success: false, message: 'User disabled' });
     }
 
     const ttlMs = Number(process.env.OTP_TTL_MS || 5 * 60 * 1000);
@@ -89,7 +89,8 @@ router.post('/send-otp', async (req, res) => {
 
 
     const includeCode = String(process.env.OTP_INCLUDE_IN_RESPONSE || 'true') === 'true';
-    return res.json({ success: true, message: smsResult.ok ? 'OTP sent' : 'OTP generated', ...(includeCode ? { otp: code } : {}) });
+    const exists = !!user;
+    return res.json({ success: true, message: smsResult.ok ? 'OTP sent' : 'OTP generated', exists, ...(includeCode ? { otp: code } : {}) });
   } catch (e) {
     return res.status(500).json({ success: false, message: 'Failed to send OTP' });
   }
@@ -145,8 +146,31 @@ router.post('/verify-otp', async (req, res) => {
     }
 
     const user = await User.findOne({ where: { phone: String(normalizedPhone) } });
-    if (!user || user.active === false) {
-      return res.status(404).json({ success: false, message: 'User not found' });
+    if (!user) {
+      return res.json({ success: true, requireSignup: true, phone: normalizedPhone });
+    }
+    if (user.active === false) {
+      return res.status(403).json({ success: false, message: 'User disabled' });
+    }
+
+    // Subscription/Org enforcement on OTP login for non-superadmin
+    if (user && user.role !== 'superadmin') {
+      try {
+        const { OrgAccount, Subscription, Plan } = require('../models');
+        const org = await OrgAccount.findByPk(user.orgAccountId);
+        if (!org || org.status !== 'ACTIVE') {
+          return res.status(403).json({ success: false, message: 'Organization disabled' });
+        }
+        const now = new Date();
+        const sub = await Subscription.findOne({
+          where: { orgAccountId: org.id, status: 'ACTIVE' },
+          order: [['endAt', 'DESC']],
+          include: [{ model: Plan, as: 'plan' }],
+        });
+        if (!sub || new Date(sub.endAt) < now) {
+          return res.status(402).json({ success: false, message: 'Subscription expired' });
+        }
+      } catch (_) {}
     }
 
     const profile = await StaffProfile.findOne({ where: { userId: user.id } });
@@ -187,6 +211,26 @@ router.post('/login', async (req, res) => {
       return res.status(401).json({ success: false, message: 'Invalid credentials' });
     }
 
+    // Subscription/Org enforcement on password login for non-superadmin
+    if (user.role !== 'superadmin') {
+      try {
+        const { OrgAccount, Subscription, Plan } = require('../models');
+        const org = await OrgAccount.findByPk(user.orgAccountId);
+        if (!org || org.status !== 'ACTIVE') {
+          return res.status(403).json({ success: false, message: 'Organization disabled' });
+        }
+        const now = new Date();
+        const sub = await Subscription.findOne({
+          where: { orgAccountId: org.id, status: 'ACTIVE' },
+          order: [['endAt', 'DESC']],
+          include: [{ model: Plan, as: 'plan' }],
+        });
+        if (!sub || new Date(sub.endAt) < now) {
+          return res.status(402).json({ success: false, message: 'Subscription expired' });
+        }
+      } catch (_) {}
+    }
+
     const profile = await StaffProfile.findOne({ where: { userId: user.id } });
     const name = profile?.name || null;
 
@@ -204,6 +248,41 @@ router.post('/login', async (req, res) => {
     });
   } catch (e) {
     return res.status(500).json({ success: false, message: 'Login failed' });
+  }
+});
+
+// Public: signup a new Admin for a new OrgAccount (pending activation by Super Admin)
+router.post('/signup-admin', async (req, res) => {
+  try {
+    const { phone, name, businessName, password, businessEmail, state, city, channelPartnerId, roleDescription, employeeCount } = req.body || {};
+    if (!phone || !name || !businessName) {
+      return res.status(400).json({ success: false, message: 'phone, name, businessName required' });
+    }
+
+    const normalizedPhone = normalizePhone(phone);
+    const existing = await User.findOne({ where: { phone: String(normalizedPhone) } });
+    if (existing) return res.status(409).json({ success: false, message: 'Already registered' });
+
+    const { OrgAccount } = require('../models');
+    const org = await OrgAccount.create({
+      name: String(businessName),
+      phone: String(normalizedPhone),
+      status: 'DISABLED',
+      businessEmail: businessEmail || null,
+      state: state || null,
+      city: city || null,
+      channelPartnerId: channelPartnerId || null,
+      roleDescription: roleDescription || null,
+      employeeCount: employeeCount || null,
+    });
+
+    const hash = await bcrypt.hash(String(password || '123456'), 10);
+    const admin = await User.create({ role: 'admin', orgAccountId: org.id, phone: String(normalizedPhone), passwordHash: hash, active: true });
+    try { await StaffProfile.create({ userId: admin.id, name: String(name) }); } catch (_) {}
+
+    return res.json({ success: true, orgAccountId: org.id, userId: admin.id });
+  } catch (e) {
+    return res.status(500).json({ success: false, message: 'Signup failed' });
   }
 });
 

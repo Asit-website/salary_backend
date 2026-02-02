@@ -10,6 +10,7 @@ module.exports = (sequelize) => {
       periodDate: { type: DataTypes.DATEONLY, allowNull: false },
       targetAmount: { type: DataTypes.DECIMAL(12, 2), allowNull: false, defaultValue: 0 },
       targetOrders: { type: DataTypes.INTEGER.UNSIGNED, allowNull: true },
+      orgAccountId: { type: DataTypes.BIGINT.UNSIGNED, allowNull: true, field: 'org_account_id' },
     },
     { tableName: 'sales_targets', underscored: true }
   );

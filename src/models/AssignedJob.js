@@ -20,6 +20,7 @@ module.exports = (sequelize) => {
       endLat: { type: DataTypes.DOUBLE, allowNull: true },
       endLng: { type: DataTypes.DOUBLE, allowNull: true },
       endAccuracy: { type: DataTypes.FLOAT, allowNull: true },
+      orgAccountId: { type: DataTypes.BIGINT.UNSIGNED, allowNull: true, field: 'org_account_id' },
     },
     { tableName: 'assigned_jobs', underscored: true }
   );

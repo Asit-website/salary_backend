@@ -14,6 +14,7 @@ module.exports = (sequelize) => {
       used: { type: DataTypes.DECIMAL(10, 2), allowNull: false, defaultValue: 0 },
       encashed: { type: DataTypes.DECIMAL(10, 2), allowNull: false, defaultValue: 0 },
       remaining: { type: DataTypes.DECIMAL(10, 2), allowNull: false, defaultValue: 0 },
+      orgAccountId: { type: DataTypes.BIGINT.UNSIGNED, allowNull: true, field: 'org_account_id' },
     },
     { tableName: 'leave_balances', underscored: true }
   );

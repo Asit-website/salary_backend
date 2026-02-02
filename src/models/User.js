@@ -6,6 +6,12 @@ module.exports = (sequelize) => {
     {
       id: { type: DataTypes.BIGINT.UNSIGNED, primaryKey: true, autoIncrement: true },
       role: { type: DataTypes.ENUM('superadmin', 'admin', 'staff'), allowNull: false },
+      orgAccountId: {
+        type: DataTypes.BIGINT.UNSIGNED,
+        allowNull: true,
+        field: 'org_account_id',
+        references: { model: 'org_accounts', key: 'id' },
+      },
       phone: { type: DataTypes.STRING(20), allowNull: false, unique: true },
       passwordHash: { 
         type: DataTypes.STRING(255), 

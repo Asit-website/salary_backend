@@ -10,6 +10,7 @@ module.exports = (sequelize) => {
       countSandwich: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: true },
       approvalLevel: { type: DataTypes.INTEGER, allowNull: false, defaultValue: 1 },
       active: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: true },
+      orgAccountId: { type: DataTypes.BIGINT.UNSIGNED, allowNull: true, field: 'org_account_id' },
     },
     { tableName: 'leave_templates', underscored: true }
   );

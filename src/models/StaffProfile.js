@@ -176,6 +176,7 @@ module.exports = (sequelize) => {
       },
 
       extra: { type: DataTypes.JSON, allowNull: true },
+      orgAccountId: { type: DataTypes.BIGINT.UNSIGNED, allowNull: true, field: 'org_account_id' },
     },
     {
       tableName: 'staff_profiles',

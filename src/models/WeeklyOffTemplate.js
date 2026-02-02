@@ -7,6 +7,7 @@ module.exports = (sequelize) => {
     // JSON config: array of items { day: 0-6 (Sun=0), weeks: [1..5] | 'all' }
     config: { type: DataTypes.JSON, allowNull: false, defaultValue: [] },
     active: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: true },
+    orgAccountId: { type: DataTypes.BIGINT.UNSIGNED, allowNull: true, field: 'org_account_id' },
   }, { tableName: 'weekly_off_templates' });
 
   WeeklyOffTemplate.associate = (models) => {

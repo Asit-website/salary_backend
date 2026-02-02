@@ -16,6 +16,7 @@ module.exports = (sequelize) => {
       gstAmount: { type: DataTypes.DECIMAL(12,2), allowNull: false, defaultValue: 0 },
       totalAmount: { type: DataTypes.DECIMAL(12,2), allowNull: false, defaultValue: 0 },
       meta: { type: DataTypes.JSON, allowNull: true },
+      orgAccountId: { type: DataTypes.BIGINT.UNSIGNED, allowNull: true, field: 'org_account_id' },
     },
     { tableName: 'orders', underscored: true }
   );

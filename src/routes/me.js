@@ -583,4 +583,39 @@ router.post('/profile/photo', upload.single('photo'), async (req, res) => {
   }
 });
 
+// Get user's payroll payment status
+router.get('/payroll-status', async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const { PayrollCycle, PayrollLine } = require('../models');
+    const monthKey = (req.query?.monthKey || req.query?.month || '').toString().slice(0, 7);
+    if (!/^\d{4}-\d{2}$/.test(monthKey)) {
+      return res.status(400).json({ success: false, message: 'monthKey (YYYY-MM) required' });
+    }
+    
+    const cycle = await PayrollCycle.findOne({ where: { monthKey } });
+    if (!cycle) {
+      return res.json({ success: true, paymentStatus: 'DUE', paidAmount: 0 });
+    }
+    
+    const line = await PayrollLine.findOne({ where: { cycleId: cycle.id, userId } });
+    if (!line) {
+      return res.json({ success: true, paymentStatus: 'DUE', paidAmount: 0 });
+    }
+    
+    if (line.paidAt) {
+      return res.json({ 
+        success: true, 
+        paymentStatus: 'PAID', 
+        paidAmount: line.paidAmount || 0 
+      });
+    } else {
+      return res.json({ success: true, paymentStatus: 'DUE', paidAmount: 0 });
+    }
+  } catch (e) {
+    console.error('My payroll status error:', e);
+    return res.status(500).json({ success: false, message: 'Failed to get payroll status' });
+  }
+});
+
 module.exports = router;

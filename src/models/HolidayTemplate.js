@@ -7,6 +7,7 @@ module.exports = (sequelize) => {
     startMonth: { type: DataTypes.INTEGER, allowNull: true },
     endMonth: { type: DataTypes.INTEGER, allowNull: true },
     active: { type: DataTypes.BOOLEAN, defaultValue: true },
+    orgAccountId: { type: DataTypes.BIGINT.UNSIGNED, allowNull: true, field: 'org_account_id' },
   }, { tableName: 'holiday_templates' });
 
   HolidayTemplate.associate = (models) => {

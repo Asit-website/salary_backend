@@ -9,6 +9,7 @@ const cors = require('cors');
 const { initDb } = require('./src/db');
 const authRoutes = require('./src/routes/auth');
 const adminRoutes = require('./src/routes/admin');
+const superadminRoutes = require('./src/routes/superadmin');
 const attendanceRoutes = require('./src/routes/attendance');
 const salesRoutes = require('./src/routes/sales');
 const leaveRoutes = require('./src/routes/leave');
@@ -17,6 +18,7 @@ const meRoutes = require('./src/routes/me');
 const documentsRoutes = require('./src/routes/documents');
 const securityRoutes = require('./src/routes/security');
 const salaryTemplateRoutes = require('./src/routes/salaryTemplates');
+const { scheduleSubscriptionSweep } = require('./src/jobs/subscriptionSweep');
 
 const app = express();
 
@@ -34,6 +36,7 @@ app.get('/health', (_req, res) => res.json({ ok: true }));
 
 app.use('/auth', authRoutes);
 app.use('/admin', adminRoutes);
+app.use('/superadmin', superadminRoutes);
 app.use('/attendance', attendanceRoutes);
 app.use('/sales', salesRoutes);
 app.use('/leave', leaveRoutes);
@@ -47,6 +50,8 @@ const port = Number(process.env.PORT || 4000);
 
 initDb()
   .then(() => {
+    // Start background job to auto-expire subscriptions and disable orgs
+    try { scheduleSubscriptionSweep(); } catch (_) {}
     app.listen(port, () => {
       console.log(`Backend running on http://localhost:${port}`);
     });

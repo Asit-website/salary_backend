@@ -7,6 +7,7 @@ module.exports = (sequelize) => {
     accountNumber: { type: DataTypes.STRING(64), allowNull: false, field: 'account_number' },
     ifsc: { type: DataTypes.STRING(32), allowNull: false },
     active: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: true },
+    orgAccountId: { type: DataTypes.BIGINT.UNSIGNED, allowNull: true, field: 'org_account_id' },
   }, {
     tableName: 'org_bank_accounts',
     underscored: true,

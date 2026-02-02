@@ -19,6 +19,7 @@ module.exports = (sequelize) => {
       maxPunchOutAfterMinutes: { type: DataTypes.INTEGER, allowNull: true },
       enableMultipleShifts: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: false },
       active: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: true },
+      orgAccountId: { type: DataTypes.BIGINT.UNSIGNED, allowNull: true, field: 'org_account_id' },
     },
     {
       tableName: 'shift_templates',

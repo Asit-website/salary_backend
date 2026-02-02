@@ -203,7 +203,7 @@ router.post('/orders', upload.single('proof'), async (req, res) => {
   }
 });
 
-// Assigned jobs for logged-in staff
+// Assigned jobs for logged-in staff (filter out deactivated clients)
 router.get('/assigned-jobs', async (req, res) => {
   try {
     const rows = await AssignedJob.findAll({
@@ -212,14 +212,11 @@ router.get('/assigned-jobs', async (req, res) => {
       order: [['createdAt', 'DESC']],
       limit: 500,
     });
+    // Filter out jobs where client is deactivated
     const filtered = rows.filter(j => {
       const c = j.client;
-      if (!c) return true;
-      let ex = c.extra || {};
-      if (typeof ex === 'string') {
-        try { ex = JSON.parse(ex); } catch (_) { ex = {}; }
-      }
-      return ex.active !== false;
+      if (!c) return true; // No client linked, show the job
+      return c.active !== false; // Only show if client is active
     });
     return res.json({ success: true, jobs: filtered });
   } catch (e) {
@@ -236,14 +233,11 @@ router.get('/assigned_jobs', async (req, res) => {
       order: [['createdAt', 'DESC']],
       limit: 500,
     });
+    // Filter out jobs where client is deactivated
     const filtered = rows.filter(j => {
       const c = j.client;
       if (!c) return true;
-      let ex = c.extra || {};
-      if (typeof ex === 'string') {
-        try { ex = JSON.parse(ex); } catch (_) { ex = {}; }
-      }
-      return ex.active !== false;
+      return c.active !== false;
     });
     return res.json({ success: true, jobs: filtered });
   } catch (e) {

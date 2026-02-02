@@ -26,7 +26,10 @@ const defineSalaryTemplate = require('./SalaryTemplate');
 const defineStaffSalaryAssignment = require('./StaffSalaryAssignment');
 const defineSalesVisit = require('./SalesVisit');
 const defineSalesVisitAttachment = require('./SalesVisitAttachment');
-const defineClient = require('./Client');
+const defineOrgAccount = require('./OrgAccount');
+const defineClient = require('./Client');              // keep this
+const definePlan = require('./Plan');
+const defineSubscription = require('./Subscription');
 const defineAssignedJob = require('./AssignedJob');
 const defineSalesTarget = require('./SalesTarget');
 const defineOrder = require('./Order');
@@ -85,7 +88,10 @@ const SalaryTemplate = defineSalaryTemplate(sequelize);
 const StaffSalaryAssignment = defineStaffSalaryAssignment(sequelize);
 const SalesVisit = defineSalesVisit(sequelize);
 const SalesVisitAttachment = defineSalesVisitAttachment(sequelize);
-const Client = defineClient(sequelize);
+const OrgAccount = defineOrgAccount(sequelize);
+const Client = defineClient(sequelize);                // keep this
+const Plan = definePlan(sequelize);
+const Subscription = defineSubscription(sequelize);
 const AssignedJob = defineAssignedJob(sequelize);
 const SalesTarget = defineSalesTarget(sequelize);
 const Order = defineOrder(sequelize);
@@ -275,6 +281,17 @@ ReliabilityScore.belongsTo(User, { foreignKey: 'userId', as: 'user' });
 User.hasMany(SalaryForecast, { foreignKey: 'userId', as: 'salaryForecasts' });
 SalaryForecast.belongsTo(User, { foreignKey: 'userId', as: 'user' });
 
+// Subscription / Plan associations
+// OrgAccount tenancy associations
+OrgAccount.hasMany(User, { foreignKey: 'orgAccountId', as: 'users' });
+User.belongsTo(OrgAccount, { foreignKey: 'orgAccountId', as: 'orgAccount' });
+
+// Subscription / Plan associations (OrgAccount-based)
+OrgAccount.hasMany(Subscription, { foreignKey: 'orgAccountId', as: 'subscriptions' });
+Subscription.belongsTo(OrgAccount, { foreignKey: 'orgAccountId', as: 'orgAccount' });
+Plan.hasMany(Subscription, { foreignKey: 'planId', as: 'subscriptions' });
+Subscription.belongsTo(Plan, { foreignKey: 'planId', as: 'plan' });
+
 module.exports = {
   sequelize,
   User,
@@ -303,8 +320,13 @@ module.exports = {
   StaffSalaryAssignment,
   SalesVisit,
   SalesVisitAttachment,
-  Client,
+ 
+  OrgAccount,
+  Plan,
+  Subscription,
+
   AssignedJob,
+  Client,
   SalesTarget,
   Order,
   OrderItem,

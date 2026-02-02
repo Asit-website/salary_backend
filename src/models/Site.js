@@ -11,6 +11,7 @@ module.exports = (sequelize) => {
       lng: { type: DataTypes.DECIMAL(10, 7), allowNull: true },
       geofenceRadiusM: { type: DataTypes.INTEGER, allowNull: true },
       active: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: true },
+      orgAccountId: { type: DataTypes.BIGINT.UNSIGNED, allowNull: true, field: 'org_account_id' },
     },
     { tableName: 'sites', underscored: true }
   );

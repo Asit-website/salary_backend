@@ -21,6 +21,7 @@ module.exports = (sequelize) => {
       checkInLng: { type: DataTypes.DECIMAL(10, 7), allowNull: true },
       checkInTime: { type: DataTypes.DATE, allowNull: true },
       verified: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: false },
+      orgAccountId: { type: DataTypes.BIGINT.UNSIGNED, allowNull: true, field: 'org_account_id' },
     },
     { tableName: 'sales_visits', underscored: true }
   );

@@ -22,6 +22,7 @@ module.exports = (sequelize) => {
       // Additional metadata: currency, rounding preferences, notes
       metadata: { type: DataTypes.JSON, allowNull: true },
       active: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: true },
+      orgAccountId: { type: DataTypes.BIGINT.UNSIGNED, allowNull: true, field: 'org_account_id' },
     },
     { tableName: 'salary_templates', underscored: true }
   );

@@ -12,6 +12,7 @@ module.exports = (sequelize) => {
       lockedBy: { type: DataTypes.BIGINT.UNSIGNED, allowNull: true },
       paidAt: { type: DataTypes.DATE, allowNull: true },
       paidBy: { type: DataTypes.BIGINT.UNSIGNED, allowNull: true },
+      orgAccountId: { type: DataTypes.BIGINT.UNSIGNED, allowNull: true, field: 'org_account_id' },
     },
     { tableName: 'payroll_cycles', underscored: true }
   );

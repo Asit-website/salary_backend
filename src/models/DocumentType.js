@@ -10,6 +10,7 @@ module.exports = (sequelize) => {
       required: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: false },
       active: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: true },
       allowedMime: { type: DataTypes.STRING(255), allowNull: true },
+      orgAccountId: { type: DataTypes.BIGINT.UNSIGNED, allowNull: true, field: 'org_account_id' },
     },
     {
       tableName: 'document_types',

@@ -8,6 +8,7 @@ module.exports = (sequelize) => {
       name: { type: DataTypes.STRING(150), allowNull: false },
       code: { type: DataTypes.STRING(50), allowNull: true },
       active: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: true },
+      orgAccountId: { type: DataTypes.BIGINT.UNSIGNED, allowNull: true, field: 'org_account_id' },
     },
     { tableName: 'routes', underscored: true }
   );

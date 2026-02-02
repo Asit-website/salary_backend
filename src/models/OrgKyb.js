@@ -20,6 +20,7 @@ module.exports = (sequelize) => {
     docDirectorId: { type: DataTypes.STRING(255), allowNull: true, field: 'doc_director_id' },
     docGstinCertificate: { type: DataTypes.STRING(255), allowNull: true, field: 'doc_gstin_certificate' },
     active: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: true },
+    orgAccountId: { type: DataTypes.BIGINT.UNSIGNED, allowNull: true, field: 'org_account_id' },
   }, {
     tableName: 'org_kyb',
     underscored: true,

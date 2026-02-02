@@ -20,6 +20,7 @@ module.exports = (sequelize) => {
       reviewedBy: { type: DataTypes.BIGINT.UNSIGNED, allowNull: true },
       reviewedAt: { type: DataTypes.DATE, allowNull: true },
       reviewNote: { type: DataTypes.STRING(500), allowNull: true },
+      orgAccountId: { type: DataTypes.BIGINT.UNSIGNED, allowNull: true, field: 'org_account_id' },
     },
     {
       tableName: 'leave_requests',

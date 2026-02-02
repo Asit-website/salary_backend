@@ -7,6 +7,7 @@ module.exports = (sequelize, DataTypes) => {
     type: { type: DataTypes.ENUM('loan','payment'), allowNull: false, defaultValue: 'loan' },
     description: { type: DataTypes.STRING(500), allowNull: true },
     notifySms: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: false },
+    orgAccountId: { type: DataTypes.BIGINT.UNSIGNED, allowNull: true, field: 'org_account_id' },
   }, {
     tableName: 'loans',
   });

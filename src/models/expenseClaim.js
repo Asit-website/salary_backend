@@ -60,6 +60,11 @@ module.exports = (sequelize, DataTypes) => {
       type: DataTypes.STRING(500),
       allowNull: true,
     },
+    orgAccountId: {
+      type: DataTypes.BIGINT.UNSIGNED,
+      allowNull: true,
+      field: 'org_account_id',
+    },
   }, {
     tableName: 'expense_claims',
     timestamps: true,
