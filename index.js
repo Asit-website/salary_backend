@@ -30,6 +30,8 @@ if (!fs.existsSync(uploadsDir)) {
   fs.mkdirSync(uploadsDir, { recursive: true });
 }
 
+//this is router
+
 app.use('/uploads', express.static(uploadsDir));
 
 app.get('/health', (_req, res) => res.json({ ok: true }));
