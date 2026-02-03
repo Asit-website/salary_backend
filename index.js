@@ -30,7 +30,7 @@ if (!fs.existsSync(uploadsDir)) {
   fs.mkdirSync(uploadsDir, { recursive: true });
 }
 
-//this is router
+//this
 
 app.use('/uploads', express.static(uploadsDir));
 
