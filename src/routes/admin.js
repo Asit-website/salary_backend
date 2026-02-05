@@ -1,5 +1,6 @@
 const express = require('express');
 const bcrypt = require('bcryptjs');
+const exceljs = require('exceljs');
 
 const { sequelize, User, StaffProfile, AppSetting, DocumentType, ShiftTemplate, ShiftBreak, ShiftRotationalSlot, StaffShiftAssignment, SalaryAccess, AttendanceTemplate, StaffAttendanceAssignment, SalaryTemplate, StaffSalaryAssignment, Site, WorkUnit, Route, RouteStop, StaffRouteAssignment, SiteCheckpoint, PatrolLog, LeaveTemplate, LeaveTemplateCategory, StaffLeaveAssignment, LeaveBalance, AIAnomaly, ReliabilityScore, SalaryForecast, Attendance, Client, AssignedJob, SalesTarget, HolidayTemplate, HolidayDate, StaffHolidayAssignment, Subscription, Plan } = require('../models');
 const multer = require('multer');
@@ -4480,11 +4481,42 @@ router.put('/staff/:id/profile', async (req, res) => {
 router.get('/attendance', async (req, res) => {
   try {
     const orgId = requireOrg(req, res); if (!orgId) return;
-    const { date, staffId } = req.query || {};
-    if (!date) return res.status(400).json({ success: false, message: 'date required' });
+    const { date, month, staffId } = req.query || {};
+    
+    // Support both date and month parameters
+    if (!date && !month) return res.status(400).json({ success: false, message: 'date or month required' });
+    
+    let whereClause;
+    
+    if (month) {
+      // Handle month parameter (YYYY-MM format)
+      const monthStr = String(month).trim();
+      if (!/^\d{4}-\d{2}$/.test(monthStr)) {
+        return res.status(400).json({ success: false, message: 'Invalid month format. Use YYYY-MM' });
+      }
+      const [year, monthNum] = monthStr.split('-').map(x => Number(x));
+      if (!year || !monthNum || monthNum < 1 || monthNum > 12) {
+        return res.status(400).json({ success: false, message: 'Invalid month values' });
+      }
+      
+      const startDate = new Date(year, monthNum - 1, 1);
+      const endDate = new Date(year, monthNum, 0); // Last day of month
+      
+      whereClause = {
+        date: {
+          [Op.between]: [
+            startDate.toISOString().split('T')[0],
+            endDate.toISOString().split('T')[0]
+          ]
+        }
+      };
+    } else {
+      // Handle single date parameter
+      whereClause = { date: String(date) };
+    }
 
     const orgStaffIds = (await User.findAll({ where: { orgAccountId: orgId, role: 'staff' }, attributes: ['id'] })).map(u => u.id);
-    const where = { date: String(date), userId: orgStaffIds };
+    const where = { ...whereClause, userId: orgStaffIds };
     if (staffId && Number(staffId) > 0) where.userId = Number(staffId);
 
     const rows = await Attendance.findAll({
@@ -4526,24 +4558,231 @@ router.get('/attendance', async (req, res) => {
 router.get('/attendance/export', async (req, res) => {
   try {
     const orgId = requireOrg(req, res); if (!orgId) return;
-    const { date, staffId } = req.query || {};
-    if (!date) return res.status(400).json({ success: false, message: 'date required' });
+    const { date, month, staffId } = req.query || {};
+    
+    // Support both date and month parameters
+    if (!date && !month) return res.status(400).json({ success: false, message: 'date or month required' });
+    
+    let whereClause;
+    
+    if (month) {
+      // Handle month parameter (YYYY-MM format)
+      const monthStr = String(month).trim();
+      if (!/^\d{4}-\d{2}$/.test(monthStr)) {
+        return res.status(400).json({ success: false, message: 'Invalid month format. Use YYYY-MM' });
+      }
+      const [year, monthNum] = monthStr.split('-').map(x => Number(x));
+      if (!year || !monthNum || monthNum < 1 || monthNum > 12) {
+        return res.status(400).json({ success: false, message: 'Invalid month values' });
+      }
+      
+      const startDate = new Date(year, monthNum - 1, 1);
+      const endDate = new Date(year, monthNum, 0); // Last day of month
+      
+      whereClause = {
+        date: {
+          [Op.between]: [
+            startDate.toISOString().split('T')[0],
+            endDate.toISOString().split('T')[0]
+          ]
+        }
+      };
+    } else {
+      // Handle single date parameter
+      whereClause = { date: String(date) };
+    }
 
     const orgStaffIds = (await User.findAll({ where: { orgAccountId: orgId, role: 'staff' }, attributes: ['id'] })).map(u => u.id);
-    const where = { date: String(date), userId: orgStaffIds };
+    const where = { ...whereClause, userId: orgStaffIds };
     if (staffId && Number(staffId) > 0) where.userId = Number(staffId);
 
     const rows = await Attendance.findAll({
       where,
       order: [['createdAt', 'DESC']],
       include: [
-        { model: User, as: 'user', attributes: ['id'], include: [{ model: StaffProfile, as: 'profile', attributes: ['name', 'staffId'] }] }
+        { model: User, as: 'user', attributes: ['id'], include: [{ model: StaffProfile, as: 'profile', attributes: ['name', 'staffId', 'department'] }] }
       ]
     });
 
-    const header = ['Staff Name', 'Staff ID', 'Date', 'Check In', 'Check Out', 'Status'];
-    const lines = [header.join(',')];
+    // Calculate statistics
+    const totalStaff = new Set(rows.map(r => r.userId)).size;
+    const presentCount = rows.filter(r => r.status === 'present').length;
+    const absentCount = rows.filter(r => r.status === 'absent').length;
+    const leaveCount = rows.filter(r => r.status === 'leave').length;
+    const halfDayCount = rows.filter(r => r.status === 'half_day').length;
+    
+    // Department-wise statistics
+    const deptStats = {};
+    rows.forEach(r => {
+      const dept = r.user?.profile?.department || 'Unassigned';
+      if (!deptStats[dept]) {
+        deptStats[dept] = { total: 0, present: 0, absent: 0, leave: 0, halfDay: 0 };
+      }
+      deptStats[dept].total++;
+      if (r.status === 'present') deptStats[dept].present++;
+      else if (r.status === 'absent') deptStats[dept].absent++;
+      else if (r.status === 'leave') deptStats[dept].leave++;
+      else if (r.status === 'half_day') deptStats[dept].halfDay++;
+    });
+
+    // Calculate total work minutes
+    let totalWorkMinutes = 0;
     const toTime = (dt) => (dt ? new Date(dt).toTimeString().slice(0, 8) : '');
+    
+    rows.forEach(r => {
+      if (r.punchedInAt && r.punchedOutAt) {
+        const checkIn = new Date(r.punchedInAt);
+        const checkOut = new Date(r.punchedOutAt);
+        const workMinutes = Math.round((checkOut - checkIn) / (1000 * 60));
+        totalWorkMinutes += workMinutes;
+      }
+    });
+
+    // Build CSV with statistics
+    const lines = [];
+    
+    // Add header with proper formatting
+    lines.push('ATTENDANCE REPORT');
+    lines.push(`Period: ${month || date}`);
+    lines.push(`Generated on: ${new Date().toLocaleDateString()}`);
+    lines.push('');
+    
+    // Overall statistics in clean column format
+    lines.push('OVERALL STATISTICS');
+    lines.push('Total Staff,Present Count,Present %,Absent Count,Absent %,Leave Count,Leave %,Half Day Count,Half Day %,Total Work Minutes,Total Work Hours');
+    const totalRecords = presentCount + absentCount + leaveCount + halfDayCount;
+    const presentPct = totalRecords > 0 ? ((presentCount/totalRecords)*100).toFixed(1) : '0';
+    const absentPct = totalRecords > 0 ? ((absentCount/totalRecords)*100).toFixed(1) : '0';
+    const leavePct = totalRecords > 0 ? ((leaveCount/totalRecords)*100).toFixed(1) : '0';
+    const halfDayPct = totalRecords > 0 ? ((halfDayCount/totalRecords)*100).toFixed(1) : '0';
+    lines.push(`${totalStaff},${presentCount},${presentPct}%,${absentCount},${absentPct}%,${leaveCount},${leavePct}%,${halfDayCount},${halfDayPct}%,${totalWorkMinutes},${(totalWorkMinutes/60).toFixed(1)}`);
+    lines.push('');
+    
+    // Department-wise statistics in clean column format
+    lines.push('DEPARTMENT WISE STATISTICS');
+    lines.push('Department,Total Staff,Present Count,Present %,Absent Count,Absent %,Leave Count,Leave %,Half Day Count,Half Day %,Total Work Minutes,Total Work Hours');
+    Object.entries(deptStats).forEach(([dept, stats]) => {
+      const deptTotal = stats.present + stats.absent + stats.leave + stats.halfDay;
+      const presentPct = deptTotal > 0 ? ((stats.present/deptTotal)*100).toFixed(1) : '0';
+      const absentPct = deptTotal > 0 ? ((stats.absent/deptTotal)*100).toFixed(1) : '0';
+      const leavePct = deptTotal > 0 ? ((stats.leave/deptTotal)*100).toFixed(1) : '0';
+      const halfDayPct = deptTotal > 0 ? ((stats.halfDay/deptTotal)*100).toFixed(1) : '0';
+      
+      // Calculate department work minutes
+      let deptWorkMinutes = 0;
+      rows.filter(r => r.user?.profile?.department === dept).forEach(r => {
+        if (r.punchedInAt && r.punchedOutAt) {
+          const checkIn = new Date(r.punchedInAt);
+          const checkOut = new Date(r.punchedOutAt);
+          const workMinutes = Math.round((checkOut - checkIn) / (1000 * 60));
+          deptWorkMinutes += workMinutes;
+        }
+      });
+      
+      lines.push(`${dept},${stats.total},${stats.present},${presentPct}%,${stats.absent},${absentPct}%,${stats.leave},${leavePct}%,${stats.halfDay},${halfDayPct}%,${deptWorkMinutes},${(deptWorkMinutes/60).toFixed(1)}`);
+    });
+    lines.push('');
+    
+    // Weekly summary in clean column format (if month data)
+    let weekStats = {};
+    if (month) {
+      lines.push('WEEKLY SUMMARY');
+      lines.push('Week,Start Date,End Date,Total Staff,Present Count,Present %,Absent Count,Absent %,Leave Count,Leave %,Half Day Count,Half Day %,Total Work Minutes,Total Work Hours');
+      
+      rows.forEach(r => {
+        const date = new Date(r.date);
+        const weekStart = new Date(date.setDate(date.getDate() - date.getDay()));
+        const weekKey = weekStart.toISOString().split('T')[0];
+        
+        if (!weekStats[weekKey]) {
+          weekStats[weekKey] = { present: 0, absent: 0, leave: 0, halfDay: 0, dates: [], staffSet: new Set(), workMinutes: 0 };
+        }
+        weekStats[weekKey].dates.push(r.date);
+        weekStats[weekKey].staffSet.add(r.userId);
+        if (r.status === 'present') weekStats[weekKey].present++;
+        else if (r.status === 'absent') weekStats[weekKey].absent++;
+        else if (r.status === 'leave') weekStats[weekKey].leave++;
+        else if (r.status === 'half_day') weekStats[weekKey].halfDay++;
+        
+        // Add work minutes for week
+        if (r.punchedInAt && r.punchedOutAt) {
+          const checkIn = new Date(r.punchedInAt);
+          const checkOut = new Date(r.punchedOutAt);
+          const workMinutes = Math.round((checkOut - checkIn) / (1000 * 60));
+          weekStats[weekKey].workMinutes += workMinutes;
+        }
+      });
+      
+      Object.entries(weekStats).forEach(([weekStart, stats], index) => {
+        const weekEnd = new Date(weekStart);
+        weekEnd.setDate(weekEnd.getDate() + 6);
+        const totalStaff = stats.staffSet.size;
+        const total = stats.present + stats.absent + stats.leave + stats.halfDay;
+        const presentPct = total > 0 ? ((stats.present/total)*100).toFixed(1) : '0';
+        const absentPct = total > 0 ? ((stats.absent/total)*100).toFixed(1) : '0';
+        const leavePct = total > 0 ? ((stats.leave/total)*100).toFixed(1) : '0';
+        const halfDayPct = total > 0 ? ((stats.halfDay/total)*100).toFixed(1) : '0';
+        
+        lines.push(`Week ${index + 1},${weekStart},${weekEnd.toISOString().split('T')[0]},${totalStaff},${stats.present},${presentPct}%,${stats.absent},${absentPct}%,${stats.leave},${leavePct}%,${stats.halfDay},${halfDayPct}%,${stats.workMinutes},${(stats.workMinutes/60).toFixed(1)}`);
+      });
+      lines.push('');
+    }
+    
+    // Staff-wise summary in clean column format
+    lines.push('STAFF WISE SUMMARY');
+    lines.push('Staff Name,Staff ID,Department,Total Days,Present Count,Present %,Absent Count,Absent %,Leave Count,Leave %,Half Day Count,Half Day %,Total Work Minutes,Total Work Hours,Attendance Rate');
+    
+    const staffStats = {};
+    rows.forEach(r => {
+      const staffId = r.userId;
+      const staffName = r.user?.profile?.name || 'Unknown';
+      const staffDept = r.user?.profile?.department || 'Unassigned';
+      const staffIdNum = r.user?.profile?.staffId || 'N/A';
+      
+      if (!staffStats[staffId]) {
+        staffStats[staffId] = {
+          name: staffName,
+          staffId: staffIdNum,
+          department: staffDept,
+          present: 0,
+          absent: 0,
+          leave: 0,
+          halfDay: 0,
+          workMinutes: 0
+        };
+      }
+      
+      if (r.status === 'present') staffStats[staffId].present++;
+      else if (r.status === 'absent') staffStats[staffId].absent++;
+      else if (r.status === 'leave') staffStats[staffId].leave++;
+      else if (r.status === 'half_day') staffStats[staffId].halfDay++;
+      
+      // Add work minutes
+      if (r.punchedInAt && r.punchedOutAt) {
+        const checkIn = new Date(r.punchedInAt);
+        const checkOut = new Date(r.punchedOutAt);
+        const workMinutes = Math.round((checkOut - checkIn) / (1000 * 60));
+        staffStats[staffId].workMinutes += workMinutes;
+      }
+    });
+    
+    Object.values(staffStats).forEach(staff => {
+      const total = staff.present + staff.absent + staff.leave + staff.halfDay;
+      const presentPct = total > 0 ? ((staff.present/total)*100).toFixed(1) : '0';
+      const absentPct = total > 0 ? ((staff.absent/total)*100).toFixed(1) : '0';
+      const leavePct = total > 0 ? ((staff.leave/total)*100).toFixed(1) : '0';
+      const halfDayPct = total > 0 ? ((staff.halfDay/total)*100).toFixed(1) : '0';
+      const attendanceRate = total > 0 ? ((staff.present / total) * 100).toFixed(1) : '0';
+      const workHours = (staff.workMinutes / 60).toFixed(1);
+      
+      lines.push(`${staff.name},${staff.staffId},${staff.department},${total},${staff.present},${presentPct}%,${staff.absent},${absentPct}%,${staff.leave},${leavePct}%,${staff.halfDay},${halfDayPct}%,${staff.workMinutes},${workHours},${attendanceRate}%`);
+    });
+    lines.push('');
+    
+    // Detailed attendance records in clean column format
+    lines.push('DETAILED ATTENDANCE RECORDS');
+    lines.push('Staff Name,Staff ID,Department,Date,Day,Check In,Check Out,Status,Work Minutes,Work Hours,Performance');
+    
     rows.forEach(r => {
       let status = r.status || 'absent';
       const isLeave = Number(r.breakTotalSeconds) === -1;
@@ -4555,21 +4794,154 @@ router.get('/attendance/export', async (req, res) => {
         const durH = durMs / (1000 * 60 * 60);
         status = durH >= 4 ? 'present' : 'half_day';
       } else if (r.punchedInAt || r.punchedOutAt) status = 'half_day';
+      
+      // Calculate work minutes and hours
+      let workMinutes = 0;
+      let workHours = 0;
+      if (r.punchedInAt && r.punchedOutAt) {
+        const checkIn = new Date(r.punchedInAt);
+        const checkOut = new Date(r.punchedOutAt);
+        workMinutes = Math.round((checkOut - checkIn) / (1000 * 60));
+        workHours = (workMinutes / 60).toFixed(2);
+      }
+      
+      // Get day of week
+      const dateObj = new Date(r.date);
+      const dayOfWeek = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'][dateObj.getDay()];
+      
+      // Performance indicator
+      let performance = 'N/A';
+      if (status === 'present') performance = 'Excellent';
+      else if (status === 'half_day') performance = 'Good';
+      else if (status === 'leave') performance = 'On Leave';
+      else if (status === 'absent') performance = 'Absent';
+      
       const line = [
         (r.user?.profile?.name || '').replace(/,/g, ' '),
         (r.user?.profile?.staffId || '').toString(),
+        (r.user?.profile?.department || '').replace(/,/g, ' '),
         r.date,
+        dayOfWeek,
         toTime(r.punchedInAt),
         toTime(r.punchedOutAt),
-        status
+        status,
+        workMinutes,
+        workHours,
+        performance
       ].join(',');
       lines.push(line);
     });
 
     const csv = lines.join('\n');
-    res.setHeader('Content-Type', 'text/csv');
-    res.setHeader('Content-Disposition', `attachment; filename=attendance-${String(date)}.csv`);
-    return res.send(csv);
+    
+    // Create Excel workbook with proper formatting
+    const workbook = new exceljs.Workbook();
+    const worksheet = workbook.addWorksheet('Attendance Report');
+    
+    // Parse CSV data and add to worksheet
+    const csvLines = csv.split('\n');
+    let currentRow = 1;
+    let sectionStartRow = 1;
+    
+    for (let i = 0; i < csvLines.length; i++) {
+      const line = csvLines[i].trim();
+      if (!line) continue;
+      
+      if (line.includes('ATTENDANCE REPORT')) {
+        worksheet.getCell(`A${currentRow}`).value = line;
+        worksheet.getCell(`A${currentRow}`).font = { bold: true, size: 16, color: { argb: 'FF2c3e50' } };
+        worksheet.getCell(`A${currentRow}`).alignment = { horizontal: 'center' };
+        worksheet.mergeCells(`A${currentRow}:M${currentRow}`);
+        currentRow += 2;
+      } else if (line.includes('Period:') || line.includes('Generated on:')) {
+        worksheet.getCell(`A${currentRow}`).value = line;
+        worksheet.getCell(`A${currentRow}`).font = { bold: true, size: 12 };
+        worksheet.getCell(`A${currentRow}`).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF8F9FA' } };
+        worksheet.mergeCells(`A${currentRow}:M${currentRow}`);
+        currentRow++;
+      } else if (line === '') {
+        currentRow++;
+      } else if (line.includes('STATISTICS') || line.includes('SUMMARY') || line.includes('RECORDS')) {
+        // Section header
+        worksheet.getCell(`A${currentRow}`).value = line.replace(/,/g, '');
+        worksheet.getCell(`A${currentRow}`).font = { bold: true, size: 14, color: { argb: 'FF34495e' } };
+        worksheet.getCell(`A${currentRow}`).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFECF0F1' } };
+        worksheet.getCell(`A${currentRow}`).border = { left: { style: 'thin', color: { argb: 'FF3498db' } } };
+        worksheet.mergeCells(`A${currentRow}:M${currentRow}`);
+        sectionStartRow = currentRow + 1;
+        currentRow++;
+      } else if (i === 1 || (csvLines[i-1] && csvLines[i-1].includes('STATISTICS') || csvLines[i-1].includes('SUMMARY') || csvLines[i-1].includes('RECORDS'))) {
+        // Header row
+        const headers = line.split(',');
+        headers.forEach((header, colIndex) => {
+          const cell = worksheet.getCell(currentRow, colIndex + 1);
+          cell.value = header;
+          cell.font = { bold: true, color: { argb: 'FFFFFFFF' } };
+          cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF667eea' } };
+          cell.border = { top: { style: 'thin' }, left: { style: 'thin' }, bottom: { style: 'thin' }, right: { style: 'thin' } };
+          cell.alignment = { horizontal: 'center', vertical: 'middle' };
+        });
+        currentRow++;
+      } else {
+        // Data row
+        const data = line.split(',');
+        data.forEach((value, colIndex) => {
+          const cell = worksheet.getCell(currentRow, colIndex + 1);
+          cell.value = value;
+          cell.border = { top: { style: 'thin' }, left: { style: 'thin' }, bottom: { style: 'thin' }, right: { style: 'thin' } };
+          cell.alignment = { horizontal: 'left', vertical: 'middle' };
+          
+          // Color coding based on content
+          if (value.toLowerCase().includes('present')) {
+            cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFD4EDDA' } };
+            cell.font = { color: { argb: 'FF155724' } };
+          } else if (value.toLowerCase().includes('absent')) {
+            cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF8D7DA' } };
+            cell.font = { color: { argb: 'FF721C24' } };
+          } else if (value.toLowerCase().includes('leave')) {
+            cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFF3CD' } };
+            cell.font = { color: { argb: 'FF856404' } };
+          } else if (value.toLowerCase().includes('half_day') || value.toLowerCase().includes('half day')) {
+            cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE2E3E5' } };
+            cell.font = { color: { argb: 'FF383D41' } };
+          }
+          
+          // Highlight summary rows
+          if (line.includes('Total Staff') || line.includes('Week') || (colIndex === 0 && value && !value.includes('Week') && !value.includes('Total'))) {
+            cell.font = { bold: true };
+            if (line.includes('Total Staff')) {
+              cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE8F5E8' } };
+            }
+          }
+        });
+        currentRow++;
+      }
+    }
+    
+    // Set column widths
+    worksheet.columns = [
+      { width: 15 }, // Staff Name/Department
+      { width: 12 }, // Staff ID
+      { width: 15 }, // Department
+      { width: 12 }, // Total Days/Date
+      { width: 10 }, // Present Count/Day
+      { width: 10 }, // Present %
+      { width: 12 }, // Absent Count
+      { width: 10 }, // Absent %
+      { width: 12 }, // Leave Count
+      { width: 10 }, // Leave %
+      { width: 12 }, // Half Day Count
+      { width: 10 }, // Half Day %
+      { width: 15 }, // Work Minutes
+      { width: 12 }, // Work Hours
+      { width: 15 }, // Performance/Rate
+    ];
+    
+    // Generate Excel file
+    const buffer = await workbook.xlsx.writeBuffer();
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', `attachment; filename=attendance-${month || date}.xlsx`);
+    return res.send(buffer);
   } catch (e) {
     console.error('Attendance export error:', e);
     return res.status(500).json({ success: false, message: 'Failed to export attendance' });
