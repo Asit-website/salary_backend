@@ -606,7 +606,8 @@ router.post('/punch-out', upload.single('photo'), async (req, res) => {
     const requirePunchOut = tpl ? (tpl.requirePunchOut ?? tpl.require_punch_out ?? false) : false;
     const allowMultiplePunches = tpl ? (tpl.allowMultiplePunches ?? tpl.allow_multiple_punches ?? false) : true;
     // If a concrete shift is assigned for the day, allow punch-out even if attendance template hasn't enabled it
-    const canTrackOut = trackInOutEnabled || !!shiftTpl;
+    // Also allow punch-out if no template is configured (fallback behavior)
+    const canTrackOut = trackInOutEnabled || !!shiftTpl || (!tpl && !shiftTpl);
     if (!canTrackOut) {
       return res.status(409).json({ success: false, message: 'Punch-out disabled by your template' });
     }
@@ -630,21 +631,30 @@ router.post('/punch-out', upload.single('photo'), async (req, res) => {
 
     const now = new Date();
     // Enforce punch-out window relative to punch-in if configured
-    if (shiftTpl && (shiftTpl.minPunchOutAfterMinutes || shiftTpl.maxPunchOutAfterMinutes)) {
+    const hasTimeRestrictions = (shiftTpl && (shiftTpl.minPunchOutAfterMinutes || shiftTpl.maxPunchOutAfterMinutes)) ||
+                                (tpl && (tpl.minPunchOutAfterMinutes || tpl.maxPunchOutAfterMinutes));
+    
+    if (hasTimeRestrictions) {
       const inAt = record?.punchedInAt ? new Date(record.punchedInAt) : null;
       if (!inAt) {
         return res.status(409).json({ success: false, message: 'Please punch-in first' });
       }
-      const minMs = Number(shiftTpl.minPunchOutAfterMinutes || 0) * 60000;
-      const maxMs = Number(shiftTpl.maxPunchOutAfterMinutes || 0) * 60000;
-      if (Number(shiftTpl.minPunchOutAfterMinutes)) {
+      
+      // Check shift template restrictions first, then template restrictions
+      const minMinutes = shiftTpl?.minPunchOutAfterMinutes || tpl?.minPunchOutAfterMinutes || 0;
+      const maxMinutes = shiftTpl?.maxPunchOutAfterMinutes || tpl?.maxPunchOutAfterMinutes || 0;
+      
+      const minMs = Number(minMinutes) * 60000;
+      const maxMs = Number(maxMinutes) * 60000;
+      
+      if (Number(minMinutes)) {
         if (now.getTime() < inAt.getTime() + minMs) {
-          return res.status(409).json({ success: false, message: `Punch-out allowed after ${shiftTpl.minPunchOutAfterMinutes} minutes from punch-in` });
+          return res.status(409).json({ success: false, message: `Punch-out allowed after ${minMinutes} minutes from punch-in` });
         }
       }
-      if (Number(shiftTpl.maxPunchOutAfterMinutes)) {
+      if (Number(maxMinutes)) {
         if (now.getTime() > inAt.getTime() + maxMs) {
-          return res.status(409).json({ success: false, message: `Punch-out must be within ${shiftTpl.maxPunchOutAfterMinutes} minutes from punch-in` });
+          return res.status(409).json({ success: false, message: `Punch-out must be within ${maxMinutes} minutes from punch-in` });
         }
       }
     }
