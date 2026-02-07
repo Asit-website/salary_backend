@@ -13,9 +13,50 @@ const {
   Order,
   OrderItem,
   IncentiveTarget,
+  OtpVerify,
 } = require('../models');
 
 const router = express.Router();
+
+// Minimal SMS sender using the provided HTTP API (same as staff login)
+async function sendSmsViaGateway({ phoneE164, code }) {
+  try {
+    const API_URL = process.env.SMS_API_URL || 'http://182.18.162.128/api/mt/SendSMS';
+    const APIKEY = process.env.SMS_APIKEY || '';
+    const SENDERID = process.env.SMS_SENDERID || 'INDPGS';
+    const ROUTE = process.env.SMS_ROUTE || '08';
+    const CHANNEL = 'Trans';
+    const DCS = '0';
+    const FLASH = '0';
+
+    if (!APIKEY) return { ok: false, reason: 'missing_apikey' };
+
+    // Compose message: keep OTP clearly visible; SMS Autofill works on iOS by oneTimeCode
+    // For Android SMS Retriever API, a hash is needed – not added here to avoid extra deps.
+    const text = `Dear customer, the one time password to reset your password is ${code}. This OTP will expire in 5 minutes. Thinktech Software company`;
+
+    const url = new URL(API_URL);
+    url.searchParams.set('APIKEY', APIKEY);
+    url.searchParams.set('senderid', SENDERID);
+    url.searchParams.set('channel', CHANNEL);
+    url.searchParams.set('DCS', DCS);
+    url.searchParams.set('flashsms', FLASH);
+    url.searchParams.set('number', phoneE164);
+    url.searchParams.set('text', text);
+    url.searchParams.set('route', ROUTE);
+
+    const resp = await fetch(url.toString());
+    return { ok: resp.ok };
+  } catch (e) {
+    return { ok: false, error: String(e) };
+  }
+}
+
+function normalizePhone(phone) {
+  const digits = String(phone || '').replace(/[^0-9]/g, '');
+  if (!digits) return '';
+  return digits.length > 10 ? digits.slice(-10) : digits;
+}
 
 router.use(authRequired);
 
@@ -29,8 +70,8 @@ router.post('/send-client-otp', async (req, res) => {
     }
 
     // Clean phone number
-    const cleanPhone = phone.replace(/\D/g, '').trim();
-    if (cleanPhone.length < 10) {
+    const normalizedPhone = normalizePhone(phone);
+    if (normalizedPhone.length < 10) {
       return res.status(400).json({ success: false, message: 'Valid phone number is required' });
     }
 
@@ -38,43 +79,20 @@ router.post('/send-client-otp', async (req, res) => {
     const otp = Math.floor(100000 + Math.random() * 900000).toString();
     
     // Save OTP to database (reuse existing OTP table)
-    const { Otp } = require('../models');
-    await Otp.create({
-      phone: cleanPhone,
+    await OtpVerify.create({
+      phone: normalizedPhone,
       code: otp,
       purpose: 'client_verification',
+      lastSentAt: new Date(),
       expiresAt: new Date(Date.now() + 10 * 60 * 1000), // 10 minutes expiry
     });
 
-    console.log('Client OTP generated for phone:', cleanPhone, 'OTP:', otp);
+    console.log('Client OTP generated for phone:', normalizedPhone, 'OTP:', otp);
 
-    // Send OTP via SMS API
+    // Send OTP via SMS API using the same function as staff login
     try {
-      const axios = require('axios');
-      const smsUrl = process.env.SMS_API_URL;
-      const smsApiKey = process.env.SMS_APIKEY;
-      const smsSenderId = process.env.SMS_SENDERID;
-      const smsRoute = process.env.SMS_ROUTE;
-
-      if (smsUrl && smsApiKey && smsSenderId) {
-        const message = `Your verification code for Vetansutra is: ${otp}. Valid for 10 minutes.`;
-        const smsResponse = await axios.post(smsUrl, null, {
-          params: {
-            user: smsApiKey,
-            senderid: smsSenderId,
-            channel: smsRoute,
-            DCS: 0,
-            flashsms: 0,
-            number: cleanPhone,
-            text: message,
-            PEID: '1701174119937266195',
-            DLTTemplateId: '1707168970724266882'
-          }
-        });
-        console.log('SMS sent successfully:', smsResponse.data);
-      } else {
-        console.log('SMS API configuration missing, OTP not sent via SMS');
-      }
+      const smsResult = await sendSmsViaGateway({ phoneE164: normalizedPhone, code: otp });
+      console.log('SMS result:', smsResult);
     } catch (smsError) {
       console.error('Failed to send SMS:', smsError);
       // Continue with OTP generation even if SMS fails
