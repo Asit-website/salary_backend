@@ -48,17 +48,45 @@ router.post('/send-client-otp', async (req, res) => {
 
     console.log('Client OTP generated for phone:', cleanPhone, 'OTP:', otp);
 
-    // TODO: Integrate with SMS service to send OTP
-    // For now, just return success with OTP in development
-    if (process.env.NODE_ENV !== 'production') {
-      return res.json({ 
-        success: true, 
-        message: 'OTP sent successfully',
-        otp: process.env.NODE_ENV === 'development' ? otp : undefined // Show OTP in development
-      });
+    // Send OTP via SMS API
+    try {
+      const axios = require('axios');
+      const smsUrl = process.env.SMS_API_URL;
+      const smsApiKey = process.env.SMS_APIKEY;
+      const smsSenderId = process.env.SMS_SENDERID;
+      const smsRoute = process.env.SMS_ROUTE;
+
+      if (smsUrl && smsApiKey && smsSenderId) {
+        const message = `Your verification code for Vetansutra is: ${otp}. Valid for 10 minutes.`;
+        const smsResponse = await axios.post(smsUrl, null, {
+          params: {
+            user: smsApiKey,
+            senderid: smsSenderId,
+            channel: smsRoute,
+            DCS: 0,
+            flashsms: 0,
+            number: cleanPhone,
+            text: message,
+            PEID: '1701174119937266195',
+            DLTTemplateId: '1707168970724266882'
+          }
+        });
+        console.log('SMS sent successfully:', smsResponse.data);
+      } else {
+        console.log('SMS API configuration missing, OTP not sent via SMS');
+      }
+    } catch (smsError) {
+      console.error('Failed to send SMS:', smsError);
+      // Continue with OTP generation even if SMS fails
     }
 
-    return res.json({ success: true, message: 'OTP sent successfully' });
+    // Return response with OTP in development mode
+    const includeOtp = process.env.OTP_INCLUDE_IN_RESPONSE === 'true';
+    return res.json({ 
+      success: true, 
+      message: 'OTP sent successfully',
+      otp: includeOtp ? otp : undefined
+    });
   } catch (e) {
     console.error('Send client OTP error:', e);
     return res.status(500).json({ success: false, message: 'Failed to send OTP' });
