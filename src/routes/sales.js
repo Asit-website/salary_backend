@@ -26,6 +26,7 @@ router.post('/visit', upload.single('clientSignature'), async (req, res) => {
     console.log('Request body keys:', Object.keys(req.body || {}));
     console.log('File received:', req.file ? req.file.filename : 'No file');
     console.log('File details:', req.file);
+    console.log('Content-Type:', req.get('Content-Type'));
     
     const {
       visitDate,
@@ -41,6 +42,7 @@ router.post('/visit', upload.single('clientSignature'), async (req, res) => {
       checkInLat,
       checkInLng,
       assignedJobId,
+      clientSignatureBase64, // For JSON fallback
     } = req.body || {};
 
     const visit = await SalesVisit.create({
@@ -65,8 +67,13 @@ router.post('/visit', upload.single('clientSignature'), async (req, res) => {
       console.log('Saving signature file:', req.file.filename);
       await visit.update({ clientSignatureUrl: `/uploads/${req.file.filename}` });
       console.log('Signature saved successfully');
+    } else if (clientSignatureBase64) {
+      console.log('Saving signature as base64 (JSON fallback)');
+      // For JSON fallback, save the base64 data
+      await visit.update({ clientSignatureUrl: clientSignatureBase64 });
+      console.log('Base64 signature saved successfully');
     } else {
-      console.log('No signature file received');
+      console.log('No signature file or base64 data received');
     }
 
     // Note: For now, we're focusing on signature only
