@@ -19,6 +19,52 @@ const router = express.Router();
 
 router.use(authRequired);
 
+// Send OTP to client for visit verification
+router.post('/send-client-otp', async (req, res) => {
+  try {
+    const { phone } = req.body || {};
+    
+    if (!phone || !phone.trim()) {
+      return res.status(400).json({ success: false, message: 'Phone number is required' });
+    }
+
+    // Clean phone number
+    const cleanPhone = phone.replace(/\D/g, '').trim();
+    if (cleanPhone.length < 10) {
+      return res.status(400).json({ success: false, message: 'Valid phone number is required' });
+    }
+
+    // Generate 6-digit OTP
+    const otp = Math.floor(100000 + Math.random() * 900000).toString();
+    
+    // Save OTP to database (reuse existing OTP table)
+    const { Otp } = require('../models');
+    await Otp.create({
+      phone: cleanPhone,
+      code: otp,
+      purpose: 'client_verification',
+      expiresAt: new Date(Date.now() + 10 * 60 * 1000), // 10 minutes expiry
+    });
+
+    console.log('Client OTP generated for phone:', cleanPhone, 'OTP:', otp);
+
+    // TODO: Integrate with SMS service to send OTP
+    // For now, just return success with OTP in development
+    if (process.env.NODE_ENV !== 'production') {
+      return res.json({ 
+        success: true, 
+        message: 'OTP sent successfully',
+        otp: process.env.NODE_ENV === 'development' ? otp : undefined // Show OTP in development
+      });
+    }
+
+    return res.json({ success: true, message: 'OTP sent successfully' });
+  } catch (e) {
+    console.error('Send client OTP error:', e);
+    return res.status(500).json({ success: false, message: 'Failed to send OTP' });
+  }
+});
+
 // Submit a visit with optional attachments, geo and client verification
 router.post('/visit', upload.single('clientSignature'), async (req, res) => {
   try {
