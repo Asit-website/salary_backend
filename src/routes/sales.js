@@ -21,8 +21,8 @@ router.use(authRequired);
 
 // Submit a visit with optional attachments, geo and client verification
 router.post('/visit', upload.fields([
-  { name: 'attachments[]', maxCount: 10 },
   { name: 'clientSignature', maxCount: 1 },
+  { name: 'attachments', maxCount: 10 },
 ]), async (req, res) => {
   try {
     const {
@@ -58,16 +58,20 @@ router.post('/visit', upload.fields([
       checkInTime: (checkInLat && checkInLng) ? new Date() : null,
     });
 
-    // Attachments
-    const filesField = req.files || {};
-    const atts = Array.isArray(filesField['attachments[]']) ? filesField['attachments[]'] : [];
-    for (const f of atts) {
-      await SalesVisitAttachment.create({ visitId: visit.id, fileUrl: `/uploads/${f.filename}` });
+    // Handle client signature
+    const sigFiles = req.files && req.files.clientSignature ? req.files.clientSignature : [];
+    const sigFile = Array.isArray(sigFiles) ? sigFiles[0] : sigFiles;
+    if (sigFile && sigFile.filename) {
+      await visit.update({ clientSignatureUrl: `/uploads/${sigFile.filename}` });
     }
 
-    const sig = Array.isArray(filesField['clientSignature']) ? filesField['clientSignature'][0] : null;
-    if (sig && sig.filename) {
-      await visit.update({ clientSignatureUrl: `/uploads/${sig.filename}` });
+    // Handle attachments
+    const attFiles = req.files && req.files.attachments ? req.files.attachments : [];
+    const attachments = Array.isArray(attFiles) ? attFiles : [attFiles].filter(Boolean);
+    for (const f of attachments) {
+      if (f && f.filename) {
+        await SalesVisitAttachment.create({ visitId: visit.id, fileUrl: `/uploads/${f.filename}` });
+      }
     }
 
     // Org features
@@ -81,13 +85,13 @@ router.post('/visit', upload.fields([
     } catch (_) {}
 
     // Enforce photo proof if required
-    if (features.photoRequired && atts.length === 0) {
+    if (features.photoRequired && attachments.length === 0) {
       return res.status(400).json({ success: false, message: 'At least one photo attachment is required' });
     }
 
     // Verified computation
     const hasGeo = Number.isFinite(visit.checkInLat) && Number.isFinite(visit.checkInLng);
-    const hasPhoto = atts.length > 0;
+    const hasPhoto = attachments.length > 0;
     const hasSigOrOtp = !!visit.clientSignatureUrl || !!visit.clientOtp;
     const needsSig = !!features.signatureOrOtpRequired;
     const needsGeo = !!features.geoRequired;

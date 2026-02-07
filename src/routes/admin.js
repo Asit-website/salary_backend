@@ -2,7 +2,7 @@ const express = require('express');
 const bcrypt = require('bcryptjs');
 const exceljs = require('exceljs');
 
-const { sequelize, User, StaffProfile, AppSetting, DocumentType, ShiftTemplate, ShiftBreak, ShiftRotationalSlot, StaffShiftAssignment, SalaryAccess, AttendanceTemplate, StaffAttendanceAssignment, SalaryTemplate, StaffSalaryAssignment, Site, WorkUnit, Route, RouteStop, StaffRouteAssignment, SiteCheckpoint, PatrolLog, LeaveTemplate, LeaveTemplateCategory, StaffLeaveAssignment, LeaveBalance, AIAnomaly, ReliabilityScore, SalaryForecast, Attendance, Client, AssignedJob, SalesTarget, HolidayTemplate, HolidayDate, StaffHolidayAssignment, Subscription, Plan } = require('../models');
+const { sequelize, User, StaffProfile, AppSetting, DocumentType, ShiftTemplate, ShiftBreak, ShiftRotationalSlot, StaffShiftAssignment, SalaryAccess, AttendanceTemplate, StaffAttendanceAssignment, SalaryTemplate, StaffSalaryAssignment, Site, WorkUnit, Route, RouteStop, StaffRouteAssignment, SiteCheckpoint, PatrolLog, LeaveTemplate, LeaveTemplateCategory, StaffLeaveAssignment, LeaveBalance, LeaveRequest, AIAnomaly, ReliabilityScore, SalaryForecast, Attendance, Client, AssignedJob, SalesTarget, HolidayTemplate, HolidayDate, StaffHolidayAssignment, Subscription, Plan, SalesVisit } = require('../models');
 const multer = require('multer');
 const fs = require('fs');
 const path = require('path');
@@ -2224,21 +2224,6 @@ function numberToINRWords(n) {
   if (hundred) words += a[hundred] + ' Hundred ';
   if (n) words += (words ? 'and ' : '') + segment(n) + ' ';
   return (words.trim() + 'Rupees').replace(/\s+/g, ' ');
-}
-
-// --- Leave Requests (use existing table: leave_request) ---
-let LeaveRequest = sequelize.models.LeaveRequest;
-if (!LeaveRequest) {
-  const { DataTypes } = require('sequelize');
-  LeaveRequest = sequelize.define('LeaveRequest', {
-    id: { type: DataTypes.BIGINT.UNSIGNED, allowNull: false, autoIncrement: true, primaryKey: true },
-    userId: { type: DataTypes.BIGINT.UNSIGNED, allowNull: false },
-    startDate: { type: DataTypes.DATEONLY, allowNull: false },
-    endDate: { type: DataTypes.DATEONLY, allowNull: false },
-    type: { type: DataTypes.STRING(32) },
-    reason: { type: DataTypes.TEXT },
-    status: { type: DataTypes.ENUM('pending', 'approved', 'rejected'), allowNull: false, defaultValue: 'pending' },
-  }, { tableName: 'leave_request', timestamps: true });
 }
 
 // List leaves for a staff (org-scoped)
@@ -6549,6 +6534,348 @@ router.put('/staff/:id/salary', async (req, res) => {
     return res.json({ success: true, userId: user.id, monthKey: monthKey || null, stored: payloadJson, totals: { totalEarnings, totalIncentives, totalDeductions, grossSalary, netSalary } });
   } catch (e) {
     return res.status(500).json({ success: false, message: 'Failed to save salary structure' });
+  }
+});
+
+// Organization-based Leave Reports
+router.get('/reports/org-leave', async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
+    
+    const { month, year, format, employeeIds } = req.query;
+    const startDate = month && year ? new Date(year, month - 1, 1) : new Date(new Date().getFullYear(), new Date().getMonth(), 1);
+    const endDate = new Date(startDate.getFullYear(), startDate.getMonth() + 1, 0);
+    
+    // Get staff based on selection
+    let staffWhereClause = { 
+      orgAccountId: orgId,
+      role: 'staff'
+    };
+    
+    // If specific employees are selected, filter by their IDs
+    if (employeeIds) {
+      const empIds = employeeIds.split(',').map(id => parseInt(id.trim())).filter(id => !isNaN(id));
+      if (empIds.length > 0) {
+        staffWhereClause.id = { [Op.in]: empIds };
+      }
+    }
+    
+    // Get all staff in the organization (or selected staff)
+    const staff = await User.findAll({
+      where: staffWhereClause,
+      include: [{
+        model: StaffProfile,
+        as: 'profile'
+      }]
+    });
+
+    // Get leave data for all staff
+    const leaveData = await LeaveRequest.findAll({
+      where: {
+        userId: staff.map(s => s.id),
+        startDate: {
+          [Op.gte]: startDate
+        },
+        endDate: {
+          [Op.lte]: endDate
+        }
+      },
+      include: [{
+        model: User,
+        as: 'user',
+        include: [{
+          model: StaffProfile,
+          as: 'profile'
+        }]
+      }]
+    });
+
+    if (format === 'excel') {
+      const workbook = new exceljs.Workbook();
+      const worksheet = workbook.addWorksheet('Leave Report');
+      
+      // Headers
+      worksheet.columns = [
+        { header: 'Employee Name', key: 'employeeName', width: 20 },
+        { header: 'Employee ID', key: 'employeeId', width: 15 },
+        { header: 'Department', key: 'department', width: 15 },
+        { header: 'Leave Type', key: 'leaveType', width: 15 },
+        { header: 'Start Date', key: 'startDate', width: 15 },
+        { header: 'End Date', key: 'endDate', width: 15 },
+        { header: 'Days', key: 'days', width: 10 },
+        { header: 'Status', key: 'status', width: 10 },
+        { header: 'Reason', key: 'reason', width: 25 }
+      ];
+
+      // Data rows
+      leaveData.forEach(leave => {
+        const days = Math.ceil((new Date(leave.endDate) - new Date(leave.startDate)) / (1000 * 60 * 60 * 24)) + 1;
+        worksheet.addRow({
+          employeeName: leave.user?.profile?.name || 'N/A',
+          employeeId: leave.user?.phone || 'N/A',
+          department: leave.user?.profile?.department || 'N/A',
+          leaveType: leave.leaveType || 'N/A',
+          startDate: new Date(leave.startDate).toLocaleDateString(),
+          endDate: new Date(leave.endDate).toLocaleDateString(),
+          days: days,
+          status: leave.status || 'N/A',
+          reason: leave.reason || 'N/A'
+        });
+      });
+
+      // Style the header row
+      worksheet.getRow(1).font = { bold: true };
+      worksheet.getRow(1).fill = {
+        type: 'pattern',
+        pattern: 'solid',
+        fgColor: { argb: 'FFE0E0E0' }
+      };
+
+      res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+      res.setHeader('Content-Disposition', `attachment; filename=org-leave-report-${startDate.getFullYear()}-${startDate.getMonth() + 1}.xlsx`);
+      
+      await workbook.xlsx.write(res);
+      return;
+    }
+
+    res.json({
+      success: true,
+      data: leaveData,
+      month: startDate.getMonth() + 1,
+      year: startDate.getFullYear()
+    });
+
+  } catch (error) {
+    console.error('Org leave report error:', error);
+    res.status(500).json({ success: false, message: 'Failed to generate leave report' });
+  }
+});
+
+// Organization-based Attendance Reports
+router.get('/reports/org-attendance', async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
+    
+    const { month, year, format, employeeIds } = req.query;
+    const startDate = month && year ? new Date(year, month - 1, 1) : new Date(new Date().getFullYear(), new Date().getMonth(), 1);
+    const endDate = new Date(startDate.getFullYear(), startDate.getMonth() + 1, 0);
+    
+    // Get staff based on selection
+    let staffWhereClause = { 
+      orgAccountId: orgId,
+      role: 'staff'
+    };
+    
+    // If specific employees are selected, filter by their IDs
+    if (employeeIds) {
+      const empIds = employeeIds.split(',').map(id => parseInt(id.trim())).filter(id => !isNaN(id));
+      if (empIds.length > 0) {
+        staffWhereClause.id = { [Op.in]: empIds };
+      }
+    }
+    
+    // Get all staff in the organization (or selected staff)
+    const staff = await User.findAll({
+      where: staffWhereClause,
+      include: [{
+        model: StaffProfile,
+        as: 'profile'
+      }]
+    });
+
+    // Get attendance data for all staff
+    const attendanceData = await Attendance.findAll({
+      where: {
+        userId: staff.map(s => s.id),
+        date: {
+          [Op.gte]: startDate.toISOString().split('T')[0],
+          [Op.lte]: endDate.toISOString().split('T')[0]
+        }
+      },
+      include: [{
+        model: User,
+        as: 'user',
+        include: [{
+          model: StaffProfile,
+          as: 'profile'
+        }]
+      }]
+    });
+
+    if (format === 'excel') {
+      const workbook = new exceljs.Workbook();
+      const worksheet = workbook.addWorksheet('Attendance Report');
+      
+      // Headers
+      worksheet.columns = [
+        { header: 'Employee Name', key: 'employeeName', width: 20 },
+        { header: 'Employee ID', key: 'employeeId', width: 15 },
+        { header: 'Department', key: 'department', width: 15 },
+        { header: 'Date', key: 'date', width: 15 },
+        { header: 'Punch In', key: 'punchIn', width: 15 },
+        { header: 'Punch Out', key: 'punchOut', width: 15 },
+        { header: 'Work Hours', key: 'workHours', width: 12 },
+        { header: 'Status', key: 'status', width: 10 },
+        { header: 'Late Arrival', key: 'lateArrival', width: 12 }
+      ];
+
+      // Data rows
+      attendanceData.forEach(att => {
+        const punchInTime = att.punchedInAt ? new Date(att.punchedInAt).toLocaleTimeString() : 'N/A';
+        const punchOutTime = att.punchedOutAt ? new Date(att.punchedOutAt).toLocaleTimeString() : 'N/A';
+        
+        let workHours = 'N/A';
+        if (att.punchedInAt && att.punchedOutAt) {
+          const hours = (new Date(att.punchedOutAt) - new Date(att.punchedInAt)) / (1000 * 60 * 60);
+          workHours = hours.toFixed(2) + ' hrs';
+        }
+
+        worksheet.addRow({
+          employeeName: att.user?.profile?.name || 'N/A',
+          employeeId: att.user?.phone || 'N/A',
+          department: att.user?.profile?.department || 'N/A',
+          date: new Date(att.date).toLocaleDateString(),
+          punchIn: punchInTime,
+          punchOut: punchOutTime,
+          workHours: workHours,
+          status: att.status || 'N/A',
+          lateArrival: att.lateArrival ? 'Yes' : 'No'
+        });
+      });
+
+      // Style the header row
+      worksheet.getRow(1).font = { bold: true };
+      worksheet.getRow(1).fill = {
+        type: 'pattern',
+        pattern: 'solid',
+        fgColor: { argb: 'FFE0E0E0' }
+      };
+
+      res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+      res.setHeader('Content-Disposition', `attachment; filename=org-attendance-report-${startDate.getFullYear()}-${startDate.getMonth() + 1}.xlsx`);
+      
+      await workbook.xlsx.write(res);
+      return;
+    }
+
+    res.json({
+      success: true,
+      data: attendanceData,
+      month: startDate.getMonth() + 1,
+      year: startDate.getFullYear()
+    });
+
+  } catch (error) {
+    console.error('Org attendance report error:', error);
+    res.status(500).json({ success: false, message: 'Failed to generate attendance report' });
+  }
+});
+
+// Organization-based Sales Reports
+router.get('/reports/org-sales', async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
+    
+    const { month, year, format, employeeIds } = req.query;
+    const startDate = month && year ? new Date(year, month - 1, 1) : new Date(new Date().getFullYear(), new Date().getMonth(), 1);
+    const endDate = new Date(startDate.getFullYear(), startDate.getMonth() + 1, 0);
+    
+    // Get staff based on selection
+    let staffWhereClause = { 
+      orgAccountId: orgId,
+      role: 'staff'
+    };
+    
+    // If specific employees are selected, filter by their IDs
+    if (employeeIds) {
+      const empIds = employeeIds.split(',').map(id => parseInt(id.trim())).filter(id => !isNaN(id));
+      if (empIds.length > 0) {
+        staffWhereClause.id = { [Op.in]: empIds };
+      }
+    }
+    
+    // Get all staff in the organization (or selected staff)
+    const staff = await User.findAll({
+      where: staffWhereClause,
+      include: [{
+        model: StaffProfile,
+        as: 'profile'
+      }]
+    });
+
+    // Get sales visit data for all staff
+    const salesData = await SalesVisit.findAll({
+      where: {
+        userId: staff.map(s => s.id),
+        visitDate: {
+          [Op.gte]: startDate,
+          [Op.lte]: endDate
+        }
+      },
+      include: [{
+        model: User,
+        as: 'user',
+        include: [{
+          model: StaffProfile,
+          as: 'profile'
+        }]
+      }]
+    });
+
+    if (format === 'excel') {
+      const workbook = new exceljs.Workbook();
+      const worksheet = workbook.addWorksheet('Sales Report');
+      
+      // Headers
+      worksheet.columns = [
+        { header: 'Employee Name', key: 'employeeName', width: 20 },
+        { header: 'Employee ID', key: 'employeeId', width: 15 },
+        { header: 'Department', key: 'department', width: 15 },
+        { header: 'Client Name', key: 'clientName', width: 20 },
+        { header: 'Visit Date', key: 'visitDate', width: 15 },
+        { header: 'Visit Type', key: 'visitType', width: 15 },
+        { header: 'Location', key: 'location', width: 25 },
+        { header: 'Phone', key: 'phone', width: 15 }
+      ];
+
+      // Data rows
+      salesData.forEach(sale => {
+        worksheet.addRow({
+          employeeName: sale.user?.profile?.name || 'N/A',
+          employeeId: sale.user?.phone || 'N/A',
+          department: sale.user?.profile?.department || 'N/A',
+          clientName: sale.clientName || 'N/A',
+          visitDate: new Date(sale.visitDate).toLocaleDateString(),
+          visitType: sale.visitType || 'N/A',
+          location: sale.location || 'N/A',
+          phone: sale.phone || 'N/A'
+        });
+      });
+
+      // Style the header row
+      worksheet.getRow(1).eachCell((cell) => {
+        cell.font = { bold: true };
+        cell.fill = {
+          type: 'pattern',
+          pattern: 'solid',
+          fgColor: { argb: 'FFE6F7FF' }
+        };
+      });
+
+      res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+      res.setHeader('Content-Disposition', `attachment; filename=org-sales-report-${month}.xlsx`);
+      
+      await workbook.xlsx.write(res);
+      res.end();
+    } else {
+      res.json({
+        success: true,
+        data: salesData
+      });
+    }
+  } catch (error) {
+    console.error('Org sales report error:', error);
+    res.status(500).json({ success: false, message: 'Failed to generate sales report' });
   }
 });
 
