@@ -20,11 +20,13 @@ const router = express.Router();
 router.use(authRequired);
 
 // Submit a visit with optional attachments, geo and client verification
-router.post('/visit', upload.fields([
-  { name: 'clientSignature', maxCount: 1 },
-  { name: 'attachments', maxCount: 10 },
-]), async (req, res) => {
+router.post('/visit', upload.single('clientSignature'), async (req, res) => {
   try {
+    console.log('Visit form submission received');
+    console.log('Request body keys:', Object.keys(req.body || {}));
+    console.log('File received:', req.file ? req.file.filename : 'No file');
+    console.log('File details:', req.file);
+    
     const {
       visitDate,
       salesPerson,
@@ -58,21 +60,17 @@ router.post('/visit', upload.fields([
       checkInTime: (checkInLat && checkInLng) ? new Date() : null,
     });
 
-    // Handle client signature
-    const sigFiles = req.files && req.files.clientSignature ? req.files.clientSignature : [];
-    const sigFile = Array.isArray(sigFiles) ? sigFiles[0] : sigFiles;
-    if (sigFile && sigFile.filename) {
-      await visit.update({ clientSignatureUrl: `/uploads/${sigFile.filename}` });
+    // Handle client signature - same pattern as order proof
+    if (req.file && req.file.filename) {
+      console.log('Saving signature file:', req.file.filename);
+      await visit.update({ clientSignatureUrl: `/uploads/${req.file.filename}` });
+      console.log('Signature saved successfully');
+    } else {
+      console.log('No signature file received');
     }
 
-    // Handle attachments
-    const attFiles = req.files && req.files.attachments ? req.files.attachments : [];
-    const attachments = Array.isArray(attFiles) ? attFiles : [attFiles].filter(Boolean);
-    for (const f of attachments) {
-      if (f && f.filename) {
-        await SalesVisitAttachment.create({ visitId: visit.id, fileUrl: `/uploads/${f.filename}` });
-      }
-    }
+    // Note: For now, we're focusing on signature only
+    // Attachments can be added later with a separate endpoint or different approach
 
     // Org features
     let features = { photoRequired: false, geoRequired: false, signatureOrOtpRequired: false };
@@ -84,14 +82,14 @@ router.post('/visit', upload.fields([
       }
     } catch (_) {}
 
-    // Enforce photo proof if required
-    if (features.photoRequired && attachments.length === 0) {
-      return res.status(400).json({ success: false, message: 'At least one photo attachment is required' });
-    }
+    // Enforce photo proof if required (disabled for now since we removed attachments)
+    // if (features.photoRequired && atts.length === 0) {
+    //   return res.status(400).json({ success: false, message: 'At least one photo attachment is required' });
+    // }
 
     // Verified computation
     const hasGeo = Number.isFinite(visit.checkInLat) && Number.isFinite(visit.checkInLng);
-    const hasPhoto = attachments.length > 0;
+    const hasPhoto = false; // No attachments in this version
     const hasSigOrOtp = !!visit.clientSignatureUrl || !!visit.clientOtp;
     const needsSig = !!features.signatureOrOtpRequired;
     const needsGeo = !!features.geoRequired;
@@ -117,8 +115,10 @@ router.post('/visit', upload.fields([
       }
     } catch (_) {}
 
+    console.log('Visit form submitted successfully, visitId:', visit.id);
     return res.json({ success: true, visitId: visit.id });
   } catch (e) {
+    console.error('Visit form submission error:', e);
     return res.status(500).json({ success: false, message: 'Failed to submit visit' });
   }
 });
