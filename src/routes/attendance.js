@@ -852,9 +852,13 @@ router.get('/weekly', async (req, res) => {
       order: [['date', 'ASC']]
     });
 
-    // Get max break duration setting
+    // Get max break duration setting and template rule
     const maxBreakSetting = await AppSetting.findOne({ where: { key: 'MAX_BREAK_DURATION' } });
     const maxBreakMinutes = maxBreakSetting ? parseInt(maxBreakSetting.value) : 0;
+    
+    // Get effective hours rule from template
+    const tpl = await getEffectiveTemplate(req.user.id);
+    const effectiveHoursRule = tpl ? (tpl.effectiveHoursRule ?? tpl.effective_hours_rule ?? null) : null;
 
     console.log('Weekly calculation - Max break allowed:', maxBreakMinutes, 'minutes');
 
@@ -863,9 +867,14 @@ router.get('/weekly', async (req, res) => {
     const start = new Date(startDate);
     const end = new Date(endDate);
     
+    console.log(`Found ${records.length} attendance records for user ${req.user.id} from ${startDate} to ${endDate}`);
+    console.log('Records:', records.map(r => ({ date: r.date, punchedInAt: r.punchedInAt, punchedOutAt: r.punchedOutAt })));
+
     for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
       const dateStr = isoDate(d);
       const record = records.find(r => r.date === dateStr);
+      
+      console.log(`Processing date ${dateStr}, record found:`, !!record);
       
       if (record && record.punchedInAt && record.punchedOutAt) {
         // Calculate total work time (punch out - punch in)
@@ -885,6 +894,7 @@ router.get('/weekly', async (req, res) => {
 
         weeklyHours.push(effectiveHours);
       } else {
+        console.log(`Date ${dateStr}: No complete attendance record (punchedInAt: ${record?.punchedInAt}, punchedOutAt: ${record?.punchedOutAt})`);
         weeklyHours.push(0);
       }
     }
