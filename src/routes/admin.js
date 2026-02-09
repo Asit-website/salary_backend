@@ -1,6 +1,7 @@
 const express = require('express');
 const bcrypt = require('bcryptjs');
 const exceljs = require('exceljs');
+const dayjs = require('dayjs');
 
 const { sequelize, User, StaffProfile, AppSetting, DocumentType, ShiftTemplate, ShiftBreak, ShiftRotationalSlot, StaffShiftAssignment, SalaryAccess, AttendanceTemplate, StaffAttendanceAssignment, SalaryTemplate, StaffSalaryAssignment, Site, WorkUnit, Route, RouteStop, StaffRouteAssignment, SiteCheckpoint, PatrolLog, LeaveTemplate, LeaveTemplateCategory, StaffLeaveAssignment, LeaveBalance, LeaveRequest, AIAnomaly, ReliabilityScore, SalaryForecast, Attendance, Client, AssignedJob, SalesTarget, HolidayTemplate, HolidayDate, StaffHolidayAssignment, Subscription, Plan, SalesVisit } = require('../models');
 const multer = require('multer');
@@ -6876,6 +6877,241 @@ router.get('/reports/org-sales', async (req, res) => {
   } catch (error) {
     console.error('Org sales report error:', error);
     res.status(500).json({ success: false, message: 'Failed to generate sales report' });
+  }
+});
+
+// --- Geolocation Tracking --- (org-scoped)
+// Get geolocation data with filters
+router.get('/geolocation', async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
+    const { LocationPing, User, StaffProfile, Attendance } = sequelize.models;
+    
+    const { startDate, endDate, staffId, date } = req.query || {};
+    
+    let whereClause = {};
+    let attendanceWhere = {};
+    
+    // Date filtering
+    if (startDate && endDate) {
+      whereClause.createdAt = {
+        [Op.between]: [new Date(startDate), new Date(endDate + ' 23:59:59')]
+      };
+    } else if (date) {
+      whereClause.createdAt = {
+        [Op.between]: [new Date(date + ' 00:00:00'), new Date(date + ' 23:59:59')]
+      };
+      attendanceWhere.date = date;
+    }
+    
+    // Staff filtering
+    if (staffId && staffId !== 'all') {
+      whereClause.userId = Number(staffId);
+      attendanceWhere.userId = Number(staffId);
+    }
+    
+    // Get staff location data
+    const locationPings = await LocationPing.findAll({
+      where: whereClause,
+      include: [
+        {
+          model: User,
+          as: 'user',
+          include: [
+            {
+              model: StaffProfile,
+              as: 'profile',
+              attributes: ['name']
+            }
+          ],
+          attributes: ['id', 'phone']
+        }
+      ],
+      order: [['createdAt', 'ASC']]
+    });
+    
+    // Get attendance data for punch in/out times
+    const attendanceRecords = await Attendance.findAll({
+      where: attendanceWhere,
+      attributes: ['userId', 'date', 'punchedInAt', 'punchedOutAt'],
+      order: [['date', 'DESC']]
+    });
+    
+    // Process data to match frontend expectations
+    const staffLocationData = [];
+    const staffMap = new Map();
+    
+    // Group location pings by user and date
+    locationPings.forEach(ping => {
+      const userDate = new Date(ping.createdAt).toISOString().slice(0, 10);
+      const key = `${ping.userId}-${userDate}`;
+      
+      if (!staffMap.has(key)) {
+        staffMap.set(key, {
+          id: key,
+          staffId: ping.userId,
+          staffName: ping.user?.profile?.name || 'Unknown',
+          date: userDate,
+          locations: [],
+          punchInTime: null,
+          punchOutTime: null
+        });
+      }
+      
+      staffMap.get(key).locations.push({
+        timestamp: ping.createdAt,
+        lat: ping.latitude,
+        lng: ping.longitude,
+        accuracy: ping.accuracyMeters,
+        address: null // Will be populated later if needed
+      });
+    });
+    
+    // Add attendance data
+    attendanceRecords.forEach(record => {
+      const key = `${record.userId}-${record.date}`;
+      if (staffMap.has(key)) {
+        const staffData = staffMap.get(key);
+        staffData.punchInTime = record.punchedInAt;
+        staffData.punchOutTime = record.punchedOutAt;
+      }
+    });
+    
+    // Convert map to array and calculate summary data
+    staffMap.forEach(staffData => {
+      const locations = staffData.locations;
+      staffData.locationCount = locations.length;
+      staffData.firstLocation = locations[0] || null;
+      staffData.lastLocation = locations[locations.length - 1] || null;
+      staffLocationData.push(staffData);
+    });
+    
+    res.json({
+      success: true,
+      data: staffLocationData
+    });
+  } catch (error) {
+    console.error('Geolocation data error:', error);
+    res.status(500).json({ success: false, message: 'Failed to fetch geolocation data' });
+  }
+});
+
+// Get geolocation statistics
+router.get('/geolocation/stats', async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
+    const { LocationPing, User, Attendance } = sequelize.models;
+    
+    const today = new Date().toISOString().slice(0, 10);
+    
+    // Get total staff count
+    const totalStaff = await User.count({
+      where: { role: 'staff', orgAccountId: orgId }
+    });
+    
+    // Get active staff (who have location pings today)
+    const activeStaffResult = await LocationPing.findAll({
+      attributes: [[sequelize.fn('DISTINCT', sequelize.col('user_id')), 'user_id']],
+      where: {
+        createdAt: {
+          [Op.between]: [new Date(today + ' 00:00:00'), new Date(today + ' 23:59:59')]
+        }
+      },
+      include: [{
+        model: User,
+        as: 'user',
+        where: { orgAccountId: orgId }
+      }],
+      raw: true
+    });
+    const activeStaff = activeStaffResult.length;
+    
+    // Get total location pings today
+    const totalLocations = await LocationPing.count({
+      where: {
+        createdAt: {
+          [Op.between]: [new Date(today + ' 00:00:00'), new Date(today + ' 23:59:59')]
+        }
+      },
+      include: [{
+        model: User,
+        as: 'user',
+        where: { orgAccountId: orgId }
+      }]
+    });
+    
+    // Calculate average locations per active staff
+    const averageLocations = activeStaff > 0 ? (totalLocations / activeStaff).toFixed(1) : 0;
+    
+    res.json({
+      success: true,
+      data: {
+        totalStaff,
+        activeStaff,
+        totalLocations,
+        averageLocations: parseFloat(averageLocations)
+      }
+    });
+  } catch (error) {
+    console.error('Geolocation stats error:', error);
+    res.status(500).json({ success: false, message: 'Failed to fetch geolocation statistics' });
+  }
+});
+
+// Get staff location timeline for a specific date
+router.get('/geolocation/:staffId/timeline', async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
+    const { LocationPing, User } = sequelize.models;
+    
+    const staffId = Number(req.params.staffId);
+    const { date } = req.query;
+    
+    if (!Number.isFinite(staffId)) {
+      return res.status(400).json({ success: false, message: 'Invalid staff ID' });
+    }
+    
+    if (!date) {
+      return res.status(400).json({ success: false, message: 'Date is required' });
+    }
+    
+    // Verify staff belongs to organization
+    const staff = await User.findOne({
+      where: { id: staffId, orgAccountId: orgId, role: 'staff' }
+    });
+    
+    if (!staff) {
+      return res.status(404).json({ success: false, message: 'Staff not found' });
+    }
+    
+    // Get location pings for the specific date
+    const locationPings = await LocationPing.findAll({
+      where: {
+        userId: staffId,
+        createdAt: {
+          [Op.between]: [new Date(date + ' 00:00:00'), new Date(date + ' 23:59:59')]
+        }
+      },
+      order: [['createdAt', 'ASC']]
+    });
+    
+    // Format timeline data
+    const timelineData = locationPings.map(ping => ({
+      id: ping.id,
+      timestamp: ping.createdAt,
+      lat: ping.latitude,
+      lng: ping.longitude,
+      accuracy: ping.accuracyMeters,
+      address: null // Can be enhanced with geocoding later
+    }));
+    
+    res.json({
+      success: true,
+      data: timelineData
+    });
+  } catch (error) {
+    console.error('Staff timeline error:', error);
+    res.status(500).json({ success: false, message: 'Failed to fetch staff timeline' });
   }
 });
 

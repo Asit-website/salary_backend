@@ -1223,4 +1223,62 @@ router.get('/user/:userId', async (req, res) => {
   }
 });
 
+// Location ping endpoint for tracking staff between punch-in and punch-out
+router.post('/ping', async (req, res) => {
+  try {
+    const { latitude, longitude, accuracy, source } = req.body || {};
+    
+    // Validate required fields
+    if (!latitude || !longitude) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Latitude and longitude are required' 
+      });
+    }
+    
+    // Validate coordinates
+    const lat = parseFloat(latitude);
+    const lng = parseFloat(longitude);
+    
+    if (isNaN(lat) || isNaN(lng) || lat < -90 || lat > 90 || lng < -180 || lng > 180) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Invalid latitude or longitude values' 
+      });
+    }
+    
+    // Create location ping record
+    const locationPing = await LocationPing.create({
+      userId: req.user.id,
+      latitude: lat,
+      longitude: lng,
+      accuracyMeters: accuracy ? parseInt(accuracy) : null,
+      source: source || 'mobile'
+    });
+    
+    console.log(`Location ping recorded for user ${req.user.id}:`, {
+      latitude: lat,
+      longitude: lng,
+      accuracy: accuracy,
+      source: source
+    });
+    
+    res.json({
+      success: true,
+      message: 'Location ping recorded successfully',
+      data: {
+        id: locationPing.id,
+        timestamp: locationPing.createdAt
+      }
+    });
+    
+  } catch (error) {
+    console.error('Location ping error:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Failed to record location ping' 
+    });
+  }
+});
+
 module.exports = router;
