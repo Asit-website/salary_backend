@@ -296,15 +296,19 @@ router.get('/status', async (req, res) => {
 
   const overtimeSeconds = workSeconds > REQUIRED_WORK_SECONDS ? workSeconds - REQUIRED_WORK_SECONDS : 0;
 
-  let dayStatus = 'ABSENT';
-  if (record?.punchedInAt) {
+  // Use the stored status from database if available, otherwise calculate
+  let dayStatus = record?.status || 'ABSENT';
+  
+  // If no stored status but user has punched in, calculate based on work hours
+  if (!record?.status && record?.punchedInAt) {
     if (workSeconds > REQUIRED_WORK_SECONDS) dayStatus = 'OVERTIME';
     else if (workSeconds >= REQUIRED_WORK_SECONDS) dayStatus = 'PRESENT';
     else if (record?.punchedOutAt) dayStatus = 'HALF_DAY';
     else dayStatus = 'HALF_DAY';
   }
-  // If admin marked half-day explicitly via sentinel or status, force HALF_DAY
-  if (record && (Number(record.breakTotalSeconds) === -2 || String(record.status || '').toLowerCase() === 'half_day')) {
+  
+  // If admin marked half-day explicitly via sentinel, force HALF_DAY
+  if (record && Number(record.breakTotalSeconds) === -2) {
     dayStatus = 'HALF_DAY';
   }
 
@@ -323,6 +327,7 @@ router.get('/status', async (req, res) => {
       overtimeSeconds,
       requiredWorkSeconds: REQUIRED_WORK_SECONDS,
       dayStatus,
+      totalWorkHours: record?.totalWorkHours || null, // Add total work hours from database
       assignedShift: assignedShift ? {
         id: assignedShift.id,
         name: assignedShift.name,
@@ -411,9 +416,15 @@ router.get('/history', async (req, res) => {
       const isAdminLeave = record && (Number(record?.breakTotalSeconds) === -1 || String(record?.status || '').toLowerCase() === 'leave');
       const isAdminHalf = record && (Number(record?.breakTotalSeconds) === -2 || String(record?.status || '').toLowerCase() === 'half_day');
 
+      // Use the stored status from database if available, otherwise calculate
       if (leave || isAdminLeave) {
         dayStatus = 'LEAVE';
         leaveType = leave?.leaveType || 'ADMIN';
+      } else if (isAdminHalf) {
+        dayStatus = 'HALF_DAY';
+      } else if (record?.status) {
+        // Use the stored status from punchout calculation
+        dayStatus = record.status.toUpperCase();
       } else if (record?.punchedInAt) {
         const punchedInAt = new Date(record.punchedInAt);
         const punchedOutAt = record.punchedOutAt ? new Date(record.punchedOutAt) : null;
@@ -440,9 +451,8 @@ router.get('/history', async (req, res) => {
 
         console.log(`History ${key}: Total=${Math.floor(totalWorkSeconds/60)}min, Break=${Math.floor(totalBreakSeconds/60)}min, MaxAllowed=${maxBreakMinutes}min, Effective=${Math.floor(workingSeconds/60)}min`);
 
-        if (isAdminHalf) {
-          dayStatus = 'HALF_DAY';
-        } else if (workingSeconds > REQUIRED_WORK_SECONDS) dayStatus = 'OVERTIME';
+        // Calculate status if not stored
+        if (workingSeconds > REQUIRED_WORK_SECONDS) dayStatus = 'OVERTIME';
         else if (workingSeconds >= REQUIRED_WORK_SECONDS) dayStatus = 'PRESENT';
         else dayStatus = 'HALF_DAY';
       } else {
@@ -665,13 +675,38 @@ router.post('/punch-out', upload.single('photo'), async (req, res) => {
       breakTotalSeconds += diffSeconds(new Date(record.breakStartedAt), now);
     }
 
+    // Calculate attendance status based on work hours
+    const punchedInAt = new Date(record.punchedInAt);
+    const totalWorkSeconds = diffSeconds(punchedInAt, now) - breakTotalSeconds;
+    const totalWorkHours = totalWorkSeconds / 3600;
+    
+    let status = 'PRESENT';
+    
+    // Get shift template for working hours calculation (already declared above)
+    const standardWorkHours = shiftTpl?.workHours || 8; // Default 8 hours
+    
+    // Calculate status based on work hours
+    if (totalWorkHours < 1) {
+      status = 'absent';
+    } else if (totalWorkHours < (standardWorkHours / 2)) {
+      status = 'half_day';
+    } else if (totalWorkHours > standardWorkHours + 1) {
+      status = 'overtime';
+    } else {
+      status = 'present';
+    }
+
     await record.update({
       punchedOutAt: now,
       punchOutPhotoUrl: photoUrl,
       isOnBreak: false,
       breakStartedAt: null,
       breakTotalSeconds,
+      status: status,
+      totalWorkHours: totalWorkHours,
     });
+    
+    console.log(`Attendance status calculated: ${status} for ${totalWorkHours.toFixed(2)} hours worked`);
     return res.json({ success: true, attendance: record });
   } catch (e) {
     return res.status(500).json({ success: false, message: 'Punch-out failed' });
