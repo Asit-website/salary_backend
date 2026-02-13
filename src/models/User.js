@@ -27,6 +27,15 @@ module.exports = (sequelize) => {
           key: 'id'
         }
       },
+      shiftTemplateId: {
+        type: DataTypes.BIGINT.UNSIGNED,
+        allowNull: true,
+        field: 'shift_template_id',
+        references: {
+          model: 'shift_templates',
+          key: 'id'
+        }
+      },
       salaryValues: {
         type: DataTypes.JSON,
         allowNull: true,
@@ -140,6 +149,7 @@ module.exports = (sequelize) => {
 
   User.associate = function(models) {
     User.belongsTo(models.SalaryTemplate, { foreignKey: 'salaryTemplateId', as: 'salaryTemplate' });
+    User.belongsTo(models.ShiftTemplate, { foreignKey: 'shiftTemplateId', as: 'shiftTemplate' });
   };
 
   // Instance method to calculate salary based on template

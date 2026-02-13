@@ -280,6 +280,16 @@ router.post('/signup-admin', async (req, res) => {
     const admin = await User.create({ role: 'admin', orgAccountId: org.id, phone: String(normalizedPhone), passwordHash: hash, active: true });
     try { await StaffProfile.create({ userId: admin.id, name: String(name) }); } catch (_) {}
 
+    // Send admin signup review email to business email
+    if (businessEmail) {
+      try {
+        const { sendAdminSignupReviewEmail } = require('../services/emailService');
+        await sendAdminSignupReviewEmail(businessEmail, name);
+      } catch (emailError) {
+        console.error('Failed to send admin signup review email:', emailError);
+      }
+    }
+
     return res.json({ success: true, orgAccountId: org.id, userId: admin.id });
   } catch (e) {
     return res.status(500).json({ success: false, message: 'Signup failed' });

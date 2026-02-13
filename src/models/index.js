@@ -30,6 +30,10 @@ const defineOrgAccount = require('./OrgAccount');
 const defineClient = require('./Client');              // keep this
 const definePlan = require('./Plan');
 const defineSubscription = require('./Subscription');
+const defineRole = require('./Role');
+const definePermission = require('./Permission');
+const defineRolePermission = require('./RolePermission');
+const defineUserRole = require('./UserRole');
 const defineAssignedJob = require('./AssignedJob');
 const defineSalesTarget = require('./SalesTarget');
 const defineOrder = require('./Order');
@@ -61,6 +65,10 @@ const defineStaffGeofenceAssignment = require('./StaffGeofenceAssignment');
 const defineLocationPing = require('./LocationPing');
 const definePayrollCycle = require('./PayrollCycle');
 const definePayrollLine = require('./PayrollLine');
+const defineAsset = require('./Asset');
+const defineAssetAssignment = require('./AssetAssignment');
+const defineAssetMaintenance = require('./AssetMaintenance');
+const defineStaffLoan = require('./StaffLoan');
 
 const User = defineUser(sequelize);
 const StaffProfile = defineStaffProfile(sequelize);
@@ -92,6 +100,10 @@ const OrgAccount = defineOrgAccount(sequelize);
 const Client = defineClient(sequelize);                // keep this
 const Plan = definePlan(sequelize);
 const Subscription = defineSubscription(sequelize);
+const Role = defineRole(sequelize);
+const Permission = definePermission(sequelize);
+const RolePermission = defineRolePermission(sequelize);
+const UserRole = defineUserRole(sequelize);
 const AssignedJob = defineAssignedJob(sequelize);
 const SalesTarget = defineSalesTarget(sequelize);
 const Order = defineOrder(sequelize);
@@ -123,6 +135,10 @@ const StaffGeofenceAssignment = defineStaffGeofenceAssignment(sequelize);
 const LocationPing = defineLocationPing(sequelize);
 const PayrollCycle = definePayrollCycle(sequelize);
 const PayrollLine = definePayrollLine(sequelize);
+const Asset = defineAsset(sequelize);
+const AssetAssignment = defineAssetAssignment(sequelize);
+const AssetMaintenance = defineAssetMaintenance(sequelize);
+const StaffLoan = defineStaffLoan(sequelize);
 
 // Leave Template associations (after models are defined)
 LeaveTemplate.hasMany(LeaveTemplateCategory, { foreignKey: 'leaveTemplateId', as: 'categories' });
@@ -213,6 +229,10 @@ StaffSalaryAssignment.belongsTo(SalaryTemplate, { foreignKey: 'salaryTemplateId'
 User.belongsTo(SalaryTemplate, { foreignKey: 'salaryTemplateId', as: 'salaryTemplate' });
 SalaryTemplate.hasMany(User, { foreignKey: 'salaryTemplateId', as: 'staff' });
 
+// User Shift Template association
+User.belongsTo(ShiftTemplate, { foreignKey: 'shiftTemplateId', as: 'shiftTemplate' });
+ShiftTemplate.hasMany(User, { foreignKey: 'shiftTemplateId', as: 'staff' });
+
 // Sales models associations
 User.hasMany(SalesVisit, { foreignKey: 'userId', as: 'salesVisits' });
 SalesVisit.belongsTo(User, { foreignKey: 'userId', as: 'user' });
@@ -292,6 +312,68 @@ Subscription.belongsTo(OrgAccount, { foreignKey: 'orgAccountId', as: 'orgAccount
 Plan.hasMany(Subscription, { foreignKey: 'planId', as: 'subscriptions' });
 Subscription.belongsTo(Plan, { foreignKey: 'planId', as: 'plan' });
 
+// Role / Permission associations
+OrgAccount.hasMany(Role, { foreignKey: 'orgAccountId', as: 'roles' });
+Role.belongsTo(OrgAccount, { foreignKey: 'orgAccountId', as: 'orgAccount' });
+
+Role.belongsToMany(Permission, { 
+  through: RolePermission, 
+  foreignKey: 'roleId', 
+  otherKey: 'permissionId',
+  as: 'permissions'
+});
+Permission.belongsToMany(Role, { 
+  through: RolePermission, 
+  foreignKey: 'permissionId', 
+  otherKey: 'roleId',
+  as: 'roles'
+});
+
+User.belongsToMany(Role, { 
+  through: UserRole, 
+  foreignKey: 'userId', 
+  otherKey: 'roleId',
+  as: 'roles'
+});
+Role.belongsToMany(User, { 
+  through: UserRole, 
+  foreignKey: 'roleId', 
+  otherKey: 'userId',
+  as: 'users'
+});
+
+// Asset Management associations - simplified
+User.hasMany(Asset, { foreignKey: 'createdBy', as: 'createdAssets' });
+User.hasMany(Asset, { foreignKey: 'updatedBy', as: 'updatedAssets' });
+User.hasMany(Asset, { foreignKey: 'assignedTo', as: 'assignedAssets' });
+Asset.belongsTo(User, { foreignKey: 'assignedTo', as: 'assignedUser' });
+Asset.belongsTo(User, { foreignKey: 'createdBy', as: 'creator' });
+Asset.belongsTo(User, { foreignKey: 'updatedBy', as: 'updater' });
+
+Asset.hasMany(AssetAssignment, { foreignKey: 'assetId', as: 'assignments' });
+AssetAssignment.belongsTo(Asset, { foreignKey: 'assetId', as: 'asset' });
+User.hasMany(AssetAssignment, { foreignKey: 'assignedTo', as: 'assetAssignments' });
+AssetAssignment.belongsTo(User, { foreignKey: 'assignedTo', as: 'assignedUser' });
+User.hasMany(AssetAssignment, { foreignKey: 'assignedBy', as: 'assetAssignmentsMade' });
+AssetAssignment.belongsTo(User, { foreignKey: 'assignedBy', as: 'assigningUser' });
+
+Asset.hasMany(AssetMaintenance, { foreignKey: 'assetId', as: 'maintenanceRecords' });
+AssetMaintenance.belongsTo(Asset, { foreignKey: 'assetId', as: 'asset' });
+User.hasMany(AssetMaintenance, { foreignKey: 'performedBy', as: 'maintenancePerformed' });
+AssetMaintenance.belongsTo(User, { foreignKey: 'performedBy', as: 'performingUser' });
+User.hasMany(AssetMaintenance, { foreignKey: 'createdBy', as: 'maintenanceCreated' });
+AssetMaintenance.belongsTo(User, { foreignKey: 'createdBy', as: 'creator' });
+User.hasMany(AssetMaintenance, { foreignKey: 'updatedBy', as: 'maintenanceUpdated' });
+AssetMaintenance.belongsTo(User, { foreignKey: 'updatedBy', as: 'updater' });
+
+// StaffLoan associations
+User.hasMany(StaffLoan, { foreignKey: 'staffId', as: 'loans' });
+StaffLoan.belongsTo(User, { foreignKey: 'staffId', as: 'staffMember' });
+User.hasMany(StaffLoan, { foreignKey: 'createdBy', as: 'loansCreated' });
+StaffLoan.belongsTo(User, { foreignKey: 'createdBy', as: 'creator' });
+User.hasMany(StaffLoan, { foreignKey: 'updatedBy', as: 'loansUpdated' });
+StaffLoan.belongsTo(User, { foreignKey: 'updatedBy', as: 'updater' });
+
 module.exports = {
   sequelize,
   User,
@@ -324,6 +406,10 @@ module.exports = {
   OrgAccount,
   Plan,
   Subscription,
+  Role,
+  Permission,
+  RolePermission,
+  UserRole,
 
   AssignedJob,
   Client,
@@ -357,4 +443,8 @@ module.exports = {
   LocationPing,
   PayrollCycle,
   PayrollLine,
+  Asset,
+  AssetAssignment,
+  AssetMaintenance,
+  StaffLoan,
 };

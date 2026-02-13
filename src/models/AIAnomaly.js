@@ -2,7 +2,7 @@
   const { DataTypes } = require('sequelize');
   const AIAnomaly = sequelize.define('AIAnomaly', {
     id: { type: DataTypes.INTEGER, primaryKey: true, autoIncrement: true },
-    userId: { type: DataTypes.INTEGER, allowNull: false },
+    userId: { type: DataTypes.BIGINT.UNSIGNED, allowNull: false },
     date: { type: DataTypes.DATEONLY, allowNull: false },
     type: { type: DataTypes.STRING(50), allowNull: false },  
     severity: { type: DataTypes.STRING(20), allowNull: false, defaultValue: 'medium' },

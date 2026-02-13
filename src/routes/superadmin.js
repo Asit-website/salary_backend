@@ -156,6 +156,16 @@ router.post('/clients', async (req, res) => {
         if (!admin) {
           const hash = await bcrypt.hash('123456', 10);
           admin = await User.create({ role: 'admin', orgAccountId: row.id, phone: String(normalizedPhone), passwordHash: hash, active: true });
+          
+          // Send admin signup review email to business email when admin is created
+          if (businessEmail) {
+            try {
+              const { sendAdminSignupReviewEmail } = require('../services/emailService');
+              await sendAdminSignupReviewEmail(businessEmail, name || 'Admin');
+            } catch (emailError) {
+              console.error('Failed to send admin signup review email:', emailError);
+            }
+          }
         } else {
           // Ensure user is linked to this org and active
           await admin.update({ orgAccountId: row.id, role: 'admin', active: true });
@@ -229,8 +239,38 @@ router.post('/clients/:id/subscription', async (req, res) => {
         if (!admin) {
           const hash = await bcrypt.hash('123456', 10);
           admin = await User.create({ role: 'admin', orgAccountId: org.id, phone: String(normalizedPhone), passwordHash: hash, active: true });
+          
+          // Send account activation email to business email when admin is created
+          if (org.businessEmail) {
+            try {
+              const { sendAccountActivationEmail } = require('../services/emailService');
+              await sendAccountActivationEmail(org.businessEmail, org.name || 'Admin', org.name || 'Organization', {
+                loginURL: 'http://localhost:3000',
+                planType: plan?.name || 'Basic',
+                expiryDate: end ? new Date(end).toLocaleDateString() : 'N/A',
+                userLimit: staffLimit || 'N/A'
+              });
+            } catch (emailError) {
+              console.error('Failed to send activation email:', emailError);
+            }
+          }
         } else {
           await admin.update({ orgAccountId: org.id, role: 'admin', active: true });
+          
+          // Send account activation email to business email for existing admin
+          if (org.businessEmail) {
+            try {
+              const { sendAccountActivationEmail } = require('../services/emailService');
+              await sendAccountActivationEmail(org.businessEmail, org.name || 'Admin', org.name || 'Organization', {
+                loginURL: 'http://localhost:3000',
+                planType: plan?.name || 'Basic',
+                expiryDate: end ? new Date(end).toLocaleDateString() : 'N/A',
+                userLimit: staffLimit || 'N/A'
+              });
+            } catch (emailError) {
+              console.error('Failed to send activation email:', emailError);
+            }
+          }
         }
       }
     } catch (_) {}
@@ -240,6 +280,8 @@ router.post('/clients/:id/subscription', async (req, res) => {
     return res.status(500).json({ success: false, message: 'Failed to assign subscription' });
   }
 });
+
+const { runSubscriptionExpiryCheck } = require('../jobs');
 
 // Superadmin Dashboard metrics
 router.get('/dashboard', async (_req, res) => {
@@ -276,6 +318,16 @@ router.get('/dashboard', async (_req, res) => {
     return res.json({ success: true, counts: { active, disabled, suspended, expired }, revenue, growth });
   } catch (e) {
     return res.status(500).json({ success: false, message: 'Failed to load dashboard' });
+  }
+});
+
+// Manually trigger subscription expiry reminder check
+router.post('/subscription-expiry-reminder-check', async (_req, res) => {
+  try {
+    await runSubscriptionExpiryCheck();
+    return res.json({ success: true, message: 'Subscription expiry reminder check completed' });
+  } catch (e) {
+    return res.status(500).json({ success: false, message: 'Failed to run reminder check' });
   }
 });
 

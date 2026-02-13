@@ -18,6 +18,8 @@ module.exports = (sequelize) => {
       breakStartedAt: { type: DataTypes.DATE, allowNull: true },
       breakTotalSeconds: { type: DataTypes.INTEGER, allowNull: false, defaultValue: 0 },
       totalWorkHours: { type: DataTypes.DECIMAL(5, 2), allowNull: true }, // Total work hours calculated
+      overtimeMinutes: { type: DataTypes.INTEGER, allowNull: false, defaultValue: 0 }, // Overtime minutes calculated
+      autoPunchout: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: false }, // Whether punchout was automatic
 
       punchInPhotoUrl: { type: DataTypes.STRING(255), allowNull: true },
       punchOutPhotoUrl: { type: DataTypes.STRING(255), allowNull: true },

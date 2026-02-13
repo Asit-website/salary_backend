@@ -18,7 +18,12 @@ const meRoutes = require('./src/routes/me');
 const documentsRoutes = require('./src/routes/documents');
 const securityRoutes = require('./src/routes/security');
 const salaryTemplateRoutes = require('./src/routes/salaryTemplates');
+const subscriptionRoutes = require('./src/routes/subscription');
+const rolesRoutes = require('./src/routes/roles');
+const { tenantEnforce } = require('./src/middleware/tenant');
 const { scheduleSubscriptionSweep } = require('./src/jobs/subscriptionSweep');
+const { scheduleSubscriptionExpiryReminders } = require('./src/jobs');
+const { verifyEmailConfig } = require('./src/services/emailService');
 
 const app = express();
 
@@ -47,13 +52,31 @@ app.use('/me', meRoutes);
 app.use('/documents', documentsRoutes);
 app.use('/security', securityRoutes);
 app.use('/salary-templates', salaryTemplateRoutes);
+app.use('/subscription', subscriptionRoutes);
+app.use('/admin/roles', rolesRoutes);
+app.use('/mobile/roles', rolesRoutes);
 
 const port = Number(process.env.PORT || 4000);
 
 initDb()
-  .then(() => {
+  .then(async () => {
+    // Verify email configuration
+    try {
+      const emailConfigured = await verifyEmailConfig();
+      if (emailConfigured) {
+        console.log('✅ Email service configured successfully');
+      } else {
+        console.log('⚠️  Email service configuration failed - emails will not be sent');
+      }
+    } catch (emailError) {
+      console.log('⚠️  Email service verification failed:', emailError.message);
+    }
+
     // Start background job to auto-expire subscriptions and disable orgs
     try { scheduleSubscriptionSweep(); } catch (_) {}
+    
+    // Start subscription expiry reminder job
+    try { scheduleSubscriptionExpiryReminders(); } catch (_) {}
     app.listen(port, () => {
       console.log(`Backend running on http://localhost:${port}`);
     });

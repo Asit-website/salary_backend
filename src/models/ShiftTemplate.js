@@ -17,6 +17,11 @@ module.exports = (sequelize) => {
       // Relative window from punch-in when punch-out is permitted
       minPunchOutAfterMinutes: { type: DataTypes.INTEGER, allowNull: true },
       maxPunchOutAfterMinutes: { type: DataTypes.INTEGER, allowNull: true },
+      // Half-day and overtime rules
+      halfDayThresholdMinutes: { type: DataTypes.INTEGER, allowNull: true, comment: 'Minutes below which attendance is marked as half-day' },
+      overtimeStartMinutes: { type: DataTypes.INTEGER, allowNull: true, comment: 'Minutes after which overtime starts' },
+      // Auto-punchout rule
+      autoPunchoutAfterShiftEnd: { type: DataTypes.DECIMAL(4, 1), allowNull: true, comment: 'Hours after shift end when auto-punchout should occur' },
       enableMultipleShifts: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: false },
       active: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: true },
       orgAccountId: { type: DataTypes.BIGINT.UNSIGNED, allowNull: true, field: 'org_account_id' },

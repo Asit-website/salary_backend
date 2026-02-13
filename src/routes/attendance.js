@@ -675,25 +675,51 @@ router.post('/punch-out', upload.single('photo'), async (req, res) => {
       breakTotalSeconds += diffSeconds(new Date(record.breakStartedAt), now);
     }
 
-    // Calculate attendance status based on work hours
+    // Calculate attendance status based on shift template rules
     const punchedInAt = new Date(record.punchedInAt);
     const totalWorkSeconds = diffSeconds(punchedInAt, now) - breakTotalSeconds;
+    const totalWorkMinutes = Math.floor(totalWorkSeconds / 60);
     const totalWorkHours = totalWorkSeconds / 3600;
     
-    let status = 'PRESENT';
+    let status = 'present';
+    let overtimeMinutes = 0;
     
-    // Get shift template for working hours calculation (already declared above)
-    const standardWorkHours = shiftTpl?.workHours || 8; // Default 8 hours
-    
-    // Calculate status based on work hours
-    if (totalWorkHours < 1) {
-      status = 'absent';
-    } else if (totalWorkHours < (standardWorkHours / 2)) {
-      status = 'half_day';
-    } else if (totalWorkHours > standardWorkHours + 1) {
-      status = 'overtime';
+    // Use shift template rules if available, otherwise fall back to defaults
+    if (shiftTpl) {
+      // Calculate overtime minutes
+      if (shiftTpl.overtimeStartMinutes && totalWorkMinutes > shiftTpl.overtimeStartMinutes) {
+        overtimeMinutes = totalWorkMinutes - shiftTpl.overtimeStartMinutes;
+      }
+      
+      // Calculate status based on half-day threshold
+      if (shiftTpl.halfDayThresholdMinutes && totalWorkMinutes < shiftTpl.halfDayThresholdMinutes) {
+        status = 'half_day';
+      } else if (totalWorkMinutes < 60) { // Less than 1 hour
+        status = 'absent';
+      } else if (shiftTpl.overtimeStartMinutes && totalWorkMinutes > shiftTpl.overtimeStartMinutes) {
+        status = 'overtime'; // Status includes overtime
+      } else {
+        status = 'present';
+      }
     } else {
-      status = 'present';
+      // Fallback logic for when no shift template is assigned
+      const standardWorkMinutes = 8 * 60; // 8 hours in minutes
+      
+      // Calculate overtime
+      if (totalWorkMinutes > standardWorkMinutes) {
+        overtimeMinutes = totalWorkMinutes - standardWorkMinutes;
+      }
+      
+      // Calculate status
+      if (totalWorkMinutes < 60) {
+        status = 'absent';
+      } else if (totalWorkMinutes < (standardWorkMinutes / 2)) {
+        status = 'half_day';
+      } else if (totalWorkMinutes > standardWorkMinutes) {
+        status = 'overtime'; // Status includes overtime
+      } else {
+        status = 'present';
+      }
     }
 
     await record.update({
@@ -704,6 +730,7 @@ router.post('/punch-out', upload.single('photo'), async (req, res) => {
       breakTotalSeconds,
       status: status,
       totalWorkHours: totalWorkHours,
+      overtimeMinutes: overtimeMinutes,
     });
     
     console.log(`Attendance status calculated: ${status} for ${totalWorkHours.toFixed(2)} hours worked`);
@@ -1322,6 +1349,147 @@ router.post('/ping', async (req, res) => {
     res.status(500).json({ 
       success: false, 
       message: 'Failed to record location ping' 
+    });
+  }
+});
+
+// Auto-punchout function to be called by cron job
+async function processAutoPunchouts() {
+  try {
+    console.log('Starting auto-punchout process...');
+    
+    const now = new Date();
+    const today = todayKey(now);
+    
+    // Find all staff who are punched in but not punched out today
+    const pendingAttendances = await Attendance.findAll({
+      where: {
+        dateKey: today,
+        punchedInAt: { [Op.not]: null },
+        punchedOutAt: null,
+        isOnBreak: false
+      },
+      include: [
+        {
+          model: StaffShiftAssignment,
+          as: 'shiftAssignment',
+          include: [
+            {
+              model: ShiftTemplate,
+              as: 'template',
+              where: { autoPunchoutAfterShiftEnd: { [Op.not]: null } }
+            }
+          ]
+        }
+      ]
+    });
+    
+    console.log(`Found ${pendingAttendances.length} pending attendances for auto-punchout`);
+    
+    for (const attendance of pendingAttendances) {
+      const shiftTemplate = attendance.shiftAssignment?.template;
+      
+      if (!shiftTemplate || !shiftTemplate.autoPunchoutAfterShiftEnd) continue;
+      
+      // Calculate shift end time
+      const punchedInAt = new Date(attendance.punchedInAt);
+      let shiftEndTime;
+      
+      if (shiftTemplate.shiftType === 'fixed' && shiftTemplate.startTime && shiftTemplate.endTime) {
+        // For fixed shifts, use the defined end time
+        const [hours, minutes, seconds] = shiftTemplate.endTime.split(':').map(Number);
+        shiftEndTime = new Date(punchedInAt);
+        shiftEndTime.setHours(hours, minutes, seconds || 0, 0);
+        
+        // Handle overnight shifts
+        if (shiftEndTime < punchedInAt) {
+          shiftEndTime.setDate(shiftEndTime.getDate() + 1);
+        }
+      } else {
+        // For open shifts, calculate based on work minutes
+        const workMinutes = shiftTemplate.workMinutes || 480; // Default 8 hours
+        shiftEndTime = new Date(punchedInAt.getTime() + workMinutes * 60 * 1000);
+      }
+      
+      // Calculate auto-punchout time (shift end + configured hours)
+      const autoPunchoutTime = new Date(shiftEndTime.getTime() + (shiftTemplate.autoPunchoutAfterShiftEnd * 60 * 60 * 1000));
+      
+      // Check if it's time to auto-punchout
+      if (now >= autoPunchoutTime) {
+        console.log(`Auto-punching out user ${attendance.userId} at ${now.toISOString()}`);
+        
+        // Calculate work duration and attendance status
+        const totalWorkSeconds = (now.getTime() - punchedInAt.getTime()) / 1000;
+        const totalWorkMinutes = Math.floor(totalWorkSeconds / 60);
+        const totalWorkHours = totalWorkSeconds / 3600;
+        
+        let status = 'present';
+        let overtimeMinutes = 0;
+        
+        // Use shift template rules for attendance calculation
+        if (shiftTemplate.halfDayThresholdMinutes && totalWorkMinutes < shiftTemplate.halfDayThresholdMinutes) {
+          status = 'half_day';
+        } else if (totalWorkMinutes < 60) { // Less than 1 hour
+          status = 'absent';
+        } else if (shiftTemplate.overtimeStartMinutes && totalWorkMinutes > shiftTemplate.overtimeStartMinutes) {
+          status = 'overtime'; // Status includes overtime
+        } else {
+          status = 'present';
+        }
+        
+        // Calculate overtime
+        if (shiftTemplate.overtimeStartMinutes && totalWorkMinutes > shiftTemplate.overtimeStartMinutes) {
+          overtimeMinutes = totalWorkMinutes - shiftTemplate.overtimeStartMinutes;
+        }
+        
+        // Update attendance record
+        await attendance.update({
+          punchedOutAt: now,
+          punchOutPhotoUrl: null, // No photo for auto-punchout
+          isOnBreak: false,
+          breakStartedAt: null,
+          breakTotalSeconds: 0,
+          status: status,
+          totalWorkHours: totalWorkHours,
+          overtimeMinutes: overtimeMinutes,
+          autoPunchout: true, // Mark as auto-punchout
+        });
+        
+        console.log(`Auto-punchout completed for user ${attendance.userId}: ${status}, ${totalWorkMinutes} mins worked, ${overtimeMinutes} mins overtime`);
+      }
+    }
+    
+    console.log('Auto-punchout process completed');
+  } catch (error) {
+    console.error('Auto-punchout process error:', error);
+  }
+}
+
+// Manual endpoint to trigger auto-punchout (for testing)
+router.post('/auto-punchout', async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res);
+    if (!orgId) return;
+    
+    // Only allow admin users to trigger auto-punchout
+    if (!req.user.roles || !req.user.roles.includes('admin')) {
+      return res.status(403).json({ 
+        success: false, 
+        message: 'Admin access required' 
+      });
+    }
+    
+    await processAutoPunchouts();
+    
+    res.json({
+      success: true,
+      message: 'Auto-punchout process completed'
+    });
+  } catch (error) {
+    console.error('Auto-punchout endpoint error:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Failed to process auto-punchout' 
     });
   }
 });
