@@ -260,10 +260,19 @@ router.post('/signup-admin', async (req, res) => {
     }
 
     const normalizedPhone = normalizePhone(phone);
-    const existing = await User.findOne({ where: { phone: String(normalizedPhone) } });
-    if (existing) return res.status(409).json({ success: false, message: 'Already registered' });
-
+    
+    // Check if phone number already exists in either User or OrgAccount table
+    const existingUser = await User.findOne({ where: { phone: String(normalizedPhone) } });
     const { OrgAccount } = require('../models');
+    const existingOrg = await OrgAccount.findOne({ where: { phone: String(normalizedPhone) } });
+    
+    if (existingUser || existingOrg) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Phone number already exists in the system' 
+      });
+    }
+
     const org = await OrgAccount.create({
       name: String(businessName),
       phone: String(normalizedPhone),

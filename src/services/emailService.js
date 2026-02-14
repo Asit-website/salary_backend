@@ -534,7 +534,7 @@ const sendAccountActivationEmail = async (adminEmail, adminName, organizationNam
               <div class="account-details">
                 <h3>Account Details:</h3>
                 <div class="detail-item">
-                  <span class="detail-label">• Login URL:</span> ${subscriptionDetails.loginURL || 'http://localhost:3000'}
+                  <span class="detail-label">• Login URL:</span> ${subscriptionDetails.loginURL || 'https://web.vetansutra.com/'}
                 </div>
                 <div class="detail-item">
                   <span class="detail-label">• Subscription Plan:</span> ${subscriptionDetails.planType || 'Basic'}

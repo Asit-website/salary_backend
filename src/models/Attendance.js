@@ -23,6 +23,7 @@ module.exports = (sequelize) => {
 
       punchInPhotoUrl: { type: DataTypes.STRING(255), allowNull: true },
       punchOutPhotoUrl: { type: DataTypes.STRING(255), allowNull: true },
+      note: { type: DataTypes.TEXT, allowNull: true }, // Admin notes for attendance
       orgAccountId: { type: DataTypes.BIGINT.UNSIGNED, allowNull: true, field: 'org_account_id' },
     },
     {

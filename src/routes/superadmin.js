@@ -1,7 +1,8 @@
 const express = require('express');
 const router = express.Router();
 
-const { Plan, OrgAccount, Subscription, User } = require('../models');
+const { sequelize } = require('../sequelize');
+const { Plan, OrgAccount, Subscription, User, Permission, Role } = require('../models');
 const bcrypt = require('bcryptjs');
 const { authRequired } = require('../middleware/auth');
 const { requireRole } = require('../middleware/roles');
@@ -69,12 +70,16 @@ router.get('/clients', async (_req, res) => {
         const sub = await Subscription.findOne({
           where: { orgAccountId: org.id, status: 'ACTIVE' },
           order: [['endAt', 'DESC']],
+          include: [{ model: Plan, as: 'plan' }]
         });
         const shouldBeActive = !!(sub && new Date(sub.endAt) >= now);
         const targetStatus = shouldBeActive ? 'ACTIVE' : 'DISABLED';
         if (org.status !== targetStatus) {
           await org.update({ status: targetStatus });
         }
+        // Add subscription data to org object
+        org.dataValues.currentSubscription = sub;
+        org.dataValues.plan = sub?.plan || null;
       } catch (_) {}
     }
     return res.json({ success: true, clients: rows });
@@ -121,7 +126,18 @@ router.get('/clients/:id/plan-details', async (req, res) => {
         startDate: subscription.startAt,
         endDate: subscription.endAt,
         status: isExpired ? 'expired' : 'active',
-        features: subscription.plan?.features || []
+        features: (() => {
+          const features = subscription.plan?.features || [];
+          if (Array.isArray(features)) return features;
+          if (typeof features === 'string') {
+            try {
+              return JSON.parse(features);
+            } catch {
+              return [];
+            }
+          }
+          return [];
+        })()
       }
     });
   } catch (e) {
@@ -133,9 +149,24 @@ router.post('/clients', async (req, res) => {
   try {
     const { name, phone, status = 'ACTIVE', clientType, location, extra, businessEmail, state, city, channelPartnerId, roleDescription, employeeCount } = req.body || {};
     if (!name) return res.status(400).json({ success: false, message: 'name required' });
+    
+    // Check if phone number already exists in either OrgAccount or User table
+    if (phone) {
+      const normalizedPhone = String(phone).replace(/[^0-9]/g, '').slice(-10);
+      const existingOrg = await OrgAccount.findOne({ where: { phone: normalizedPhone } });
+      const existingUser = await User.findOne({ where: { phone: String(normalizedPhone) } });
+      
+      if (existingOrg || existingUser) {
+        return res.status(400).json({ 
+          success: false, 
+          message: 'Phone number already exists in the system' 
+        });
+      }
+    }
+    
     const row = await OrgAccount.create({
       name,
-      phone: phone || null,
+      phone: phone ? String(phone).replace(/[^0-9]/g, '').slice(-10) : null,
       status,
       clientType: clientType || null,
       location: location || null,
@@ -183,9 +214,29 @@ router.put('/clients/:id', async (req, res) => {
     const row = await OrgAccount.findByPk(req.params.id);
     if (!row) return res.status(404).json({ success: false, message: 'Not found' });
     const { name, phone, status, clientType, location, extra, businessEmail, state, city, channelPartnerId, roleDescription, employeeCount } = req.body || {};
+    
+    // Check if phone number already exists in either OrgAccount or User table (excluding current client)
+    if (phone) {
+      const normalizedPhone = String(phone).replace(/[^0-9]/g, '').slice(-10);
+      const existingOrg = await OrgAccount.findOne({ 
+        where: { 
+          phone: normalizedPhone,
+          id: { [Op.ne]: req.params.id } // Exclude current client
+        } 
+      });
+      const existingUser = await User.findOne({ where: { phone: String(normalizedPhone) } });
+      
+      if (existingOrg || existingUser) {
+        return res.status(400).json({ 
+          success: false, 
+          message: 'Phone number already exists in the system' 
+        });
+      }
+    }
+    
     await row.update({
       ...(name !== undefined ? { name } : {}),
-      ...(phone !== undefined ? { phone } : {}),
+      ...(phone !== undefined ? { phone: phone ? String(phone).replace(/[^0-9]/g, '').slice(-10) : null } : {}),
       ...(status !== undefined ? { status } : {}),
       ...(clientType !== undefined ? { clientType } : {}),
       ...(location !== undefined ? { location } : {}),
@@ -210,7 +261,67 @@ router.post('/clients/:id/subscription', async (req, res) => {
     const org = await OrgAccount.findByPk(orgAccountId);
     if (!org) return res.status(404).json({ success: false, message: 'Organization not found' });
 
-    const { planId, planCode, startAt, staffLimit } = req.body || {};
+    const { planId, planCode, startAt, staffLimit, maxGeolocationStaff } = req.body || {};
+    
+    // Check if client has an active subscription that hasn't expired
+    const existingSubscription = await Subscription.findOne({
+      where: { orgAccountId: org.id, status: 'ACTIVE' },
+      order: [['endAt', 'DESC']]
+    });
+
+    // Allow staff limit increase even if subscription hasn't expired
+    // But block other subscription changes until expiration
+    if (existingSubscription && new Date(existingSubscription.endAt) > new Date()) {
+      // If only staff limit or maxGeolocationStaff is being updated, allow it
+      if ((staffLimit !== undefined && staffLimit !== null && !planId && !planCode && !startAt) || 
+          (maxGeolocationStaff !== undefined && maxGeolocationStaff !== null && !planId && !planCode && !startAt)) {
+        
+        const updateData = {};
+        let message = '';
+        
+        // Handle staff limit update
+        if (staffLimit !== undefined && staffLimit !== null) {
+          if (staffLimit > existingSubscription.staffLimit) {
+            updateData.staffLimit = Number(staffLimit);
+            message += 'Staff limit updated successfully';
+          } else {
+            return res.status(400).json({ 
+              success: false, 
+              message: 'New staff limit must be greater than current limit' 
+            });
+          }
+        }
+        
+        // Handle maxGeolocationStaff update
+        if (maxGeolocationStaff !== undefined && maxGeolocationStaff !== null) {
+          if (maxGeolocationStaff >= existingSubscription.maxGeolocationStaff) {
+            updateData.maxGeolocationStaff = Number(maxGeolocationStaff);
+            if (message) message += ', ';
+            message += 'Max geolocation staff updated successfully';
+          } else {
+            return res.status(400).json({ 
+              success: false, 
+              message: 'New max geolocation staff must be greater than or equal to current limit' 
+            });
+          }
+        }
+        
+        if (Object.keys(updateData).length > 0) {
+          await existingSubscription.update(updateData);
+          return res.json({ 
+            success: true, 
+            message: message,
+            subscription: existingSubscription
+          });
+        }
+      } else {
+        return res.status(400).json({ 
+          success: false, 
+          message: 'Your old subscription is not expired yet. You can only increase staff limit or max geolocation staff until it expires.' 
+        });
+      }
+    }
+
     let plan = null;
     if (planId) plan = await Plan.findByPk(planId);
     if (!plan && planCode) plan = await Plan.findOne({ where: { code: String(planCode).toUpperCase() } });
@@ -227,6 +338,7 @@ router.post('/clients/:id/subscription', async (req, res) => {
       endAt: end,
       status: 'ACTIVE',
       ...(staffLimit !== undefined && staffLimit !== null ? { staffLimit: Number(staffLimit) } : {}),
+      ...(maxGeolocationStaff !== undefined && maxGeolocationStaff !== null ? { maxGeolocationStaff: Number(maxGeolocationStaff) } : {}),
     });
 
     await org.update({ status: 'ACTIVE' });
@@ -281,6 +393,27 @@ router.post('/clients/:id/subscription', async (req, res) => {
   }
 });
 
+// Get staff count for a client
+router.get('/client/:id/staff-count', async (req, res) => {
+  try {
+    const clientId = req.params.id;
+    
+    // Count staff users for this organization
+    const staffCount = await User.count({
+      where: {
+        orgAccountId: clientId,
+        role: 'staff',
+        active: true
+      }
+    });
+    
+    return res.json({ success: true, count: staffCount });
+  } catch (e) {
+    console.error('Failed to get staff count:', e);
+    return res.status(500).json({ success: false, message: 'Failed to get staff count' });
+  }
+});
+
 const { runSubscriptionExpiryCheck } = require('../jobs');
 
 // Superadmin Dashboard metrics
@@ -328,6 +461,38 @@ router.post('/subscription-expiry-reminder-check', async (_req, res) => {
     return res.json({ success: true, message: 'Subscription expiry reminder check completed' });
   } catch (e) {
     return res.status(500).json({ success: false, message: 'Failed to run reminder check' });
+  }
+});
+
+// Get geolocation staff count for a client
+router.get('/client/:id/geo-staff-count', async (req, res) => {
+  try {
+    const clientId = req.params.id;
+
+    // Directly query the users table for staff with geolocation access
+    const [results] = await sequelize.query(`
+      SELECT COUNT(DISTINCT u.id) as count
+      FROM users u
+      WHERE u.org_account_id = :clientId
+      AND u.role = 'staff'
+      AND u.active = 1
+      AND EXISTS (
+        SELECT 1 FROM user_roles ur
+        JOIN roles r ON ur.role_id = r.id
+        JOIN role_permissions rp ON r.id = rp.role_id
+        JOIN permissions p ON rp.permission_id = p.id
+        WHERE ur.user_id = u.id
+        AND p.name = 'geolocation_access'
+      )
+    `, {
+      replacements: { clientId },
+      type: sequelize.QueryTypes.SELECT
+    });
+
+    return res.json({ success: true, count: results ? results.count : 0 });
+  } catch (e) {
+    console.error('Failed to get geolocation staff count:', e);
+    return res.status(500).json({ success: false, message: 'Failed to get geolocation staff count' });
   }
 });
 

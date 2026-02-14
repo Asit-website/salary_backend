@@ -3,6 +3,8 @@ const { Op } = require('sequelize');
 const { authRequired } = require('../middleware/auth');
 const { upload } = require('../upload');
 
+const { sequelize } = require('../sequelize');
+
 const {
   SalesVisit,
   SalesVisitAttachment,
@@ -82,7 +84,6 @@ router.post('/send-client-otp', async (req, res) => {
     await OtpVerify.create({
       phone: normalizedPhone,
       code: otp,
-      purpose: 'client_verification',
       lastSentAt: new Date(),
       expiresAt: new Date(Date.now() + 10 * 60 * 1000), // 10 minutes expiry
     });
@@ -113,13 +114,14 @@ router.post('/send-client-otp', async (req, res) => {
 
 // Submit a visit with optional attachments, geo and client verification
 router.post('/visit', upload.single('clientSignature'), async (req, res) => {
+  const t = await sequelize.transaction();
   try {
     console.log('Visit form submission received');
     console.log('Request body keys:', Object.keys(req.body || {}));
     console.log('File received:', req.file ? req.file.filename : 'No file');
     console.log('File details:', req.file);
     console.log('Content-Type:', req.get('Content-Type'));
-    
+
     const {
       visitDate,
       salesPerson,
@@ -136,6 +138,42 @@ router.post('/visit', upload.single('clientSignature'), async (req, res) => {
       assignedJobId,
     } = req.body || {};
 
+    // If OTP is provided, validate it
+    if (clientOtp && phone) {
+      // Find the most recent OTP for this phone number
+      const otpRecord = await OtpVerify.findOne({
+        where: {
+          phone: normalizePhone(phone),
+          expiresAt: { [Op.gt]: new Date() },
+          consumedAt: null // Use consumedAt instead of usedAt
+        },
+        order: [['createdAt', 'DESC']],
+        transaction: t
+      });
+
+      if (!otpRecord) {
+        await t.rollback();
+        return res.status(400).json({
+          success: false,
+          message: 'No valid OTP found for this phone number. Please request a new OTP.'
+        });
+      }
+
+      // Verify OTP
+      if (otpRecord.code !== clientOtp.trim()) {
+        console.log('OTP Mismatch - Expected:', otpRecord.code, 'Got:', clientOtp.trim());
+        await t.rollback();
+        console.log('Returning Invalid OTP error');
+        return res.status(400).json({
+          success: false,
+          message: 'Invalid OTP'
+        });
+      }
+
+      // Mark OTP as used
+      await otpRecord.update({ consumedAt: new Date() }, { transaction: t });
+    }
+
     const visit = await SalesVisit.create({
       userId: req.user.id,
       visitDate: visitDate ? new Date(visitDate) : new Date(),
@@ -151,12 +189,12 @@ router.post('/visit', upload.single('clientSignature'), async (req, res) => {
       checkInLat: checkInLat !== undefined && checkInLat !== null && checkInLat !== '' ? Number(checkInLat) : null,
       checkInLng: checkInLng !== undefined && checkInLng !== null && checkInLng !== '' ? Number(checkInLng) : null,
       checkInTime: (checkInLat && checkInLng) ? new Date() : null,
-    });
+    }, { transaction: t });
 
     // Handle client signature - same pattern as order proof
     if (req.file && req.file.filename) {
       console.log('Saving signature file:', req.file.filename);
-      await visit.update({ clientSignatureUrl: `/uploads/${req.file.filename}` });
+      await visit.update({ clientSignatureUrl: `/uploads/${req.file.filename}` }, { transaction: t });
       console.log('Signature saved successfully');
     } else {
       console.log('No signature file received');
@@ -194,7 +232,7 @@ router.post('/visit', upload.single('clientSignature'), async (req, res) => {
     );
 
     if (verified && visit.verified !== true) {
-      await visit.update({ verified: true });
+      await visit.update({ verified: true }, { transaction: t });
     }
 
     // If linked to an assigned job, mark it IN PROGRESS (admin completes later)
@@ -203,15 +241,18 @@ router.post('/visit', upload.single('clientSignature'), async (req, res) => {
       if (Number.isFinite(aid)) {
         const job = await AssignedJob.findByPk(aid);
         if (job && job.staffUserId === req.user.id && job.status !== 'complete') {
-          await job.update({ status: 'inprogress' });
+          await job.update({ status: 'inprogress' }, { transaction: t });
         }
       }
     } catch (_) {}
 
+    await t.commit();
     console.log('Visit form submitted successfully, visitId:', visit.id);
     return res.json({ success: true, visitId: visit.id });
   } catch (e) {
+    await t.rollback();
     console.error('Visit form submission error:', e);
+    console.error('Error details:', e.message, e.stack);
     return res.status(500).json({ success: false, message: 'Failed to submit visit' });
   }
 });

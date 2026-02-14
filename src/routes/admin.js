@@ -78,7 +78,7 @@ const storage = multer.diskStorage({
 
     const safe = (file.originalname || 'file').replace(/[^a-zA-Z0-9_.-]/g, '_');
 
-    cb(null, `${ts}-${safe}`);    
+    cb(null, `${ts}-${safe}`);
 
   },
 
@@ -134,7 +134,7 @@ router.post('/payroll/:cycleId/lines/mark-paid', async (req, res) => {
 
     const rows = await PayrollLine.findAll({ where: { id: lineIds, cycleId: id } });
 
-    for (const r of rows) { 
+    for (const r of rows) {
 
       const finalPayload = { ...payload };
 
@@ -146,7 +146,7 @@ router.post('/payroll/:cycleId/lines/mark-paid', async (req, res) => {
 
       }
 
-      await r.update(finalPayload); 
+      await r.update(finalPayload);
 
     }
 
@@ -194,11 +194,11 @@ router.get('/payroll/:cycleId/export', async (req, res) => {
 
     const header = [
 
-      'user_id','name',
+      'user_id', 'name',
 
-      'total_earnings','total_incentives','total_deductions','gross_salary','net_salary','ratio',
+      'total_earnings', 'total_incentives', 'total_deductions', 'gross_salary', 'net_salary', 'ratio',
 
-      'present','half','paid_leave','unpaid_leave','weekly_off','holidays','absent'
+      'present', 'half', 'paid_leave', 'unpaid_leave', 'weekly_off', 'holidays', 'absent'
 
     ];
 
@@ -336,7 +336,7 @@ router.get('/staff/:id/salary-compute', async (req, res) => {
 
     const userId = Number(req.params.id);
 
-    const monthKey = String(req.query.monthKey || req.query.month || '').slice(0,7);
+    const monthKey = String(req.query.monthKey || req.query.month || '').slice(0, 7);
 
     if (!Number.isFinite(userId) || !/^\d{4}-\d{2}$/.test(monthKey)) {
 
@@ -356,11 +356,11 @@ router.get('/staff/:id/salary-compute', async (req, res) => {
 
     const end = new Date(yy, mm, 0);
 
-    const endKey = `${end.getFullYear()}-${String(end.getMonth()+1).padStart(2,'0')}-${String(end.getDate()).padStart(2,'0')}`;
+    const endKey = `${end.getFullYear()}-${String(end.getMonth() + 1).padStart(2, '0')}-${String(end.getDate()).padStart(2, '0')}`;
 
 
 
-    const parseMaybe = (v) => { if (!v) return v; if (typeof v !== 'string') return v; try { v = JSON.parse(v); } catch { return v; } if (typeof v === 'string') { try { v = JSON.parse(v); } catch {} } return v; };
+    const parseMaybe = (v) => { if (!v) return v; if (typeof v !== 'string') return v; try { v = JSON.parse(v); } catch { return v; } if (typeof v === 'string') { try { v = JSON.parse(v); } catch { } } return v; };
 
     const sum = (o) => Object.values(o || {}).reduce((s, v) => s + (Number(v) || 0), 0);
 
@@ -404,9 +404,9 @@ router.get('/staff/:id/salary-compute', async (req, res) => {
 
     // Attendance map
 
-    const atts = await Attendance.findAll({ where: { userId: u.id, date: { [Op.gte]: start, [Op.lte]: endKey } }, attributes: ['status','date'] });
+    const atts = await Attendance.findAll({ where: { userId: u.id, date: { [Op.gte]: start, [Op.lte]: endKey } }, attributes: ['status', 'date'] });
 
-    const attMap = {}; for (const a of atts) { attMap[String(a.date).slice(0,10)] = String(a.status || '').toLowerCase(); }
+    const attMap = {}; for (const a of atts) { attMap[String(a.date).slice(0, 10)] = String(a.status || '').toLowerCase(); }
 
 
 
@@ -428,7 +428,7 @@ router.get('/staff/:id/salary-compute', async (req, res) => {
 
         for (let dte = new Date(lrStart); dte <= lrEnd; dte.setDate(dte.getDate() + 1)) {
 
-          const k = `${dte.getFullYear()}-${String(dte.getMonth()+1).padStart(2,'0')}-${String(dte.getDate()).padStart(2,'0')}`;
+          const k = `${dte.getFullYear()}-${String(dte.getMonth() + 1).padStart(2, '0')}-${String(dte.getDate()).padStart(2, '0')}`;
 
           if (paidRem > 0) { paidLeaveSet.add(k); paidRem -= 1; } else if (unpaidRem > 0) { unpaidLeaveSet.add(k); unpaidRem -= 1; } else { paidLeaveSet.add(k); }
 
@@ -436,7 +436,7 @@ router.get('/staff/:id/salary-compute', async (req, res) => {
 
       }
 
-    } catch (_) {}
+    } catch (_) { }
 
 
 
@@ -450,19 +450,19 @@ router.get('/staff/:id/salary-compute', async (req, res) => {
 
       if (WeeklyOffTemplate && StaffWeeklyOffAssignment) {
 
-        const asg = await StaffWeeklyOffAssignment.findOne({ where: { userId: u.id, active: true }, order: [['id','DESC']] });
+        const asg = await StaffWeeklyOffAssignment.findOne({ where: { userId: u.id, active: true }, order: [['id', 'DESC']] });
 
         if (asg) { const tpl = await WeeklyOffTemplate.findByPk(asg.weeklyOffTemplateId || asg.weekly_off_template_id); woConfig = (tpl && Array.isArray(tpl.config)) ? tpl.config : (tpl?.config || []); }
 
       }
 
-    } catch (_) {}
+    } catch (_) { }
 
     let holidaySet = new Set();
 
     try {
 
-      const hasg = await StaffHolidayAssignment.findOne({ where: { userId: u.id, active: true }, order: [['id','DESC']] });
+      const hasg = await StaffHolidayAssignment.findOne({ where: { userId: u.id, active: true }, order: [['id', 'DESC']] });
 
       if (hasg) {
 
@@ -470,17 +470,17 @@ router.get('/staff/:id/salary-compute', async (req, res) => {
 
         const hs = Array.isArray(tpl?.holidays) ? tpl.holidays : [];
 
-        holidaySet = new Set(hs.filter(h => h && h.active !== false && String(h.date) >= start && String(h.date) <= endKey).map(h => String(h.date).slice(0,10)));
+        holidaySet = new Set(hs.filter(h => h && h.active !== false && String(h.date) >= start && String(h.date) <= endKey).map(h => String(h.date).slice(0, 10)));
 
       } else {
 
-        const rows = await HolidayDate.findAll({ where: { active: { [Op.not]: false }, date: { [Op.gte]: start, [Op.lte]: endKey } }, attributes: ['date','active'] });
+        const rows = await HolidayDate.findAll({ where: { active: { [Op.not]: false }, date: { [Op.gte]: start, [Op.lte]: endKey } }, attributes: ['date', 'active'] });
 
-        holidaySet = new Set(rows.map(r => String(r.date).slice(0,10)));
+        holidaySet = new Set(rows.map(r => String(r.date).slice(0, 10)));
 
       }
 
-    } catch (_) {}
+    } catch (_) { }
 
 
 
@@ -492,7 +492,7 @@ router.get('/staff/:id/salary-compute', async (req, res) => {
 
       const dt = new Date(yy, mm - 1, dnum);
 
-      const key = `${dt.getFullYear()}-${String(dt.getMonth()+1).padStart(2,'0')}-${String(dnum).padStart(2,'0')}`;
+      const key = `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, '0')}-${String(dnum).padStart(2, '0')}`;
 
       const s = attMap[key];
 
@@ -524,7 +524,7 @@ router.get('/staff/:id/salary-compute', async (req, res) => {
 
     const daysInMonth = end.getDate();
 
-    const ratio = daysInMonth > 0 ? Math.max(0, Math.min(1, (present + half*0.5 + weeklyOff + holidays + paidLeave)/daysInMonth)) : 1;
+    const ratio = daysInMonth > 0 ? Math.max(0, Math.min(1, (present + half * 0.5 + weeklyOff + holidays + paidLeave) / daysInMonth)) : 1;
 
     const totals = {
 
@@ -630,7 +630,7 @@ router.post('/payroll/:cycleId/mark-paid', async (req, res) => {
 
     if (!cycle) return res.status(404).json({ success: false, message: 'Cycle not found' });
 
-    
+
 
     // Mark all lines as paid
 
@@ -648,7 +648,7 @@ router.post('/payroll/:cycleId/mark-paid', async (req, res) => {
 
     };
 
-    
+
 
     for (const line of lines) {
 
@@ -666,7 +666,7 @@ router.post('/payroll/:cycleId/mark-paid', async (req, res) => {
 
     }
 
-    
+
 
     await cycle.update({ status: 'PAID' });
 
@@ -746,7 +746,7 @@ router.get('/my-payroll-status', async (req, res) => {
 
     }
 
-    
+
 
     const cycle = await PayrollCycle.findOne({ where: { monthKey, orgAccountId: orgId } });
 
@@ -756,7 +756,7 @@ router.get('/my-payroll-status', async (req, res) => {
 
     }
 
-    
+
 
     const line = await PayrollLine.findOne({ where: { cycleId: cycle.id, userId } });
 
@@ -766,17 +766,17 @@ router.get('/my-payroll-status', async (req, res) => {
 
     }
 
-    
+
 
     if (line.paidAt) {
 
-      return res.json({ 
+      return res.json({
 
-        success: true, 
+        success: true,
 
-        paymentStatus: 'PAID', 
+        paymentStatus: 'PAID',
 
-        paidAmount: line.paidAmount || 0 
+        paidAmount: line.paidAmount || 0
 
       });
 
@@ -952,11 +952,11 @@ router.post('/payroll/:cycleId/compute', async (req, res) => {
 
         const staffLoans = await StaffLoan.findAll({
 
-          where: { 
+          where: {
 
-            staffId: u.id, 
+            staffId: u.id,
 
-            orgId, 
+            orgId,
 
             status: 'active',
 
@@ -970,7 +970,7 @@ router.post('/payroll/:cycleId/compute', async (req, res) => {
 
         console.log(`Found ${staffLoans.length} active loans for staff ${u.id}`);
 
-        
+
 
         for (const loan of staffLoans) {
 
@@ -978,7 +978,7 @@ router.post('/payroll/:cycleId/compute', async (req, res) => {
 
           const loanStartMonth = `${loanStart.getFullYear()}-${String(loanStart.getMonth() + 1).padStart(2, '0')}`;
 
-          
+
 
           // Calculate months passed since loan start (fixed calculation)
 
@@ -986,11 +986,11 @@ router.post('/payroll/:cycleId/compute', async (req, res) => {
 
           const monthsPassed = Math.max(0, (currentMonth.getFullYear() - loanStart.getFullYear()) * 12 + (currentMonth.getMonth() - loanStart.getMonth()) + 1);
 
-          
+
 
           console.log(`Loan ID: ${loan.id}, Start: ${loan.startDate}, EMI: ${loan.emiAmount}, Tenure: ${loan.tenure}, Months Passed: ${monthsPassed}`);
 
-          
+
 
           // Check if EMI should be deducted this month (within tenure)
 
@@ -1008,7 +1008,7 @@ router.post('/payroll/:cycleId/compute', async (req, res) => {
 
         }
 
-        
+
 
         console.log(`Final EMI deductions for staff ${u.id}: ${loanEmiDeductions}`);
 
@@ -1036,7 +1036,7 @@ router.post('/payroll/:cycleId/compute', async (req, res) => {
 
       }
 
-      
+
 
       console.log(`Final deductions for staff ${u.id}:`, finalDeductions);
 
@@ -1044,13 +1044,13 @@ router.post('/payroll/:cycleId/compute', async (req, res) => {
 
       // Attendance summary and proration for the month
 
-      const atts = await Attendance.findAll({ where: { userId: u.id, date: { [Op.gte]: start, [Op.lte]: endKey } }, attributes: ['status','date'] });
+      const atts = await Attendance.findAll({ where: { userId: u.id, date: { [Op.gte]: start, [Op.lte]: endKey } }, attributes: ['status', 'date'] });
 
       const attMap = {};
 
       for (const a of atts) {
 
-        const key = String(a.date || '').slice(0,10);
+        const key = String(a.date || '').slice(0, 10);
 
         attMap[key] = String(a.status || '').toLowerCase();
 
@@ -1080,7 +1080,7 @@ router.post('/payroll/:cycleId/compute', async (req, res) => {
 
           for (let d = new Date(lrStart); d <= lrEnd; d.setDate(d.getDate() + 1)) {
 
-            const k = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+            const k = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 
             if (paidRem > 0) { paidLeaveSet.add(k); paidRem -= 1; }
 
@@ -1114,7 +1114,7 @@ router.post('/payroll/:cycleId/compute', async (req, res) => {
 
         if (WeeklyOffTemplate && StaffWeeklyOffAssignment) {
 
-          const asg = await StaffWeeklyOffAssignment.findOne({ where: { userId: u.id, active: true }, order: [['id','DESC']] });
+          const asg = await StaffWeeklyOffAssignment.findOne({ where: { userId: u.id, active: true }, order: [['id', 'DESC']] });
 
           if (asg) {
 
@@ -1134,7 +1134,7 @@ router.post('/payroll/:cycleId/compute', async (req, res) => {
 
         let holidayDates = [];
 
-        const hasg = await StaffHolidayAssignment.findOne({ where: { userId: u.id, active: true }, order: [['id','DESC']] });
+        const hasg = await StaffHolidayAssignment.findOne({ where: { userId: u.id, active: true }, order: [['id', 'DESC']] });
 
         if (hasg) {
 
@@ -1142,13 +1142,13 @@ router.post('/payroll/:cycleId/compute', async (req, res) => {
 
           const hs = Array.isArray(tpl?.holidays) ? tpl.holidays : [];
 
-          holidayDates = hs.filter(h => h && h.active !== false && String(h.date) >= start && String(h.date) <= endKey).map(h => String(h.date).slice(0,10));
+          holidayDates = hs.filter(h => h && h.active !== false && String(h.date) >= start && String(h.date) <= endKey).map(h => String(h.date).slice(0, 10));
 
         } else {
 
-          const rows = await HolidayDate.findAll({ where: { active: { [Op.not]: false }, date: { [Op.gte]: start, [Op.lte]: endKey } }, attributes: ['date','active'] });
+          const rows = await HolidayDate.findAll({ where: { active: { [Op.not]: false }, date: { [Op.gte]: start, [Op.lte]: endKey } }, attributes: ['date', 'active'] });
 
-          holidayDates = rows.map(r => String(r.date).slice(0,10));
+          holidayDates = rows.map(r => String(r.date).slice(0, 10));
 
         }
 
@@ -1174,7 +1174,7 @@ router.post('/payroll/:cycleId/compute', async (req, res) => {
 
         const dt = new Date(yy, mm - 1, dnum);
 
-        const key = `${dt.getFullYear()}-${String(dt.getMonth()+1).padStart(2,'0')}-${String(dnum).padStart(2,'0')}`;
+        const key = `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, '0')}-${String(dnum).padStart(2, '0')}`;
 
         const s = attMap[key];
 
@@ -1270,11 +1270,11 @@ router.post('/payroll/:cycleId/compute', async (req, res) => {
 
       });
 
-      
+
 
       console.log(`PayrollLine ${created ? 'created' : 'updated'} for staff ${u.id}, deductions:`, line.deductions);
 
-      
+
 
       if (!created) {
 
@@ -1464,7 +1464,7 @@ router.get('/sales/visits', async (req, res) => {
 
     const orgStaffIds = (await User.findAll({ where: { orgAccountId: orgId, role: 'staff' }, attributes: ['id'] })).map(u => u.id);
 
-    const rows = await SalesVisit.findAll({ where: { userId: orgStaffIds }, order: [['id','DESC']], limit: 500 });
+    const rows = await SalesVisit.findAll({ where: { userId: orgStaffIds }, order: [['id', 'DESC']], limit: 500 });
 
     // Resolve user names safely
 
@@ -1476,11 +1476,11 @@ router.get('/sales/visits', async (req, res) => {
 
       try {
 
-        const users = await User.findAll({ where: { id: userIds }, attributes: ['id','name','phone'] });
+        const users = await User.findAll({ where: { id: userIds }, attributes: ['id', 'name', 'phone'] });
 
         for (const u of users) userMap[u.id] = u.name || u.phone || `User #${u.id}`;
 
-      } catch (_) {}
+      } catch (_) { }
 
     }
 
@@ -1513,6 +1513,97 @@ router.get('/sales/visits', async (req, res) => {
   } catch (e) {
 
     return res.status(500).json({ success: false, message: 'Failed to load visits' });
+
+  }
+
+});
+
+
+
+// Get a single sales visit detail (org-scoped)
+
+router.get('/sales/visits/:id', async (req, res) => {
+
+  try {
+
+    const orgId = requireOrg(req, res); if (!orgId) return;
+
+    const { SalesVisit, SalesVisitAttachment, User } = sequelize.models;
+
+    const orgStaffIds = (await User.findAll({ where: { orgAccountId: orgId, role: 'staff' }, attributes: ['id'] })).map(u => u.id);
+
+    const id = Number(req.params.id);
+
+    if (!Number.isFinite(id)) return res.status(400).json({ success: false, message: 'invalid id' });
+
+    const row = await SalesVisit.findOne({
+
+      where: { id, userId: orgStaffIds },
+      include: [
+        {
+          model: SalesVisitAttachment,
+          as: 'attachments',
+          required: false
+        }
+      ]
+    });
+
+    if (!row) return res.status(404).json({ success: false, message: 'Not found' });
+
+    // Get staff name
+    let staffName = null;
+    const uid = row.userId ?? row.user_id;
+    if (User && Number.isFinite(Number(uid))) {
+      try {
+        const u = await User.findOne({ where: { id: Number(uid), orgAccountId: orgId }, attributes: ['id', 'name', 'phone'] });
+        staffName = u ? (u.name || u.phone || `User #${u.id}`) : null;
+      } catch (_) { }
+    }
+
+    // Helper function to get full URL for file paths
+    const getFullUrl = (filePath) => {
+      if (!filePath) return null;
+      if (filePath.startsWith('http://') || filePath.startsWith('https://')) return filePath;
+      const baseUrl = 'https://backend.vetansutra.com';
+      return `${baseUrl}${filePath.startsWith('/') ? '' : '/'}${filePath}`;
+    };
+
+    const visit = {
+      id: row.id,
+      visitDate: row.visitDate || row.createdAt,
+      userId: row.userId ?? row.user_id ?? null,
+      staffName: staffName || row.salesPerson || null,
+      salesPerson: row.salesPerson || null,
+      clientName: row.clientName || null,
+      phone: row.phone || null,
+      clientType: row.clientType || null,
+      visitType: row.visitType || null,
+      location: row.location || null,
+      madeOrder: !!row.madeOrder,
+      amount: Number(row.amount || 0),
+      verified: !!row.verified,
+      clientSignatureUrl: getFullUrl(row.clientSignatureUrl),
+      clientSignature: getFullUrl(row.clientSignatureUrl),
+      clientOtp: row.clientOtp || null,
+      checkInLat: row.checkInLat || null,
+      checkInLng: row.checkInLng || null,
+      checkInTime: row.checkInTime || null,
+      createdAt: row.createdAt,
+      updatedAt: row.updatedAt,
+      attachments: Array.isArray(row.attachments) ? row.attachments.map(a => ({
+        id: a.id,
+        fileUrl: getFullUrl(a.fileUrl),
+        name: a.fileUrl ? a.fileUrl.split('/').pop() : null
+      })) : []
+    };
+
+    return res.json({ success: true, visit });
+
+  } catch (e) {
+
+    console.error('Failed to load visit details:', e);
+
+    return res.status(500).json({ success: false, message: 'Failed to load visit details' });
 
   }
 
@@ -1572,7 +1663,7 @@ router.get('/sales/orders', async (req, res) => {
 
     const orgStaffIds = (await User.findAll({ where: { orgAccountId: orgId, role: 'staff' }, attributes: ['id'] })).map(u => u.id);
 
-    const rows = await Order.findAll({ where: { userId: orgStaffIds }, order: [['id','DESC']], limit: 500 });
+    const rows = await Order.findAll({ where: { userId: orgStaffIds }, order: [['id', 'DESC']], limit: 500 });
 
     const userIds = Array.from(new Set(rows.map(r => (r.userId ?? r.user_id)).filter(v => Number.isFinite(Number(v))))).map(Number);
 
@@ -1584,11 +1675,11 @@ router.get('/sales/orders', async (req, res) => {
 
       try {
 
-        const users = await User.findAll({ where: { id: userIds }, attributes: ['id','name','phone'] });
+        const users = await User.findAll({ where: { id: userIds }, attributes: ['id', 'name', 'phone'] });
 
         for (const u of users) userMap[u.id] = u.name || u.phone || `User #${u.id}`;
 
-      } catch (_) {}
+      } catch (_) { }
 
     }
 
@@ -1596,11 +1687,11 @@ router.get('/sales/orders', async (req, res) => {
 
       try {
 
-        const clients = await Client.findAll({ where: { id: clientIds }, attributes: ['id','name','phone','location'] });
+        const clients = await Client.findAll({ where: { id: clientIds }, attributes: ['id', 'name', 'phone', 'location'] });
 
         for (const c of clients) clientMap[c.id] = c.name || c.phone || `Client #${c.id}`;
 
-      } catch (_) {}
+      } catch (_) { }
 
     }
 
@@ -1622,7 +1713,7 @@ router.get('/sales/orders', async (req, res) => {
 
         for (const k of counts) itemsCount[Number(k.id)] = Number(k.cnt) || 0;
 
-      } catch (_) {}
+      } catch (_) { }
 
     }
 
@@ -1653,6 +1744,8 @@ router.get('/sales/orders', async (req, res) => {
   }
 
 });
+
+
 
 
 
@@ -1694,7 +1787,7 @@ router.put('/sales/targets/:id', async (req, res) => {
 
     }
 
-    if (period !== undefined) patch.period = ['daily','weekly','monthly'].includes(String(period)) ? String(period) : 'monthly';
+    if (period !== undefined) patch.period = ['daily', 'weekly', 'monthly'].includes(String(period)) ? String(period) : 'monthly';
 
     if (periodDate !== undefined) { const pd = periodDate ? String(periodDate) : null; patch.period_date = pd; patch.periodDate = pd; }
 
@@ -1792,11 +1885,11 @@ router.get('/sales/orders/:id', async (req, res) => {
 
       try {
 
-        const u = await User.findOne({ where: { id: Number(uid), orgAccountId: orgId }, attributes: ['id','name','phone'] });
+        const u = await User.findOne({ where: { id: Number(uid), orgAccountId: orgId }, attributes: ['id', 'name', 'phone'] });
 
         staffName = u ? (u.name || u.phone || `User #${u.id}`) : null;
 
-      } catch (_) {}
+      } catch (_) { }
 
     }
 
@@ -1878,25 +1971,27 @@ router.get('/settings/business-info', async (req, res) => {
 
     const orgId = requireOrg(req, res); if (!orgId) return;
 
-    const row = await sequelize.models.OrgBusinessInfo.findOne({ where: { active: true, orgAccountId: orgId }, order: [['updatedAt','DESC']] });
+    const row = await sequelize.models.OrgBusinessInfo.findOne({ where: { active: true, orgAccountId: orgId }, order: [['updatedAt', 'DESC']] });
 
     if (!row) return res.json({ success: true, info: null });
 
-    return res.json({ success: true, info: {
+    return res.json({
+      success: true, info: {
 
-      state: row.state || null,
+        state: row.state || null,
 
-      city: row.city || null,
+        city: row.city || null,
 
-      addressLine1: row.addressLine1 || null,
+        addressLine1: row.addressLine1 || null,
 
-      addressLine2: row.addressLine2 || null,
+        addressLine2: row.addressLine2 || null,
 
-      pincode: row.pincode || null,
+        pincode: row.pincode || null,
 
-      logoUrl: row.logoUrl || null,
+        logoUrl: row.logoUrl || null,
 
-    } });
+      }
+    });
 
   } catch (e) {
 
@@ -2016,49 +2111,51 @@ router.get('/settings/kyb', async (req, res) => {
 
     const orgId = requireOrg(req, res); if (!orgId) return;
 
-    const row = await sequelize.models.OrgKyb.findOne({ where: { active: true, orgAccountId: orgId }, order: [['updatedAt','DESC']] });
+    const row = await sequelize.models.OrgKyb.findOne({ where: { active: true, orgAccountId: orgId }, order: [['updatedAt', 'DESC']] });
 
     if (!row) return res.json({ success: true, kyb: null });
 
-    return res.json({ success: true, kyb: {
+    return res.json({
+      success: true, kyb: {
 
-      businessType: row.businessType || null,
+        businessType: row.businessType || null,
 
-      gstin: row.gstin || null,
+        gstin: row.gstin || null,
 
-      businessName: row.businessName || null,
+        businessName: row.businessName || null,
 
-      businessAddress: row.businessAddress || null,
+        businessAddress: row.businessAddress || null,
 
-      cin: row.cin || null,
+        cin: row.cin || null,
 
-      directorName: row.directorName || null,
+        directorName: row.directorName || null,
 
-      companyPan: row.companyPan || null,
+        companyPan: row.companyPan || null,
 
-      bankAccountNumber: row.bankAccountNumber || null,
+        bankAccountNumber: row.bankAccountNumber || null,
 
-      ifsc: row.ifsc || null,
+        ifsc: row.ifsc || null,
 
-      docs: {
+        docs: {
 
-        certificate_incorp: row.docCertificateIncorp || null,
+          certificate_incorp: row.docCertificateIncorp || null,
 
-        company_pan: row.docCompanyPan || null,
+          company_pan: row.docCompanyPan || null,
 
-        director_pan: row.docDirectorPan || null,
+          director_pan: row.docDirectorPan || null,
 
-        cancelled_cheque: row.docCancelledCheque || null,
+          cancelled_cheque: row.docCancelledCheque || null,
 
-        director_id: row.docDirectorId || null,
+          director_id: row.docDirectorId || null,
 
-        gstin_certificate: row.docGstinCertificate || null,
+          gstin_certificate: row.docGstinCertificate || null,
+
+        }
+
+        // docs will be added later
 
       }
-
-      // docs will be added later
-
-    }});
+    });
 
   } catch (e) {
 
@@ -2156,7 +2253,7 @@ router.get('/settings/bank-account', async (req, res) => {
 
     const orgId = requireOrg(req, res); if (!orgId) return;
 
-    const row = await sequelize.models.OrgBankAccount.findOne({ where: { active: true, orgAccountId: orgId }, order: [['updatedAt','DESC']] });
+    const row = await sequelize.models.OrgBankAccount.findOne({ where: { active: true, orgAccountId: orgId }, order: [['updatedAt', 'DESC']] });
 
     if (!row) return res.json({ success: true, bank: null });
 
@@ -2166,17 +2263,19 @@ router.get('/settings/bank-account', async (req, res) => {
 
       : row.accountNumber || null;
 
-    return res.json({ success: true, bank: {
+    return res.json({
+      success: true, bank: {
 
-      accountHolderName: row.accountHolderName,
+        accountHolderName: row.accountHolderName,
 
-      accountNumber: row.accountNumber,
+        accountNumber: row.accountNumber,
 
-      ifsc: row.ifsc,
+        ifsc: row.ifsc,
 
-      maskedAccount: masked,
+        maskedAccount: masked,
 
-    }});
+      }
+    });
 
   } catch (e) {
 
@@ -2244,7 +2343,7 @@ router.get('/salary-templates', async (req, res) => {
 
     const orgId = requireOrg(req, res); if (!orgId) return;
 
-    const rows = await SalaryTemplate.findAll({ where: { active: true, orgAccountId: orgId }, order: [['name','ASC']] });
+    const rows = await SalaryTemplate.findAll({ where: { active: true, orgAccountId: orgId }, order: [['name', 'ASC']] });
 
     return res.json({ success: true, data: rows });
 
@@ -2334,7 +2433,7 @@ router.delete('/salary-templates/:id', async (req, res) => {
 
     if (!row) return res.status(404).json({ success: false, message: 'Salary template not found' });
 
-    await row.destroy();   
+    await row.destroy();
 
     return res.json({ success: true, deleted: true });
 
@@ -2746,7 +2845,7 @@ if (!BusinessFunction || !BusinessFunctionValue) {
 
     BusinessFunctionValue.belongsTo(BusinessFunction, { foreignKey: 'businessFunctionId' });
 
-  } catch (_) {}
+  } catch (_) { }
 
 }
 
@@ -4897,7 +4996,7 @@ function computeItemAmount(item, ctx) {
 
         // Handle double-encoded case: string that parses to a JSON string again
 
-        if (typeof current === 'string') {              
+        if (typeof current === 'string') {
 
           current = tryParse(current);
 
@@ -4905,51 +5004,51 @@ function computeItemAmount(item, ctx) {
 
         if (!current || typeof current !== 'object') current = {};
 
-    const isEmptyObj = (o) => !o || Object.keys(o).length === 0;
+        const isEmptyObj = (o) => !o || Object.keys(o).length === 0;
 
-    if (isEmptyObj(current) || (isEmptyObj(current.earnings) && isEmptyObj(current.deductions) && isEmptyObj(current.incentives))) {
+        if (isEmptyObj(current) || (isEmptyObj(current.earnings) && isEmptyObj(current.deductions) && isEmptyObj(current.incentives))) {
 
-      // Build baseline from numeric columns
+          // Build baseline from numeric columns
 
-      const baseE = {
+          const baseE = {
 
-        basic_salary: Number(user.basicSalary || user.basic_salary || 0),
+            basic_salary: Number(user.basicSalary || user.basic_salary || 0),
 
-        hra: Number(user.hra || user.hra_amount || 0),
+            hra: Number(user.hra || user.hra_amount || 0),
 
-        da: Number(user.da || user.da_amount || 0),
+            da: Number(user.da || user.da_amount || 0),
 
-        special_allowance: Number(user.specialAllowance || user.special_allowance || 0),
+            special_allowance: Number(user.specialAllowance || user.special_allowance || 0),
 
-        conveyance_allowance: Number(user.conveyanceAllowance || user.conveyance_allowance || 0),
+            conveyance_allowance: Number(user.conveyanceAllowance || user.conveyance_allowance || 0),
 
-        medical_allowance: Number(user.medicalAllowance || user.medical_allowance || 0),
+            medical_allowance: Number(user.medicalAllowance || user.medical_allowance || 0),
 
-        telephone_allowance: Number(user.telephoneAllowance || user.telephone_allowance || 0),
+            telephone_allowance: Number(user.telephoneAllowance || user.telephone_allowance || 0),
 
-        other_allowances: Number(user.otherAllowances || user.other_allowances || 0),
+            other_allowances: Number(user.otherAllowances || user.other_allowances || 0),
 
-      };
+          };
 
-      const baseD = {
+          const baseD = {
 
-        provident_fund: Number(user.pfDeduction || user.provident_fund || 0),
+            provident_fund: Number(user.pfDeduction || user.provident_fund || 0),
 
-        esi: Number(user.esiDeduction || user.esi || 0),
+            esi: Number(user.esiDeduction || user.esi || 0),
 
-        professional_tax: Number(user.professionalTax || user.professional_tax || 0),
+            professional_tax: Number(user.professionalTax || user.professional_tax || 0),
 
-        income_tax: Number(user.tdsDeduction || user.income_tax || 0),
+            income_tax: Number(user.tdsDeduction || user.income_tax || 0),
 
-        loan_deduction: Number(user.loanDeduction || user.loan_deduction || 0),
+            loan_deduction: Number(user.loanDeduction || user.loan_deduction || 0),
 
-        other_deductions: Number(user.otherDeductions || user.other_deductions || 0),
+            other_deductions: Number(user.otherDeductions || user.other_deductions || 0),
 
-      };
+          };
 
-      current = { earnings: baseE, incentives: {}, deductions: baseD };
+          current = { earnings: baseE, incentives: {}, deductions: baseD };
 
-    }
+        }
 
 
 
@@ -6528,7 +6627,7 @@ router.get('/staff/leave-assignments', async (req, res) => {
     const staff = await User.findAll({
       where: { orgAccountId: orgId, role: 'staff' },
       include: [
-        { 
+        {
           model: StaffLeaveAssignment, as: 'leaveAssignments',
           include: [
             {
@@ -6557,8 +6656,8 @@ router.get('/leave/balances', async (req, res) => {
     const balances = await LeaveBalance.findAll({
       where: { orgAccountId: orgId },
       include: [
-        { 
-          model: User, as: 'user', 
+        {
+          model: User, as: 'user',
           attributes: ['id', 'phone'],
           include: [
             { model: StaffProfile, as: 'profile', attributes: ['name'] }
@@ -7611,7 +7710,7 @@ router.post('/attendance/templates', async (req, res) => {
 
     const attendanceMode = modeMap[rawMode] || rawMode;
 
-    
+
 
     const payload = {
 
@@ -8011,7 +8110,7 @@ router.get('/settings/brand', async (req, res) => {
 
     const orgId = requireOrg(req, res); if (!orgId) return;
 
-    const row = await sequelize.models.OrgBrand.findOne({ where: { active: true, orgAccountId: orgId }, order: [['updatedAt','DESC']] });
+    const row = await sequelize.models.OrgBrand.findOne({ where: { active: true, orgAccountId: orgId }, order: [['updatedAt', 'DESC']] });
 
     const name = row?.displayName || getDefaultBrandSettings().displayName;
 
@@ -9005,8 +9104,37 @@ router.get('/staff/:id', async (req, res) => {
 
       where: { id, orgAccountId: orgId, role: 'staff' },
 
-      include: [{ model: StaffProfile, as: 'profile' }]
+      include: [
+        { model: StaffProfile, as: 'profile' }
+      ]
 
+    });
+
+    // Fetch shift template separately if profile has shiftSelection
+    let shiftTemplate = null;
+    if (user?.profile?.shiftSelection) {
+      shiftTemplate = await ShiftTemplate.findOne({
+        where: { id: Number(user.profile.shiftSelection) },
+        attributes: ['id', 'name', 'startTime', 'endTime']
+      });
+    }
+
+    // Fetch attendance template separately if profile has attendanceSettingTemplate
+    let attendanceTemplate = null;
+    if (user?.profile?.attendanceSettingTemplate) {
+      attendanceTemplate = await AttendanceTemplate.findOne({
+        where: { id: Number(user.profile.attendanceSettingTemplate) },
+        attributes: ['id', 'name']
+      });
+    }
+
+    console.log('Debug - User data:', {
+      userId: user?.id,
+      shiftTemplateId: user?.shiftTemplateId,
+      shiftTemplate: shiftTemplate,
+      profileShiftSelection: user?.profile?.shiftSelection,
+      attendanceTemplate: attendanceTemplate,
+      profileAttendanceTemplate: user?.profile?.attendanceSettingTemplate
     });
 
     if (!user) {
@@ -9086,6 +9214,18 @@ router.get('/staff/:id', async (req, res) => {
         other_deductions: user.otherDeductions ?? user.other_deductions ?? 0,
 
         profile: user.profile || null,
+
+        shiftTemplate: shiftTemplate ? {
+          id: shiftTemplate.id,
+          name: shiftTemplate.name,
+          startTime: shiftTemplate.startTime,
+          endTime: shiftTemplate.endTime
+        } : null,
+
+        attendanceTemplate: attendanceTemplate ? {
+          id: attendanceTemplate.id,
+          name: attendanceTemplate.name
+        } : null
 
       }
 
@@ -9181,17 +9321,17 @@ router.get('/attendance', async (req, res) => {
 
     const { date, month, staffId } = req.query || {};
 
-    
+
 
     // Support both date and month parameters
 
     if (!date && !month) return res.status(400).json({ success: false, message: 'date or month required' });
 
-    
+
 
     let whereClause;
 
-    
+
 
     if (month) {
 
@@ -9213,13 +9353,13 @@ router.get('/attendance', async (req, res) => {
 
       }
 
-      
+
 
       const startDate = new Date(year, monthNum - 1, 1);
 
       const endDate = new Date(year, monthNum, 0); // Last day of month
 
-      
+
 
       whereClause = {
 
@@ -9335,17 +9475,17 @@ router.get('/attendance/export', async (req, res) => {
 
     const { date, month, staffId } = req.query || {};
 
-    
+
 
     // Support both date and month parameters
 
     if (!date && !month) return res.status(400).json({ success: false, message: 'date or month required' });
 
-    
+
 
     let whereClause;
 
-    
+
 
     if (month) {
 
@@ -9367,13 +9507,13 @@ router.get('/attendance/export', async (req, res) => {
 
       }
 
-      
+
 
       const startDate = new Date(year, monthNum - 1, 1);
 
       const endDate = new Date(year, monthNum, 0); // Last day of month
 
-      
+
 
       whereClause = {
 
@@ -9437,7 +9577,7 @@ router.get('/attendance/export', async (req, res) => {
 
     const halfDayCount = rows.filter(r => r.status === 'half_day').length;
 
-    
+
 
     // Department-wise statistics
 
@@ -9473,7 +9613,7 @@ router.get('/attendance/export', async (req, res) => {
 
     const toTime = (dt) => (dt ? new Date(dt).toTimeString().slice(0, 8) : '');
 
-    
+
 
     rows.forEach(r => {
 
@@ -9497,7 +9637,7 @@ router.get('/attendance/export', async (req, res) => {
 
     const lines = [];
 
-    
+
 
     // Add header with proper formatting
 
@@ -9509,7 +9649,7 @@ router.get('/attendance/export', async (req, res) => {
 
     lines.push('');
 
-    
+
 
     // Overall statistics in clean column format
 
@@ -9519,19 +9659,19 @@ router.get('/attendance/export', async (req, res) => {
 
     const totalRecords = presentCount + absentCount + leaveCount + halfDayCount;
 
-    const presentPct = totalRecords > 0 ? ((presentCount/totalRecords)*100).toFixed(1) : '0';
+    const presentPct = totalRecords > 0 ? ((presentCount / totalRecords) * 100).toFixed(1) : '0';
 
-    const absentPct = totalRecords > 0 ? ((absentCount/totalRecords)*100).toFixed(1) : '0';
+    const absentPct = totalRecords > 0 ? ((absentCount / totalRecords) * 100).toFixed(1) : '0';
 
-    const leavePct = totalRecords > 0 ? ((leaveCount/totalRecords)*100).toFixed(1) : '0';
+    const leavePct = totalRecords > 0 ? ((leaveCount / totalRecords) * 100).toFixed(1) : '0';
 
-    const halfDayPct = totalRecords > 0 ? ((halfDayCount/totalRecords)*100).toFixed(1) : '0';
+    const halfDayPct = totalRecords > 0 ? ((halfDayCount / totalRecords) * 100).toFixed(1) : '0';
 
-    lines.push(`${totalStaff},${presentCount},${presentPct}%,${absentCount},${absentPct}%,${leaveCount},${leavePct}%,${halfDayCount},${halfDayPct}%,${totalWorkMinutes},${(totalWorkMinutes/60).toFixed(1)}`);
+    lines.push(`${totalStaff},${presentCount},${presentPct}%,${absentCount},${absentPct}%,${leaveCount},${leavePct}%,${halfDayCount},${halfDayPct}%,${totalWorkMinutes},${(totalWorkMinutes / 60).toFixed(1)}`);
 
     lines.push('');
 
-    
+
 
     // Department-wise statistics in clean column format
 
@@ -9543,15 +9683,15 @@ router.get('/attendance/export', async (req, res) => {
 
       const deptTotal = stats.present + stats.absent + stats.leave + stats.halfDay;
 
-      const presentPct = deptTotal > 0 ? ((stats.present/deptTotal)*100).toFixed(1) : '0';
+      const presentPct = deptTotal > 0 ? ((stats.present / deptTotal) * 100).toFixed(1) : '0';
 
-      const absentPct = deptTotal > 0 ? ((stats.absent/deptTotal)*100).toFixed(1) : '0';
+      const absentPct = deptTotal > 0 ? ((stats.absent / deptTotal) * 100).toFixed(1) : '0';
 
-      const leavePct = deptTotal > 0 ? ((stats.leave/deptTotal)*100).toFixed(1) : '0';
+      const leavePct = deptTotal > 0 ? ((stats.leave / deptTotal) * 100).toFixed(1) : '0';
 
-      const halfDayPct = deptTotal > 0 ? ((stats.halfDay/deptTotal)*100).toFixed(1) : '0';
+      const halfDayPct = deptTotal > 0 ? ((stats.halfDay / deptTotal) * 100).toFixed(1) : '0';
 
-      
+
 
       // Calculate department work minutes
 
@@ -9573,15 +9713,15 @@ router.get('/attendance/export', async (req, res) => {
 
       });
 
-      
 
-      lines.push(`${dept},${stats.total},${stats.present},${presentPct}%,${stats.absent},${absentPct}%,${stats.leave},${leavePct}%,${stats.halfDay},${halfDayPct}%,${deptWorkMinutes},${(deptWorkMinutes/60).toFixed(1)}`);
+
+      lines.push(`${dept},${stats.total},${stats.present},${presentPct}%,${stats.absent},${absentPct}%,${stats.leave},${leavePct}%,${stats.halfDay},${halfDayPct}%,${deptWorkMinutes},${(deptWorkMinutes / 60).toFixed(1)}`);
 
     });
 
     lines.push('');
 
-    
+
 
     // Weekly summary in clean column format (if month data)
 
@@ -9593,7 +9733,7 @@ router.get('/attendance/export', async (req, res) => {
 
       lines.push('Week,Start Date,End Date,Total Staff,Present Count,Present %,Absent Count,Absent %,Leave Count,Leave %,Half Day Count,Half Day %,Total Work Minutes,Total Work Hours');
 
-      
+
 
       rows.forEach(r => {
 
@@ -9603,7 +9743,7 @@ router.get('/attendance/export', async (req, res) => {
 
         const weekKey = weekStart.toISOString().split('T')[0];
 
-        
+
 
         if (!weekStats[weekKey]) {
 
@@ -9623,7 +9763,7 @@ router.get('/attendance/export', async (req, res) => {
 
         else if (r.status === 'half_day') weekStats[weekKey].halfDay++;
 
-        
+
 
         // Add work minutes for week
 
@@ -9641,7 +9781,7 @@ router.get('/attendance/export', async (req, res) => {
 
       });
 
-      
+
 
       Object.entries(weekStats).forEach(([weekStart, stats], index) => {
 
@@ -9653,17 +9793,17 @@ router.get('/attendance/export', async (req, res) => {
 
         const total = stats.present + stats.absent + stats.leave + stats.halfDay;
 
-        const presentPct = total > 0 ? ((stats.present/total)*100).toFixed(1) : '0';
+        const presentPct = total > 0 ? ((stats.present / total) * 100).toFixed(1) : '0';
 
-        const absentPct = total > 0 ? ((stats.absent/total)*100).toFixed(1) : '0';
+        const absentPct = total > 0 ? ((stats.absent / total) * 100).toFixed(1) : '0';
 
-        const leavePct = total > 0 ? ((stats.leave/total)*100).toFixed(1) : '0';
+        const leavePct = total > 0 ? ((stats.leave / total) * 100).toFixed(1) : '0';
 
-        const halfDayPct = total > 0 ? ((stats.halfDay/total)*100).toFixed(1) : '0';
+        const halfDayPct = total > 0 ? ((stats.halfDay / total) * 100).toFixed(1) : '0';
 
-        
 
-        lines.push(`Week ${index + 1},${weekStart},${weekEnd.toISOString().split('T')[0]},${totalStaff},${stats.present},${presentPct}%,${stats.absent},${absentPct}%,${stats.leave},${leavePct}%,${stats.halfDay},${halfDayPct}%,${stats.workMinutes},${(stats.workMinutes/60).toFixed(1)}`);
+
+        lines.push(`Week ${index + 1},${weekStart},${weekEnd.toISOString().split('T')[0]},${totalStaff},${stats.present},${presentPct}%,${stats.absent},${absentPct}%,${stats.leave},${leavePct}%,${stats.halfDay},${halfDayPct}%,${stats.workMinutes},${(stats.workMinutes / 60).toFixed(1)}`);
 
       });
 
@@ -9671,7 +9811,7 @@ router.get('/attendance/export', async (req, res) => {
 
     }
 
-    
+
 
     // Staff-wise summary in clean column format
 
@@ -9679,7 +9819,7 @@ router.get('/attendance/export', async (req, res) => {
 
     lines.push('Staff Name,Staff ID,Department,Total Days,Present Count,Present %,Absent Count,Absent %,Leave Count,Leave %,Half Day Count,Half Day %,Total Work Minutes,Total Work Hours,Attendance Rate');
 
-    
+
 
     const staffStats = {};
 
@@ -9693,7 +9833,7 @@ router.get('/attendance/export', async (req, res) => {
 
       const staffIdNum = r.user?.profile?.staffId || 'N/A';
 
-      
+
 
       if (!staffStats[staffId]) {
 
@@ -9719,7 +9859,7 @@ router.get('/attendance/export', async (req, res) => {
 
       }
 
-      
+
 
       if (r.status === 'present') staffStats[staffId].present++;
 
@@ -9729,7 +9869,7 @@ router.get('/attendance/export', async (req, res) => {
 
       else if (r.status === 'half_day') staffStats[staffId].halfDay++;
 
-      
+
 
       // Add work minutes
 
@@ -9747,25 +9887,25 @@ router.get('/attendance/export', async (req, res) => {
 
     });
 
-    
+
 
     Object.values(staffStats).forEach(staff => {
 
       const total = staff.present + staff.absent + staff.leave + staff.halfDay;
 
-      const presentPct = total > 0 ? ((staff.present/total)*100).toFixed(1) : '0';
+      const presentPct = total > 0 ? ((staff.present / total) * 100).toFixed(1) : '0';
 
-      const absentPct = total > 0 ? ((staff.absent/total)*100).toFixed(1) : '0';
+      const absentPct = total > 0 ? ((staff.absent / total) * 100).toFixed(1) : '0';
 
-      const leavePct = total > 0 ? ((staff.leave/total)*100).toFixed(1) : '0';
+      const leavePct = total > 0 ? ((staff.leave / total) * 100).toFixed(1) : '0';
 
-      const halfDayPct = total > 0 ? ((staff.halfDay/total)*100).toFixed(1) : '0';
+      const halfDayPct = total > 0 ? ((staff.halfDay / total) * 100).toFixed(1) : '0';
 
       const attendanceRate = total > 0 ? ((staff.present / total) * 100).toFixed(1) : '0';
 
       const workHours = (staff.workMinutes / 60).toFixed(1);
 
-      
+
 
       lines.push(`${staff.name},${staff.staffId},${staff.department},${total},${staff.present},${presentPct}%,${staff.absent},${absentPct}%,${staff.leave},${leavePct}%,${staff.halfDay},${halfDayPct}%,${staff.workMinutes},${workHours},${attendanceRate}%`);
 
@@ -9773,15 +9913,15 @@ router.get('/attendance/export', async (req, res) => {
 
     lines.push('');
 
-    
+
 
     // Detailed attendance records in clean column format
 
     lines.push('DETAILED ATTENDANCE RECORDS');
 
-    lines.push('Staff Name,Staff ID,Department,Date,Day,Check In,Check Out,Status,Work Minutes,Work Hours,Performance');
+    lines.push('Staff Name,Staff ID,Department,Date,Day,Check In,Check Out,Status,Break Minutes,Work Minutes,Work Hours,Performance');
 
-    
+
 
     rows.forEach(r => {
 
@@ -9805,7 +9945,7 @@ router.get('/attendance/export', async (req, res) => {
 
       } else if (r.punchedInAt || r.punchedOutAt) status = 'half_day';
 
-      
+
 
       // Calculate work minutes and hours
 
@@ -9825,7 +9965,7 @@ router.get('/attendance/export', async (req, res) => {
 
       }
 
-      
+
 
       // Get day of week
 
@@ -9833,7 +9973,17 @@ router.get('/attendance/export', async (req, res) => {
 
       const dayOfWeek = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'][dateObj.getDay()];
 
-      
+
+
+      // Calculate break minutes
+
+      let breakMinutes = 0;
+
+      if (r.breakTotalSeconds && r.breakTotalSeconds > 0) {
+
+        breakMinutes = Math.round(r.breakTotalSeconds / 60);
+
+      }
 
       // Performance indicator
 
@@ -9847,7 +9997,7 @@ router.get('/attendance/export', async (req, res) => {
 
       else if (status === 'absent') performance = 'Absent';
 
-      
+
 
       const line = [
 
@@ -9867,6 +10017,8 @@ router.get('/attendance/export', async (req, res) => {
 
         status,
 
+        breakMinutes,
+
         workMinutes,
 
         workHours,
@@ -9883,7 +10035,7 @@ router.get('/attendance/export', async (req, res) => {
 
     const csv = lines.join('\n');
 
-    
+
 
     // Create Excel workbook with proper formatting
 
@@ -9891,7 +10043,7 @@ router.get('/attendance/export', async (req, res) => {
 
     const worksheet = workbook.addWorksheet('Attendance Report');
 
-    
+
 
     // Parse CSV data and add to worksheet
 
@@ -9901,7 +10053,7 @@ router.get('/attendance/export', async (req, res) => {
 
     let sectionStartRow = 1;
 
-    
+
 
     for (let i = 0; i < csvLines.length; i++) {
 
@@ -9909,7 +10061,7 @@ router.get('/attendance/export', async (req, res) => {
 
       if (!line) continue;
 
-      
+
 
       if (line.includes('ATTENDANCE REPORT')) {
 
@@ -9957,7 +10109,7 @@ router.get('/attendance/export', async (req, res) => {
 
         currentRow++;
 
-      } else if (i === 1 || (csvLines[i-1] && csvLines[i-1].includes('STATISTICS') || csvLines[i-1].includes('SUMMARY') || csvLines[i-1].includes('RECORDS'))) {
+      } else if (i === 1 || (csvLines[i - 1] && csvLines[i - 1].includes('STATISTICS') || csvLines[i - 1].includes('SUMMARY') || csvLines[i - 1].includes('RECORDS'))) {
 
         // Header row
 
@@ -9997,7 +10149,7 @@ router.get('/attendance/export', async (req, res) => {
 
           cell.alignment = { horizontal: 'left', vertical: 'middle' };
 
-          
+
 
           // Color coding based on content
 
@@ -10027,7 +10179,7 @@ router.get('/attendance/export', async (req, res) => {
 
           }
 
-          
+
 
           // Highlight summary rows
 
@@ -10051,7 +10203,7 @@ router.get('/attendance/export', async (req, res) => {
 
     }
 
-    
+
 
     // Set column widths
 
@@ -10089,7 +10241,7 @@ router.get('/attendance/export', async (req, res) => {
 
     ];
 
-    
+
 
     // Generate Excel file
 
@@ -10106,6 +10258,73 @@ router.get('/attendance/export', async (req, res) => {
     console.error('Attendance export error:', e);
 
     return res.status(500).json({ success: false, message: 'Failed to export attendance' });
+
+  }
+
+});
+
+// Add note to attendance record (org-scoped)
+
+router.post('/attendance/note', async (req, res) => {
+
+  try {
+
+    const orgId = requireOrg(req, res); if (!orgId) return;
+
+    const { staffId, date, note } = req.body || {};
+
+
+    if (!note || note.trim() === '') {
+
+      return res.status(400).json({ success: false, message: 'Note is required' });
+
+    }
+
+    // Find existing attendance record only (don't create new one)
+
+    // console.log('Looking for attendance with:', { staffId, date });
+
+    // Debug: Check what attendance records exist for today
+    const todayRecords = await Attendance.findAll({
+      where: { date: date },
+      limit: 5
+    });
+    console.log('Today attendance records:', todayRecords.map(r => ({ id: r.id, userId: r.userId, date: r.date })));
+
+    // Try to find by userId first, then by attendance record id
+    let attendance = await Attendance.findOne({ where: { userId: staffId, date } });
+
+    // If not found by userId, try by attendance record id
+    if (!attendance) {
+      attendance = await Attendance.findOne({ where: { id: staffId, date } });
+      if (attendance) {
+        // console.log('Found attendance by record id, userId is:', attendance.userId);
+      }
+    }
+
+    // console.log('Found attendance:', attendance);
+
+    if (!attendance) {
+
+      return res.status(404).json({ success: false, message: 'Attendance record not found. Cannot add note to non-existent attendance.' });
+
+    }
+
+
+
+    // Update existing attendance record with note
+
+    await attendance.update({ note: note, updatedBy: req.user?.id || null });
+
+
+
+    res.json({ success: true, message: 'Note saved successfully', data: attendance });
+
+  } catch (e) {
+
+    console.error('Attendance note error:', e);
+
+    return res.status(500).json({ success: false, message: 'Failed to save note' });
 
   }
 
@@ -11637,11 +11856,11 @@ router.get('/dashboard/late-arrivals', async (req, res) => {
 
       include: [
 
-        { 
+        {
 
-          model: User, 
+          model: User,
 
-          as: 'user', 
+          as: 'user',
 
           where: { role: 'staff', orgAccountId: orgId },
 
@@ -11751,7 +11970,7 @@ router.get('/dashboard/department-distribution', async (req, res) => {
 
     const orgId = requireOrg(req, res); if (!orgId) return;
 
-    
+
 
     // Get all business function values for "department" type
 
@@ -11761,7 +11980,7 @@ router.get('/dashboard/department-distribution', async (req, res) => {
 
     if (BusinessFunction) {
 
-      deptFunction = await BusinessFunction.findOne({ 
+      deptFunction = await BusinessFunction.findOne({
 
         where: { name: { [Op.like]: '%department%' }, orgAccountId: orgId },
 
@@ -11773,7 +11992,7 @@ router.get('/dashboard/department-distribution', async (req, res) => {
 
     const validDepts = deptFunction?.values?.map(v => v.value) || [];
 
-    
+
 
     // Get staff distribution by department from profile
 
@@ -11795,7 +12014,7 @@ router.get('/dashboard/department-distribution', async (req, res) => {
 
     validDepts.forEach(d => { deptCounts[d] = 0; });
 
-    
+
 
     staffByDept.forEach(staff => {
 
@@ -12563,7 +12782,7 @@ router.post('/geofence/templates', async (req, res) => {
 
       name: String(name).trim(),
 
-      approvalRequired: !!approvalRequired,                                      
+      approvalRequired: !!approvalRequired,
 
       active: active !== false,
 
@@ -12887,7 +13106,7 @@ router.get('/sales/clients', async (req, res) => {
 
     const orgId = requireOrg(req, res); if (!orgId) return;
 
-    const rows = await sequelize.models.Client.findAll({ where: { orgAccountId: orgId }, order: [['createdAt','DESC']] });
+    const rows = await sequelize.models.Client.findAll({ where: { orgAccountId: orgId }, order: [['createdAt', 'DESC']] });
 
     const data = rows.map(r => {
 
@@ -13069,7 +13288,7 @@ router.get('/sales/assignments', async (req, res) => {
 
       where: { orgAccountId: orgId },
 
-      order: [['createdAt','DESC']],
+      order: [['createdAt', 'DESC']],
 
       include: [
 
@@ -13227,7 +13446,7 @@ router.get('/sales/targets', async (req, res) => {
 
     const orgStaffIds = (await User.findAll({ where: { orgAccountId: orgId, role: 'staff' }, attributes: ['id'] })).map(u => u.id);
 
-    const rows = await SalesTarget.findAll({ where: { staffUserId: orgStaffIds }, order: [['id','DESC']], limit: 1000 });
+    const rows = await SalesTarget.findAll({ where: { staffUserId: orgStaffIds }, order: [['id', 'DESC']], limit: 1000 });
 
 
 
@@ -13251,7 +13470,7 @@ router.get('/sales/targets', async (req, res) => {
 
         try {
 
-          const users = await User.findAll({ where: { id: staffIds }, attributes: ['id','name','phone'] });
+          const users = await User.findAll({ where: { id: staffIds }, attributes: ['id', 'name', 'phone'] });
 
           for (const u of users) {
 
@@ -13357,7 +13576,7 @@ router.post('/sales/targets', async (req, res) => {
 
     if (!staff) return res.status(404).json({ success: false, message: 'Staff not found' });
 
-    const p = ['daily','weekly','monthly'].includes(String(period)) ? String(period) : 'monthly';
+    const p = ['daily', 'weekly', 'monthly'].includes(String(period)) ? String(period) : 'monthly';
 
     const pd = periodDate ? String(periodDate) : null;
 
@@ -13457,7 +13676,7 @@ router.put('/staff/:id/salary', async (req, res) => {
 
         const iso = dateLike.slice(0, 10);
 
-        if (/^\d{4}-\d{2}-\d{2}$/.test(iso)) return iso.slice(0,7);
+        if (/^\d{4}-\d{2}-\d{2}$/.test(iso)) return iso.slice(0, 7);
 
       }
 
@@ -13471,7 +13690,7 @@ router.put('/staff/:id/salary', async (req, res) => {
 
         const month1 = (mNum >= 0 && mNum <= 11) ? (mNum + 1) : (mNum >= 1 && mNum <= 12 ? mNum : null);
 
-        if (month1) return `${yNum}-${String(month1).padStart(2,'0')}`;
+        if (month1) return `${yNum}-${String(month1).padStart(2, '0')}`;
 
       }
 
@@ -13481,7 +13700,7 @@ router.put('/staff/:id/salary', async (req, res) => {
 
         const month1 = (mNum >= 0 && mNum <= 11) ? (mNum + 1) : (mNum >= 1 && mNum <= 12 ? mNum : null);
 
-        if (month1) return `${yy}-${String(month1).padStart(2,'0')}`;
+        if (month1) return `${yy}-${String(month1).padStart(2, '0')}`;
 
       }
 
@@ -13741,7 +13960,7 @@ router.get('/reports/org-leave', async (req, res) => {
 
     const orgId = requireOrg(req, res); if (!orgId) return;
 
-    
+
 
     const { month, year, format, employeeIds } = req.query;
 
@@ -13749,11 +13968,11 @@ router.get('/reports/org-leave', async (req, res) => {
 
     const endDate = new Date(startDate.getFullYear(), startDate.getMonth() + 1, 0);
 
-    
+
 
     // Get staff based on selection
 
-    let staffWhereClause = { 
+    let staffWhereClause = {
 
       orgAccountId: orgId,
 
@@ -13761,7 +13980,7 @@ router.get('/reports/org-leave', async (req, res) => {
 
     };
 
-    
+
 
     // If specific employees are selected, filter by their IDs
 
@@ -13777,7 +13996,7 @@ router.get('/reports/org-leave', async (req, res) => {
 
     }
 
-    
+
 
     // Get all staff in the organization (or selected staff)
 
@@ -13845,7 +14064,7 @@ router.get('/reports/org-leave', async (req, res) => {
 
       const worksheet = workbook.addWorksheet('Leave Report');
 
-      
+
 
       // Headers
 
@@ -13925,7 +14144,7 @@ router.get('/reports/org-leave', async (req, res) => {
 
       res.setHeader('Content-Disposition', `attachment; filename=org-leave-report-${startDate.getFullYear()}-${startDate.getMonth() + 1}.xlsx`);
 
-      
+
 
       await workbook.xlsx.write(res);
 
@@ -13969,7 +14188,7 @@ router.get('/reports/org-attendance', async (req, res) => {
 
     const orgId = requireOrg(req, res); if (!orgId) return;
 
-    
+
 
     const { month, year, format, employeeIds } = req.query;
 
@@ -13977,11 +14196,11 @@ router.get('/reports/org-attendance', async (req, res) => {
 
     const endDate = new Date(startDate.getFullYear(), startDate.getMonth() + 1, 0);
 
-    
+
 
     // Get staff based on selection
 
-    let staffWhereClause = { 
+    let staffWhereClause = {
 
       orgAccountId: orgId,
 
@@ -13989,7 +14208,7 @@ router.get('/reports/org-attendance', async (req, res) => {
 
     };
 
-    
+
 
     // If specific employees are selected, filter by their IDs
 
@@ -14005,7 +14224,7 @@ router.get('/reports/org-attendance', async (req, res) => {
 
     }
 
-    
+
 
     // Get all staff in the organization (or selected staff)
 
@@ -14069,7 +14288,7 @@ router.get('/reports/org-attendance', async (req, res) => {
 
       const worksheet = workbook.addWorksheet('Attendance Report');
 
-      
+
 
       // Headers
 
@@ -14105,7 +14324,7 @@ router.get('/reports/org-attendance', async (req, res) => {
 
         const punchOutTime = att.punchedOutAt ? new Date(att.punchedOutAt).toLocaleTimeString() : 'N/A';
 
-        
+
 
         let workHours = 'N/A';
 
@@ -14165,7 +14384,7 @@ router.get('/reports/org-attendance', async (req, res) => {
 
       res.setHeader('Content-Disposition', `attachment; filename=org-attendance-report-${startDate.getFullYear()}-${startDate.getMonth() + 1}.xlsx`);
 
-      
+
 
       await workbook.xlsx.write(res);
 
@@ -14209,7 +14428,7 @@ router.get('/reports/org-sales', async (req, res) => {
 
     const orgId = requireOrg(req, res); if (!orgId) return;
 
-    
+
 
     const { month, year, format, employeeIds } = req.query;
 
@@ -14217,11 +14436,11 @@ router.get('/reports/org-sales', async (req, res) => {
 
     const endDate = new Date(startDate.getFullYear(), startDate.getMonth() + 1, 0);
 
-    
+
 
     // Get staff based on selection
 
-    let staffWhereClause = { 
+    let staffWhereClause = {
 
       orgAccountId: orgId,
 
@@ -14229,7 +14448,7 @@ router.get('/reports/org-sales', async (req, res) => {
 
     };
 
-    
+
 
     // If specific employees are selected, filter by their IDs
 
@@ -14245,7 +14464,7 @@ router.get('/reports/org-sales', async (req, res) => {
 
     }
 
-    
+
 
     // Get all staff in the organization (or selected staff)
 
@@ -14309,7 +14528,7 @@ router.get('/reports/org-sales', async (req, res) => {
 
       const worksheet = workbook.addWorksheet('Sales Report');
 
-      
+
 
       // Headers
 
@@ -14387,7 +14606,7 @@ router.get('/reports/org-sales', async (req, res) => {
 
       res.setHeader('Content-Disposition', `attachment; filename=org-sales-report-${month}.xlsx`);
 
-      
+
 
       await workbook.xlsx.write(res);
 
@@ -14429,17 +14648,17 @@ router.get('/geolocation', async (req, res) => {
 
     const { LocationPing, User, StaffProfile, Attendance } = sequelize.models;
 
-    
+
 
     const { startDate, endDate, staffId, date } = req.query || {};
 
-    
+
 
     let whereClause = {};
 
     let attendanceWhere = {};
 
-    
+
 
     // Date filtering
 
@@ -14463,7 +14682,7 @@ router.get('/geolocation', async (req, res) => {
 
     }
 
-    
+
 
     // Staff filtering
 
@@ -14475,7 +14694,7 @@ router.get('/geolocation', async (req, res) => {
 
     }
 
-    
+
 
     // Get staff location data
 
@@ -14515,7 +14734,7 @@ router.get('/geolocation', async (req, res) => {
 
     });
 
-    
+
 
     // Get attendance data for punch in/out times
 
@@ -14529,7 +14748,7 @@ router.get('/geolocation', async (req, res) => {
 
     });
 
-    
+
 
     // Process data to match frontend expectations
 
@@ -14537,7 +14756,7 @@ router.get('/geolocation', async (req, res) => {
 
     const staffMap = new Map();
 
-    
+
 
     // Group location pings by user and date
 
@@ -14547,7 +14766,7 @@ router.get('/geolocation', async (req, res) => {
 
       const key = `${ping.userId}-${userDate}`;
 
-      
+
 
       if (!staffMap.has(key)) {
 
@@ -14571,7 +14790,7 @@ router.get('/geolocation', async (req, res) => {
 
       }
 
-      
+
 
       staffMap.get(key).locations.push({
 
@@ -14589,7 +14808,7 @@ router.get('/geolocation', async (req, res) => {
 
     });
 
-    
+
 
     // Add attendance data
 
@@ -14609,7 +14828,7 @@ router.get('/geolocation', async (req, res) => {
 
     });
 
-    
+
 
     // Convert map to array and calculate summary data
 
@@ -14627,7 +14846,7 @@ router.get('/geolocation', async (req, res) => {
 
     });
 
-    
+
 
     res.json({
 
@@ -14659,11 +14878,11 @@ router.get('/geolocation/stats', async (req, res) => {
 
     const { LocationPing, User, Attendance } = sequelize.models;
 
-    
+
 
     const today = new Date().toISOString().slice(0, 10);
 
-    
+
 
     // Get total staff count
 
@@ -14673,7 +14892,7 @@ router.get('/geolocation/stats', async (req, res) => {
 
     });
 
-    
+
 
     // Get active staff (who have location pings today)
 
@@ -14707,7 +14926,7 @@ router.get('/geolocation/stats', async (req, res) => {
 
     const activeStaff = activeStaffResult.length;
 
-    
+
 
     // Get total location pings today
 
@@ -14735,13 +14954,13 @@ router.get('/geolocation/stats', async (req, res) => {
 
     });
 
-    
+
 
     // Calculate average locations per active staff
 
     const averageLocations = activeStaff > 0 ? (totalLocations / activeStaff).toFixed(1) : 0;
 
-    
+
 
     res.json({
 
@@ -14783,13 +15002,13 @@ router.get('/geolocation/:staffId/timeline', async (req, res) => {
 
     const { LocationPing, User } = sequelize.models;
 
-    
+
 
     const staffId = Number(req.params.staffId);
 
     const { date } = req.query;
 
-    
+
 
     if (!Number.isFinite(staffId)) {
 
@@ -14797,7 +15016,7 @@ router.get('/geolocation/:staffId/timeline', async (req, res) => {
 
     }
 
-    
+
 
     if (!date) {
 
@@ -14805,7 +15024,7 @@ router.get('/geolocation/:staffId/timeline', async (req, res) => {
 
     }
 
-    
+
 
     // Verify staff belongs to organization
 
@@ -14815,7 +15034,7 @@ router.get('/geolocation/:staffId/timeline', async (req, res) => {
 
     });
 
-    
+
 
     if (!staff) {
 
@@ -14823,7 +15042,7 @@ router.get('/geolocation/:staffId/timeline', async (req, res) => {
 
     }
 
-    
+
 
     // Get location pings for the specific date
 
@@ -14845,7 +15064,7 @@ router.get('/geolocation/:staffId/timeline', async (req, res) => {
 
     });
 
-    
+
 
     // Format timeline data
 
@@ -14865,7 +15084,7 @@ router.get('/geolocation/:staffId/timeline', async (req, res) => {
 
     }));
 
-    
+
 
     res.json({
 
@@ -14903,17 +15122,17 @@ router.get('/assets', async (req, res) => {
 
 
 
-    const { 
+    const {
 
-      page = 1, 
+      page = 1,
 
-      limit = 10, 
+      limit = 10,
 
-      search, 
+      search,
 
-      category, 
+      category,
 
-      status, 
+      status,
 
       assignedTo,
 
@@ -14927,7 +15146,7 @@ router.get('/assets', async (req, res) => {
 
     const whereClause = { orgId };
 
-    
+
 
     // Apply filters
 
@@ -14949,7 +15168,7 @@ router.get('/assets', async (req, res) => {
 
     }
 
-    
+
 
     if (category) whereClause.category = category;
 
@@ -14991,7 +15210,7 @@ router.get('/assets', async (req, res) => {
 
       .map(asset => asset.assignedTo);
 
-    
+
 
     const assignedUsers = assignedUserIds.length > 0 ? await User.findAll({
 
@@ -15109,7 +15328,7 @@ router.get('/assets/stats', async (req, res) => {
 
       Asset.count({ where: { orgId } }),
 
-      
+
 
       // Assets by status
 
@@ -15131,7 +15350,7 @@ router.get('/assets/stats', async (req, res) => {
 
       }),
 
-      
+
 
       // Assets by category
 
@@ -15153,7 +15372,7 @@ router.get('/assets/stats', async (req, res) => {
 
       }),
 
-      
+
 
       // Assets by condition
 
@@ -15175,7 +15394,7 @@ router.get('/assets/stats', async (req, res) => {
 
       }),
 
-      
+
 
       // Maintenance due (next 30 days)
 
@@ -15401,11 +15620,11 @@ router.post('/assets', async (req, res) => {
 
       if (existingAsset) {
 
-        return res.status(400).json({ 
+        return res.status(400).json({
 
-          success: false, 
+          success: false,
 
-          message: 'Serial number already exists' 
+          message: 'Serial number already exists'
 
         });
 
@@ -15555,11 +15774,11 @@ router.put('/assets/:id', async (req, res) => {
 
       if (existingAsset) {
 
-        return res.status(400).json({ 
+        return res.status(400).json({
 
-          success: false, 
+          success: false,
 
-          message: 'Serial number already exists' 
+          message: 'Serial number already exists'
 
         });
 
@@ -15667,11 +15886,11 @@ router.delete('/assets/:id', async (req, res) => {
 
     if (activeAssignments) {
 
-      return res.status(400).json({ 
+      return res.status(400).json({
 
-        success: false, 
+        success: false,
 
-        message: 'Cannot delete asset with active assignments' 
+        message: 'Cannot delete asset with active assignments'
 
       });
 
@@ -15731,11 +15950,11 @@ router.post('/assets/:id/assign', async (req, res) => {
 
     if (asset.status !== 'available') {
 
-      return res.status(400).json({ 
+      return res.status(400).json({
 
-        success: false, 
+        success: false,
 
-        message: 'Asset is not available for assignment' 
+        message: 'Asset is not available for assignment'
 
       });
 
@@ -15847,11 +16066,11 @@ router.post('/assets/:id/return', async (req, res) => {
 
     if (asset.status !== 'in_use') {
 
-      return res.status(400).json({ 
+      return res.status(400).json({
 
-        success: false, 
+        success: false,
 
-        message: 'Asset is not currently assigned' 
+        message: 'Asset is not currently assigned'
 
       });
 
@@ -15935,15 +16154,15 @@ router.get('/asset-assignments', async (req, res) => {
 
 
 
-    const { 
+    const {
 
-      page = 1, 
+      page = 1,
 
-      limit = 10, 
+      limit = 10,
 
-      search, 
+      search,
 
-      status, 
+      status,
 
       assetId,
 
@@ -15959,7 +16178,7 @@ router.get('/asset-assignments', async (req, res) => {
 
     const whereClause = {};
 
-    
+
 
     // Apply filters
 
@@ -16101,7 +16320,7 @@ router.get('/asset-assignments', async (req, res) => {
 
     if (search) {
 
-      filteredAssignments = assignments.filter(assignment => 
+      filteredAssignments = assignments.filter(assignment =>
 
         assignment.asset?.name?.toLowerCase().includes(search.toLowerCase()) ||
 
@@ -16187,11 +16406,11 @@ router.post('/asset-assignments/:id/return', async (req, res) => {
 
     if (assignment.status !== 'active') {
 
-      return res.status(400).json({ 
+      return res.status(400).json({
 
-        success: false, 
+        success: false,
 
-        message: 'Assignment is not active' 
+        message: 'Assignment is not active'
 
       });
 
@@ -16261,15 +16480,15 @@ router.get('/asset-maintenance', async (req, res) => {
 
 
 
-    const { 
+    const {
 
-      page = 1, 
+      page = 1,
 
-      limit = 10, 
+      limit = 10,
 
-      search, 
+      search,
 
-      status, 
+      status,
 
       maintenanceType,
 
@@ -16287,7 +16506,7 @@ router.get('/asset-maintenance', async (req, res) => {
 
     const whereClause = {};
 
-    
+
 
     // Apply filters
 
@@ -16307,7 +16526,7 @@ router.get('/asset-maintenance', async (req, res) => {
 
     let maintenanceWhereClause = { ...whereClause };
 
-    
+
 
     // If assetId is provided, we need to filter by asset through include
 
@@ -16425,7 +16644,7 @@ router.get('/asset-maintenance', async (req, res) => {
 
       }
 
-      
+
 
       if (record.creator && profileMap[record.creator.id]) {
 
@@ -16445,7 +16664,7 @@ router.get('/asset-maintenance', async (req, res) => {
 
       }
 
-      
+
 
       // Debug completedDate
 
@@ -16465,7 +16684,7 @@ router.get('/asset-maintenance', async (req, res) => {
 
     if (search) {
 
-      filteredRecords = maintenanceRecords.filter(record => 
+      filteredRecords = maintenanceRecords.filter(record =>
 
         record.asset?.name?.toLowerCase().includes(search.toLowerCase()) ||
 
@@ -16541,7 +16760,7 @@ router.get('/asset-maintenance/stats', async (req, res) => {
 
       }),
 
-      
+
 
       // Maintenance by status
 
@@ -16563,7 +16782,7 @@ router.get('/asset-maintenance/stats', async (req, res) => {
 
       }),
 
-      
+
 
       // Maintenance by type
 
@@ -16585,7 +16804,7 @@ router.get('/asset-maintenance/stats', async (req, res) => {
 
       }),
 
-      
+
 
       // Overdue maintenance
 
@@ -16779,7 +16998,7 @@ router.post('/asset-maintenance', async (req, res) => {
 
       });
 
-      
+
 
       if (creatorProfile) {
 
@@ -16929,7 +17148,7 @@ router.put('/asset-maintenance/:id', async (req, res) => {
 
       });
 
-      
+
 
       if (creatorProfile) {
 
@@ -16973,7 +17192,7 @@ router.post('/asset-maintenance/:id/complete', async (req, res) => {
 
     const { completedDate, cost, performedBy, notes } = req.body;
 
-    
+
 
     console.log('Complete maintenance request body:', req.body);
 
@@ -17033,7 +17252,7 @@ router.post('/asset-maintenance/:id/complete', async (req, res) => {
 
       nextMaintenanceDate.setMonth(nextMaintenanceDate.getMonth() + 6); // Schedule next maintenance in 6 months
 
-      
+
 
       await maintenance.asset.update({
 
@@ -17079,15 +17298,15 @@ router.get('/loans', async (req, res) => {
 
 
 
-    const { 
+    const {
 
-      page = 1, 
+      page = 1,
 
-      limit = 10, 
+      limit = 10,
 
-      search, 
+      search,
 
-      status, 
+      status,
 
       staffId,
 
@@ -17101,7 +17320,7 @@ router.get('/loans', async (req, res) => {
 
     const whereClause = { orgId };
 
-    
+
 
     // Apply filters
 
@@ -17141,9 +17360,9 @@ router.get('/loans', async (req, res) => {
 
       include: [
 
-        { 
+        {
 
-          model: User, 
+          model: User,
 
           as: 'staffMember',
 
@@ -17251,7 +17470,7 @@ router.post('/loans', async (req, res) => {
 
     console.log('Organization ID:', orgId);
 
-    
+
 
     const staff = await User.findOne({
 
@@ -17297,7 +17516,7 @@ router.post('/loans', async (req, res) => {
 
     let emiAmount;
 
-    
+
 
     if (monthlyRate === 0) {
 
@@ -17305,13 +17524,13 @@ router.post('/loans', async (req, res) => {
 
     } else {
 
-      emiAmount = amount * monthlyRate * Math.pow(1 + monthlyRate, months) / 
+      emiAmount = amount * monthlyRate * Math.pow(1 + monthlyRate, months) /
 
-                  (Math.pow(1 + monthlyRate, months) - 1);
+        (Math.pow(1 + monthlyRate, months) - 1);
 
     }
 
-    
+
 
     emiAmount = Math.round(emiAmount * 100) / 100;
 
@@ -17355,9 +17574,9 @@ router.post('/loans', async (req, res) => {
 
       include: [
 
-        { 
+        {
 
-          model: User, 
+          model: User,
 
           as: 'staffMember',
 
@@ -17461,7 +17680,7 @@ router.put('/loans/:id', async (req, res) => {
 
       const months = tenure;
 
-      
+
 
       if (monthlyRate === 0) {
 
@@ -17469,13 +17688,13 @@ router.put('/loans/:id', async (req, res) => {
 
       } else {
 
-        emiAmount = amount * monthlyRate * Math.pow(1 + monthlyRate, months) / 
+        emiAmount = amount * monthlyRate * Math.pow(1 + monthlyRate, months) /
 
-                    (Math.pow(1 + monthlyRate, months) - 1);
+          (Math.pow(1 + monthlyRate, months) - 1);
 
       }
 
-      
+
 
       emiAmount = Math.round(emiAmount * 100) / 100;
 
@@ -17515,9 +17734,9 @@ router.put('/loans/:id', async (req, res) => {
 
       include: [
 
-        { 
+        {
 
-          model: User, 
+          model: User,
 
           as: 'staffMember',
 

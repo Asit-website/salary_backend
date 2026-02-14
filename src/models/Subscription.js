@@ -12,6 +12,12 @@ module.exports = (sequelize) => {
       status: { type: DataTypes.ENUM('ACTIVE','EXPIRED','CANCELED'), allowNull: false, defaultValue: 'ACTIVE' },
       meta: { type: DataTypes.JSON, allowNull: true },
       staffLimit: { type: DataTypes.INTEGER, allowNull: true, field: 'staff_limit' },
+      maxGeolocationStaff: { 
+        type: DataTypes.INTEGER, 
+        allowNull: true, 
+        field: 'max_geolocation_staff',
+        defaultValue: 0
+      }
     },
     { tableName: 'subscriptions', underscored: true }
   );

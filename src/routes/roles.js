@@ -229,6 +229,8 @@ router.post('/assign-role', authRequired, tenantEnforce, async (req, res) => {
     const orgAccountId = req.tenantOrgAccountId;
     const { userId, roleIds } = req.body;
 
+    console.log('Assign role request:', { userId, roleIds, orgAccountId });
+
     if (!userId || !roleIds || !Array.isArray(roleIds)) {
       return res.status(400).json({ success: false, message: 'User ID and role IDs are required' });
     }
@@ -259,11 +261,11 @@ router.post('/assign-role', authRequired, tenantEnforce, async (req, res) => {
       return res.status(400).json({ success: false, message: 'One or more roles not found' });
     }
 
-    // Check if organization has geolocation enabled in their subscription
-    const subscription = await Subscription.findOne({
-      where: { orgAccountId, status: 'ACTIVE' },
-      include: [{ model: Plan, as: 'plan' }]
-    });
+    console.log('Roles to assign:', roles.map(r => ({ id: r.id, name: r.name, permissions: r.permissions?.length })));
+
+    // Use the active subscription from middleware
+    const subscription = req.activeSubscription;
+    console.log('Subscription:', subscription ? { id: subscription.id, maxGeolocationStaff: subscription.maxGeolocationStaff } : 'None');
 
     // Check if any of the roles being assigned have geolocation permission
     const geoPermission = await Permission.findOne({ where: { name: 'geolocation_access' } });
@@ -271,20 +273,15 @@ router.post('/assign-role', authRequired, tenantEnforce, async (req, res) => {
       role.permissions?.some(p => p.id === geoPermission?.id)
     );
 
-    // If assigning geolocation roles but org doesn't have geolocation enabled
-    if (geolocationRoles.length > 0 && (!subscription || !subscription.plan.geolocationEnabled)) {
-      return res.status(403).json({ 
-        success: false, 
-        message: 'Cannot assign geolocation access roles. Your organization\'s subscription plan does not include geolocation features. Please upgrade your plan to enable geolocation access.' 
-      });
-    }
+    console.log('Geolocation permission:', geoPermission?.id, 'Geolocation roles:', geolocationRoles.length);
 
-    // Check geolocation staff limits if geolocation is enabled
-    if (subscription && subscription.plan.geolocationEnabled && geolocationRoles.length > 0) {
-      const maxGeoStaff = subscription.meta?.maxGeolocationStaff || subscription.plan.maxGeolocationStaff;
+    // Check geolocation staff limits if geolocation is enabled and roles have geo permission
+    if (subscription && subscription.maxGeolocationStaff > 0 && geolocationRoles.length > 0) {
+      console.log('Checking geolocation limits...');
+      const maxGeoStaff = subscription.maxGeolocationStaff;
       
-      // Count current staff with geolocation permission (excluding the user being updated)
-      const currentGeoStaff = await User.count({
+      // Count current staff with geolocation permission (excluding current user)
+      const allStaff = await User.findAll({
         where: { 
           orgAccountId, 
           role: 'staff', 
@@ -293,22 +290,29 @@ router.post('/assign-role', authRequired, tenantEnforce, async (req, res) => {
         },
         include: [
           {
-            model: StaffProfile,
-            as: 'profile'
-          },
-          {
             model: Role,
             as: 'roles',
             through: { attributes: [] },
             include: [{
               model: Permission,
               as: 'permissions',
-              through: { attributes: [] },
-              where: { id: geoPermission.id }
+              through: { attributes: [] }
             }]
           }
         ]
       });
+      
+      // Filter users who have the geolocation_access permission
+      const usersWithGeoAccess = allStaff.filter(user => 
+        user.roles?.some(role => 
+          role.permissions?.some(permission => permission.id === geoPermission.id)
+        )
+      );
+      
+      // Count unique users
+      const currentGeoStaff = usersWithGeoAccess.length;
+
+      console.log('Current geo staff count (excluding user):', currentGeoStaff);
 
       // Check if current user already has geolocation permission
       const currentUserRoles = await User.findByPk(userId, {
@@ -328,11 +332,16 @@ router.post('/assign-role', authRequired, tenantEnforce, async (req, res) => {
         role.permissions?.some(p => p.id === geoPermission.id)
       ) || false;
 
+      console.log('Current user has geo access:', currentUserHasGeo);
+
       // Calculate new total after assignment
       const newTotalGeoStaff = currentGeoStaff + (currentUserHasGeo ? 0 : 1);
 
+      console.log('New total geo staff after assignment:', newTotalGeoStaff, 'Max allowed:', maxGeoStaff);
+
       // Check if new assignment would exceed limit
       if (newTotalGeoStaff > maxGeoStaff) {
+        console.log('Limit exceeded, blocking assignment');
         return res.status(400).json({ 
           success: false, 
           message: `Geolocation staff limit reached (${maxGeoStaff}). Currently ${currentGeoStaff} staff have geolocation access. Cannot assign more staff with geolocation access.` 
@@ -340,12 +349,16 @@ router.post('/assign-role', authRequired, tenantEnforce, async (req, res) => {
       }
     }
 
+    console.log('Proceeding with role assignment...');
+
     // Remove existing role assignments
     await UserRole.destroy({ where: { userId } });
+    console.log('Removed existing roles');
 
     // Add new role assignments
     const userRoles = roleIds.map(roleId => ({ userId, roleId }));
     await UserRole.bulkCreate(userRoles);
+    console.log('Created new role assignments:', userRoles);
 
     // Get updated user with roles
     const updatedUser = await User.findByPk(userId, {
@@ -361,6 +374,7 @@ router.post('/assign-role', authRequired, tenantEnforce, async (req, res) => {
       }]
     });
 
+    console.log('Role assignment completed successfully');
     res.json({ success: true, user: updatedUser });
   } catch (error) {
     console.error('Assign role error:', error);
@@ -372,35 +386,46 @@ router.post('/assign-role', authRequired, tenantEnforce, async (req, res) => {
 router.get('/geolocation-limits', authRequired, tenantEnforce, async (req, res) => {
   try {
     const orgAccountId = req.tenantOrgAccountId;
+    console.log('Getting geolocation limits for orgAccountId:', orgAccountId);
     
-    const subscription = await Subscription.findOne({
-      where: { orgAccountId, status: 'ACTIVE' },
-      include: [{ model: Plan, as: 'plan' }]
-    });
+    // Use the active subscription from middleware
+    const subscription = req.activeSubscription;
+    console.log('Subscription found:', subscription ? 'Yes' : 'No');
+    if (subscription) {
+      console.log('maxGeolocationStaff:', subscription.maxGeolocationStaff);
+      console.log('staffLimit:', subscription.staffLimit);
+      console.log('status:', subscription.status);
+    }
 
-    if (!subscription || !subscription.plan.geolocationEnabled) {
+    // First check if we have a maxGeolocationStaff value set
+    const maxGeoStaff = subscription?.maxGeolocationStaff || 0;
+    console.log('maxGeoStaff value:', maxGeoStaff);
+    
+    // If maxGeoStaff is 0, geolocation is effectively disabled
+    if (maxGeoStaff === 0) {
+      console.log('Geolocation disabled - maxGeoStaff is 0');
       return res.json({ 
         success: true, 
         geolocationEnabled: false,
         maxStaff: 0,
-        currentStaff: 0
+        currentStaff: 0,
+        canAssignMore: false
       });
     }
 
-    const maxGeoStaff = subscription.meta?.maxGeolocationStaff || subscription.plan.maxGeolocationStaff;
-    
     // Count current staff with geolocation permission
     const geoPermission = await Permission.findOne({ where: { name: 'geolocation_access' } });
     let currentGeoStaff = 0;
     
     if (geoPermission) {
-      currentGeoStaff = await User.count({
-        where: { orgAccountId, role: 'staff', active: true },
+      // Get all staff users for this organization
+      const allStaff = await User.findAll({
+        where: { 
+          orgAccountId, 
+          role: 'staff', 
+          active: true
+        },
         include: [
-          {
-            model: StaffProfile,
-            as: 'profile'
-          },
           {
             model: Role,
             as: 'roles',
@@ -408,14 +433,31 @@ router.get('/geolocation-limits', authRequired, tenantEnforce, async (req, res) 
             include: [{
               model: Permission,
               as: 'permissions',
-              through: { attributes: [] },
-              where: { id: geoPermission.id }
+              through: { attributes: [] }
             }]
           }
         ]
       });
+      
+      // Filter users who have the geolocation_access permission
+      const usersWithGeoAccess = allStaff.filter(user => 
+        user.roles?.some(role => 
+          role.permissions?.some(permission => permission.id === geoPermission.id)
+        )
+      );
+      
+      // Count unique users
+      currentGeoStaff = usersWithGeoAccess.length;
+      console.log('Total staff:', allStaff.length, 'Users with geo access:', currentGeoStaff);
+      
+      // Debug: Log user IDs with geo access
+      if (currentGeoStaff > 0) {
+        console.log('User IDs with geolocation access:', usersWithGeoAccess.map(u => u.id).join(', '));
+      }
     }
 
+    console.log('Returning geolocation limits - maxStaff:', maxGeoStaff, 'currentStaff:', currentGeoStaff);
+    
     res.json({ 
       success: true, 
       geolocationEnabled: true,
@@ -429,16 +471,114 @@ router.get('/geolocation-limits', authRequired, tenantEnforce, async (req, res) 
   }
 });
 
-// Test endpoint to verify API is working
-router.get('/test', (req, res) => {
-  console.log('Test endpoint called');
-  res.json({ success: true, message: 'Roles API is working' });
+// Simple test endpoint to check subscription data
+router.get('/test-subscription', authRequired, tenantEnforce, async (req, res) => {
+  try {
+    const subscription = req.activeSubscription;
+    const rawQuery = await require('../models').Subscription.findOne({
+      where: { orgAccountId: req.tenantOrgAccountId, status: 'ACTIVE' }
+    });
+
+    res.json({
+      success: true,
+      middlewareSubscription: {
+        id: subscription?.id,
+        maxGeolocationStaff: subscription?.maxGeolocationStaff,
+        dataValues: subscription?.dataValues
+      },
+      rawQuery: rawQuery?.dataValues,
+      tenantOrgAccountId: req.tenantOrgAccountId
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
 });
 
-// Open test endpoint (no auth required)
-router.get('/open-test', (req, res) => {
-  console.log('Open test endpoint called');
-  res.json({ success: true, message: 'Open API is working' });
+// Debug endpoint for geolocation limits
+router.get('/debug-geolocation', authRequired, tenantEnforce, async (req, res) => {
+  try {
+    const subscription = req.activeSubscription;
+    const orgAccountId = req.tenantOrgAccountId;
+    
+    const rawSubscription = await Subscription.findOne({
+      where: { orgAccountId, status: 'ACTIVE' },
+      include: [{ model: Plan, as: 'plan' }]
+    });
+
+    res.json({
+      success: true,
+      tenantOrgAccountId: orgAccountId,
+      middlewareSubscription: {
+        id: subscription?.id,
+        maxGeolocationStaff: subscription?.maxGeolocationStaff,
+        staffLimit: subscription?.staffLimit,
+        status: subscription?.status
+      },
+      rawQuerySubscription: {
+        id: rawSubscription?.id,
+        maxGeolocationStaff: rawSubscription?.maxGeolocationStaff,
+        staffLimit: rawSubscription?.staffLimit,
+        status: rawSubscription?.status
+      }
+    });
+  } catch (error) {
+    console.error('Debug geolocation error:', error);
+    res.status(500).json({ success: false, message: 'Internal server error', error: error.message });
+  }
+});
+
+// Fix geo role permissions
+router.post('/fix-geo-role', authRequired, tenantEnforce, async (req, res) => {
+  try {
+    const orgAccountId = req.tenantOrgAccountId;
+    
+    // Find the geo role
+    const geoRole = await Role.findOne({
+      where: { name: 'geo', orgAccountId }
+    });
+
+    if (!geoRole) {
+      return res.status(404).json({ success: false, message: 'Geo role not found' });
+    }
+
+    // Find geolocation_access permission
+    const geoPermission = await Permission.findOne({ 
+      where: { name: 'geolocation_access' } 
+    });
+
+    if (!geoPermission) {
+      return res.status(404).json({ success: false, message: 'Geolocation permission not found' });
+    }
+
+    // Check if role already has this permission
+    const existingPermission = await RolePermission.findOne({
+      where: { roleId: geoRole.id, permissionId: geoPermission.id }
+    });
+
+    if (existingPermission) {
+      return res.json({ success: true, message: 'Geo role already has geolocation permission' });
+    }
+
+    // Add the permission
+    await RolePermission.create({
+      roleId: geoRole.id,
+      permissionId: geoPermission.id
+    });
+
+    // Get updated role with permissions
+    const updatedRole = await Role.findByPk(geoRole.id, {
+      include: [{
+        model: Permission,
+        as: 'permissions',
+        through: { attributes: [] }
+      }]
+    });
+
+    res.json({ success: true, role: updatedRole, message: 'Geo role fixed with geolocation permission' });
+  } catch (error) {
+    console.error('Fix geo role error:', error);
+    res.status(500).json({ success: false, message: 'Internal server error' });
+  }
 });
 
 // Get current user's permissions (for mobile app) - no auth for testing
@@ -470,7 +610,7 @@ router.get('/my-permissions-open', async (req, res) => {
     const targetUserId = req.headers['x-user-id'];
     const userId = targetUserId || decoded.id;
     
-    console.log('Getting permissions for user ID:', userId, '(requested by:', decoded.id, ')');
+    // console.log('Getting permissions for user ID:', userId, '(requested by:', decoded.id, ')');
     
     const user = await User.findByPk(userId, {
       include: [{
@@ -523,7 +663,7 @@ router.get('/my-permissions-open', async (req, res) => {
 router.get('/my-permissions', authRequired, async (req, res) => {
   try {
     const userId = req.user.id;
-    console.log('Getting permissions for user ID:', userId);
+    // console.log('Getting permissions for user ID:', userId);
     
     const user = await User.findByPk(userId, {
       include: [{
@@ -576,7 +716,7 @@ router.get('/my-permissions', authRequired, async (req, res) => {
 router.get('/user-permissions', authRequired, tenantEnforce, async (req, res) => {
   try {
     const userId = req.user.id;
-    console.log('Getting permissions for user ID:', userId);
+    // console.log('Getting permissions for user ID:', userId);
     
     const user = await User.findByPk(userId, {
       include: [{
