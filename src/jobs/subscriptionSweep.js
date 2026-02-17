@@ -35,27 +35,27 @@ async function runSweepOnce(now = new Date()) {
       const org = sub.orgAccount;
       if (org && org.status !== 'DISABLED') {
         await org.update({ status: 'DISABLED' });
-        
+
         // Send expired subscription email
         if (org.businessEmail) {
           const adminUser = org.users && org.users.find(user => user.role === 'admin');
           const adminName = adminUser ? (adminUser.name || org.name) : org.name;
-          
+
           const subscriptionDetails = {
             expiryDate: new Date(sub.endAt).toLocaleDateString(),
             renewalLink: 'http://localhost:3000/renew', // Update with actual renewal URL
             productName: 'Vetansutra'
           };
-          
+
           console.log(`📧 Sending expired subscription email to ${org.businessEmail} for ${org.name}`);
-          
+
           const result = await sendSubscriptionExpiredEmail(
             org.businessEmail,
             adminName,
             org.name,
             subscriptionDetails
           );
-          
+
           if (result.success) {
             console.log(`✅ Expired subscription email sent successfully to ${org.businessEmail}`);
           } else {
@@ -71,12 +71,12 @@ async function runSweepOnce(now = new Date()) {
 
 function scheduleSubscriptionSweep() {
   // Run immediately on startup
-  runSweepOnce().catch(() => {});
+  runSweepOnce().catch(() => { });
 
   // Then run every 6 hours
   const SIX_HOURS = 6 * 60 * 60 * 1000;
   setInterval(() => {
-    runSweepOnce().catch(() => {});
+    runSweepOnce().catch(() => { });
   }, SIX_HOURS);
 }
 

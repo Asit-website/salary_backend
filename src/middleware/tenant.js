@@ -29,7 +29,7 @@ async function tenantEnforce(req, res, next) {
     const now = new Date();
     const sub = await Subscription.findOne({
       where: { orgAccountId, status: 'ACTIVE' },
-      order: [['endAt', 'DESC']],
+      order: [['endAt', 'DESC'], ['updatedAt', 'DESC']],
       include: [{ model: Plan, as: 'plan' }],
     });
     if (!sub || new Date(sub.endAt) < now) {
@@ -37,6 +37,13 @@ async function tenantEnforce(req, res, next) {
     }
 
     req.activeSubscription = sub;
+    // Attach limits and features from subscription (which may override plan defaults)
+    req.subscriptionInfo = {
+      staffLimit: sub.staffLimit || sub.plan?.staffLimit || 0,
+      maxGeolocationStaff: sub.maxGeolocationStaff !== null ? sub.maxGeolocationStaff : (sub.plan?.maxGeolocationStaff || 0),
+      salesEnabled: sub.salesEnabled !== null && sub.salesEnabled !== undefined ? (!!sub.salesEnabled || !!sub.plan?.salesEnabled) : !!sub.plan?.salesEnabled,
+      geolocationEnabled: sub.geolocationEnabled !== null && sub.geolocationEnabled !== undefined ? (!!sub.geolocationEnabled || !!sub.plan?.geolocationEnabled) : !!sub.plan?.geolocationEnabled
+    };
     return next();
   } catch (e) {
     return res.status(500).json({ success: false, message: 'Tenant check failed' });

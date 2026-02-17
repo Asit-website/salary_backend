@@ -13,7 +13,7 @@ router.get('/plans', authRequired, requireRole('superadmin'), async (req, res) =
       where: { active: true },
       order: [['price', 'ASC']]
     });
-    
+
     res.json({ success: true, plans });
   } catch (error) {
     console.error('Get plans error:', error);
@@ -62,7 +62,7 @@ router.post('/plans', authRequired, requireRole('superadmin'), async (req, res) 
 router.put('/plans/:id', authRequired, requireRole('superadmin'), async (req, res) => {
   try {
     const plan = await Plan.findByPk(req.params.id);
-    
+
     if (!plan) {
       return res.status(404).json({ success: false, message: 'Plan not found' });
     }
@@ -189,7 +189,7 @@ router.put('/clients/:subscriptionId/geolocation-limit', authRequired, requireRo
     // Update subscription's geolocation staff limit in meta
     const meta = subscription.meta || {};
     meta.maxGeolocationStaff = maxGeolocationStaff;
-    
+
     await subscription.update({ meta });
 
     res.json({ success: true, maxGeolocationStaff });
@@ -203,13 +203,14 @@ router.put('/clients/:subscriptionId/geolocation-limit', authRequired, requireRo
 router.get('/subscription-info', authRequired, tenantEnforce, async (req, res) => {
   try {
     const orgAccountId = req.tenantOrgAccountId;
-    
+
     if (!orgAccountId) {
       return res.status(403).json({ success: false, message: 'Organization context required' });
     }
 
     const subscription = await Subscription.findOne({
       where: { orgAccountId, status: 'ACTIVE' },
+      order: [['endAt', 'DESC'], ['updatedAt', 'DESC']],
       include: [{
         model: Plan,
         as: 'plan'
@@ -217,29 +218,29 @@ router.get('/subscription-info', authRequired, tenantEnforce, async (req, res) =
     });
 
     if (!subscription || !subscription.plan) {
-      return res.status(404).json({ 
-        success: false, 
-        message: 'No active subscription found' 
+      return res.status(404).json({
+        success: false,
+        message: 'No active subscription found'
       });
     }
 
     // Get current staff count
     const currentStaffCount = await User.count({
-      where: { 
-        orgAccountId, 
+      where: {
+        orgAccountId,
         role: 'staff',
-        active: true 
+        active: true
       }
     });
 
     const subscriptionInfo = {
       plan: subscription.plan,
       currentStaffCount,
-      staffLimit: subscription.plan.staffLimit,
-      canAddStaff: currentStaffCount < subscription.plan.staffLimit,
-      salesEnabled: subscription.plan.salesEnabled,
-      geolocationEnabled: subscription.plan.geolocationEnabled,
-      maxGeolocationStaff: subscription.meta?.maxGeolocationStaff || subscription.plan.maxGeolocationStaff,
+      staffLimit: subscription.staffLimit || subscription.plan.staffLimit,
+      canAddStaff: currentStaffCount < (subscription.staffLimit || subscription.plan.staffLimit),
+      salesEnabled: !!subscription.salesEnabled,
+      geolocationEnabled: !!subscription.geolocationEnabled,
+      maxGeolocationStaff: subscription.maxGeolocationStaff !== null ? subscription.maxGeolocationStaff : (subscription.meta?.maxGeolocationStaff || subscription.plan.maxGeolocationStaff),
       subscriptionStatus: subscription.status
     };
 

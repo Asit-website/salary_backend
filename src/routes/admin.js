@@ -1989,7 +1989,7 @@ router.get('/settings/business-info', async (req, res) => {
         pincode: row.pincode || null,
 
         logoUrl: row.logoUrl || null,
-
+        sidebarHeaderType: row.sidebarHeaderType || 'name',
       }
     });
 
@@ -2011,27 +2011,22 @@ router.put('/settings/business-info', async (req, res) => {
 
     const orgId = requireOrg(req, res); if (!orgId) return;
 
-    const state = req.body?.state ? String(req.body.state) : null;
-
-    const city = req.body?.city ? String(req.body.city) : null;
-
-    const addressLine1 = req.body?.addressLine1 ? String(req.body.addressLine1) : null;
-
-    const addressLine2 = req.body?.addressLine2 ? String(req.body.addressLine2) : null;
-
-    const pincode = req.body?.pincode ? String(req.body.pincode) : null;
+    const updates = {};
+    if ('state' in (req.body || {})) updates.state = req.body.state ? String(req.body.state) : null;
+    if ('city' in (req.body || {})) updates.city = req.body.city ? String(req.body.city) : null;
+    if ('addressLine1' in (req.body || {})) updates.addressLine1 = req.body.addressLine1 ? String(req.body.addressLine1) : null;
+    if ('addressLine2' in (req.body || {})) updates.addressLine2 = req.body.addressLine2 ? String(req.body.addressLine2) : null;
+    if ('pincode' in (req.body || {})) updates.pincode = req.body.pincode ? String(req.body.pincode) : null;
+    if ('sidebarHeaderType' in (req.body || {})) updates.sidebarHeaderType = req.body.sidebarHeaderType ? String(req.body.sidebarHeaderType) : 'name';
 
     const existing = await sequelize.models.OrgBusinessInfo.findOne({ where: { active: true, orgAccountId: orgId } });
 
     if (existing) {
-
-      await existing.update({ state, city, addressLine1, addressLine2, pincode });
-
+      await existing.update(updates);
       return res.json({ success: true });
-
     }
 
-    await sequelize.models.OrgBusinessInfo.create({ state, city, addressLine1, addressLine2, pincode, active: true, orgAccountId: orgId });
+    await sequelize.models.OrgBusinessInfo.create({ ...updates, active: true, orgAccountId: orgId });
 
     return res.json({ success: true });
 
@@ -10688,7 +10683,9 @@ router.post('/staff', async (req, res) => {
 
       allowCurrentCycleSalaryAccess,
 
-      active
+      active,
+
+      dateOfJoining
 
     } = req.body || {};
 
@@ -11151,6 +11148,8 @@ router.post('/staff', async (req, res) => {
       salaryDetailAccess: salaryDetailAccess !== undefined ? Boolean(salaryDetailAccess) : false,
 
       allowCurrentCycleSalaryAccess: allowCurrentCycleSalaryAccess !== undefined ? Boolean(allowCurrentCycleSalaryAccess) : false,
+
+      dateOfJoining: dateOfJoining || null,
 
     });
 
@@ -14645,6 +14644,11 @@ router.get('/geolocation', async (req, res) => {
   try {
 
     const orgId = requireOrg(req, res); if (!orgId) return;
+
+    // Check if geolocation is enabled for this organization
+    if (!req.subscriptionInfo?.geolocationEnabled) {
+      return res.status(403).json({ success: false, message: 'Geolocation module is not enabled for your subscription' });
+    }
 
     const { LocationPing, User, StaffProfile, Attendance } = sequelize.models;
 

@@ -69,6 +69,8 @@ const defineAsset = require('./Asset');
 const defineAssetAssignment = require('./AssetAssignment');
 const defineAssetMaintenance = require('./AssetMaintenance');
 const defineStaffLoan = require('./StaffLoan');
+const defineLetterTemplate = require('./LetterTemplate');
+const defineStaffLetter = require('./StaffLetter');
 
 const User = defineUser(sequelize);
 const StaffProfile = defineStaffProfile(sequelize);
@@ -139,6 +141,8 @@ const Asset = defineAsset(sequelize);
 const AssetAssignment = defineAssetAssignment(sequelize);
 const AssetMaintenance = defineAssetMaintenance(sequelize);
 const StaffLoan = defineStaffLoan(sequelize);
+const LetterTemplate = defineLetterTemplate(sequelize);
+const StaffLetter = defineStaffLetter(sequelize);
 
 // Leave Template associations (after models are defined)
 LeaveTemplate.hasMany(LeaveTemplateCategory, { foreignKey: 'leaveTemplateId', as: 'categories' });
@@ -316,28 +320,28 @@ Subscription.belongsTo(Plan, { foreignKey: 'planId', as: 'plan' });
 OrgAccount.hasMany(Role, { foreignKey: 'orgAccountId', as: 'roles' });
 Role.belongsTo(OrgAccount, { foreignKey: 'orgAccountId', as: 'orgAccount' });
 
-Role.belongsToMany(Permission, { 
-  through: RolePermission, 
-  foreignKey: 'roleId', 
+Role.belongsToMany(Permission, {
+  through: RolePermission,
+  foreignKey: 'roleId',
   otherKey: 'permissionId',
   as: 'permissions'
 });
-Permission.belongsToMany(Role, { 
-  through: RolePermission, 
-  foreignKey: 'permissionId', 
+Permission.belongsToMany(Role, {
+  through: RolePermission,
+  foreignKey: 'permissionId',
   otherKey: 'roleId',
   as: 'roles'
 });
 
-User.belongsToMany(Role, { 
-  through: UserRole, 
-  foreignKey: 'userId', 
+User.belongsToMany(Role, {
+  through: UserRole,
+  foreignKey: 'userId',
   otherKey: 'roleId',
   as: 'roles'
 });
-Role.belongsToMany(User, { 
-  through: UserRole, 
-  foreignKey: 'roleId', 
+Role.belongsToMany(User, {
+  through: UserRole,
+  foreignKey: 'roleId',
   otherKey: 'userId',
   as: 'users'
 });
@@ -374,6 +378,22 @@ StaffLoan.belongsTo(User, { foreignKey: 'createdBy', as: 'creator' });
 User.hasMany(StaffLoan, { foreignKey: 'updatedBy', as: 'loansUpdated' });
 StaffLoan.belongsTo(User, { foreignKey: 'updatedBy', as: 'updater' });
 
+// Letter Management associations
+OrgAccount.hasMany(LetterTemplate, { foreignKey: 'orgAccountId', as: 'letterTemplates' });
+LetterTemplate.belongsTo(OrgAccount, { foreignKey: 'orgAccountId', as: 'orgAccount' });
+
+User.hasMany(StaffLetter, { foreignKey: 'staffId', as: 'issuedLetters' });
+StaffLetter.belongsTo(User, { foreignKey: 'staffId', as: 'staffMember' });
+
+LetterTemplate.hasMany(StaffLetter, { foreignKey: 'letterTemplateId', as: 'issuedLetters' });
+StaffLetter.belongsTo(LetterTemplate, { foreignKey: 'letterTemplateId', as: 'template' });
+
+OrgAccount.hasMany(StaffLetter, { foreignKey: 'orgAccountId', as: 'staffLetters' });
+StaffLetter.belongsTo(OrgAccount, { foreignKey: 'orgAccountId', as: 'orgAccount' });
+
+User.hasMany(StaffLetter, { foreignKey: 'issuedBy', as: 'lettersIssuedBy' });
+StaffLetter.belongsTo(User, { foreignKey: 'issuedBy', as: 'issuer' });
+
 module.exports = {
   sequelize,
   User,
@@ -402,7 +422,7 @@ module.exports = {
   StaffSalaryAssignment,
   SalesVisit,
   SalesVisitAttachment,
- 
+
   OrgAccount,
   Plan,
   Subscription,
@@ -447,4 +467,6 @@ module.exports = {
   AssetAssignment,
   AssetMaintenance,
   StaffLoan,
+  LetterTemplate,
+  StaffLetter,
 };

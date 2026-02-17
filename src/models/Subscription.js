@@ -9,14 +9,26 @@ module.exports = (sequelize) => {
       planId: { type: DataTypes.BIGINT.UNSIGNED, allowNull: false, field: 'plan_id' },
       startAt: { type: DataTypes.DATE, allowNull: false },
       endAt: { type: DataTypes.DATE, allowNull: false },
-      status: { type: DataTypes.ENUM('ACTIVE','EXPIRED','CANCELED'), allowNull: false, defaultValue: 'ACTIVE' },
+      status: { type: DataTypes.ENUM('ACTIVE', 'EXPIRED', 'CANCELED'), allowNull: false, defaultValue: 'ACTIVE' },
       meta: { type: DataTypes.JSON, allowNull: true },
       staffLimit: { type: DataTypes.INTEGER, allowNull: true, field: 'staff_limit' },
-      maxGeolocationStaff: { 
-        type: DataTypes.INTEGER, 
-        allowNull: true, 
+      maxGeolocationStaff: {
+        type: DataTypes.INTEGER,
+        allowNull: true,
         field: 'max_geolocation_staff',
         defaultValue: 0
+      },
+      salesEnabled: {
+        type: DataTypes.BOOLEAN,
+        allowNull: false,
+        defaultValue: false,
+        field: 'sales_enabled'
+      },
+      geolocationEnabled: {
+        type: DataTypes.BOOLEAN,
+        allowNull: false,
+        defaultValue: false,
+        field: 'geolocation_enabled'
       }
     },
     { tableName: 'subscriptions', underscored: true }

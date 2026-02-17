@@ -69,7 +69,7 @@ router.get('/clients', async (_req, res) => {
       try {
         const sub = await Subscription.findOne({
           where: { orgAccountId: org.id, status: 'ACTIVE' },
-          order: [['endAt', 'DESC']],
+          order: [['endAt', 'DESC'], ['updatedAt', 'DESC']],
           include: [{ model: Plan, as: 'plan' }]
         });
         const shouldBeActive = !!(sub && new Date(sub.endAt) >= now);
@@ -80,7 +80,7 @@ router.get('/clients', async (_req, res) => {
         // Add subscription data to org object
         org.dataValues.currentSubscription = sub;
         org.dataValues.plan = sub?.plan || null;
-      } catch (_) {}
+      } catch (_) { }
     }
     return res.json({ success: true, clients: rows });
   } catch (e) {
@@ -92,7 +92,7 @@ router.get('/clients', async (_req, res) => {
 router.get('/clients/:id/plan-details', async (req, res) => {
   try {
     const clientId = req.params.id;
-    
+
     // Get latest subscription with plan details
     const subscription = await Subscription.findOne({
       where: { orgAccountId: clientId },
@@ -100,12 +100,12 @@ router.get('/clients/:id/plan-details', async (req, res) => {
         model: Plan,
         as: 'plan'
       }],
-      order: [['endAt', 'DESC']]
+      order: [['endAt', 'DESC'], ['updatedAt', 'DESC']]
     });
 
     if (!subscription) {
-      return res.json({ 
-        success: true, 
+      return res.json({
+        success: true,
         planDetails: {
           planName: null,
           startDate: null,
@@ -118,9 +118,9 @@ router.get('/clients/:id/plan-details', async (req, res) => {
 
     const now = new Date();
     const isExpired = new Date(subscription.endAt) < now;
-    
-    return res.json({ 
-      success: true, 
+
+    return res.json({
+      success: true,
       planDetails: {
         planName: subscription.plan?.name || 'Unknown Plan',
         startDate: subscription.startAt,
@@ -149,21 +149,21 @@ router.post('/clients', async (req, res) => {
   try {
     const { name, phone, status = 'ACTIVE', clientType, location, extra, businessEmail, state, city, channelPartnerId, roleDescription, employeeCount } = req.body || {};
     if (!name) return res.status(400).json({ success: false, message: 'name required' });
-    
+
     // Check if phone number already exists in either OrgAccount or User table
     if (phone) {
       const normalizedPhone = String(phone).replace(/[^0-9]/g, '').slice(-10);
       const existingOrg = await OrgAccount.findOne({ where: { phone: normalizedPhone } });
       const existingUser = await User.findOne({ where: { phone: String(normalizedPhone) } });
-      
+
       if (existingOrg || existingUser) {
-        return res.status(400).json({ 
-          success: false, 
-          message: 'Phone number already exists in the system' 
+        return res.status(400).json({
+          success: false,
+          message: 'Phone number already exists in the system'
         });
       }
     }
-    
+
     const row = await OrgAccount.create({
       name,
       phone: phone ? String(phone).replace(/[^0-9]/g, '').slice(-10) : null,
@@ -187,7 +187,7 @@ router.post('/clients', async (req, res) => {
         if (!admin) {
           const hash = await bcrypt.hash('123456', 10);
           admin = await User.create({ role: 'admin', orgAccountId: row.id, phone: String(normalizedPhone), passwordHash: hash, active: true });
-          
+
           // Send admin signup review email to business email when admin is created
           if (businessEmail) {
             try {
@@ -202,7 +202,7 @@ router.post('/clients', async (req, res) => {
           await admin.update({ orgAccountId: row.id, role: 'admin', active: true });
         }
       }
-    } catch (_) {}
+    } catch (_) { }
     return res.json({ success: true, client: row });
   } catch (e) {
     return res.status(500).json({ success: false, message: 'Failed to create client' });
@@ -214,26 +214,26 @@ router.put('/clients/:id', async (req, res) => {
     const row = await OrgAccount.findByPk(req.params.id);
     if (!row) return res.status(404).json({ success: false, message: 'Not found' });
     const { name, phone, status, clientType, location, extra, businessEmail, state, city, channelPartnerId, roleDescription, employeeCount } = req.body || {};
-    
+
     // Check if phone number already exists in either OrgAccount or User table (excluding current client)
     if (phone) {
       const normalizedPhone = String(phone).replace(/[^0-9]/g, '').slice(-10);
-      const existingOrg = await OrgAccount.findOne({ 
-        where: { 
+      const existingOrg = await OrgAccount.findOne({
+        where: {
           phone: normalizedPhone,
           id: { [Op.ne]: req.params.id } // Exclude current client
-        } 
+        }
       });
       const existingUser = await User.findOne({ where: { phone: String(normalizedPhone) } });
-      
+
       if (existingOrg || existingUser) {
-        return res.status(400).json({ 
-          success: false, 
-          message: 'Phone number already exists in the system' 
+        return res.status(400).json({
+          success: false,
+          message: 'Phone number already exists in the system'
         });
       }
     }
-    
+
     await row.update({
       ...(name !== undefined ? { name } : {}),
       ...(phone !== undefined ? { phone: phone ? String(phone).replace(/[^0-9]/g, '').slice(-10) : null } : {}),
@@ -261,63 +261,54 @@ router.post('/clients/:id/subscription', async (req, res) => {
     const org = await OrgAccount.findByPk(orgAccountId);
     if (!org) return res.status(404).json({ success: false, message: 'Organization not found' });
 
-    const { planId, planCode, startAt, staffLimit, maxGeolocationStaff } = req.body || {};
-    
+    const { planId, planCode, startAt, staffLimit, maxGeolocationStaff, salesEnabled, geolocationEnabled } = req.body || {};
+
     // Check if client has an active subscription that hasn't expired
     const existingSubscription = await Subscription.findOne({
       where: { orgAccountId: org.id, status: 'ACTIVE' },
-      order: [['endAt', 'DESC']]
+      order: [['endAt', 'DESC'], ['updatedAt', 'DESC']]
     });
 
-    // Allow staff limit increase even if subscription hasn't expired
-    // But block other subscription changes until expiration
+    // Allow limit and feature updates even if subscription hasn't expired
     if (existingSubscription && new Date(existingSubscription.endAt) > new Date()) {
-      // If only staff limit or maxGeolocationStaff is being updated, allow it
-      if ((staffLimit !== undefined && staffLimit !== null && !planId && !planCode && !startAt) || 
-          (maxGeolocationStaff !== undefined && maxGeolocationStaff !== null && !planId && !planCode && !startAt)) {
-        
+      // If updating limits or feature toggles on the SAME plan
+      const isUpdatingCurrentPlan = !planId || planId == existingSubscription.planId;
+
+      if (isUpdatingCurrentPlan) {
         const updateData = {};
-        let message = '';
-        
-        // Handle staff limit update
-        if (staffLimit !== undefined && staffLimit !== null) {
-          if (staffLimit > existingSubscription.staffLimit) {
-            updateData.staffLimit = Number(staffLimit);
-            message += 'Staff limit updated successfully';
-          } else {
-            return res.status(400).json({ 
-              success: false, 
-              message: 'New staff limit must be greater than current limit' 
-            });
-          }
+        let messageArr = [];
+
+        if (staffLimit !== undefined && staffLimit !== null && Number(staffLimit) !== existingSubscription.staffLimit) {
+          updateData.staffLimit = Number(staffLimit);
+          messageArr.push('Staff limit updated');
         }
-        
-        // Handle maxGeolocationStaff update
-        if (maxGeolocationStaff !== undefined && maxGeolocationStaff !== null) {
-          if (maxGeolocationStaff >= existingSubscription.maxGeolocationStaff) {
-            updateData.maxGeolocationStaff = Number(maxGeolocationStaff);
-            if (message) message += ', ';
-            message += 'Max geolocation staff updated successfully';
-          } else {
-            return res.status(400).json({ 
-              success: false, 
-              message: 'New max geolocation staff must be greater than or equal to current limit' 
-            });
-          }
+
+        if (maxGeolocationStaff !== undefined && maxGeolocationStaff !== null && Number(maxGeolocationStaff) !== existingSubscription.maxGeolocationStaff) {
+          updateData.maxGeolocationStaff = Number(maxGeolocationStaff);
+          messageArr.push('Max geolocation staff updated');
         }
-        
+
+        if (salesEnabled !== undefined && !!salesEnabled !== existingSubscription.salesEnabled) {
+          updateData.salesEnabled = !!salesEnabled;
+          messageArr.push(`Sales module ${salesEnabled ? 'enabled' : 'disabled'}`);
+        }
+
+        if (geolocationEnabled !== undefined && !!geolocationEnabled !== existingSubscription.geolocationEnabled) {
+          updateData.geolocationEnabled = !!geolocationEnabled;
+          messageArr.push(`Geolocation module ${geolocationEnabled ? 'enabled' : 'disabled'}`);
+        }
+
         if (Object.keys(updateData).length > 0) {
           await existingSubscription.update(updateData);
-          return res.json({ 
-            success: true, 
-            message: message,
-            subscription: existingSubscription
-          });
+          return res.json({ success: true, message: messageArr.join(', '), subscription: existingSubscription });
+        } else {
+          // If no changes were actually made but it was a valid check, just return current
+          return res.json({ success: true, message: 'Current subscription remains unchanged', subscription: existingSubscription });
         }
       } else {
-        return res.status(400).json({ 
-          success: false, 
-          message: 'Your old subscription is not expired yet. You can only increase staff limit or max geolocation staff until it expires.' 
+        return res.status(400).json({
+          success: false,
+          message: 'Your old subscription is not expired yet. You can only increase staff limit or toggle features until it expires.'
         });
       }
     }
@@ -331,17 +322,30 @@ router.post('/clients/:id/subscription', async (req, res) => {
     const end = new Date(start);
     end.setDate(end.getDate() + Number(plan.periodDays || 0));
 
+    console.log('Final subscription data:', {
+      orgAccountId: org.id,
+      planId: plan.id,
+      staffLimit,
+      maxGeolocationStaff,
+      salesEnabled,
+      geolocationEnabled
+    });
+
     const sub = await Subscription.create({
       orgAccountId: org.id,
       planId: plan.id,
       startAt: start,
       endAt: end,
       status: 'ACTIVE',
-      ...(staffLimit !== undefined && staffLimit !== null ? { staffLimit: Number(staffLimit) } : {}),
-      ...(maxGeolocationStaff !== undefined && maxGeolocationStaff !== null ? { maxGeolocationStaff: Number(maxGeolocationStaff) } : {}),
+      staffLimit: staffLimit !== undefined && staffLimit !== null ? Number(staffLimit) : (plan.staffLimit || 0),
+      maxGeolocationStaff: maxGeolocationStaff !== undefined && maxGeolocationStaff !== null ? Number(maxGeolocationStaff) : (plan.maxGeolocationStaff || 0),
+      salesEnabled: salesEnabled !== undefined ? !!salesEnabled : (plan.salesEnabled || false),
+      geolocationEnabled: geolocationEnabled !== undefined ? !!geolocationEnabled : (plan.geolocationEnabled || false),
     });
+    console.log('Subscription created successfully:', sub.id);
 
     await org.update({ status: 'ACTIVE' });
+    console.log('Organization status updated to ACTIVE');
 
     // Ensure there is an admin user tied to this organization (using org.phone)
     try {
@@ -351,7 +355,7 @@ router.post('/clients/:id/subscription', async (req, res) => {
         if (!admin) {
           const hash = await bcrypt.hash('123456', 10);
           admin = await User.create({ role: 'admin', orgAccountId: org.id, phone: String(normalizedPhone), passwordHash: hash, active: true });
-          
+
           // Send account activation email to business email when admin is created
           if (org.businessEmail) {
             try {
@@ -368,7 +372,7 @@ router.post('/clients/:id/subscription', async (req, res) => {
           }
         } else {
           await admin.update({ orgAccountId: org.id, role: 'admin', active: true });
-          
+
           // Send account activation email to business email for existing admin
           if (org.businessEmail) {
             try {
@@ -385,11 +389,12 @@ router.post('/clients/:id/subscription', async (req, res) => {
           }
         }
       }
-    } catch (_) {}
+    } catch (_) { }
 
     return res.json({ success: true, subscription: sub, plan });
   } catch (e) {
-    return res.status(500).json({ success: false, message: 'Failed to assign subscription' });
+    console.error('Subscription assignment error:', e);
+    return res.status(500).json({ success: false, message: 'Failed to assign subscription: ' + e.message });
   }
 });
 
@@ -397,7 +402,7 @@ router.post('/clients/:id/subscription', async (req, res) => {
 router.get('/client/:id/staff-count', async (req, res) => {
   try {
     const clientId = req.params.id;
-    
+
     // Count staff users for this organization
     const staffCount = await User.count({
       where: {
@@ -406,7 +411,7 @@ router.get('/client/:id/staff-count', async (req, res) => {
         active: true
       }
     });
-    
+
     return res.json({ success: true, count: staffCount });
   } catch (e) {
     console.error('Failed to get staff count:', e);
@@ -430,9 +435,9 @@ router.get('/dashboard', async (_req, res) => {
       else if (org.status === 'DISABLED') disabled += 1;
       else if (org.status === 'SUSPENDED') suspended += 1;
       try {
-        const sub = await Subscription.findOne({ where: { orgAccountId: org.id, status: 'ACTIVE' }, order: [['endAt','DESC']] });
+        const sub = await Subscription.findOne({ where: { orgAccountId: org.id, status: 'ACTIVE' }, order: [['endAt', 'DESC']] });
         if (!sub || new Date(sub.endAt) < now) expired += 1;
-      } catch (_) {}
+      } catch (_) { }
     }
 
     const subsMonth = await Subscription.findAll({ where: { startAt: { [Op.gte]: startOfMonth } }, include: [{ model: Plan, as: 'plan' }] });
@@ -445,7 +450,7 @@ router.get('/dashboard', async (_req, res) => {
       const from = new Date(now.getFullYear(), now.getMonth() - i, 1);
       const to = new Date(now.getFullYear(), now.getMonth() - i + 1, 1);
       const count = orgs.filter(o => new Date(o.createdAt) >= from && new Date(o.createdAt) < to).length;
-      growth.push({ month: `${from.getFullYear()}-${String(from.getMonth()+1).padStart(2,'0')}`, clients: count });
+      growth.push({ month: `${from.getFullYear()}-${String(from.getMonth() + 1).padStart(2, '0')}`, clients: count });
     }
 
     return res.json({ success: true, counts: { active, disabled, suspended, expired }, revenue, growth });

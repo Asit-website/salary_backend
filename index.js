@@ -20,6 +20,7 @@ const securityRoutes = require('./src/routes/security');
 const salaryTemplateRoutes = require('./src/routes/salaryTemplates');
 const subscriptionRoutes = require('./src/routes/subscription');
 const rolesRoutes = require('./src/routes/roles');
+const letterRoutes = require('./src/routes/letter');
 const { tenantEnforce } = require('./src/middleware/tenant');
 const { scheduleSubscriptionSweep } = require('./src/jobs/subscriptionSweep');
 const { scheduleSubscriptionExpiryReminders } = require('./src/jobs');
@@ -41,6 +42,7 @@ app.use('/uploads', express.static(uploadsDir));
 
 app.get('/health', (_req, res) => res.json({ ok: true }));
 
+app.use('/admin/letters', letterRoutes);
 app.use('/auth', authRoutes);
 app.use('/admin', adminRoutes);
 app.use('/superadmin', superadminRoutes);
@@ -73,10 +75,10 @@ initDb()
     }
 
     // Start background job to auto-expire subscriptions and disable orgs
-    try { scheduleSubscriptionSweep(); } catch (_) {}
-    
+    try { scheduleSubscriptionSweep(); } catch (_) { }
+
     // Start subscription expiry reminder job
-    try { scheduleSubscriptionExpiryReminders(); } catch (_) {}
+    try { scheduleSubscriptionExpiryReminders(); } catch (_) { }
     app.listen(port, () => {
       console.log(`Backend running on http://localhost:${port}`);
     });

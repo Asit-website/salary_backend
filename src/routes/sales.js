@@ -1,6 +1,7 @@
 const express = require('express');
 const { Op } = require('sequelize');
 const { authRequired } = require('../middleware/auth');
+const { tenantEnforce } = require('../middleware/tenant');
 const { upload } = require('../upload');
 
 const { sequelize } = require('../sequelize');
@@ -61,12 +62,21 @@ function normalizePhone(phone) {
 }
 
 router.use(authRequired);
+router.use(tenantEnforce);
+
+// Global check for sales module access
+router.use((req, res, next) => {
+  if (req.user.role !== 'superadmin' && !req.subscriptionInfo?.salesEnabled) {
+    return res.status(403).json({ success: false, message: 'Sales module is not enabled for your subscription' });
+  }
+  next();
+});
 
 // Send OTP to client for visit verification
 router.post('/send-client-otp', async (req, res) => {
   try {
     const { phone } = req.body || {};
-    
+
     if (!phone || !phone.trim()) {
       return res.status(400).json({ success: false, message: 'Phone number is required' });
     }
@@ -79,7 +89,7 @@ router.post('/send-client-otp', async (req, res) => {
 
     // Generate 6-digit OTP
     const otp = Math.floor(100000 + Math.random() * 900000).toString();
-    
+
     // Save OTP to database (reuse existing OTP table)
     await OtpVerify.create({
       phone: normalizedPhone,
@@ -101,8 +111,8 @@ router.post('/send-client-otp', async (req, res) => {
 
     // Return response with OTP in development mode
     const includeOtp = process.env.OTP_INCLUDE_IN_RESPONSE === 'true';
-    return res.json({ 
-      success: true, 
+    return res.json({
+      success: true,
       message: 'OTP sent successfully',
       otp: includeOtp ? otp : undefined
     });
@@ -211,7 +221,7 @@ router.post('/visit', upload.single('clientSignature'), async (req, res) => {
         const cfg = JSON.parse(row.value);
         features = Object.assign(features, cfg?.features || {});
       }
-    } catch (_) {}
+    } catch (_) { }
 
     // Enforce photo proof if required (disabled for now since we removed attachments)
     // if (features.photoRequired && atts.length === 0) {
@@ -244,7 +254,7 @@ router.post('/visit', upload.single('clientSignature'), async (req, res) => {
           await job.update({ status: 'inprogress' }, { transaction: t });
         }
       }
-    } catch (_) {}
+    } catch (_) { }
 
     await t.commit();
     console.log('Visit form submitted successfully, visitId:', visit.id);
@@ -333,7 +343,7 @@ router.post('/orders', upload.single('proof'), async (req, res) => {
           await job.update({ status: 'inprogress' });
         }
       }
-    } catch (_) {}
+    } catch (_) { }
 
     return res.json({ success: true, order: out });
   } catch (e) {
@@ -415,7 +425,7 @@ router.put('/assigned-jobs/:id/status', async (req, res) => {
     if (!row || row.staffUserId !== req.user.id) return res.status(404).json({ success: false, message: 'Not found' });
 
     const next = String(req.body?.status || '').toLowerCase();
-    if (!['pending','inprogress','complete'].includes(next)) {
+    if (!['pending', 'inprogress', 'complete'].includes(next)) {
       return res.status(400).json({ success: false, message: 'Invalid status' });
     }
 
@@ -499,7 +509,7 @@ router.put('/assigned_jobs/:id/status', async (req, res) => {
     if (!row || row.staffUserId !== req.user.id) return res.status(404).json({ success: false, message: 'Not found' });
 
     const next = String(req.body?.status || '').toLowerCase();
-    if (!['pending','inprogress','complete'].includes(next)) {
+    if (!['pending', 'inprogress', 'complete'].includes(next)) {
       return res.status(400).json({ success: false, message: 'Invalid status' });
     }
 
@@ -605,27 +615,27 @@ router.get('/weekly', async (req, res) => {
     const { startDate, endDate } = req.query;
     const start = startDate ? new Date(`${startDate}T00:00:00`) : new Date();
     const end = endDate ? new Date(`${endDate}T23:59:59.999`) : new Date();
-    
+
     // Get orders for each day of the week
     const weeklyData = [];
     const current = new Date(start);
-    
+
     for (let i = 0; i < 7; i++) {
       const dayStart = new Date(current);
       dayStart.setHours(0, 0, 0, 0);
       const dayEnd = new Date(current);
       dayEnd.setHours(23, 59, 59, 999);
-      
-      const orders = await Order.findAll({ 
-        where: { 
-          userId: req.user.id, 
-          orderDate: { [Op.between]: [dayStart, dayEnd] } 
-        } 
+
+      const orders = await Order.findAll({
+        where: {
+          userId: req.user.id,
+          orderDate: { [Op.between]: [dayStart, dayEnd] }
+        }
       });
-      
+
       const totalAmount = orders.reduce((s, o) => s + Number(o.totalAmount || 0), 0);
       weeklyData.push(totalAmount);
-      
+
       current.setDate(current.getDate() + 1);
     }
 
@@ -638,10 +648,10 @@ router.get('/weekly', async (req, res) => {
 // Current target for logged-in staff
 router.get('/targets/current', async (req, res) => {
   try {
-    const period = ['daily','weekly','monthly'].includes(String(req.query?.period)) ? String(req.query.period) : 'daily';
+    const period = ['daily', 'weekly', 'monthly'].includes(String(req.query?.period)) ? String(req.query.period) : 'daily';
     const tgt = await SalesTarget.findOne({
       where: { staffUserId: req.user.id, period },
-      order: [['periodDate','DESC']],
+      order: [['periodDate', 'DESC']],
     });
     return res.json({ success: true, target: tgt || null });
   } catch (e) {
@@ -652,10 +662,10 @@ router.get('/targets/current', async (req, res) => {
 // Incentive target for logged-in staff
 router.get('/incentives/current', async (req, res) => {
   try {
-    const period = ['daily','weekly','monthly'].includes(String(req.query?.period)) ? String(req.query.period) : 'daily';
+    const period = ['daily', 'weekly', 'monthly'].includes(String(req.query?.period)) ? String(req.query.period) : 'daily';
     const row = await IncentiveTarget.findOne({
       where: { staffUserId: req.user.id, period, active: true },
-      order: [['periodDate','DESC']],
+      order: [['periodDate', 'DESC']],
     });
     return res.json({ success: true, incentive: row || null });
   } catch (e) {
