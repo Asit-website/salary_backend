@@ -27,6 +27,7 @@ const { tenantEnforce } = require('../middleware/tenant');
 const ai = require('../services/aiProvider');
 
 const { Op } = require('sequelize');
+const { calculateSalary, generatePayslipPDF } = require('../services/payrollService');
 
 
 
@@ -178,90 +179,124 @@ router.get('/payroll/:cycleId/export', async (req, res) => {
 
     if (!cycle) return res.status(404).json({ success: false, message: 'Cycle not found' });
 
+
+
     const lines = await PayrollLine.findAll({ where: { cycleId: id } });
 
 
-
-    // Fetch names for users
+    // Calculate days in month for the cycle
+    const [year, month] = cycle.monthKey.split('-').map(Number);
+    const daysInMonth = new Date(year, month, 0).getDate();
 
     const userIds = [...new Set(lines.map(l => l.userId))];
-
     const users = await User.findAll({ where: { id: userIds }, include: [{ model: StaffProfile, as: 'profile' }] });
 
-    const nameById = new Map(users.map(u => [u.id, (u.profile?.name || u.phone || `User ${u.id}`)]));
+    // Map of user data for quick lookup
+    const userMap = new Map(users.map(u => [u.id, {
+      name: u.profile?.name || u.phone || `User ${u.id}`,
+      staffId: u.profile?.staffId || '',
+      designation: u.profile?.designation || '',
+      department: u.profile?.department || '',
+      basicSalary: Number(u.basicSalary || 0)
+    }]));
 
+    const parseJSON = (val) => {
+      if (!val) return {};
+      if (typeof val === 'object') return val;
+      try { return JSON.parse(val); } catch (e) { return {}; }
+    };
 
+    const earningsKeys = new Set();
+    const incentivesKeys = new Set();
+    const deductionsKeys = new Set();
+
+    const parsedLines = lines.map(l => {
+      const e = parseJSON(l.earnings);
+      const i = parseJSON(l.incentives);
+      const d = parseJSON(l.deductions);
+      const s = parseJSON(l.attendanceSummary);
+      const t = parseJSON(l.totals);
+
+      Object.keys(e).forEach(k => earningsKeys.add(k));
+      Object.keys(i).forEach(k => incentivesKeys.add(k));
+      Object.keys(d).forEach(k => deductionsKeys.add(k));
+
+      return { line: l, e, i, d, s, t };
+    });
+
+    const sortedEarnings = Array.from(earningsKeys).sort();
+    const sortedIncentives = Array.from(incentivesKeys).sort();
+    const sortedDeductions = Array.from(deductionsKeys).sort();
 
     const header = [
-
-      'user_id', 'name',
-
-      'total_earnings', 'total_incentives', 'total_deductions', 'gross_salary', 'net_salary', 'ratio',
-
-      'present', 'half', 'paid_leave', 'unpaid_leave', 'weekly_off', 'holidays', 'absent'
-
+      'Staff ID', 'Name', 'Designation', 'Department',
+      'Month',
+      'Working Days', 'Present', 'Half', 'Absent', 'Paid Leave', 'Unpaid Leave', 'Weekly Off', 'Holidays', 'Payable Days',
+      ...sortedEarnings,
+      ...sortedIncentives,
+      ...sortedDeductions,
+      'Total Earnings', 'Total Incentives', 'Total Deductions', 'Gross Salary', 'Net Salary'
     ];
 
-    const rows = [header.join(',')];
+    const escapeCSV = (val) => {
+      const str = String(val === null || val === undefined ? '' : val);
+      if (str.includes(',') || str.includes('"') || str.includes('\n')) {
+        return `"${str.replace(/"/g, '""')}"`;
+      }
+      return str;
+    };
 
-    for (const l of lines) {
+    const rows = [header.map(escapeCSV).join(',')];
 
-      const t = l.totals || {};
+    for (const pl of parsedLines) {
+      const { line, e, i, d, s, t } = pl;
+      const u = userMap.get(line.userId) || { name: '', staffId: '', designation: '', department: '' };
 
-      const s = l.attendanceSummary || {};
+      const ratio = Number(t.ratio || s.ratio || 0);
+      const pod = ratio * daysInMonth;
+      const attPct = (ratio * 100).toFixed(2);
 
-      const row = [
-
-        l.userId,
-
-        JSON.stringify(nameById.get(l.userId) || ''),
-
-        Number(t.totalEarnings || 0),
-
-        Number(t.totalIncentives || 0),
-
-        Number(t.totalDeductions || 0),
-
-        Number(t.grossSalary || 0),
-
-        Number(t.netSalary || 0),
-
-        Number(t.ratio || s.ratio || 0),
-
+      const rowData = [
+        u.staffId,
+        u.name,
+        u.designation,
+        u.department,
+        cycle.monthKey,
+        daysInMonth,
         Number(s.present || 0),
-
         Number(s.half || 0),
-
-        Number(s.paidLeave || 0),
-
-        Number(s.unpaidLeave || 0),
-
-        Number(s.weeklyOff || 0),
-
-        Number(s.holidays || 0),
-
         Number(s.absent || 0),
-
+        Number(s.paidLeave || 0),
+        Number(s.unpaidLeave || 0),
+        Number(s.weeklyOff || 0),
+        Number(s.holidays || 0),
+        pod.toFixed(2),
+        ...sortedEarnings.map(k => {
+          // If the key is basic_salary, show the fixed amount from user profile
+          if (k.toLowerCase() === 'basic_salary' || k.toLowerCase() === 'basicsalary') {
+            return u.basicSalary || 0;
+          }
+          return e[k] || 0;
+        }),
+        ...sortedIncentives.map(k => i[k] || 0),
+        ...sortedDeductions.map(k => d[k] || 0),
+        Number(t.totalEarnings || 0),
+        Number(t.totalIncentives || 0),
+        Number(t.totalDeductions || 0),
+        Number(t.grossSalary || 0),
+        Number(t.netSalary || 0)
       ];
-
-      rows.push(row.join(','));
-
+      rows.push(rowData.map(escapeCSV).join(','));
     }
 
-    const csv = rows.join('\n');
-
     res.setHeader('Content-Type', 'text/csv');
-
-    res.setHeader('Content-Disposition', `attachment; filename="payroll-${cycle.monthKey}.csv"`);
-
-    return res.status(200).send(csv);
+    res.setHeader('Content-Disposition', `attachment; filename=payroll-${cycle.monthKey}.csv`);
+    return res.send(rows.join('\n'));
 
   } catch (e) {
-
-    return res.status(500).json({ success: false, message: 'Failed to export CSV' });
-
+    console.error('Payroll export error:', e);
+    return res.status(500).json({ success: false, message: 'Failed to export payroll', error: e.message });
   }
-
 });
 
 
@@ -311,6 +346,8 @@ router.put('/payroll/:cycleId/line/:lineId', async (req, res) => {
     if (typeof payload.remarks === 'string') next.remarks = payload.remarks;
 
     if (payload.status && (payload.status === 'INCLUDED' || payload.status === 'EXCLUDED')) next.status = payload.status;
+
+    if (typeof payload.isManual === 'boolean') next.isManual = payload.isManual;
 
 
 
@@ -705,17 +742,29 @@ router.get('/payroll', async (req, res) => {
     let cycle = await PayrollCycle.findOne({ where: { monthKey, orgAccountId: orgId } });
 
     if (!cycle) {
-
       cycle = await PayrollCycle.create({ monthKey, status: 'DRAFT', orgAccountId: orgId });
-
     }
-
-    const lines = await PayrollLine.findAll({ where: { cycleId: cycle.id } });
-
+    let whereClause = { cycleId: cycle.id };
+    if (req.query.staffId) {
+      whereClause.userId = Number(req.query.staffId);
+    }
+    const lines = await PayrollLine.findAll({
+      where: whereClause,
+      include: [
+        {
+          model: require('../models').User,
+          as: 'user',
+          attributes: [
+            'basicSalary', 'hra', 'da', 'specialAllowance', 'conveyanceAllowance',
+            'medicalAllowance', 'telephoneAllowance', 'otherAllowances',
+            'pfDeduction', 'esiDeduction', 'professionalTax', 'tdsDeduction',
+            'otherDeductions', 'salaryValues'
+          ]
+        }
+      ]
+    });
     return res.json({ success: true, cycle, lines });
-
   } catch (e) {
-
     console.error('Payroll GET error:', e);
 
     return res.status(500).json({ success: false, message: 'Failed to load payroll', error: e.message });
@@ -824,7 +873,13 @@ router.post('/payroll/:cycleId/compute', async (req, res) => {
 
 
 
-    const staff = await User.findAll({ where: { role: 'staff', active: true, orgAccountId: orgId } });
+    const staffId = req.body.staffId ? Number(req.body.staffId) : null;
+    let staff;
+    if (staffId) {
+      staff = await User.findAll({ where: { id: staffId, role: 'staff', active: true, orgAccountId: orgId } });
+    } else {
+      staff = await User.findAll({ where: { role: 'staff', active: true, orgAccountId: orgId } });
+    }
 
 
 
@@ -1242,46 +1297,49 @@ router.post('/payroll/:cycleId/compute', async (req, res) => {
 
 
 
-      const totalEarnings = Math.round(baseTotalE * ratio);
+      // Pro-rate individual keys first (User wants to see 54, 7 in Edit)
+      const prorate = (obj, r) => {
+        const res = {};
+        Object.entries(obj || {}).forEach(([k, v]) => {
+          res[k] = Math.ceil(Number(v || 0) * r);
+        });
+        return res;
+      };
 
-      const totalIncentives = Math.round(baseTotalI * ratio);
+      const finalE = prorate(e, ratio);
+      const finalI = prorate(i, ratio);
+      const finalD = prorate(finalDeductions, ratio);
 
-      const totalDeductions = Math.round(baseTotalD * ratio);
+      // Sum pro-rated components for totals to ensure consistency (Fix 7+1=8 mismatch)
+      const sumObj = (obj) => Object.values(obj || {}).reduce((s, v) => s + (Number(v) || 0), 0);
 
+      const totalEarnings = sumObj(finalE);
+      const totalIncentives = sumObj(finalI);
+      const totalDeductions = sumObj(finalD);
       const grossSalary = totalEarnings + totalIncentives;
-
       const netSalary = grossSalary - totalDeductions;
 
-
-
       const totalAbsent = absent + unpaidLeave;
-
-      const attendanceSummary = { present, half, leave, paidLeave, unpaidLeave, absent: totalAbsent, weeklyOff, holidays };
-
+      const attendanceSummary = { present, half, leave, paidLeave, unpaidLeave, absent: totalAbsent, weeklyOff, holidays, ratio };
       const totals = { totalEarnings, totalIncentives, totalDeductions, grossSalary, netSalary, ratio };
 
-
-
-      const [line, created] = await require('../models').sequelize.models.PayrollLine.findOrCreate({
-
-        where: { cycleId: cycle.id, userId: u.id },
-
-        defaults: { earnings: e, incentives: i, deductions: finalDeductions, totals, attendanceSummary }
-
+      // Check if line exists and is manual
+      const existingLine = await require('../models').sequelize.models.PayrollLine.findOne({
+        where: { cycleId: cycle.id, userId: u.id }
       });
 
+      if (existingLine && existingLine.isManual) {
+        console.log(`Skipping compute for manual line: staff ${u.id}`);
+        continue;
+      }
 
+      const [line, created] = await require('../models').sequelize.models.PayrollLine.findOrCreate({
+        where: { cycleId: cycle.id, userId: u.id },
+        defaults: { earnings: finalE, incentives: finalI, deductions: finalD, totals, attendanceSummary }
+      });
 
-      console.log(`PayrollLine ${created ? 'created' : 'updated'} for staff ${u.id}, deductions:`, line.deductions);
-
-
-
-      if (!created) {
-
-        await line.update({ earnings: e, incentives: i, deductions: finalDeductions, totals, attendanceSummary });
-
-        console.log(`Updated PayrollLine for staff ${u.id}, new deductions:`, line.deductions);
-
+      if (!created && !line.isManual) {
+        await line.update({ earnings: finalE, incentives: finalI, deductions: finalD, totals, attendanceSummary });
       }
 
     }
@@ -3884,87 +3942,315 @@ router.post('/settings/attendance-templates/:id/assign', async (req, res) => {
 // Staff list (full details) (org-scoped)
 
 router.get('/staff', async (req, res) => {
-
   try {
-
     const orgId = requireOrg(req, res); if (!orgId) return;
+    const staff = await User.findAll({
+      where: { role: 'staff', orgAccountId: orgId },
+      include: [{ model: StaffProfile, as: 'profile' }],
+      order: [['createdAt', 'DESC']],
+    });
 
-    let rows;
-
-    try {
-
-      [rows] = await sequelize.query(
-
-        `SELECT u.id,
-
-                COALESCE(sp.phone, '') AS phone,
-
-                COALESCE(sp.email, '') AS email,
-
-                COALESCE(u.active, 1) AS active,
-
-                COALESCE(sp.created_at, u.created_at) AS createdAt,
-
-                sp.name,
-
-                sp.staff_id AS staffId,
-
-                COALESCE(sp.department, '') AS department
-
-         FROM users u
-
-         INNER JOIN staff_profiles sp ON sp.user_id = u.id
-
-         WHERE u.org_account_id = :orgId AND u.role = 'staff'`,
-
-        { replacements: { orgId } }
-
-      );
-
-    } catch (eRaw) {
-
-      console.warn('Raw JOIN query failed:', eRaw?.message || eRaw);
-
-      // Fallback via ORM without associations to avoid alias issues
-
-      const orgStaffIds = (await User.findAll({ where: { orgAccountId: orgId, role: 'staff' }, attributes: ['id'] })).map(u => u.id);
-
-      const profs = await StaffProfile.findAll({ where: { userId: orgStaffIds }, attributes: ['userId', 'name', 'staffId', 'department', 'phone', 'email', 'createdAt'] });
-
-      rows = profs.map(p => ({ id: p.userId, name: p.name, staffId: p.staffId, department: p.department, phone: p.phone, email: p.email, active: 1, createdAt: p.createdAt }));
-
-    }
-
-    const data = (rows || []).map(r => ({
-
-      id: r.id,
-
-      name: r.name || `Staff ${r.id}`,
-
-      email: r.email || '',
-
-      phone: r.phone || '',
-
-      role: 'staff',
-
-      staffId: r.staffId || '',
-
-      department: r.department || '',
-
-      active: r.active === undefined ? true : !!r.active,
-
-      createdAt: r.createdAt || null,
-
+    const mappedData = staff.map((u) => ({
+      id: u.id,
+      active: u.active === true,
+      createdAt: u.createdAt,
+      staffId: u.profile?.staffId || null,
+      phone: u.phone,
+      name: u.profile?.name || `Staff ${u.id}`,
+      email: u.profile?.email || null,
+      department: u.profile?.department || null,
+      designation: u.profile?.designation || null,
+      staffType: u.profile?.staffType || 'regular',
+      salaryTemplateId: u.salaryTemplateId,
+      attendanceSettingTemplate: u.profile?.attendanceSettingTemplate || null,
+      salaryValues: u.salaryValues,
+      shiftSelection: u.profile?.shiftSelection || null,
+      openingBalance: u.profile?.openingBalance || 0,
+      salaryDetailAccess: !!u.profile?.salaryDetailAccess,
+      allowCurrentCycleSalaryAccess: !!u.profile?.allowCurrentCycleSalaryAccess,
+      dateOfJoining: u.profile?.dateOfJoining || null,
+      // salary components for convenience
+      basicSalary: u.basicSalary,
+      hra: u.hra,
+      da: u.da,
+      specialAllowance: u.specialAllowance,
+      conveyanceAllowance: u.conveyanceAllowance,
+      medicalAllowance: u.medicalAllowance,
+      telephoneAllowance: u.telephoneAllowance,
+      otherAllowances: u.otherAllowances,
+      pfDeduction: u.pfDeduction,
+      esiDeduction: u.esiDeduction,
+      professionalTax: u.professionalTax,
+      tdsDeduction: u.tdsDeduction,
     }));
 
-    return res.json({ success: true, data, staff: data });
-
+    return res.json({
+      success: true,
+      data: mappedData,
+      staff: mappedData
+    });
   } catch (e) {
-
+    console.error('Staff list load fail:', e);
     return res.status(500).json({ success: false, message: 'Failed to load staff list' });
-
   }
+});
 
+router.get('/staff/import-template', async (req, res) => {
+  try {
+    const workbook = new exceljs.Workbook();
+    const worksheet = workbook.addWorksheet('Staff Import Template');
+
+    worksheet.columns = [
+      { header: 'Name', key: 'name', width: 25 },
+      { header: 'Staff ID', key: 'staffId', width: 15 },
+      { header: 'Phone Number', key: 'phone', width: 15 },
+      { header: 'Designation', key: 'designation', width: 20 },
+      { header: 'Joining Date (YYYY-MM-DD)', key: 'joiningDate', width: 25 },
+      { header: 'Email Address', key: 'email', width: 30 },
+    ];
+
+    // Add a sample row
+    worksheet.addRow({
+      name: 'John Doe',
+      staffId: 'ST001',
+      phone: '9876543210',
+      designation: 'Software Engineer',
+      joiningDate: '2024-01-01',
+      email: 'john@example.com'
+    });
+
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', 'attachment; filename=staff_import_template.xlsx');
+
+    await workbook.xlsx.write(res);
+    res.end();
+  } catch (e) {
+    console.error('Template gen error:', e);
+    res.status(500).json({ success: false, message: 'Failed to generate template' });
+  }
+});
+
+const uploadMemory = multer({ storage: multer.memoryStorage() });
+
+router.post('/staff/import', uploadMemory.single('file'), async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
+    if (!req.file) return res.status(400).json({ success: false, message: 'No file uploaded' });
+
+    const activeSub = req.activeSubscription;
+    if (!activeSub) return res.status(402).json({ success: false, message: 'Active subscription required' });
+
+    const workbook = new exceljs.Workbook();
+    await workbook.xlsx.load(req.file.buffer);
+    const worksheet = workbook.getWorksheet(1);
+
+    const results = {
+      success: 0,
+      failed: 0,
+      skipped: 0,
+      errors: []
+    };
+
+    const rows = [];
+    worksheet.eachRow((row, rowNumber) => {
+      if (rowNumber === 1) return; // Skip header
+      rows.push({
+        name: row.getCell(1).value,
+        staffId: row.getCell(2).value,
+        phone: row.getCell(3).value,
+        designation: row.getCell(4).value,
+        joiningDate: row.getCell(5).value,
+        email: row.getCell(6).value,
+        rowNumber
+      });
+    });
+
+    const staffLimit = Number(((activeSub && (activeSub.staffLimit ?? (activeSub.meta ? activeSub.meta.staffLimit : undefined))) ?? (activeSub.plan ? activeSub.plan.staffLimit : 0)) || 0);
+
+    for (const data of rows) {
+      try {
+        const phone = data.phone ? String(data.phone).trim() : null;
+        if (!phone) {
+          results.failed++;
+          results.errors.push(`Row ${data.rowNumber}: Phone number is required`);
+          continue;
+        }
+
+        // Check limit
+        if (staffLimit > 0) {
+          const count = await User.count({ where: { role: 'staff', orgAccountId: orgId, active: true } });
+          if (count >= staffLimit) {
+            results.failed++;
+            results.errors.push(`Row ${data.rowNumber}: Staff limit reached`);
+            continue;
+          }
+        }
+
+        // Check duplicate phone
+        const existing = await User.findOne({ where: { phone } });
+        if (existing) {
+          results.skipped++;
+          results.errors.push(`Row ${data.rowNumber}: Phone ${phone} already exists`);
+          continue;
+        }
+
+        // Check duplicate staffId
+        if (data.staffId) {
+          const existingSid = await StaffProfile.findOne({ where: { staffId: String(data.staffId) } });
+          if (existingSid) {
+            results.skipped++;
+            results.errors.push(`Row ${data.rowNumber}: Staff ID ${data.staffId} already exists`);
+            continue;
+          }
+        }
+
+        const passwordHash = await bcrypt.hash(phone, 10);
+        const user = await User.create({
+          role: 'staff',
+          phone,
+          passwordHash,
+          orgAccountId: orgId,
+          active: true
+        });
+
+        await StaffProfile.create({
+          userId: user.id,
+          staffId: data.staffId ? String(data.staffId) : null,
+          phone,
+          name: data.name ? String(data.name) : `Staff ${user.id}`,
+          email: data.email ? String(data.email) : null,
+          designation: data.designation ? String(data.designation) : null,
+          dateOfJoining: data.joiningDate ? dayjs(data.joiningDate).format('YYYY-MM-DD') : null,
+          staffType: 'regular'
+        });
+
+        results.success++;
+      } catch (err) {
+        console.error(`Import error row ${data.rowNumber}:`, err);
+        results.failed++;
+        results.errors.push(`Row ${data.rowNumber}: ${err.message}`);
+      }
+    }
+
+    return res.json({ success: true, results });
+  } catch (e) {
+    console.error('Import fail:', e);
+    return res.status(500).json({ success: false, message: 'Internal server error during import' });
+  }
+});
+
+router.get('/staff/export', async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
+
+    const staff = await User.findAll({
+      where: { role: 'staff', orgAccountId: orgId },
+      include: [
+        { model: StaffProfile, as: 'profile' },
+        { model: SalaryTemplate, as: 'salaryTemplate' }
+      ],
+      order: [['createdAt', 'DESC']],
+    });
+
+    const workbook = new exceljs.Workbook();
+    const worksheet = workbook.addWorksheet('Staff List');
+
+    worksheet.columns = [
+      // Profile
+      { header: 'Name', key: 'name', width: 25 },
+      { header: 'Staff ID', key: 'staffId', width: 15 },
+      { header: 'Phone', key: 'phone', width: 15 },
+      { header: 'Email', key: 'email', width: 25 },
+      { header: 'Designation', key: 'designation', width: 20 },
+      { header: 'Department', key: 'department', width: 20 },
+      { header: 'Staff Type', key: 'staffType', width: 15 },
+      { header: 'Joining Date', key: 'dateOfJoining', width: 15 },
+      { header: 'Status', key: 'status', width: 10 },
+      // Bank Details
+      { header: 'Bank Holder', key: 'bankAccountHolderName', width: 20 },
+      { header: 'Account Number', key: 'bankAccountNumber', width: 20 },
+      { header: 'IFSC', key: 'bankIfsc', width: 15 },
+      { header: 'Bank Name', key: 'bankName', width: 20 },
+      { header: 'Branch', key: 'bankBranch', width: 20 },
+      { header: 'UPI ID', key: 'upiId', width: 20 },
+      // Salary Components
+      { header: 'Basic Salary', key: 'basicSalary', width: 15 },
+      { header: 'HRA', key: 'hra', width: 12 },
+      { header: 'DA', key: 'da', width: 12 },
+      { header: 'Special Allowance', key: 'specialAllowance', width: 20 },
+      { header: 'Conveyance', key: 'conveyanceAllowance', width: 15 },
+      { header: 'Medical', key: 'medicalAllowance', width: 15 },
+      { header: 'Telephone', key: 'telephoneAllowance', width: 15 },
+      { header: 'Other Allowances', key: 'otherAllowances', width: 20 },
+      { header: 'PF Deduction', key: 'pfDeduction', width: 15 },
+      { header: 'ESI Deduction', key: 'esiDeduction', width: 15 },
+      { header: 'Professional Tax', key: 'professionalTax', width: 15 },
+      { header: 'Income Tax (TDS)', key: 'tdsDeduction', width: 15 },
+      { header: 'Other Deductions', key: 'otherDeductions', width: 15 },
+      // Totals
+      { header: 'Total Earnings', key: 'totalEarnings', width: 15 },
+      { header: 'Total Deductions', key: 'totalDeductions', width: 15 },
+      { header: 'Gross Salary', key: 'grossSalary', width: 15 },
+      { header: 'Net Salary', key: 'netSalary', width: 15 },
+    ];
+
+    staff.forEach(u => {
+      worksheet.addRow({
+        name: u.profile?.name || `Staff ${u.id}`,
+        staffId: u.profile?.staffId || '-',
+        phone: u.phone,
+        email: u.profile?.email || '-',
+        designation: u.profile?.designation || '-',
+        department: u.profile?.department || '-',
+        staffType: u.profile?.staffType || 'regular',
+        dateOfJoining: u.profile?.dateOfJoining || '-',
+        status: u.active ? 'Active' : 'Inactive',
+        // Bank
+        bankAccountHolderName: u.profile?.bankAccountHolderName || '-',
+        bankAccountNumber: u.profile?.bankAccountNumber || '-',
+        bankIfsc: u.profile?.bankIfsc || '-',
+        bankName: u.profile?.bankName || '-',
+        bankBranch: u.profile?.bankBranch || '-',
+        upiId: u.profile?.upiId || '-',
+        // Salary
+        basicSalary: Number(u.basicSalary || 0),
+        hra: Number(u.hra || 0),
+        da: Number(u.da || 0),
+        specialAllowance: Number(u.specialAllowance || 0),
+        conveyanceAllowance: Number(u.conveyanceAllowance || 0),
+        medicalAllowance: Number(u.medicalAllowance || 0),
+        telephoneAllowance: Number(u.telephoneAllowance || 0),
+        otherAllowances: Number(u.otherAllowances || 0),
+        pfDeduction: Number(u.pfDeduction || 0),
+        esiDeduction: Number(u.esiDeduction || 0),
+        professionalTax: Number(u.professionalTax || 0),
+        tdsDeduction: Number(u.tdsDeduction || 0),
+        otherDeductions: Number(u.otherDeductions || 0),
+        // Totals
+        totalEarnings: Number(u.totalEarnings || 0),
+        totalDeductions: Number(u.totalDeductions || 0),
+        grossSalary: Number(u.grossSalary || 0),
+        netSalary: Number(u.netSalary || 0),
+      });
+    });
+
+    // Formatting headers
+    worksheet.getRow(1).font = { bold: true };
+    worksheet.getRow(1).fill = {
+      type: 'pattern',
+      pattern: 'solid',
+      fgColor: { argb: 'FFE0E0E0' }
+    };
+
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', 'attachment; filename=staff_export.xlsx');
+
+    await workbook.xlsx.write(res);
+    res.end();
+  } catch (e) {
+    console.error('Export fail:', e);
+    return res.status(500).json({ success: false, message: 'Failed to export staff list' });
+  }
 });
 
 // const upload = multer({ storage });
@@ -4525,7 +4811,8 @@ router.put('/expenses/:claimId/status', async (req, res) => {
 
       if (approvedAmount !== undefined) patch.approvedAmount = Number(approvedAmount);
 
-      if (approvedBy) patch.approvedBy = String(approvedBy);
+      // Auto-set approvedBy from logged-in admin
+      patch.approvedBy = approvedBy || req.user?.name || req.user?.phone || 'Admin';
 
     }
 
@@ -4543,6 +4830,87 @@ router.put('/expenses/:claimId/status', async (req, res) => {
 
 });
 
+
+// --- Org-wide Expense Management ---
+
+// List ALL expense claims for the org (with filters)
+router.get('/expenses', async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
+    const { status, staffId, startDate, endDate, expenseType, page = 1, limit = 20 } = req.query || {};
+
+    // Get all staff in this org - simple queries to avoid association issues
+    const orgUsers = await User.findAll({
+      where: { orgAccountId: orgId, role: 'staff' },
+      attributes: ['id', 'phone'],
+      raw: true
+    });
+    const orgStaffIds = orgUsers.map(u => u.id);
+    if (orgStaffIds.length === 0) return res.json({ success: true, data: [], total: 0, stats: {} });
+
+    // Get staff profiles separately
+    const StaffProfile = sequelize.models.StaffProfile;
+    const profiles = StaffProfile ? await StaffProfile.findAll({
+      where: { userId: orgStaffIds },
+      attributes: ['userId', 'name', 'department'],
+      raw: true
+    }) : [];
+
+    // Build staff name map
+    const staffMap = {};
+    orgUsers.forEach(u => { staffMap[u.id] = { staffName: u.phone || 'Unknown', department: '-' }; });
+    profiles.forEach(p => {
+      if (staffMap[p.userId]) {
+        if (p.name) staffMap[p.userId].staffName = p.name;
+        if (p.department) staffMap[p.userId].department = p.department;
+      }
+    });
+
+    const where = { userId: orgStaffIds };
+    if (status && status !== 'all') where.status = status;
+    if (staffId) where.userId = Number(staffId);
+    if (expenseType && expenseType !== 'all') where.expenseType = expenseType;
+    if (startDate && endDate) {
+      where.expenseDate = { [Op.between]: [startDate, endDate] };
+    } else if (startDate) {
+      where.expenseDate = { [Op.gte]: startDate };
+    } else if (endDate) {
+      where.expenseDate = { [Op.lte]: endDate };
+    }
+
+    const offset = (Number(page) - 1) * Number(limit);
+    const { count, rows } = await ExpenseClaim.findAndCountAll({
+      where,
+      order: [['createdAt', 'DESC']],
+      limit: Number(limit),
+      offset,
+    });
+
+    // Stats for this org
+    const allClaims = await ExpenseClaim.findAll({ where: { userId: orgStaffIds }, attributes: ['status', 'amount', 'approvedAmount'] });
+    const stats = {
+      total: allClaims.length,
+      pending: allClaims.filter(c => c.status === 'pending').length,
+      approved: allClaims.filter(c => c.status === 'approved').length,
+      rejected: allClaims.filter(c => c.status === 'rejected').length,
+      settled: allClaims.filter(c => c.status === 'settled').length,
+      totalAmount: allClaims.reduce((s, c) => s + Number(c.amount || 0), 0),
+      approvedAmount: allClaims.filter(c => c.status === 'approved' || c.status === 'settled').reduce((s, c) => s + Number(c.approvedAmount || c.amount || 0), 0),
+      pendingAmount: allClaims.filter(c => c.status === 'pending').reduce((s, c) => s + Number(c.amount || 0), 0),
+    };
+
+    const data = rows.map(r => ({
+      ...r.toJSON(),
+      staffName: staffMap[r.userId]?.staffName || 'Unknown',
+      department: staffMap[r.userId]?.department || '-',
+    }));
+
+    return res.json({ success: true, data, total: count, stats });
+  } catch (e) {
+    console.error('Expense list error:', e);
+    return res.status(500).json({ success: false, message: 'Failed to load expenses' });
+  }
+});
 
 
 router.get('/staff/:id/loans/summary', async (req, res) => {
@@ -9039,48 +9407,81 @@ router.get('/admins', async (req, res) => {
 
 
 
-router.get('/staff', async (req, res) => {
 
-  const orgId = requireOrg(req, res); if (!orgId) return;
+router.get('/staff-salary-list', async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
 
-  const staff = await User.findAll({
+    const staff = await User.findAll({
+      where: { role: 'staff', orgAccountId: orgId },
+      include: [{ model: StaffProfile, as: 'profile' }],
+      attributes: [
+        'id', 'phone', 'grossSalary', 'netSalary', 'salaryValues',
+        'basicSalary', 'hra', 'da', 'specialAllowance', 'conveyanceAllowance',
+        'medicalAllowance', 'telephoneAllowance', 'otherAllowances',
+        'pfDeduction', 'esiDeduction', 'professionalTax', 'tdsDeduction', 'otherDeductions'
+      ],
+      order: [['createdAt', 'DESC']],
+    });
 
-    where: { role: 'staff', orgAccountId: orgId },
+    return res.json({
+      success: true,
+      data: staff.map((u) => {
+        let vals = {};
+        try {
+          vals = typeof u.salaryValues === 'string' ? JSON.parse(u.salaryValues) : (u.salaryValues || {});
+        } catch (e) { console.error('Error parsing salaryValues', e); }
 
-    include: [{ model: StaffProfile, as: 'profile' }],
+        const earnings = { ...(vals.earnings || {}) };
+        const deductions = { ...(vals.deductions || {}) };
 
-    order: [['createdAt', 'DESC']],
+        // Helper to add if not already present (normalized check)
+        const addIfNew = (obj, key, val, alternates = []) => {
+          const norm = (s) => s.toLowerCase().replace(/[^a-z0-9]/g, '');
+          const existingKeys = Object.keys(obj).map(norm);
+          const keyNorm = norm(key);
+          const altNorms = alternates.map(norm);
 
-  });
+          if (!existingKeys.includes(keyNorm) && !altNorms.some(a => existingKeys.includes(a))) {
+            obj[key] = val;
+          }
+        };
 
+        if (Number(u.basicSalary) > 0) addIfNew(earnings, 'basic_salary', u.basicSalary, ['basic', 'basicpay']);
+        if (Number(u.hra) > 0) addIfNew(earnings, 'hra', u.hra);
+        if (Number(u.da) > 0) addIfNew(earnings, 'da', u.da);
+        if (Number(u.specialAllowance) > 0) addIfNew(earnings, 'special_allowance', u.specialAllowance, ['special']);
+        if (Number(u.conveyanceAllowance) > 0) addIfNew(earnings, 'conveyance', u.conveyanceAllowance);
+        if (Number(u.medicalAllowance) > 0) addIfNew(earnings, 'medical', u.medicalAllowance);
+        if (Number(u.telephoneAllowance) > 0) addIfNew(earnings, 'telephone', u.telephoneAllowance);
+        if (Number(u.otherAllowances) > 0) addIfNew(earnings, 'other_earnings', u.otherAllowances, ['other']);
 
+        if (Number(u.pfDeduction) > 0) addIfNew(deductions, 'pf', u.pfDeduction, ['provident fund', 'epf']);
+        if (Number(u.esiDeduction) > 0) addIfNew(deductions, 'esi', u.esiDeduction, ['esic']);
+        if (Number(u.professionalTax) > 0) addIfNew(deductions, 'professional_tax', u.professionalTax, ['pt']);
+        if (Number(u.tdsDeduction) > 0) addIfNew(deductions, 'tds', u.tdsDeduction);
+        if (Number(u.otherDeductions) > 0) addIfNew(deductions, 'other_deductions', u.otherDeductions, ['other']);
 
-  return res.json({
-
-    success: true,
-
-    data: staff.map((u) => ({
-
-      id: u.id,
-
-      active: u.active === true,
-
-      createdAt: u.createdAt,
-
-      staffId: u.profile?.staffId || null,
-
-      phone: u.phone,
-
-      name: u.profile?.name || `Staff ${u.id}`,
-
-      email: u.profile?.email || null,
-
-      department: u.profile?.department || null,
-
-    })),
-
-  });
-
+        return {
+          id: u.id,
+          name: u.profile?.name || `Staff ${u.id}`,
+          staffId: u.profile?.staffId || null,
+          phone: u.phone,
+          department: u.profile?.department || null,
+          grossSalary: u.grossSalary,
+          netSalary: u.netSalary,
+          components: {
+            earnings,
+            incentives: vals.incentives || {},
+            deductions
+          }
+        };
+      }),
+    });
+  } catch (error) {
+    console.error('Error fetching staff salary list:', error);
+    return res.status(500).json({ success: false, message: 'Internal server error' });
+  }
 });
 
 
@@ -11292,117 +11693,139 @@ router.post('/staff', async (req, res) => {
 // Update staff (org-scoped)
 
 router.put('/staff/:id', async (req, res) => {
-
   try {
-
     const orgId = requireOrg(req, res); if (!orgId) return;
+    const { id } = req.params;
+    const {
+      staffId: newStaffId,
+      phone,
+      name,
+      email,
+      password,
+      salaryTemplateId,
+      salaryValues,
+      department,
+      designation,
+      attendanceSettingTemplate,
+      salaryCycleDate,
+      staffType,
+      shiftSelection,
+      openingBalance,
+      salaryDetailAccess,
+      allowCurrentCycleSalaryAccess,
+      active,
+      dateOfJoining
+    } = req.body || {};
 
-    const staffId = req.params.id;
+    const staff = await User.findOne({ where: { id: Number(id), orgAccountId: orgId, role: 'staff' } });
+    if (!staff) return res.status(404).json({ success: false, message: 'Staff not found' });
 
-    const { staffId: newStaffId, phone, name, email, active } = req.body || {};
-
-
-
-    const staff = await User.findOne({ where: { id: Number(staffId), orgAccountId: orgId, role: 'staff' } });
-
-    if (!staff) {
-
-      return res.status(404).json({ success: false, message: 'Staff not found' });
-
-    }
-
-
-
-    // Check if phone is being changed and if it already exists
-
+    // Check if phone unique
     if (phone && phone !== staff.phone) {
-
       const existingUser = await User.findOne({ where: { phone: String(phone) } });
-
-      if (existingUser) {
-
-        return res.status(409).json({ success: false, message: 'Phone already exists' });
-
-      }
-
+      if (existingUser) return res.status(409).json({ success: false, message: 'Phone already exists' });
     }
 
-
-
-    // Check if staffId is being changed and if it already exists
-
-    if (newStaffId && newStaffId !== staffId) {
-
-      const existingStaffId = await StaffProfile.findOne({ where: { staffId: String(newStaffId) } });
-
-      if (existingStaffId) {
-
-        return res.status(409).json({ success: false, message: 'Staff ID already exists' });
-
+    // Check if staffId unique
+    if (newStaffId) {
+      const profile = await StaffProfile.findOne({ where: { userId: staff.id } });
+      if (profile && profile.staffId !== newStaffId) {
+        const existingStaffId = await StaffProfile.findOne({ where: { staffId: String(newStaffId) } });
+        if (existingStaffId) return res.status(409).json({ success: false, message: 'Staff ID already exists' });
       }
-
     }
 
+    const patchUser = {};
+    if (phone) patchUser.phone = String(phone);
+    if (password) patchUser.passwordHash = await bcrypt.hash(String(password), 10);
+    if (active !== undefined) patchUser.active = !!active;
+    if (salaryTemplateId !== undefined) patchUser.salaryTemplateId = salaryTemplateId;
+    if (salaryValues) patchUser.salaryValues = salaryValues;
+    if (department) patchUser.department = department;
+    if (designation) patchUser.designation = designation;
+    if (attendanceSettingTemplate) patchUser.attendanceSettingTemplate = attendanceSettingTemplate;
+    if (salaryCycleDate) patchUser.salaryCycleDate = salaryCycleDate;
+    if (staffType) patchUser.staffType = staffType;
+    if (shiftSelection) patchUser.shiftSelection = shiftSelection;
+    if (openingBalance !== undefined) patchUser.openingBalance = openingBalance;
+    if (salaryDetailAccess !== undefined) patchUser.salaryDetailAccess = !!salaryDetailAccess;
+    if (allowCurrentCycleSalaryAccess !== undefined) patchUser.allowCurrentCycleSalaryAccess = !!allowCurrentCycleSalaryAccess;
 
+    // Handle salary recalculation if values are provided
+    if (salaryValues && (salaryValues.earnings || salaryValues.deductions)) {
+      const toUserAttr = (key) => ({
+        basic_salary: 'basicSalary',
+        hra: 'hra',
+        da: 'da',
+        special_allowance: 'specialAllowance',
+        conveyance_allowance: 'conveyanceAllowance',
+        medical_allowance: 'medicalAllowance',
+        telephone_allowance: 'telephoneAllowance',
+        other_allowances: 'otherAllowances',
+        provident_fund: 'pfDeduction',
+        esi: 'esiDeduction',
+        professional_tax: 'professionalTax',
+        income_tax: 'tdsDeduction',
+        loan_deduction: 'otherDeductions',
+        other_deductions: 'otherDeductions',
+      })[key];
 
-    // Update user
+      const ev = salaryValues.earnings || {};
+      const dv = salaryValues.deductions || {};
+      const toNum = (v) => (v === undefined || v === null || v === '' ? 0 : parseFloat(v));
 
-    await staff.update({
-
-      phone: phone ? String(phone) : staff.phone,
-
-      active: active !== undefined ? !!active : staff.active,
-
-    });
-
-
-
-    // Update profile
-
-    const profile = await StaffProfile.findOne({ where: { userId: staffId } });
-
-    if (profile) {
-
-      await profile.update({
-
-        staffId: newStaffId ? String(newStaffId) : profile.staffId,
-
-        phone: phone ? String(phone) : profile.phone,
-
-        name: name !== undefined ? (name ? String(name) : null) : profile.name,
-
-        email: email !== undefined ? (email ? String(email) : null) : profile.email,
-
+      let totalE = 0;
+      ['basic_salary', 'hra', 'da', 'special_allowance', 'conveyance_allowance', 'medical_allowance', 'telephone_allowance', 'other_allowances'].forEach(k => {
+        const attr = toUserAttr(k);
+        if (ev[k] !== undefined && attr) patchUser[attr] = toNum(ev[k]);
+        if (attr && patchUser[attr] !== undefined) totalE += toNum(patchUser[attr]);
+        else if (attr && staff[attr] !== undefined) totalE += toNum(staff[attr]);
       });
 
+      let totalD = 0;
+      ['provident_fund', 'esi', 'professional_tax', 'income_tax', 'loan_deduction', 'other_deductions'].forEach(k => {
+        const attr = toUserAttr(k);
+        if (dv[k] !== undefined && attr) patchUser[attr] = toNum(dv[k]);
+        if (attr && patchUser[attr] !== undefined) totalD += toNum(patchUser[attr]);
+        else if (attr && staff[attr] !== undefined) totalD += toNum(staff[attr]);
+      });
+
+      patchUser.totalEarnings = totalE;
+      patchUser.totalDeductions = totalD;
+      patchUser.grossSalary = totalE + (staff.totalIncentives || 0);
+      patchUser.netSalary = patchUser.grossSalary - totalD;
+      patchUser.salaryLastCalculated = new Date();
+      if (ev.basic_salary !== undefined) patchUser.basicSalary = toNum(ev.basic_salary);
     }
 
+    await staff.update(patchUser);
 
+    // Update profile
+    const profile = await StaffProfile.findOne({ where: { userId: staff.id } });
+    if (profile) {
+      const patchProfile = {};
+      if (newStaffId) patchProfile.staffId = String(newStaffId);
+      if (phone) patchProfile.phone = String(phone);
+      if (name !== undefined) patchProfile.name = name;
+      if (email !== undefined) patchProfile.email = email;
+      if (department) patchProfile.department = department;
+      if (designation) patchProfile.designation = designation;
+      if (attendanceSettingTemplate) patchProfile.attendanceSettingTemplate = attendanceSettingTemplate;
+      if (salaryCycleDate !== undefined) patchProfile.salaryCycleDate = salaryCycleDate;
+      if (staffType) patchProfile.staffType = staffType;
+      if (shiftSelection !== undefined) patchProfile.shiftSelection = shiftSelection;
+      if (openingBalance !== undefined) patchProfile.openingBalance = openingBalance;
+      if (salaryDetailAccess !== undefined) patchProfile.salaryDetailAccess = !!salaryDetailAccess;
+      if (allowCurrentCycleSalaryAccess !== undefined) patchProfile.allowCurrentCycleSalaryAccess = !!allowCurrentCycleSalaryAccess;
+      if (dateOfJoining) patchProfile.dateOfJoining = dateOfJoining;
+      await profile.update(patchProfile);
+    }
 
-    return res.json({
-
-      success: true,
-
-      staff: {
-
-        id: staff.id,
-
-        staffId: newStaffId || profile.staffId,
-
-        phone: staff.phone,
-
-        active: staff.active
-
-      },
-
-    });
-
+    return res.json({ success: true, staff: staff });
   } catch (e) {
-
+    console.error('Staff update error:', e);
     return res.status(500).json({ success: false, message: 'Failed to update staff' });
-
   }
-
 });
 
 
@@ -17829,6 +18252,54 @@ router.delete('/loans/:id', async (req, res) => {
 });
 
 
+
+// Generate Persistent Payslip (Force generation and save)
+router.post('/payroll/generate-payslip', async (req, res) => {
+  try {
+    const { userId, monthKey } = req.body;
+    if (!userId || !monthKey) return res.status(400).json({ success: false, message: 'userId and monthKey required' });
+
+    // Calculate data
+    const data = await calculateSalary(userId, monthKey);
+
+    // Ensure directory exists
+    // Path: uploads/payslips/YYYY-MM/
+    const uploadsDir = path.join(__dirname, '../../uploads/payslips', monthKey);
+    if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir, { recursive: true });
+
+    const filename = `payslip-${userId}-${monthKey}-${Date.now()}.pdf`;
+    const absolutePath = path.join(uploadsDir, filename);
+    const relativePath = `/uploads/payslips/${monthKey}/${filename}`;
+
+    // Generate and save
+    await generatePayslipPDF(data, absolutePath);
+
+    // Update DB
+    console.log(`Updating payslip path for user ${userId}, month ${monthKey}`);
+    const cycle = await sequelize.models.PayrollCycle.findOne({
+      where: { monthKey },
+      order: [['id', 'DESC']]
+    });
+    if (cycle) {
+      console.log(`Cycle found: ${cycle.id}`);
+      const line = await sequelize.models.PayrollLine.findOne({ where: { cycleId: cycle.id, userId } });
+      if (line) {
+        console.log(`Line found: ${line.id}. Updating path to ${relativePath}`);
+        await line.update({ payslipPath: relativePath });
+        console.log('Line updated');
+      } else {
+        console.log('PayrollLine not found');
+      }
+    } else {
+      console.log('PayrollCycle not found');
+    }
+
+    return res.json({ success: true, message: 'Payslip generated and saved', path: relativePath });
+  } catch (e) {
+    console.error('Generate payslip error:', e);
+    return res.status(500).json({ success: false, message: 'Failed to generate payslip' });
+  }
+});
 
 module.exports = router;
 

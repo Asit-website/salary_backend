@@ -33,7 +33,7 @@ const verifyEmailConfig = async () => {
         pass: emailConfig.auth.pass ? '***configured***' : '***missing***'
       }
     });
-    
+
     await transporter.verify();
     console.log('✅ Email server is ready to send messages');
     return true;
@@ -890,6 +890,105 @@ const sendSubscriptionExpiredEmail = async (adminEmail, adminName, organizationN
   }
 };
 
+// Send staff letter email
+const sendStaffLetterEmail = async (staffEmail, staffName, letterTitle, letterContent) => {
+  try {
+    console.log(`📧 Sending staff letter email to: ${staffEmail}`);
+    console.log(`📧 Letter title: ${letterTitle}`);
+
+    const mailOptions = {
+      from: `"${emailFrom.name}" <${emailFrom.address}>`,
+      to: staffEmail,
+      subject: `${letterTitle} - Attached Document`,
+      html: `
+        <!DOCTYPE html>
+        <html>
+        <head>
+          <meta charset="utf-8">
+          <meta name="viewport" content="width=device-width, initial-scale=1.0">
+          <title>Document from ThinkTech Solutions</title>
+          <style>
+            body {
+              font-family: 'Arial', sans-serif;
+              line-height: 1.6;
+              color: #333;
+              max-width: 800px;
+              margin: 0 auto;
+              padding: 20px;
+              background-color: #f4f4f4;
+            }
+            .container {
+              background-color: #ffffff;
+              padding: 40px;
+              border-radius: 10px;
+              box-shadow: 0 0 10px rgba(0,0,0,0.1);
+            }
+            .header {
+              text-align: center;
+              padding-bottom: 20px;
+              border-bottom: 2px solid #125EC9;
+            }
+            .header h1 {
+              color: #125EC9;
+              margin: 0;
+              font-size: 24px;
+            }
+            .content {
+              padding: 30px 0;
+            }
+            .letter-box {
+              background-color: #fff;
+              padding: 30px;
+              border: 1px solid #ddd;
+              border-radius: 5px;
+            }
+            .footer {
+              text-align: center;
+              padding-top: 20px;
+              border-top: 1px solid #eee;
+              color: #666;
+              font-size: 12px;
+            }
+          </style>
+        </head>
+        <body>
+          <div class="container">
+            <div class="header">
+              <h1>Document Issued</h1>
+            </div>
+            
+            <div class="content">
+              <p>Dear <strong>${staffName}</strong>,</p>
+              <p>A new document has been issued to you by your organization.</p>
+              
+              <div class="letter-box">
+                ${letterContent}
+              </div>
+              
+              <p>You can also view this document by logging into your staff portal.</p>
+              
+              <p>Best regards,<br>
+              <strong>ThinkTech Solutions Team</strong></p>
+            </div>
+            
+            <div class="footer">
+              <p>This is an automated message. Please do not reply to this email.</p>
+            </div>
+          </div>
+        </body>
+        </html>
+      `
+    };
+
+    const info = await transporter.sendMail(mailOptions);
+    console.log('✅ Staff letter email sent successfully:', info.messageId);
+    return { success: true, messageId: info.messageId };
+  } catch (error) {
+    console.error('Error sending staff letter email:', error);
+    return { success: false, error: error.message };
+  }
+};
+
 module.exports = {
   verifyEmailConfig,
   sendWelcomeEmail,
@@ -898,6 +997,7 @@ module.exports = {
   sendAccountActivationEmail,
   sendSubscriptionExpiryReminderEmail,
   sendSubscriptionExpiredEmail,
+  sendStaffLetterEmail,
   transporter,
   emailFrom
 };

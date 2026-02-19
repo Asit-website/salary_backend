@@ -394,6 +394,12 @@ StaffLetter.belongsTo(OrgAccount, { foreignKey: 'orgAccountId', as: 'orgAccount'
 User.hasMany(StaffLetter, { foreignKey: 'issuedBy', as: 'lettersIssuedBy' });
 StaffLetter.belongsTo(User, { foreignKey: 'issuedBy', as: 'issuer' });
 
+// Payroll associations
+PayrollCycle.hasMany(PayrollLine, { foreignKey: 'cycleId', as: 'lines' });
+PayrollLine.belongsTo(PayrollCycle, { foreignKey: 'cycleId', as: 'cycle' });
+User.hasMany(PayrollLine, { foreignKey: 'userId', as: 'payrollLines' });
+PayrollLine.belongsTo(User, { foreignKey: 'userId', as: 'user' });
+
 module.exports = {
   sequelize,
   User,

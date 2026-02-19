@@ -2,6 +2,7 @@ const express = require('express');
 const { LetterTemplate, StaffLetter, StaffProfile, User, sequelize } = require('../models');
 const { authRequired } = require('../middleware/auth');
 const { tenantEnforce } = require('../middleware/tenant');
+const { sendStaffLetterEmail } = require('../services/emailService');
 const router = express.Router();
 
 // One-liner org guard
@@ -153,6 +154,20 @@ router.post('/issue', async (req, res) => {
             issuedBy: req.user.id,
             orgAccountId: orgId
         });
+
+        // Send email notification to staff
+        if (staff.email) {
+            console.log(`Attempting to send letter email to: ${staff.email}`);
+            // Don't await this to keep response fast, or await if reliability is preferred
+            sendStaffLetterEmail(
+                staff.email,
+                staff.name || 'Staff Member',
+                finalTitle || 'Letter Issued',
+                finalContent
+            ).catch(err => console.error('Failed to send letter email:', err));
+        } else {
+            console.warn(`Staff member ${staffUserId} has no email address. Skipping email notification.`);
+        }
 
         res.json({ success: true, issuedLetter });
     } catch (e) {

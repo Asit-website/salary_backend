@@ -13,13 +13,15 @@ module.exports = (sequelize) => {
       totals: { type: DataTypes.JSON, allowNull: true }, // { totalEarnings, totalDeductions, gross, net }
       attendanceSummary: { type: DataTypes.JSON, allowNull: true },
       adjustments: { type: DataTypes.JSON, allowNull: true, defaultValue: [] }, // [{type:'ADD'|'DEDUCT',label,amount}]
+      payslipPath: { type: DataTypes.STRING, allowNull: true, field: 'payslip_path' },
       remarks: { type: DataTypes.TEXT, allowNull: true },
       status: { type: DataTypes.ENUM('INCLUDED', 'EXCLUDED'), allowNull: false, defaultValue: 'INCLUDED' },
       paidAt: { type: DataTypes.DATE, allowNull: true },
       paidMode: { type: DataTypes.STRING(32), allowNull: true },
       paidRef: { type: DataTypes.STRING(191), allowNull: true },
-      paidAmount: { type: DataTypes.DECIMAL(12,2), allowNull: true },
+      paidAmount: { type: DataTypes.DECIMAL(12, 2), allowNull: true },
       paidBy: { type: DataTypes.BIGINT.UNSIGNED, allowNull: true },
+      isManual: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: false },
     },
     { tableName: 'payroll_lines', underscored: true }
   );

@@ -1,8 +1,9 @@
 const express = require('express');
 const router = express.Router();
+const jwt = require('jsonwebtoken');
 
 const { sequelize } = require('../sequelize');
-const { Plan, OrgAccount, Subscription, User, Permission, Role } = require('../models');
+const { Plan, OrgAccount, Subscription, User, Permission, Role, StaffProfile } = require('../models');
 const bcrypt = require('bcryptjs');
 const { authRequired } = require('../middleware/auth');
 const { requireRole } = require('../middleware/roles');
@@ -278,6 +279,36 @@ router.post('/clients/:id/subscription', async (req, res) => {
         const updateData = {};
         let messageArr = [];
 
+        // Check if Start Date is being updated
+        if (startAt) {
+          const newStart = new Date(startAt);
+          const oldStart = new Date(existingSubscription.startAt);
+
+          console.log('--- DATE DEBUG ---');
+          console.log('Incoming startAt:', startAt);
+          console.log('Parsed New Start:', newStart.toString());
+          console.log('Old Start:', oldStart.toString());
+
+          // Check if difference is significant (e.g. > 12 hours to ignore minor timezone drifts)
+          const diff = Math.abs(newStart.getTime() - oldStart.getTime());
+          console.log('Diff (ms):', diff);
+          console.log('Threshold:', 1000 * 60 * 60 * 12);
+
+          if (diff > 1000 * 60 * 60 * 12) {
+            // Date has changed. We need to update Start AND End date.
+            // We need to fetch the plan to know the duration
+            const currentPlan = await Plan.findByPk(existingSubscription.planId);
+            if (currentPlan) {
+              const newEnd = new Date(newStart);
+              newEnd.setDate(newEnd.getDate() + Number(currentPlan.periodDays || 0));
+
+              updateData.startAt = newStart;
+              updateData.endAt = newEnd;
+              messageArr.push(`Subscription period updated (${newStart.toLocaleDateString()} - ${newEnd.toLocaleDateString()})`);
+            }
+          }
+        }
+
         if (staffLimit !== undefined && staffLimit !== null && Number(staffLimit) !== existingSubscription.staffLimit) {
           updateData.staffLimit = Number(staffLimit);
           messageArr.push('Staff limit updated');
@@ -498,6 +529,42 @@ router.get('/client/:id/geo-staff-count', async (req, res) => {
   } catch (e) {
     console.error('Failed to get geolocation staff count:', e);
     return res.status(500).json({ success: false, message: 'Failed to get geolocation staff count' });
+  }
+});
+
+// Impersonate: login as client's admin
+router.post('/clients/:id/impersonate', async (req, res) => {
+  try {
+    const orgAccountId = Number(req.params.id);
+    const org = await OrgAccount.findByPk(orgAccountId);
+    if (!org) return res.status(404).json({ success: false, message: 'Organization not found' });
+
+    // Find the admin user for this org
+    const admin = await User.findOne({
+      where: { orgAccountId: org.id, role: 'admin', active: true }
+    });
+    if (!admin) {
+      return res.status(404).json({ success: false, message: 'No admin user found for this organization' });
+    }
+
+    const profile = await StaffProfile.findOne({ where: { userId: admin.id } });
+    const name = profile?.name || org.name || null;
+
+    const secret = process.env.JWT_SECRET || 'dev_secret_change_me';
+    const token = jwt.sign(
+      { id: admin.id, role: admin.role, phone: admin.phone, name },
+      secret,
+      { expiresIn: process.env.JWT_EXPIRES_IN || '7d' }
+    );
+
+    return res.json({
+      success: true,
+      token,
+      user: { id: admin.id, role: admin.role, phone: admin.phone, name },
+    });
+  } catch (e) {
+    console.error('Impersonate error:', e);
+    return res.status(500).json({ success: false, message: 'Failed to impersonate' });
   }
 });
 

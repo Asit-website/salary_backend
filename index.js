@@ -38,6 +38,40 @@ if (!fs.existsSync(uploadsDir)) {
 
 //this
 
+// Serve PDF Viewer Page (HTML Wrapper) to force open in browser
+app.get('/view-pdf/:month/:filename', (req, res) => {
+  const { month, filename } = req.params;
+  const fileUrl = `/uploads/payslips/${month}/${filename}`;
+  // Return HTML with embedded PDF
+  res.send(`
+    <html>
+      <head>
+        <title>Payslip ${month}</title>
+        <style>body, html { margin: 0; height: 100%; overflow: hidden; }</style>
+      </head>
+      <body>
+        <iframe src="${fileUrl}" width="100%" height="100%" style="border:none;">
+          <p>Your browser does not support PDFs. <a href="${fileUrl}">Download the PDF</a>.</p>
+        </iframe>
+      </body>
+    </html>
+  `);
+});
+
+// Explicitly serve payslips with inline headers (for the iframe source)
+app.get('/uploads/payslips/:month/:filename', (req, res) => {
+  const { month, filename } = req.params;
+  const filePath = path.join(uploadsDir, 'payslips', month, filename);
+  if (fs.existsSync(filePath)) {
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `inline; filename="${filename}"`); // Force open with filename
+    res.setHeader('Cache-Control', 'no-cache');
+    fs.createReadStream(filePath).pipe(res);
+  } else {
+    res.status(404).send('File not found');
+  }
+});
+
 app.use('/uploads', express.static(uploadsDir));
 
 app.get('/health', (_req, res) => res.json({ ok: true }));
@@ -79,9 +113,13 @@ initDb()
 
     // Start subscription expiry reminder job
     try { scheduleSubscriptionExpiryReminders(); } catch (_) { }
-    app.listen(port, () => {
-      console.log(`Backend running on http://localhost:${port}`);
+    // app.listen(port, () => {
+    //   console.log(`Backend running on http://localhost:${port}`);
+    // });
+    app.listen(port, "0.0.0.0", () => {
+      console.log(`🚀 Backend running on port ${port}`);
     });
+
   })
   .catch((e) => {
     console.error('Failed to init DB', e);
