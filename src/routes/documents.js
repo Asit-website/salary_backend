@@ -55,6 +55,12 @@ router.post('/:documentTypeId/upload', upload.single('file'), async (req, res) =
 
     const existing = await StaffDocument.findOne({ where: { userId: req.user.id, documentTypeId: id } });
     if (existing) {
+      if (String(existing.status || '').toUpperCase() === 'APPROVED') {
+        return res.status(409).json({
+          success: false,
+          message: 'This document is already approved and cannot be replaced.',
+        });
+      }
       await existing.update({ fileUrl, fileName, status: 'SUBMITTED' });
       return res.json({ success: true, document: existing });
     }

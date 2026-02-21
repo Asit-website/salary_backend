@@ -56,6 +56,47 @@ function haversineMeters(lat1, lon1, lat2, lon2) {
   return R * c;
 }
 
+async function validateAssignedGeofence(userId, dateKey, lat, lng) {
+  const assignedSites = await getAssignedGeofenceSites(userId, dateKey);
+  if (!assignedSites.length) {
+    return { ok: true, assigned: false };
+  }
+
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
+    return {
+      ok: false,
+      status: 400,
+      message: 'Location is required for punch because geofence is assigned',
+    };
+  }
+
+  let nearest = null;
+  for (const site of assignedSites) {
+    const siteLat = Number(site.latitude);
+    const siteLng = Number(site.longitude);
+    const siteRadius = Number(site.radiusMeters || 0);
+    if (!Number.isFinite(siteLat) || !Number.isFinite(siteLng) || !Number.isFinite(siteRadius) || siteRadius <= 0) {
+      continue;
+    }
+    const dist = haversineMeters(lat, lng, siteLat, siteLng);
+    if (!nearest || dist < nearest.distanceMeters) {
+      nearest = { distanceMeters: dist, radiusMeters: siteRadius, siteName: site.name || null };
+    }
+    if (dist <= siteRadius) {
+      return { ok: true, assigned: true, within: true };
+    }
+  }
+
+  return {
+    ok: false,
+    status: 403,
+    message: nearest
+      ? `Outside assigned geofence. You are ${Math.round(nearest.distanceMeters)}m away from ${nearest.siteName || 'assigned site'} (allowed radius ${Math.round(nearest.radiusMeters)}m).`
+      : 'Outside assigned geofence radius. Punch-in/out allowed only within assigned site radius.',
+    nearest,
+  };
+}
+
 function diffSeconds(a, b) {
   if (!a || !b) return 0;
   return Math.max(0, Math.floor((b.getTime() - a.getTime()) / 1000));
@@ -562,6 +603,16 @@ router.post('/punch-in', upload.single('photo'), async (req, res) => {
     if (await hasApprovedLeave(req.user.id, dateKey)) {
       return res.status(409).json({ success: false, message: 'You are on leave today' });
     }
+    const lat = Number(req.body?.lat ?? req.body?.latitude);
+    const lng = Number(req.body?.lng ?? req.body?.longitude);
+    const geoCheck = await validateAssignedGeofence(req.user.id, dateKey, lat, lng);
+    if (!geoCheck.ok) {
+      return res.status(geoCheck.status || 403).json({
+        success: false,
+        message: geoCheck.message,
+        geofence: geoCheck.nearest || null,
+      });
+    }
     if (!req.file) {
       return res.status(400).json({ success: false, message: 'Photo is required' });
     }
@@ -632,6 +683,16 @@ router.post('/punch-out', upload.single('photo'), async (req, res) => {
     }
 
     const key = todayKey();
+    const lat = Number(req.body?.lat ?? req.body?.latitude);
+    const lng = Number(req.body?.lng ?? req.body?.longitude);
+    const geoCheck = await validateAssignedGeofence(req.user.id, key, lat, lng);
+    if (!geoCheck.ok) {
+      return res.status(geoCheck.status || 403).json({
+        success: false,
+        message: geoCheck.message,
+        geofence: geoCheck.nearest || null,
+      });
+    }
     const record = await Attendance.findOne({ where: { userId: req.user.id, date: key } });
 
     if (!record?.punchedInAt) {

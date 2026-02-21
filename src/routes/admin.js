@@ -4715,11 +4715,38 @@ router.get('/documents/recent', async (req, res) => {
 
     const orgId = requireOrg(req, res); if (!orgId) return;
 
-    const orgStaffIds = (await User.findAll({ where: { orgAccountId: orgId, role: 'staff' }, attributes: ['id'] })).map(u => u.id);
+    const orgStaff = await User.findAll({
+      where: { orgAccountId: orgId, role: 'staff' },
+      attributes: ['id', 'phone'],
+      include: [{ model: StaffProfile, as: 'profile', attributes: ['name'] }],
+    });
+    const orgStaffIds = orgStaff.map(u => u.id);
+    const staffMap = new Map(orgStaff.map(u => [
+      Number(u.id),
+      {
+        staffName: u.profile?.name || u.phone || `Staff ${u.id}`,
+        phone: u.phone || null,
+      }
+    ]));
+
+    const types = await DocumentType.findAll({ where: { orgAccountId: orgId }, attributes: ['id', 'name', 'key'] });
+    const typeMap = new Map(types.map(t => [Number(t.id), { name: t.name, key: t.key }]));
 
     const rows = await StaffDocument.findAll({ where: { userId: orgStaffIds }, order: [['createdAt', 'DESC']], limit: 100 });
+    const data = rows.map(r => {
+      const j = r.toJSON();
+      const staff = staffMap.get(Number(j.userId)) || {};
+      const type = typeMap.get(Number(j.documentTypeId)) || {};
+      return {
+        ...j,
+        staffName: staff.staffName || null,
+        phone: staff.phone || null,
+        documentTypeName: type.name || null,
+        documentTypeKey: type.key || null,
+      };
+    });
 
-    return res.json({ success: true, data: rows });
+    return res.json({ success: true, data });
 
   } catch (e) {
 
@@ -4727,6 +4754,29 @@ router.get('/documents/recent', async (req, res) => {
 
   }
 
+});
+
+// Admin: approve/reject staff document (org-scoped)
+router.put('/documents/:docId/status', async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
+    const id = Number(req.params.docId);
+    const nextStatus = String(req.body?.status || '').toUpperCase();
+    if (!['APPROVED', 'REJECTED', 'SUBMITTED'].includes(nextStatus)) {
+      return res.status(400).json({ success: false, message: 'Invalid status' });
+    }
+
+    const row = await StaffDocument.findByPk(id);
+    if (!row) return res.status(404).json({ success: false, message: 'Document not found' });
+
+    const user = await User.findOne({ where: { id: row.userId, orgAccountId: orgId, role: 'staff' } });
+    if (!user) return res.status(404).json({ success: false, message: 'Document does not belong to your organization' });
+
+    await row.update({ status: nextStatus });
+    return res.json({ success: true, document: row });
+  } catch (e) {
+    return res.status(500).json({ success: false, message: 'Failed to update document status' });
+  }
 });
 
 
@@ -7884,12 +7934,14 @@ router.get('/attendance', async (req, res) => {
       }
       return {
         id: r.id,
+        userId: r.userId,
 
         date: r.date,
 
         checkIn: toTime(r.punchedInAt),
 
         checkOut: toTime(r.punchedOutAt),
+        note: r.note || '',
 
         status,
 
