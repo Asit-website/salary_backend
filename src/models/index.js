@@ -11,6 +11,7 @@ const defineLeaveBalance = require('./LeaveBalance');
 const defineAppSetting = require('./AppSetting');
 const defineDocumentType = require('./DocumentType');
 const defineStaffDocument = require('./StaffDocument');
+const defineExpenseClaim = require('./ExpenseClaim');
 const defineShiftTemplate = require('./ShiftTemplate');
 const defineHolidayTemplate = require('./HolidayTemplate');
 const defineHolidayDate = require('./HolidayDate');
@@ -83,6 +84,7 @@ const LeaveBalance = defineLeaveBalance(sequelize);
 const AppSetting = defineAppSetting(sequelize);
 const DocumentType = defineDocumentType(sequelize);
 const StaffDocument = defineStaffDocument(sequelize);
+const ExpenseClaim = defineExpenseClaim(sequelize, require('sequelize'));
 const ShiftTemplate = defineShiftTemplate(sequelize);
 const HolidayTemplate = defineHolidayTemplate(sequelize);
 const HolidayDate = defineHolidayDate(sequelize);
@@ -413,6 +415,7 @@ module.exports = {
   AppSetting,
   DocumentType,
   StaffDocument,
+  ExpenseClaim,
   ShiftTemplate,
   ShiftBreak,
   ShiftRotationalSlot,

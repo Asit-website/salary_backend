@@ -240,6 +240,7 @@ router.get('/subscription-info', authRequired, tenantEnforce, async (req, res) =
       canAddStaff: currentStaffCount < (subscription.staffLimit || subscription.plan.staffLimit),
       salesEnabled: !!subscription.salesEnabled,
       geolocationEnabled: !!subscription.geolocationEnabled,
+      expenseEnabled: !!subscription.expenseEnabled,
       maxGeolocationStaff: subscription.maxGeolocationStaff !== null ? subscription.maxGeolocationStaff : (subscription.meta?.maxGeolocationStaff || subscription.plan.maxGeolocationStaff),
       subscriptionStatus: subscription.status
     };

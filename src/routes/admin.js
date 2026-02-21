@@ -6,6 +6,17 @@ const exceljs = require('exceljs');
 
 const dayjs = require('dayjs');
 
+function getCellValue(cell) {
+  if (!cell || cell.value === null || cell.value === undefined) return null;
+  const val = cell.value;
+  if (typeof val === 'object' && val.text !== undefined) return String(val.text).trim();
+  if (val.richText && Array.isArray(val.richText)) {
+    return val.richText.map(rt => rt.text || '').join('').trim();
+  }
+  if (val.formula !== undefined && val.result !== undefined) return String(val.result).trim();
+  return String(val).trim();
+}
+
 
 
 const { sequelize, User, StaffProfile, AppSetting, DocumentType, ShiftTemplate, ShiftBreak, ShiftRotationalSlot, StaffShiftAssignment, SalaryAccess, AttendanceTemplate, StaffAttendanceAssignment, SalaryTemplate, StaffSalaryAssignment, Site, WorkUnit, Route, RouteStop, StaffRouteAssignment, SiteCheckpoint, PatrolLog, LeaveTemplate, LeaveTemplateCategory, StaffLeaveAssignment, LeaveBalance, LeaveRequest, AIAnomaly, ReliabilityScore, SalaryForecast, Attendance, Client, AssignedJob, SalesTarget, HolidayTemplate, HolidayDate, StaffHolidayAssignment, Subscription, Plan, SalesVisit, Asset, AssetAssignment, AssetMaintenance, StaffLoan } = require('../models');
@@ -66,23 +77,27 @@ router.use(tenantEnforce);
 // Uploads: ensure folder exists and configure multer
 
 const uploadsDir = path.join(process.cwd(), 'uploads', 'claims');
+const profileUploadsDir = path.join(process.cwd(), 'uploads', 'profiles');
 
 try { fs.mkdirSync(uploadsDir, { recursive: true }); } catch (_) { }
+try { fs.mkdirSync(profileUploadsDir, { recursive: true }); } catch (_) { }
 
 const storage = multer.diskStorage({
-
   destination: (_req, _file, cb) => cb(null, uploadsDir),
-
   filename: (_req, file, cb) => {
-
     const ts = Date.now();
-
     const safe = (file.originalname || 'file').replace(/[^a-zA-Z0-9_.-]/g, '_');
-
     cb(null, `${ts}-${safe}`);
-
   },
+});
 
+const profileStorage = multer.diskStorage({
+  destination: (_req, _file, cb) => cb(null, profileUploadsDir),
+  filename: (_req, file, cb) => {
+    const ts = Date.now();
+    const safe = (file.originalname || 'file').replace(/[^a-zA-r0-9_.-]/g, '_');
+    cb(null, `${ts}-${safe}`);
+  },
 });
 
 
@@ -718,12 +733,26 @@ router.post('/payroll/:cycleId/mark-paid', async (req, res) => {
 });
 
 const upload = multer({ storage });
+const uploadProfilePhotoMiddleware = multer({ storage: profileStorage });
+
+router.post('/upload-profile-photo', requireRole(['admin', 'staff']), uploadProfilePhotoMiddleware.single('photo'), async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ success: false, message: 'No file uploaded' });
+    }
+    const photoUrl = `/uploads/profiles/${req.file.filename}`;
+    return res.json({ success: true, photoUrl });
+  } catch (error) {
+    console.error('Profile photo upload error:', error);
+    return res.status(500).json({ success: false, message: 'Upload failed', error: error.message });
+  }
+});
 
 
 
 // --- Payroll (admin) --- (org-scoped)
 
-router.get('/payroll', async (req, res) => {
+router.get('/payroll', requireRole(['admin', 'staff']), async (req, res) => {
 
   try {
 
@@ -1410,16 +1439,9 @@ router.get('/dashboard/upcoming-holidays', async (req, res) => {
 
 
 
-    const in90 = new Date();
-
-    in90.setDate(in90.getDate() + 90);
-
-    const y2 = in90.getFullYear();
-
-    const m2 = String(in90.getMonth() + 1).padStart(2, '0');
-
-    const d2 = String(in90.getDate()).padStart(2, '0');
-
+    const y2 = in365.getFullYear();
+    const m2 = String(in365.getMonth() + 1).padStart(2, '0');
+    const d2 = String(in365.getDate()).padStart(2, '0');
     const untilKey = `${y2}-${m2}-${d2}`;
 
 
@@ -3807,7 +3829,13 @@ router.post('/settings/attendance-templates', async (req, res) => {
 
     const row = await AttendanceTemplate.create(payload);
 
-    console.log('Template created:', row.id);
+    // The instruction provided a log for 'Parsed rows count', but it's not applicable here.
+    // Assuming the intent was to add a log related to the creation of the template itself.
+    // If 'Parsed rows count' was intended for an Excel parsing context, it should be placed elsewhere.
+    // For now, I'm adding a log that makes sense in this context, as per the instruction's placement.
+    // If the user meant to add 'Parsed rows count' in an Excel import route, please clarify.
+    // console.log('Parsed rows count:', rows.length); // This line would cause a ReferenceError here.
+    console.log('Attendance template created successfully.');
 
     return res.json({ success: true, template: row });
 
@@ -3941,7 +3969,7 @@ router.post('/settings/attendance-templates/:id/assign', async (req, res) => {
 
 // Staff list (full details) (org-scoped)
 
-router.get('/staff', async (req, res) => {
+router.get('/staff', requireRole(['admin', 'staff']), async (req, res) => {
   try {
     const orgId = requireOrg(req, res); if (!orgId) return;
     const staff = await User.findAll({
@@ -3982,6 +4010,9 @@ router.get('/staff', async (req, res) => {
       esiDeduction: u.esiDeduction,
       professionalTax: u.professionalTax,
       tdsDeduction: u.tdsDeduction,
+      photoUrl: u.profile?.photoUrl || null,
+      education: u.profile?.education || null,
+      experience: u.profile?.experience || null,
     }));
 
     return res.json({
@@ -4055,12 +4086,12 @@ router.post('/staff/import', uploadMemory.single('file'), async (req, res) => {
     worksheet.eachRow((row, rowNumber) => {
       if (rowNumber === 1) return; // Skip header
       rows.push({
-        name: row.getCell(1).value,
-        staffId: row.getCell(2).value,
-        phone: row.getCell(3).value,
-        designation: row.getCell(4).value,
-        joiningDate: row.getCell(5).value,
-        email: row.getCell(6).value,
+        name: getCellValue(row.getCell(1)),
+        staffId: getCellValue(row.getCell(2)),
+        phone: getCellValue(row.getCell(3)),
+        designation: getCellValue(row.getCell(4)),
+        joiningDate: getCellValue(row.getCell(5)),
+        email: getCellValue(row.getCell(6)),
         rowNumber
       });
     });
@@ -4090,7 +4121,7 @@ router.post('/staff/import', uploadMemory.single('file'), async (req, res) => {
         const existing = await User.findOne({ where: { phone } });
         if (existing) {
           results.skipped++;
-          results.errors.push(`Row ${data.rowNumber}: Phone ${phone} already exists`);
+          results.errors.push(`Row ${data.rowNumber}: phone number can not be same`);
           continue;
         }
 
@@ -4099,7 +4130,7 @@ router.post('/staff/import', uploadMemory.single('file'), async (req, res) => {
           const existingSid = await StaffProfile.findOne({ where: { staffId: String(data.staffId) } });
           if (existingSid) {
             results.skipped++;
-            results.errors.push(`Row ${data.rowNumber}: Staff ID ${data.staffId} already exists`);
+            results.errors.push(`Row ${data.rowNumber}: staff id can not be same`);
             continue;
           }
         }
@@ -4362,13 +4393,8 @@ router.get('/staff/:id/loans', async (req, res) => {
 
 
 // --- Expense Claims (table: expense_claims) ---
-
-let ExpenseClaim = sequelize.models.ExpenseClaim;
-
-if (!ExpenseClaim) {
-
-  const { DataTypes } = require('sequelize');
-
+const { ExpenseClaim } = require('../models');
+if (false) {
   ExpenseClaim = sequelize.define('ExpenseClaim', {
 
     id: { type: DataTypes.BIGINT.UNSIGNED, autoIncrement: true, primaryKey: true },
@@ -5658,1255 +5684,631 @@ function computeItemAmount(item, ctx) {
           else if (r.punchedInAt && r.punchedOutAt) {
 
             const durMs = new Date(r.punchedOutAt) - new Date(r.punchedInAt);
-
             const durH = durMs / (1000 * 60 * 60);
-
             status = durH >= 4 ? 'present' : 'half_day';
-
-          } else if (r.punchedInAt || r.punchedOutAt) status = 'half_day';
-
+          } else if (r.punchedInAt || r.punchedOutAt) {
+            status = r.punchedOutAt ? 'half_day' : 'present';
+          }
           return {
-
             id: r.id,
-
             date: r.date,
-
             checkIn: toTime(r.punchedInAt),
-
             checkOut: toTime(r.punchedOutAt),
-
             status,
-
             user: { name: r.user?.profile?.name || null },
-
             staffProfile: { staffId: r.user?.profile?.staffId || null, department: r.user?.profile?.department || null }
-
           };
-
         });
 
-
-
         return res.json({ success: true, data });
-
       } catch (e) {
-
         console.error('Attendance month error:', e);
-
         return res.status(500).json({ success: false, message: 'Failed to load attendance' });
-
       }
-
     });
-
     // Month-wise attendance for a staff member (org-scoped)
-
     router.get('/staff/:id/attendance', async (req, res) => {
-
       try {
-
         const orgId = requireOrg(req, res); if (!orgId) return;
-
         const { id } = req.params;
-
         const { month } = req.query; // YYYY-MM
-
         if (!month || !/^\d{4}-\d{2}$/.test(String(month))) {
-
           return res.status(400).json({ success: false, message: 'month (YYYY-MM) required' });
-
         }
-
         const user = await User.findOne({ where: { id: Number(id), orgAccountId: orgId, role: 'staff' } });
-
         if (!user) {
-
           return res.status(404).json({ success: false, message: 'Staff not found' });
-
         }
-
-
 
         const first = new Date(`${month}-01T00:00:00.000Z`);
-
         const last = new Date(first);
-
         last.setMonth(first.getMonth() + 1);
-
         last.setDate(0); // last day of previous month after increment
-
         const fromDate = `${month}-01`;
-
         const toDate = `${last.getFullYear()}-${String(last.getMonth() + 1).padStart(2, '0')}-${String(last.getDate()).padStart(2, '0')}`;
 
-
-
         const rows = await Attendance.findAll({
-
           where: { userId: Number(id), date: { [Op.between]: [fromDate, toDate] } },
-
           order: [['date', 'ASC']],
-
           include: [
-
             { model: User, as: 'user', attributes: ['id'], include: [{ model: StaffProfile, as: 'profile', attributes: ['name', 'staffId', 'department'] }] }
-
           ]
-
         });
-
-
 
         const toTime = (dt) => (dt ? new Date(dt).toTimeString().slice(0, 8) : null);
-
         const data = rows.map(r => {
-
           let status = r.status || 'absent';
-
           if (!r.status) {
-
             if (Number(r.breakTotalSeconds) === -1) status = 'leave';
-
             else if (Number(r.breakTotalSeconds) === -2) status = 'half_day';
-
             else if (r.punchedInAt && r.punchedOutAt) {
-
               const durMs = new Date(r.punchedOutAt) - new Date(r.punchedInAt);
-
               const durH = durMs / (1000 * 60 * 60);
-
               status = durH >= 4 ? 'present' : 'half_day';
-
-            } else if (r.punchedInAt || r.punchedOutAt) status = 'half_day';
-
+            } else if (r.punchedInAt || r.punchedOutAt) {
+              status = r.punchedOutAt ? 'half_day' : 'present';
+            }
           }
-
           return {
-
             id: r.id,
-
             date: r.date,
-
             checkIn: toTime(r.punchedInAt),
-
             checkOut: toTime(r.punchedOutAt),
-
             status,
-
             user: { name: r.user?.profile?.name || null },
-
             staffProfile: { staffId: r.user?.profile?.staffId || null, department: r.user?.profile?.department || null }
-
           };
-
         });
-
-
 
         return res.json({ success: true, data });
-
       } catch (e) {
-
         console.error('Staff month attendance error:', e);
-
         return res.status(500).json({ success: false, message: 'Failed to load attendance' });
-
       }
-
     });
-
-
-
-
-
-
-
-
 
     // Known deductions keys
-
     const deductionKeys = [
-
       'provident_fund',
-
       'esi',
-
       'professional_tax',
-
       'income_tax',
-
       'loan_deduction',
-
       'other_deductions'
-
     ];
-
     let totalDeductionsFallback = 0;
-
     deductionKeys.forEach(k => {
-
       if (dv[k] !== undefined) {
-
         userData[k] = num(dv[k]);
-
       }
-
       if (userData[k] !== undefined) {
-
         totalDeductionsFallback += num(userData[k]);
-
       }
-
     });
-
-
 
     // Apply totals if not set by template logic
-
     if (userData.total_earnings === undefined) userData.total_earnings = totalEarningsFallback;
-
     if (userData.total_deductions === undefined) userData.total_deductions = totalDeductionsFallback;
-
     const grossSalaryFallback = num(userData.total_earnings) + num(userData.total_incentives || 0);
-
     const netSalaryFallback = grossSalaryFallback - num(userData.total_deductions);
-
     if (userData.gross_salary === undefined) userData.gross_salary = grossSalaryFallback;
-
     if (userData.net_salary === undefined) userData.net_salary = netSalaryFallback;
-
     if (!userData.salary_last_calculated) userData.salary_last_calculated = new Date();
-
     amt = (baseVal * val) / 100;
-
   } else {
-
     amt = val;
-
   }
-
-
 
   // caps / mins
-
   if (Number.isFinite(item?.capAmount)) amt = Math.min(amt, Number(item.capAmount));
-
   if (Number.isFinite(item?.minAmount)) amt = Math.max(amt, Number(item.minAmount));
 
-
-
   // rounding
-
   const r = String(item?.rounding || (t === 'percent' ? 'round' : 'none')).toLowerCase();
-
   if (r === 'round') amt = Math.round(amt);
-
   else if (r === 'floor') amt = Math.floor(amt);
-
   else if (r === 'ceil') amt = Math.ceil(amt);
 
-
-
   return amt;
-
 }
-
-
 
 function toIsoDateOnly(d) {
-
   const dt = d instanceof Date ? d : new Date(d);
-
   if (Number.isNaN(dt.getTime())) return null;
-
   const y = dt.getFullYear();
-
   const m = String(dt.getMonth() + 1).padStart(2, '0');
-
   const day = String(dt.getDate()).padStart(2, '0');
-
   return `${y}-${m}-${day}`;
-
 }
-
-
 
 function normalizeTime(v) {
-
   if (v === null || v === undefined || v === '') return null;
-
   const s = String(v).trim();
-
   // Accept HH:mm or HH:mm:ss
-
   if (!/^\d{2}:\d{2}(:\d{2})?$/.test(s)) return null;
-
   return s.length === 5 ? `${s}:00` : s;
-
 }
-
-
 
 // --- Salary Settings helpers ---
-
 function getDefaultSalarySettings() {
-
   return {
-
     payableDaysMode: 'calendar_month',
-
     weeklyOffs: [0], // 0 = Sunday ... 6 = Saturday
-
     hoursPerDay: 8,
-
   };
-
 }
-
-
 
 function coerceSalarySettings(input) {
-
   const def = getDefaultSalarySettings();
-
   const modes = ['calendar_month', 'every_30', 'every_28', 'every_26', 'exclude_weekly_offs'];
-
   const mode = input?.payableDaysMode && modes.includes(String(input.payableDaysMode))
-
     ? String(input.payableDaysMode)
-
     : def.payableDaysMode;
 
-
-
   let weeklyOffs = Array.isArray(input?.weeklyOffs) ? input.weeklyOffs.filter((n) => Number.isInteger(n) && n >= 0 && n <= 6) : def.weeklyOffs;
-
   if (weeklyOffs.length === 0) weeklyOffs = def.weeklyOffs;
-
   const hoursPerDay = Number(input?.hoursPerDay || def.hoursPerDay);
-
   const hp = Number.isFinite(hoursPerDay) && hoursPerDay > 0 && hoursPerDay <= 24 ? hoursPerDay : def.hoursPerDay;
-
   return { payableDaysMode: mode, weeklyOffs, hoursPerDay: hp };
-
 }
-
-
 
 function daysInMonth(year, month /* 1-12 */) {
-
   return new Date(year, month, 0).getDate();
-
 }
-
-
 
 function computePayableDays(settings, year, month /* 1-12 */) {
-
   const s = coerceSalarySettings(settings);
-
   const dim = daysInMonth(year, month);
-
   switch (s.payableDaysMode) {
-
     case 'every_30':
-
       return 30;
-
     case 'every_28':
-
       return 28;
-
     case 'every_26':
-
       return 26;
-
     case 'exclude_weekly_offs': {
-
       // Count all days in the month excluding specified weekly offs
-
       let count = 0;
-
       for (let d = 1; d <= dim; d += 1) {
-
         const wd = new Date(year, month - 1, d).getDay(); // 0-6
-
         if (!s.weeklyOffs.includes(wd)) count += 1;
-
       }
-
       return count;
-
     }
-
     case 'calendar_month':
-
     default:
-
       return dim;
-
   }
-
 }
 
-
-
 router.get('/settings/work-hours', async (req, res) => {
-
   try {
-
     const orgId = requireOrg(req, res); if (!orgId) return;
-
     const s = await AppSetting.findOne({ where: { key: 'required_work_hours', orgAccountId: orgId } });
-
     return res.json({ success: true, value: s ? s.value : null });
-
   } catch (e) {
-
     return res.status(500).json({ success: false, message: 'Failed to load work hours setting' });
-
   }
-
 });
-
 // Top 5 users needing review today based on anomaly counts (org-scoped)
-
 router.get('/ai/anomalies/top-today', async (req, res) => {
-
   try {
-
     const orgId = requireOrg(req, res); if (!orgId) return;
-
     const today = new Date().toISOString().slice(0, 10);
-
     const rows = await AIAnomaly.findAll({
-
       where: { date: today },
-
       attributes: [
-
         'userId',
-
         [sequelize.fn('COUNT', sequelize.col('AIAnomaly.id')), 'count']
-
       ],
-
       group: ['userId'],
-
       order: [[sequelize.literal('count'), 'DESC']],
-
       limit: 5,
-
       include: [{ model: User, as: 'user', where: { orgAccountId: orgId }, attributes: ['id', 'phone'], include: [{ model: StaffProfile, as: 'profile', attributes: ['name', 'staffId'] }] }],
-
     });
-
     // Normalize output
-
     const items = rows.map((r) => ({
-
       userId: r.userId,
-
       count: Number(r.get('count')) || 0,
-
       name: r.user?.profile?.name || null,
-
       staffId: r.user?.profile?.staffId || null,
-
       phone: r.user?.phone || null,
-
     }));
-
     return res.json({ success: true, date: today, items });
-
   } catch (e) {
-
     return res.status(500).json({ success: false, message: 'Failed to load top anomalies' });
-
   }
-
 });
-
-
 
 // List salary templates (org-scoped)
-
 router.get('/salary-templates', async (req, res) => {
-
   try {
-
     const orgId = requireOrg(req, res); if (!orgId) return;
-
     const templates = await SalaryTemplate.findAll({
-
       where: { orgAccountId: orgId },
-
       attributes: ['id', 'name']
-
     });
-
     return res.json({ success: true, data: templates });
-
   } catch (error) {
-
     console.error('Get salary templates error:', error);
-
     return res.status(500).json({ success: false, message: 'Failed to load salary templates' });
-
   }
-
 });
-
-
 
 // List attendance templates (org-scoped)
-
 router.get('/attendance-templates', async (req, res) => {
-
   try {
-
     const orgId = requireOrg(req, res); if (!orgId) return;
-
     const templates = await AttendanceTemplate.findAll({
-
       where: { orgAccountId: orgId },
-
       attributes: ['id', 'name']
-
     });
-
     return res.json({ success: true, data: templates });
-
   } catch (error) {
-
     console.error('Get attendance templates error:', error);
-
     return res.status(500).json({ success: false, message: 'Failed to load attendance templates' });
-
   }
-
 });
-
-
 
 // Smart Geo-Fence Logic settings (stored in AppSetting: key 'smart_geo_fence') (org-scoped)
-
 router.get('/settings/geo-fence', async (req, res) => {
-
   try {
-
     const orgId = requireOrg(req, res); if (!orgId) return;
-
     const row = await AppSetting.findOne({ where: { key: 'smart_geo_fence', orgAccountId: orgId } });
-
     const value = row?.value ? JSON.parse(row.value) : { dynamicRoutes: true, tempLocations: true, multiSiteShifts: true, timeRules: true };
-
     return res.json({ success: true, settings: value });
-
   } catch (e) {
-
     return res.status(500).json({ success: false, message: 'Failed to load geo-fence settings' });
-
   }
-
 });
-
-
 
 router.put('/settings/geo-fence', async (req, res) => {
-
   try {
-
     const orgId = requireOrg(req, res); if (!orgId) return;
-
     const body = req.body || {};
-
     const next = {
-
       dynamicRoutes: !!body.dynamicRoutes,
-
       tempLocations: !!body.tempLocations,
-
       multiSiteShifts: !!body.multiSiteShifts,
-
       timeRules: !!body.timeRules,
-
     };
-
     const payload = JSON.stringify(next);
-
     const [row] = await AppSetting.findOrCreate({ where: { key: 'smart_geo_fence', orgAccountId: orgId }, defaults: { value: payload, orgAccountId: orgId } });
-
     if (row.value !== payload) await row.update({ value: payload });
-
     return res.json({ success: true, settings: next });
-
   } catch (e) {
-
     return res.status(500).json({ success: false, message: 'Failed to save geo-fence settings' });
-
   }
-
 });
-
-
 
 // AI Attendance Anomaly: list recent and compute stub (org-scoped)
-
 router.get('/ai/anomalies', async (req, res) => {
-
   try {
-
     const orgId = requireOrg(req, res); if (!orgId) return;
-
     const orgStaffIds = (await User.findAll({ where: { orgAccountId: orgId, role: 'staff' }, attributes: ['id'] })).map(u => u.id);
-
     const userId = req.query.userId ? Number(req.query.userId) : null;
-
     const where = userId ? { userId } : { userId: orgStaffIds };
-
     const rows = await AIAnomaly.findAll({ where, order: [['date', 'DESC'], ['createdAt', 'DESC']], limit: 200 });
-
     return res.json({ success: true, anomalies: rows });
-
   } catch (e) {
-
     return res.status(500).json({ success: false, message: 'Failed to load anomalies' });
-
   }
-
 });
-
-
 
 router.post('/ai/anomalies/compute', async (req, res) => {
-
   try {
-
     const orgId = requireOrg(req, res); if (!orgId) return;
-
     const orgStaffIds = (await User.findAll({ where: { orgAccountId: orgId, role: 'staff' }, attributes: ['id'] })).map(u => u.id);
-
     const dateIso = String(req.body?.date || new Date().toISOString().slice(0, 10));
-
     const att = await Attendance.findAll({ where: { date: dateIso, userId: orgStaffIds }, order: [['userId', 'ASC'], ['createdAt', 'ASC']] });
 
-
-
     // Try AI provider first
-
     let created = 0;
-
     try {
-
       const aiOut = await ai.analyzeAnomalies({ date: dateIso, attendance: att });
-
       if (Array.isArray(aiOut) && aiOut.length) {
-
         for (const a of aiOut) {
-
           const type = String(a.type || 'ai_flag');
-
           const severity = String(a.severity || 'medium');
-
           const details = a.details || {};
-
           const uid = Number(a.userId);
-
           if (!Number.isFinite(uid)) continue;
-
           await AIAnomaly.create({ userId: uid, date: dateIso, type, severity, details });
-
           created += 1;
-
         }
-
         return res.json({ success: true, created, source: 'ai' });
-
       }
-
     } catch (_) {
-
       // fall through to heuristics
-
     }
-
-
 
     // Fallback heuristic: same-location quick repeats within 2 minutes
-
     const byUser = new Map();
-
     for (const a of att) {
-
       if (!byUser.has(a.userId)) byUser.set(a.userId, []);
-
       byUser.get(a.userId).push(a);
-
     }
-
     for (const [uid, list] of byUser) {
-
       for (let i = 1; i < list.length; i += 1) {
-
         const p = list[i - 1];
-
         const c = list[i];
-
         const dt = Math.abs(new Date(c.createdAt) - new Date(p.createdAt)) / 60000; // minutes
-
         if (dt <= 2 && p.lat && p.lng && c.lat === p.lat && c.lng === p.lng) {
-
           await AIAnomaly.create({ userId: uid, date: dateIso, type: 'same_location_quick', severity: 'low', details: { aId: p.id, bId: c.id } });
-
           created += 1;
-
         }
-
       }
-
     }
-
     return res.json({ success: true, created, source: 'heuristic' });
-
   } catch (e) {
-
     return res.status(500).json({ success: false, message: 'Failed to compute anomalies' });
-
   }
-
 });
-
-
 
 // Reliability Score: list top N and compute stub
-
 router.get('/ai/reliability', async (req, res) => {
-
   try {
-
     const month = Number(req.query.month);
-
     const year = Number(req.query.year);
-
     const where = Number.isFinite(month) && Number.isFinite(year) ? { month, year } : {};
-
     const rows = await ReliabilityScore.findAll({ where, order: [['score', 'DESC']], limit: 100 });
-
     return res.json({ success: true, scores: rows });
-
   } catch (e) {
-
     return res.status(500).json({ success: false, message: 'Failed to load scores' });
-
   }
-
 });
-
-
 
 router.post('/ai/reliability/compute', async (req, res) => {
-
   try {
-
     const month = Number(req.body?.month ?? new Date().getMonth() + 1);
-
     const year = Number(req.body?.year ?? new Date().getFullYear());
-
     const users = await User.findAll({ where: { role: 'staff' }, limit: 1000 });
-
     let computed = 0;
-
     // Try AI provider
-
     try {
-
       const aiItems = await ai.scoreReliability({ month, year, users });
-
       if (Array.isArray(aiItems) && aiItems.length) {
-
         for (const it of aiItems) {
-
           const uid = Number(it.userId);
-
           if (!Number.isFinite(uid)) continue;
-
           const score = Number(it.score);
-
           const breakdown = it.breakdown || {};
-
           const [row] = await ReliabilityScore.findOrCreate({ where: { userId: uid, month, year }, defaults: { score, breakdown } });
-
           if (row.score !== score) await row.update({ score, breakdown });
-
           computed += 1;
-
         }
-
         return res.json({ success: true, month, year, computed, source: 'ai' });
-
       }
-
     } catch (_) {
-
       // ignore and fallback
-
     }
-
-
 
     // Fallback random-ish scoring
-
     for (const u of users) {
-
       const score = Math.round((Math.random() * 40 + 60) * 100) / 100; // 60-100
-
       const breakdown = { attendanceConsistency: 0.35, punctuality: 0.25, tasks: 0.2, locationAccuracy: 0.2 };
-
       const [row] = await ReliabilityScore.findOrCreate({ where: { userId: u.id, month, year }, defaults: { score, breakdown } });
-
       if (row.score !== score) await row.update({ score, breakdown });
-
       computed += 1;
-
     }
-
     return res.json({ success: true, month, year, computed, source: 'heuristic' });
-
   } catch (e) {
-
     return res.status(500).json({ success: false, message: 'Failed to compute reliability' });
-
   }
-
 });
-
-
 
 // Salary Forecast: list and compute stub
-
 router.get('/ai/salary-forecast', async (req, res) => {
-
   try {
-
     const month = Number(req.query.month);
-
     const year = Number(req.query.year);
-
     const where = Number.isFinite(month) && Number.isFinite(year) ? { month, year } : {};
-
     const rows = await SalaryForecast.findAll({ where, order: [['updatedAt', 'DESC']], limit: 200 });
-
     return res.json({ success: true, items: rows });
-
   } catch (e) {
-
     return res.status(500).json({ success: false, message: 'Failed to load salary forecasts' });
-
   }
-
 });
-
-
 
 router.post('/ai/salary-forecast/compute', async (req, res) => {
-
   try {
-
     const month = Number(req.body?.month ?? new Date().getMonth() + 1);
-
     const year = Number(req.body?.year ?? new Date().getFullYear());
-
     const users = await User.findAll({ where: { role: 'staff' }, limit: 1000 });
-
     let computed = 0;
-
     // Try AI provider
-
     try {
-
       const aiItems = await ai.forecastSalary({ month, year, users });
-
       if (Array.isArray(aiItems) && aiItems.length) {
-
         for (const it of aiItems) {
-
           const uid = Number(it.userId);
-
           if (!Number.isFinite(uid)) continue;
-
           const forecastNetPay = Number(it.forecastNetPay);
-
           const assumptions = it.assumptions || {};
-
           const [row] = await SalaryForecast.findOrCreate({ where: { userId: uid, month, year }, defaults: { forecastNetPay, assumptions } });
-
           if (Number(row.forecastNetPay) !== forecastNetPay) await row.update({ forecastNetPay, assumptions });
-
           computed += 1;
-
         }
-
         return res.json({ success: true, month, year, computed, source: 'ai' });
-
       }
-
     } catch (_) {
-
       // ignore and fallback
-
     }
-
-
 
     // Fallback quick baseline
-
     for (const u of users) {
-
       const base = 20000; // placeholder
-
       const variance = Math.round((Math.random() * 5000));
-
       const forecastNetPay = base + variance;
-
       const assumptions = { payableDays: 26, expectedIncentives: 1500 };
-
       const [row] = await SalaryForecast.findOrCreate({ where: { userId: u.id, month, year }, defaults: { forecastNetPay, assumptions } });
-
       if (Number(row.forecastNetPay) !== forecastNetPay) await row.update({ forecastNetPay, assumptions });
-
       computed += 1;
-
     }
-
     return res.json({ success: true, month, year, computed, source: 'heuristic' });
-
   } catch (e) {
-
     return res.status(500).json({ success: false, message: 'Failed to compute salary forecast' });
-
   }
-
 });
-
-
 
 // Allocate leave balances for a given date's cycle (idempotent)
-
 router.post('/leave/allocate', async (req, res) => {
-
   try {
-
     const dateIso = String(req.body?.date || req.query?.date || new Date().toISOString().slice(0, 10));
-
     const onDate = new Date(`${dateIso}T00:00:00`);
-
     if (Number.isNaN(onDate.getTime())) return res.status(400).json({ success: false, message: 'Invalid date' });
 
-
-
     // Load all active assignments
-
     const assigns = await StaffLeaveAssignment.findAll({
-
       include: [{ model: LeaveTemplate, as: 'template', include: [{ model: LeaveTemplateCategory, as: 'categories' }] }],
-
     });
-
-
 
     let allocatedCount = 0;
-
     for (const a of assigns) {
-
       const ef = a.effectiveFrom;
-
       const et = a.effectiveTo;
-
       const dateStr = dateIso;
-
       if (dateStr < ef) continue;
-
       if (et && dateStr > et) continue;
-
       const tpl = a.template;
-
       if (!tpl || !Array.isArray(tpl.categories)) continue;
-
       const cyc = tpl.cycle || 'monthly';
-
       const { start, end } = getCycleRange(cyc, onDate);
-
       const prev = getPrevCycleRange(cyc, onDate);
 
-
-
       for (const c of tpl.categories) {
-
         const key = String(c.key).toLowerCase();
-
         // Check if balance already exists for this cycle
-
         const existing = await LeaveBalance.findOne({ where: { userId: a.userId, categoryKey: key, cycleStart: start, cycleEnd: end } });
-
         if (existing) continue;
 
-
-
         // Carry forward from previous cycle based on rule
-
         let carry = 0; let encash = 0;
-
         const prevBal = await LeaveBalance.findOne({ where: { userId: a.userId, categoryKey: key, cycleStart: prev.start, cycleEnd: prev.end } });
-
         if (prevBal) {
-
           const rem = Number(prevBal.remaining || 0);
-
           const rule = String(c.unusedRule || 'lapse');
-
           if (rule === 'carry_forward') {
-
             const cap = c.carryLimitDays === null || c.carryLimitDays === undefined ? rem : Math.min(rem, Number(c.carryLimitDays));
-
             carry = cap;
-
           } else if (rule === 'encash') {
-
             const cap = c.encashLimitDays === null || c.encashLimitDays === undefined ? rem : Math.min(rem, Number(c.encashLimitDays));
-
             encash = cap;
-
           }
-
         }
 
-
-
         const allocated = Number(c.leaveCount || 0) + carry;
-
         const remaining = allocated; // used/encashed will reduce later
-
         await LeaveBalance.create({
-
           userId: a.userId,
-
           categoryKey: key,
-
           cycleStart: start,
-
           cycleEnd: end,
-
           allocated,
-
           carriedForward: carry,
-
           used: 0,
-
           encashed: encash,
-
           remaining,
-
         });
-
         allocatedCount += 1;
-
       }
-
     }
-
-
 
     return res.json({ success: true, allocatedCount });
-
   } catch (e) {
-
     return res.status(500).json({ success: false, message: 'Failed to allocate balances' });
-
   }
-
 });
-
-
 
 // --- Leave Templates CRUD --- (org-scoped duplicate block)
-
 router.get('/leave/templates', async (req, res) => {
-
   try {
-
     const orgId = requireOrg(req, res); if (!orgId) return;
-
     const rows = await LeaveTemplate.findAll({ where: { orgAccountId: orgId }, include: [{ model: LeaveTemplateCategory, as: 'categories' }], order: [['createdAt', 'DESC']] });
-
     return res.json({ success: true, templates: rows });
-
   } catch (e) {
-
     return res.status(500).json({ success: false, message: 'Failed to load leave templates' });
-
   }
-
 });
-
-
 
 router.post('/leave/templates', async (req, res) => {
-
   try {
-
     const orgId = requireOrg(req, res); if (!orgId) return;
-
     const { name, cycle, countSandwich, approvalLevel, categories } = req.body || {};
-
     if (!name) return res.status(400).json({ success: false, message: 'name required' });
-
     const cyc = ['monthly', 'quarterly', 'yearly'].includes(String(cycle)) ? String(cycle) : 'monthly';
-
     const lvl = [1, 2, 3].includes(Number(approvalLevel)) ? Number(approvalLevel) : 1;
-
     const tpl = await LeaveTemplate.create({ name: String(name), cycle: cyc, countSandwich: !!countSandwich, approvalLevel: lvl, active: true, orgAccountId: orgId });
-
     if (Array.isArray(categories)) {
-
       for (const c of categories) {
-
         await LeaveTemplateCategory.create({
-
           leaveTemplateId: tpl.id,
-
           key: String(c.key || c.name || 'GEN').toLowerCase(),
-
           name: String(c.name || c.key || 'General'),
-
           leaveCount: Number(c.leaveCount || 0),
-
           unusedRule: ['lapse', 'carry_forward', 'encash'].includes(String(c.unusedRule)) ? String(c.unusedRule) : 'lapse',
-
           carryLimitDays: c.carryLimitDays === undefined || c.carryLimitDays === null || c.carryLimitDays === '' ? null : Number(c.carryLimitDays),
-
           encashLimitDays: c.encashLimitDays === undefined || c.encashLimitDays === null || c.encashLimitDays === '' ? null : Number(c.encashLimitDays),
-
         });
-
       }
-
     }
-
     const out = await LeaveTemplate.findByPk(tpl.id, { include: [{ model: LeaveTemplateCategory, as: 'categories' }] });
-
     return res.json({ success: true, template: out });
-
   } catch (e) {
-
     return res.status(500).json({ success: false, message: 'Failed to create leave template' });
-
   }
-
 });
-
-
 
 router.put('/leave/templates/:id', async (req, res) => {
-
   try {
-
     const orgId = requireOrg(req, res); if (!orgId) return;
-
     const id = Number(req.params.id);
-
     const row = await LeaveTemplate.findOne({ where: { id, orgAccountId: orgId } });
-
     if (!row) return res.status(404).json({ success: false, message: 'Template not found' });
-
     const { name, cycle, countSandwich, approvalLevel, active } = req.body || {};
-
     await row.update({
-
       name: name !== undefined ? String(name) : row.name,
-
       cycle: cycle !== undefined ? (['monthly', 'quarterly', 'yearly'].includes(String(cycle)) ? String(cycle) : row.cycle) : row.cycle,
-
       countSandwich: countSandwich !== undefined ? !!countSandwich : row.countSandwich,
-
       approvalLevel: approvalLevel !== undefined ? ([1, 2, 3].includes(Number(approvalLevel)) ? Number(approvalLevel) : row.approvalLevel) : row.approvalLevel,
-
       active: active !== undefined ? !!active : row.active,
-
     });
-
     const out = await LeaveTemplate.findByPk(id, { include: [{ model: LeaveTemplateCategory, as: 'categories' }] });
-
     return res.json({ success: true, template: out });
-
   } catch (e) {
-
     return res.status(500).json({ success: false, message: 'Failed to update leave template' });
-
   }
-
 });
-
-
 
 router.post('/leave/templates/:id/categories-bulk', async (req, res) => {
-
   try {
-
     const orgId = requireOrg(req, res); if (!orgId) return;
-
     const id = Number(req.params.id);
-
     const tpl = await LeaveTemplate.findOne({ where: { id, orgAccountId: orgId } });
-
     if (!tpl) return res.status(404).json({ success: false, message: 'Template not found' });
-
     const items = Array.isArray(req.body?.categories) ? req.body.categories : [];
-
     await LeaveTemplateCategory.destroy({ where: { leaveTemplateId: id } });
-
     for (const c of items) {
-
       await LeaveTemplateCategory.create({
-
         leaveTemplateId: id,
-
         key: String(c.key || c.name || 'GEN').toLowerCase(),
-
         name: String(c.name || c.key || 'General'),
-
         leaveCount: Number(c.leaveCount || 0),
-
         unusedRule: ['lapse', 'carry_forward', 'encash'].includes(String(c.unusedRule)) ? String(c.unusedRule) : 'lapse',
-
         carryLimitDays: c.carryLimitDays === undefined || c.carryLimitDays === null || c.carryLimitDays === '' ? null : Number(c.carryLimitDays),
-
         encashLimitDays: c.encashLimitDays === undefined || c.encashLimitDays === null || c.encashLimitDays === '' ? null : Number(c.encashLimitDays),
-
       });
-
     }
-
     const out = await LeaveTemplate.findByPk(id, { include: [{ model: LeaveTemplateCategory, as: 'categories' }] });
-
     return res.json({ success: true, template: out });
-
   } catch (e) {
-
     return res.status(500).json({ success: false, message: 'Failed to save categories' });
-
   }
-
 });
 
-
-
 router.post('/leave/assign', async (req, res) => {
-
   try {
-
     const orgId = requireOrg(req, res); if (!orgId) return;
-
     const userId = Number(req.body?.userId);
     const templateId = Number(req.body?.leaveTemplateId || req.body?.templateId);
     const effectiveFrom = String(req.body?.effectiveFrom || '').slice(0, 10);
@@ -6926,25 +6328,15 @@ router.post('/leave/assign', async (req, res) => {
     }
 
     const user = await User.findOne({ where: { id: userId, orgAccountId: orgId, role: 'staff' } });
-
     if (!user) return res.status(404).json({ success: false, message: 'Staff not found' });
-
     const tpl = await LeaveTemplate.findOne({ where: { id: templateId, orgAccountId: orgId } });
-
     if (!tpl) return res.status(404).json({ success: false, message: 'Leave template not found' });
-
     const row = await StaffLeaveAssignment.create({ userId, leaveTemplateId: templateId, effectiveFrom, effectiveTo });
-
     return res.json({ success: true, assignment: row });
-
   } catch (e) {
-
     return res.status(500).json({ success: false, message: 'Failed to assign leave template' });
-
   }
-
 });
-
 // List all leaves for admin (filterable)
 router.get('/leaves', async (req, res) => {
   try {
@@ -7037,2376 +6429,1189 @@ router.get('/leave/balances', async (req, res) => {
   }
 });
 
-
-
 // --- Site Checkpoints CRUD (Security) (org-scoped)
-
 router.get('/sites/:siteId/checkpoints', async (req, res) => {
-
   try {
-
     const orgId = requireOrg(req, res); if (!orgId) return;
-
     const siteId = Number(req.params.siteId);
-
     const site = await Site.findOne({ where: { id: siteId, orgAccountId: orgId } });
-
     if (!site) return res.status(404).json({ success: false, message: 'Site not found' });
-
     const rows = await SiteCheckpoint.findAll({ where: { siteId }, order: [['createdAt', 'DESC']] });
-
     return res.json({ success: true, checkpoints: rows });
-
   } catch (e) {
-
     return res.status(500).json({ success: false, message: 'Failed to load checkpoints' });
-
   }
-
 });
-
-
 
 router.post('/sites/:siteId/checkpoints', async (req, res) => {
-
   try {
-
     const orgId = requireOrg(req, res); if (!orgId) return;
-
     const siteId = Number(req.params.siteId);
-
     const site = await Site.findOne({ where: { id: siteId, orgAccountId: orgId } });
-
     if (!site) return res.status(404).json({ success: false, message: 'Site not found' });
-
     const { name, qrCode, lat, lng, radiusM, active } = req.body || {};
-
     if (!name) return res.status(400).json({ success: false, message: 'name required' });
-
     const created = await SiteCheckpoint.create({
-
       siteId,
-
       name: String(name),
-
       qrCode: qrCode ? String(qrCode) : null,
-
       lat: lat !== undefined && lat !== null && lat !== '' ? Number(lat) : null,
-
       lng: lng !== undefined && lng !== null && lng !== '' ? Number(lng) : null,
-
       radiusM: radiusM !== undefined && radiusM !== null && radiusM !== '' ? Number(radiusM) : null,
-
       active: active === undefined ? true : !!active,
-
     });
-
     return res.json({ success: true, checkpoint: created });
-
   } catch (e) {
-
     return res.status(500).json({ success: false, message: 'Failed to create checkpoint' });
-
   }
-
 });
-
-
 
 router.put('/sites/:siteId/checkpoints/:id', async (req, res) => {
-
   try {
-
     const orgId = requireOrg(req, res); if (!orgId) return;
-
     const siteId = Number(req.params.siteId);
-
     const site = await Site.findOne({ where: { id: siteId, orgAccountId: orgId } });
-
     if (!site) return res.status(404).json({ success: false, message: 'Site not found' });
-
     const id = Number(req.params.id);
-
     const row = await SiteCheckpoint.findOne({ where: { id, siteId } });
-
     if (!row) return res.status(404).json({ success: false, message: 'Checkpoint not found' });
-
     const { name, qrCode, lat, lng, radiusM, active } = req.body || {};
-
     await row.update({
-
       name: name !== undefined ? String(name) : row.name,
-
       qrCode: qrCode !== undefined ? (qrCode ? String(qrCode) : null) : row.qrCode,
-
       lat: lat !== undefined ? (lat === null || lat === '' ? null : Number(lat)) : row.lat,
-
       lng: lng !== undefined ? (lng === null || lng === '' ? null : Number(lng)) : row.lng,
-
       radiusM: radiusM !== undefined ? (radiusM === null || radiusM === '' ? null : Number(radiusM)) : row.radiusM,
-
       active: active !== undefined ? !!active : row.active,
-
     });
-
     return res.json({ success: true, checkpoint: row });
-
   } catch (e) {
-
     return res.status(500).json({ success: false, message: 'Failed to update checkpoint' });
-
   }
-
 });
-
-
 
 router.delete('/sites/:siteId/checkpoints/:id', async (req, res) => {
-
   try {
-
     const orgId = requireOrg(req, res); if (!orgId) return;
-
     const siteId = Number(req.params.siteId);
-
     const site = await Site.findOne({ where: { id: siteId, orgAccountId: orgId } });
-
     if (!site) return res.status(404).json({ success: false, message: 'Site not found' });
-
     const id = Number(req.params.id);
-
     const row = await SiteCheckpoint.findOne({ where: { id, siteId } });
-
     if (!row) return res.status(404).json({ success: false, message: 'Checkpoint not found' });
-
     await row.update({ active: false });
-
     return res.json({ success: true });
-
   } catch (e) {
-
     return res.status(500).json({ success: false, message: 'Failed to delete checkpoint' });
-
   }
-
 });
-
-
 
 // Patrol verification & adjustments
-
 router.post('/security/patrol/:id/verify', async (req, res) => {
-
   try {
-
     const id = Number(req.params.id);
-
     const row = await PatrolLog.findByPk(id);
-
     if (!row) return res.status(404).json({ success: false, message: 'Patrol log not found' });
-
     if (row.supervisorVerified) return res.json({ success: true, patrol: row });
-
     await row.update({ supervisorVerified: true });
-
     return res.json({ success: true, patrol: row });
-
   } catch (e) {
-
     return res.status(500).json({ success: false, message: 'Failed to verify patrol' });
-
   }
-
 });
-
-
 
 router.post('/security/patrol/:id/client-confirm', async (req, res) => {
-
   try {
-
     const id = Number(req.params.id);
-
     const row = await PatrolLog.findByPk(id);
-
     if (!row) return res.status(404).json({ success: false, message: 'Patrol log not found' });
-
     if (row.clientConfirmed) return res.json({ success: true, patrol: row });
-
     await row.update({ clientConfirmed: true });
-
     return res.json({ success: true, patrol: row });
-
   } catch (e) {
-
     return res.status(500).json({ success: false, message: 'Failed to confirm patrol' });
-
   }
-
 });
-
-
 
 router.patch('/security/patrol/:id/adjust', async (req, res) => {
-
   try {
-
     const id = Number(req.params.id);
-
     const row = await PatrolLog.findByPk(id);
-
     if (!row) return res.status(404).json({ success: false, message: 'Patrol log not found' });
-
     const { penaltyAmount, incentiveAmount, penaltyReason } = req.body || {};
-
     await row.update({
-
       penaltyAmount: penaltyAmount !== undefined ? Number(penaltyAmount) : row.penaltyAmount,
-
       incentiveAmount: incentiveAmount !== undefined ? Number(incentiveAmount) : row.incentiveAmount,
-
       penaltyReason: penaltyReason !== undefined ? (penaltyReason ? String(penaltyReason) : null) : row.penaltyReason,
-
     });
-
     return res.json({ success: true, patrol: row });
-
   } catch (e) {
-
     return res.status(500).json({ success: false, message: 'Failed to adjust patrol' });
-
   }
-
 });
-
-
 
 // --- Routes CRUD (Logistics) (org-scoped)
-
 router.get('/routes', async (req, res) => {
-
   try {
-
     const orgId = requireOrg(req, res); if (!orgId) return;
-
     const rows = await Route.findAll({ where: { orgAccountId: orgId }, include: [{ model: RouteStop, as: 'stops', order: [['seqNo', 'ASC']] }], order: [['createdAt', 'DESC']] });
-
     return res.json({ success: true, routes: rows });
-
   } catch (e) {
-
     return res.status(500).json({ success: false, message: 'Failed to load routes' });
-
   }
-
 });
-
-
 
 router.post('/routes', async (req, res) => {
-
   try {
-
     const orgId = requireOrg(req, res); if (!orgId) return;
-
     const { name, code, active } = req.body || {};
-
     if (!name) return res.status(400).json({ success: false, message: 'name required' });
-
     const created = await Route.create({ name: String(name), code: code ? String(code) : null, active: active === undefined ? true : !!active, orgAccountId: orgId });
-
     return res.json({ success: true, route: created });
-
   } catch (e) {
-
     return res.status(500).json({ success: false, message: 'Failed to create route' });
-
   }
-
 });
-
-
 
 router.post('/routes/:id/stops-bulk', async (req, res) => {
-
   try {
-
     const orgId = requireOrg(req, res); if (!orgId) return;
-
     const id = Number(req.params.id);
-
     const route = await Route.findOne({ where: { id, orgAccountId: orgId } });
-
     if (!route) return res.status(404).json({ success: false, message: 'Route not found' });
-
     const stops = Array.isArray(req.body?.stops) ? req.body.stops : [];
-
     if (stops.length === 0) return res.status(400).json({ success: false, message: 'stops required' });
-
     // Remove existing stops
-
     await RouteStop.destroy({ where: { routeId: id } });
-
     // Create new stops in order
-
     for (const s of stops) {
-
       await RouteStop.create({
-
         routeId: id,
-
         seqNo: Number(s.seqNo),
-
         name: String(s.name),
-
         lat: s.lat === undefined || s.lat === null || s.lat === '' ? null : Number(s.lat),
-
         lng: s.lng === undefined || s.lng === null || s.lng === '' ? null : Number(s.lng),
-
         radiusM: s.radiusM === undefined || s.radiusM === null || s.radiusM === '' ? null : Number(s.radiusM),
-
         plannedTime: s.plannedTime || null,
-
         active: s.active === undefined ? true : !!s.active,
-
       });
-
     }
-
     const out = await Route.findByPk(id, { include: [{ model: RouteStop, as: 'stops', order: [['seqNo', 'ASC']] }] });
-
     return res.json({ success: true, route: out });
-
   } catch (e) {
-
     return res.status(500).json({ success: false, message: 'Failed to save stops' });
-
   }
-
 });
-
-
 
 router.post('/routes/assign', async (req, res) => {
-
   try {
-
     const orgId = requireOrg(req, res); if (!orgId) return;
-
     const userId = Number(req.body?.userId);
-
     const routeId = Number(req.body?.routeId);
-
     const effectiveDate = String(req.body?.effectiveDate || '').slice(0, 10);
-
     if (!Number.isFinite(userId) || !Number.isFinite(routeId) || !effectiveDate) {
-
       return res.status(400).json({ success: false, message: 'userId, routeId, effectiveDate required' });
-
     }
-
     const user = await User.findByPk(userId);
-
     if (!user || user.role !== 'staff') return res.status(404).json({ success: false, message: 'Staff not found' });
-
     const route = await Route.findByPk(routeId);
-
     if (!route) return res.status(404).json({ success: false, message: 'Route not found' });
-
     const row = await StaffRouteAssignment.create({ userId, routeId, effectiveDate });
-
     return res.json({ success: true, assignment: row });
-
   } catch (e) {
-
     return res.status(500).json({ success: false, message: 'Failed to assign route' });
-
   }
-
 });
-
-
 
 // --- Sites CRUD (Construction) (org-scoped)
-
 router.get('/sites', async (req, res) => {
-
   try {
-
     const orgId = requireOrg(req, res); if (!orgId) return;
-
     const rows = await Site.findAll({ where: { orgAccountId: orgId }, order: [['createdAt', 'DESC']] });
-
     return res.json({ success: true, sites: rows });
-
   } catch (e) {
-
     return res.status(500).json({ success: false, message: 'Failed to load sites' });
-
   }
-
 });
-
-
 
 router.post('/sites', async (req, res) => {
-
   try {
-
     const orgId = requireOrg(req, res); if (!orgId) return;
-
     const { name, address, lat, lng, geofenceRadiusM, active } = req.body || {};
-
     if (!name) return res.status(400).json({ success: false, message: 'name required' });
-
     const created = await Site.create({
-
       name: String(name),
-
       address: address ? String(address) : null,
-
       lat: lat !== undefined && lat !== null && lat !== '' ? Number(lat) : null,
-
       lng: lng !== undefined && lng !== null && lng !== '' ? Number(lng) : null,
-
       geofenceRadiusM: geofenceRadiusM !== undefined && geofenceRadiusM !== null && geofenceRadiusM !== '' ? Number(geofenceRadiusM) : null,
-
       active: active === undefined ? true : !!active,
-
       orgAccountId: orgId,
-
     });
-
     return res.json({ success: true, site: created });
-
   } catch (e) {
-
     return res.status(500).json({ success: false, message: 'Failed to create site' });
-
   }
-
 });
-
-
 
 router.put('/sites/:id', async (req, res) => {
-
   try {
-
     const orgId = requireOrg(req, res); if (!orgId) return;
-
     const id = Number(req.params.id);
-
     const row = await Site.findOne({ where: { id, orgAccountId: orgId } });
-
     if (!row) return res.status(404).json({ success: false, message: 'Site not found' });
-
     const { name, address, lat, lng, geofenceRadiusM, active } = req.body || {};
-
     await row.update({
-
       name: name !== undefined ? String(name) : row.name,
-
       address: address !== undefined ? (address ? String(address) : null) : row.address,
-
       lat: lat !== undefined ? (lat === null || lat === '' ? null : Number(lat)) : row.lat,
-
       lng: lng !== undefined ? (lng === null || lng === '' ? null : Number(lng)) : row.lng,
-
       geofenceRadiusM: geofenceRadiusM !== undefined ? (geofenceRadiusM === null || geofenceRadiusM === '' ? null : Number(geofenceRadiusM)) : row.geofenceRadiusM,
-
       active: active !== undefined ? !!active : row.active,
-
     });
-
     return res.json({ success: true, site: row });
-
   } catch (e) {
-
     return res.status(500).json({ success: false, message: 'Failed to update site' });
-
   }
-
 });
-
-
 
 router.delete('/sites/:id', async (req, res) => {
-
   try {
-
     const orgId = requireOrg(req, res); if (!orgId) return;
-
     const id = Number(req.params.id);
-
     const row = await Site.findOne({ where: { id, orgAccountId: orgId } });
-
     if (!row) return res.status(404).json({ success: false, message: 'Site not found' });
-
     await row.update({ active: false });
-
     return res.json({ success: true });
-
   } catch (e) {
-
     return res.status(500).json({ success: false, message: 'Failed to delete site' });
-
   }
-
 });
-
-
 
 // Supervisor verification for Work Units
-
 router.post('/construction/work-units/:id/verify', async (req, res) => {
-
   try {
-
     const id = Number(req.params.id);
-
     const row = await WorkUnit.findByPk(id);
-
     if (!row) return res.status(404).json({ success: false, message: 'Work unit not found' });
-
     if (row.supervisorVerified) return res.json({ success: true, workUnit: row });
-
     await row.update({ supervisorVerified: true, verifiedAt: new Date() });
-
     return res.json({ success: true, workUnit: row });
-
   } catch (e) {
-
     return res.status(500).json({ success: false, message: 'Failed to verify work unit' });
-
   }
-
 });
-
-
 
 // Organization/tenant configuration: industryType and feature flags (org-scoped)
-
 router.get('/settings/org', async (req, res) => {
-
   try {
-
     const orgId = requireOrg(req, res); if (!orgId) return;
-
     const row = await AppSetting.findOne({ where: { key: 'org_config', orgAccountId: orgId } });
-
     let config = { industryType: 'field_sales', features: {} };
-
     if (row?.value) {
-
       try { config = JSON.parse(row.value); } catch (_) { }
-
     }
-
     return res.json({ success: true, config });
-
   } catch (e) {
-
     return res.status(500).json({ success: false, message: 'Failed to load org config' });
-
   }
-
 });
-
-
 
 router.put('/settings/org', async (req, res) => {
-
   try {
-
     const orgId = requireOrg(req, res); if (!orgId) return;
-
     const allowedIndustries = ['field_sales', 'construction', 'logistics', 'security'];
-
     const body = req.body || {};
-
     const industryType = allowedIndustries.includes(String(body.industryType)) ? String(body.industryType) : 'field_sales';
-
     const features = body.features && typeof body.features === 'object' ? body.features : {};
-
     const payload = JSON.stringify({ industryType, features });
 
-
-
     const [row] = await AppSetting.findOrCreate({ where: { key: 'org_config', orgAccountId: orgId }, defaults: { value: payload, orgAccountId: orgId } });
-
     if (row.value !== payload) await row.update({ value: payload });
-
     return res.json({ success: true, config: { industryType, features } });
-
   } catch (e) {
-
     return res.status(500).json({ success: false, message: 'Failed to save org config' });
-
   }
-
 });
-
-
 
 // Get current active salary template assignment (latest) for a staff with template included
-
 router.get('/salary/assignment/:userId', async (req, res) => {
-
   try {
-
     const userId = Number(req.params.userId);
-
     if (!Number.isFinite(userId)) return res.status(400).json({ success: false, message: 'userId is required' });
-
     const assign = await StaffSalaryAssignment.findOne({
-
       where: { userId },
-
       order: [['effectiveFrom', 'DESC']],
-
       include: [{ model: SalaryTemplate, as: 'template' }],
-
     });
-
     return res.json({ success: true, assignment: assign });
-
   } catch (e) {
-
     return res.status(500).json({ success: false, message: 'Failed to load assignment' });
-
   }
-
 });
 
-
-
 // Compute simple monthly salary totals from assigned template
-
 router.get('/salary/compute/:userId', async (req, res) => {
-
   try {
-
     const userId = Number(req.params.userId);
-
     const month = Number(req.query?.month); // 0-11
-
     const year = Number(req.query?.year);
-
     if (!Number.isFinite(userId) || !Number.isFinite(month) || !Number.isFinite(year)) {
-
       return res.status(400).json({ success: false, message: 'userId, month, year are required' });
-
     }
-
     const assign = await StaffSalaryAssignment.findOne({
-
       where: { userId },
-
       order: [['effectiveFrom', 'DESC']],
-
       include: [{ model: SalaryTemplate, as: 'template' }],
-
     });
-
     if (!assign || !assign.template) return res.status(404).json({ success: false, message: 'No template assigned' });
-
-
 
     const tpl = assign.template;
 
-
-
     const ctx = { basic: 0, earningsBase: 0, grossBase: 0, custom: {} };
-
     // Compute earnings first (single pass; supports percent of basic or custom computed before)
-
     const earningsArr = Array.isArray(tpl.earnings) ? tpl.earnings : [];
-
     let earningsTotal = 0;
-
     for (const it of earningsArr) {
-
       // Preload known bases
-
       ctx.earningsBase = earningsTotal;
-
       ctx.grossBase = earningsTotal; // incentives not added yet
-
       const amt = computeItemAmount(it, ctx);
-
       earningsTotal += amt;
-
       ctx.custom[it.key] = amt;
-
       if (String(it.key).toLowerCase() === 'basic') ctx.basic = amt;
-
     }
-
-
 
     // Incentives next
-
     const incentivesArr = Array.isArray(tpl.incentives) ? tpl.incentives : [];
-
     let incentivesTotal = 0;
-
     for (const it of incentivesArr) {
-
       ctx.earningsBase = earningsTotal;
-
       ctx.grossBase = earningsTotal + incentivesTotal;
-
       const amt = computeItemAmount(it, ctx);
-
       incentivesTotal += amt;
-
       ctx.custom[it.key] = amt;
-
     }
-
-
 
     const gross = earningsTotal + incentivesTotal;
-
     ctx.grossBase = gross;
 
-
-
     // Deductions (can depend on gross/basic/earnings/custom)
-
     const deductionsArr = Array.isArray(tpl.deductions) ? tpl.deductions : [];
-
     let deductionsTotal = 0;
-
     for (const it of deductionsArr) {
-
       ctx.earningsBase = earningsTotal;
-
       ctx.grossBase = gross;
-
       const amt = computeItemAmount(it, ctx);
-
       deductionsTotal += amt;
-
       ctx.custom[it.key] = amt;
-
     }
-
-
 
     const net = gross - deductionsTotal;
-
     const netInWords = numberToINRWords(net);
-
     return res.json({
-
       success: true,
-
       month,
-
       year,
-
       totals: {
-
         earnings: earningsTotal,
-
         incentives: incentivesTotal,
-
         totalDeductions: deductionsTotal,
-
         grossSalary: gross,
-
         netPay: net,
-
         netPayInWords: netInWords,
-
       },
-
       template: tpl,
-
     });
-
   } catch (e) {
-
     return res.status(500).json({ success: false, message: 'Failed to compute salary' });
-
   }
-
 });
-
-
 
 // --- Salary Templates CRUD --- (org-scoped)
-
 router.get('/salary/templates', async (req, res) => {
-
   try {
-
     const orgId = requireOrg(req, res); if (!orgId) return;
-
     const rows = await SalaryTemplate.findAll({ where: { orgAccountId: orgId }, order: [['createdAt', 'DESC']] });
-
     return res.json({ success: true, templates: rows });
-
   } catch (e) {
-
     return res.status(500).json({ success: false, message: 'Failed to load salary templates' });
-
   }
-
 });
-
-
 
 router.post('/salary/templates', async (req, res) => {
-
   try {
-
     const orgId = requireOrg(req, res); if (!orgId) return;
-
     const payload = {
-
       name: String(req.body?.name || '').trim(),
-
       code: req.body?.code ? String(req.body.code).trim() : null,
-
       payableDaysMode: req.body?.payableDaysMode || 'calendar_month',
-
       weeklyOffs: Array.isArray(req.body?.weeklyOffs) ? req.body.weeklyOffs : null,
-
       hoursPerDay: Number(req.body?.hoursPerDay || 8),
-
       active: req.body?.active === undefined ? true : !!req.body.active,
-
       earnings: Array.isArray(req.body?.earnings) ? req.body.earnings : [],
-
       incentives: Array.isArray(req.body?.incentives) ? req.body.incentives : [],
-
       deductions: Array.isArray(req.body?.deductions) ? req.body.deductions : [],
-
       metadata: req.body?.metadata && typeof req.body.metadata === 'object' ? req.body.metadata : null,
-
       orgAccountId: orgId,
-
     };
-
     if (!payload.name) return res.status(400).json({ success: false, message: 'Name is required' });
-
     if (!Number.isFinite(payload.hoursPerDay) || payload.hoursPerDay <= 0 || payload.hoursPerDay > 24) payload.hoursPerDay = 8;
-
     const row = await SalaryTemplate.create(payload);
-
     return res.json({ success: true, template: row });
-
   } catch (e) {
-
     return res.status(500).json({ success: false, message: 'Failed to create salary template' });
-
   }
-
 });
-
-
 
 router.put('/salary/templates/:id', async (req, res) => {
-
   try {
-
     const orgId = requireOrg(req, res); if (!orgId) return;
-
     const id = Number(req.params.id);
-
     const row = await SalaryTemplate.findOne({ where: { id, orgAccountId: orgId } });
-
     if (!row) return res.status(404).json({ success: false, message: 'Salary template not found' });
-
     const updates = {
-
       name: req.body?.name !== undefined ? String(req.body.name).trim() : row.name,
-
       code: req.body?.code !== undefined ? (req.body.code ? String(req.body.code).trim() : null) : row.code,
-
       payableDaysMode: req.body?.payableDaysMode ?? row.payableDaysMode,
-
       weeklyOffs: req.body?.weeklyOffs === undefined ? row.weeklyOffs : (Array.isArray(req.body.weeklyOffs) ? req.body.weeklyOffs : null),
-
       hoursPerDay: req.body?.hoursPerDay === undefined ? row.hoursPerDay : Number(req.body.hoursPerDay),
-
       active: req.body?.active === undefined ? row.active : !!req.body.active,
-
       earnings: req.body?.earnings === undefined ? row.earnings : (Array.isArray(req.body.earnings) ? req.body.earnings : []),
-
       incentives: req.body?.incentives === undefined ? row.incentives : (Array.isArray(req.body.incentives) ? req.body.incentives : []),
-
       deductions: req.body?.deductions === undefined ? row.deductions : (Array.isArray(req.body.deductions) ? req.body.deductions : []),
-
       metadata: req.body?.metadata === undefined ? row.metadata : (req.body.metadata && typeof req.body.metadata === 'object' ? req.body.metadata : null),
-
     };
-
     if (!Number.isFinite(updates.hoursPerDay) || updates.hoursPerDay <= 0 || updates.hoursPerDay > 24) updates.hoursPerDay = row.hoursPerDay;
-
     await row.update(updates);
-
     return res.json({ success: true, template: row });
-
   } catch (e) {
-
     return res.status(500).json({ success: false, message: 'Failed to update salary template' });
-
   }
-
 });
-
-
 
 router.delete('/salary/templates/:id', async (req, res) => {
-
   try {
-
     const orgId = requireOrg(req, res); if (!orgId) return;
-
     const id = Number(req.params.id);
-
     const row = await SalaryTemplate.findOne({ where: { id, orgAccountId: orgId } });
-
     if (!row) return res.status(404).json({ success: false, message: 'Salary template not found' });
-
     await row.destroy();
-
     return res.json({ success: true });
-
   } catch (e) {
-
     return res.status(500).json({ success: false, message: 'Failed to delete salary template' });
-
   }
-
 });
-
-
 
 // Assign salary template to a staff (org-scoped)
-
 router.post('/salary/assign', async (req, res) => {
-
   try {
-
     const orgId = requireOrg(req, res); if (!orgId) return;
-
     const userId = Number(req.body?.userId);
-
     const templateId = Number(req.body?.salaryTemplateId || req.body?.templateId);
-
     const effectiveFrom = String(req.body?.effectiveFrom || '').slice(0, 10);
-
     const effectiveTo = req.body?.effectiveTo ? String(req.body.effectiveTo).slice(0, 10) : null;
-
     if (!Number.isFinite(userId) || !Number.isFinite(templateId) || !effectiveFrom) {
-
       return res.status(400).json({ success: false, message: 'userId, salaryTemplateId, effectiveFrom are required' });
-
     }
-
     const user = await User.findOne({ where: { id: userId, orgAccountId: orgId, role: 'staff' } });
-
     if (!user) return res.status(404).json({ success: false, message: 'Staff not found' });
-
     const tpl = await SalaryTemplate.findOne({ where: { id: templateId, orgAccountId: orgId } });
-
     if (!tpl) return res.status(404).json({ success: false, message: 'Salary template not found' });
 
-
-
     const row = await StaffSalaryAssignment.create({ userId, salaryTemplateId: templateId, effectiveFrom, effectiveTo });
-
     return res.json({ success: true, assignment: row });
-
   } catch (e) {
-
     return res.status(500).json({ success: false, message: 'Failed to assign salary template' });
-
   }
-
 });
-
-
 
 // --- Attendance Templates CRUD --- (org-scoped)
-
 router.get('/attendance/templates', async (req, res) => {
-
   try {
-
     const orgId = requireOrg(req, res); if (!orgId) return;
-
     const rows = await AttendanceTemplate.findAll({ where: { orgAccountId: orgId }, order: [['createdAt', 'DESC']] });
-
     return res.json({ success: true, templates: rows });
-
   } catch (e) {
-
     return res.status(500).json({ success: false, message: 'Failed to load templates' });
-
   }
-
 });
-
-
 
 router.post('/attendance/templates', async (req, res) => {
-
   console.log('POST /attendance/templates called', req.body);
-
   try {
-
     const orgId = requireOrg(req, res); if (!orgId) return;
-
     console.log('orgId:', orgId);
-
     // Map frontend values to model ENUM values
-
     const modeMap = { 'mark_present': 'mark_present_by_default', 'manual': 'manual', 'location': 'location_based', 'selfie': 'selfie_location' };
-
     const rawMode = req.body?.attendanceMode || 'manual';
-
     const attendanceMode = modeMap[rawMode] || rawMode;
 
-
-
     const payload = {
-
       name: String(req.body?.name || '').trim(),
-
       code: req.body?.code ? String(req.body.code).trim() : null,
-
       attendanceMode,
-
       holidaysRule: req.body?.holidaysRule || 'disallow',
-
       trackInOutEnabled: !!req.body?.trackInOutEnabled,
-
       requirePunchOut: !!req.body?.requirePunchOut,
-
       allowMultiplePunches: !!req.body?.allowMultiplePunches,
-
       markAbsentPrevDaysEnabled: !!req.body?.markAbsentPrevDaysEnabled,
-
       markAbsentRule: req.body?.markAbsentRule || 'none',
-
       effectiveHoursRule: req.body?.effectiveHoursRule || null,
-
       active: req.body?.active === undefined ? true : !!req.body.active,
-
       orgAccountId: orgId,
-
     };
-
     if (!payload.name) return res.status(400).json({ success: false, message: 'Name is required' });
-
     const row = await AttendanceTemplate.create(payload);
-
     return res.json({ success: true, template: row });
-
   } catch (e) {
-
     console.error('Create attendance template error:', e);
-
     return res.status(500).json({ success: false, message: 'Failed to create template', error: e.message, stack: e.stack });
-
   }
-
 });
-
-
 
 router.put('/attendance/templates/:id', async (req, res) => {
-
   try {
-
     const orgId = requireOrg(req, res); if (!orgId) return;
-
     const id = Number(req.params.id);
-
     const row = await AttendanceTemplate.findOne({ where: { id, orgAccountId: orgId } });
-
     if (!row) return res.status(404).json({ success: false, message: 'Template not found' });
-
     const updates = {
-
       name: req.body?.name !== undefined ? String(req.body.name).trim() : row.name,
-
       code: req.body?.code !== undefined ? (req.body.code ? String(req.body.code).trim() : null) : row.code,
-
       attendanceMode: req.body?.attendanceMode ?? row.attendanceMode,
-
       holidaysRule: req.body?.holidaysRule ?? row.holidaysRule,
-
       trackInOutEnabled: req.body?.trackInOutEnabled === undefined ? row.trackInOutEnabled : !!req.body.trackInOutEnabled,
-
       requirePunchOut: req.body?.requirePunchOut === undefined ? row.requirePunchOut : !!req.body.requirePunchOut,
-
       allowMultiplePunches: req.body?.allowMultiplePunches === undefined ? row.allowMultiplePunches : !!req.body.allowMultiplePunches,
-
       markAbsentPrevDaysEnabled: req.body?.markAbsentPrevDaysEnabled === undefined ? row.markAbsentPrevDaysEnabled : !!req.body.markAbsentPrevDaysEnabled,
-
       markAbsentRule: req.body?.markAbsentRule ?? row.markAbsentRule,
-
       effectiveHoursRule: req.body?.effectiveHoursRule === undefined ? row.effectiveHoursRule : (req.body.effectiveHoursRule || null),
-
       active: req.body?.active === undefined ? row.active : !!req.body.active,
-
     };
-
     await row.update(updates);
-
     return res.json({ success: true, template: row });
-
   } catch (e) {
-
     return res.status(500).json({ success: false, message: 'Failed to update template' });
-
   }
-
 });
-
-
 
 router.delete('/attendance/templates/:id', async (req, res) => {
-
   try {
-
     const orgId = requireOrg(req, res); if (!orgId) return;
-
     const id = Number(req.params.id);
-
     const row = await AttendanceTemplate.findOne({ where: { id, orgAccountId: orgId } });
-
     if (!row) return res.status(404).json({ success: false, message: 'Template not found' });
-
     await row.destroy();
-
     return res.json({ success: true });
-
   } catch (e) {
-
     return res.status(500).json({ success: false, message: 'Failed to delete template' });
-
   }
-
 });
-
-
 
 // Assign attendance template to a staff (org-scoped)
-
 router.post('/attendance/assign', async (req, res) => {
-
   try {
-
     const orgId = requireOrg(req, res); if (!orgId) return;
-
     const userId = Number(req.body?.userId);
-
     const templateId = Number(req.body?.attendanceTemplateId || req.body?.templateId);
-
     const effectiveFrom = String(req.body?.effectiveFrom || '').slice(0, 10);
-
     const effectiveTo = req.body?.effectiveTo ? String(req.body.effectiveTo).slice(0, 10) : null;
-
     if (!Number.isFinite(userId) || !Number.isFinite(templateId) || !effectiveFrom) {
-
       return res.status(400).json({ success: false, message: 'userId, attendanceTemplateId, effectiveFrom are required' });
-
     }
-
     const user = await User.findOne({ where: { id: userId, orgAccountId: orgId, role: 'staff' } });
-
     if (!user) return res.status(404).json({ success: false, message: 'Staff not found' });
-
     const tpl = await AttendanceTemplate.findOne({ where: { id: templateId, orgAccountId: orgId } });
-
     if (!tpl) return res.status(404).json({ success: false, message: 'Template not found' });
 
-
-
     const row = await StaffAttendanceAssignment.create({ userId, attendanceTemplateId: templateId, effectiveFrom, effectiveTo });
-
     return res.json({ success: true, assignment: row });
-
   } catch (e) {
-
     return res.status(500).json({ success: false, message: 'Failed to assign template' });
-
   }
-
 });
-
-
 
 // --- Salary details access to staff --- (org-scoped)
-
 router.get('/salary/access', async (req, res) => {
-
   try {
-
     const orgId = requireOrg(req, res); if (!orgId) return;
-
     const staff = await User.findAll({
-
       where: { role: 'staff', orgAccountId: orgId },
-
       include: [
-
         { model: StaffProfile, as: 'profile' },
-
         { model: SalaryAccess, as: 'salaryAccess' },
-
       ],
-
       order: [['createdAt', 'DESC']],
-
     });
-
-
 
     const rows = staff.map((u) => ({
-
       userId: u.id,
-
       staffId: u.profile?.staffId || null,
-
       name: u.profile?.name || null,
-
       phone: u.phone,
-
       allowCurrentCycle: !!u.salaryAccess?.allowCurrentCycle,
-
     }));
-
     return res.json({ success: true, items: rows });
-
   } catch (e) {
-
     return res.status(500).json({ success: false, message: 'Failed to load salary access list' });
-
   }
-
 });
-
-
 
 router.put('/salary/access/:userId', async (req, res) => {
-
   try {
-
     const orgId = requireOrg(req, res); if (!orgId) return;
-
     const userId = Number(req.params.userId);
-
     if (!Number.isFinite(userId) || userId <= 0) return res.status(400).json({ success: false, message: 'Invalid userId' });
-
     const allow = !!req.body?.allowCurrentCycle;
-
-
 
     const user = await User.findOne({ where: { id: userId, orgAccountId: orgId, role: 'staff' } });
-
     if (!user) return res.status(404).json({ success: false, message: 'Staff not found' });
 
-
-
     if (allow) {
-
       const [row] = await SalaryAccess.findOrCreate({ where: { userId }, defaults: { allowCurrentCycle: true, active: true } });
-
       if (!row.allowCurrentCycle) await row.update({ allowCurrentCycle: true });
-
       return res.json({ success: true, userId, allowCurrentCycle: true });
-
     } else {
-
       await SalaryAccess.destroy({ where: { userId } });
-
       return res.json({ success: true, userId, allowCurrentCycle: false });
-
     }
-
   } catch (e) {
-
     return res.status(500).json({ success: false, message: 'Failed to update salary access' });
-
   }
-
 });
-
-
 
 router.put('/salary/access-bulk', async (req, res) => {
-
   try {
-
     const orgId = requireOrg(req, res); if (!orgId) return;
-
     const userIds = Array.isArray(req.body?.userIds) ? req.body.userIds.map((x) => Number(x)).filter((n) => Number.isFinite(n) && n > 0) : [];
-
     const allow = !!req.body?.allowCurrentCycle;
-
     if (userIds.length === 0) return res.status(400).json({ success: false, message: 'userIds required' });
 
-
-
     const staff = await User.findAll({ where: { id: userIds, role: 'staff', orgAccountId: orgId } });
-
     const updated = [];
-
     if (allow) {
-
       for (const u of staff) {
-
         const [row] = await SalaryAccess.findOrCreate({ where: { userId: u.id }, defaults: { allowCurrentCycle: true, active: true } });
-
         if (!row.allowCurrentCycle) await row.update({ allowCurrentCycle: true });
-
         updated.push({ userId: u.id, allowCurrentCycle: true });
-
       }
-
     } else {
-
       await SalaryAccess.destroy({ where: { userId: userIds } });
-
       for (const u of staff) updated.push({ userId: u.id, allowCurrentCycle: false });
-
     }
-
     return res.json({ success: true, updated });
-
   } catch (e) {
-
     return res.status(500).json({ success: false, message: 'Failed to bulk update salary access' });
-
   }
-
 });
-
-
 
 // Salary calculation settings (org-scoped)
-
 router.get('/settings/salary', async (req, res) => {
-
   try {
-
     const orgId = requireOrg(req, res); if (!orgId) return;
-
     const row = await AppSetting.findOne({ where: { key: 'salary_settings', orgAccountId: orgId } });
-
     const value = row?.value ? JSON.parse(row.value) : getDefaultSalarySettings();
-
     return res.json({ success: true, settings: coerceSalarySettings(value) });
-
   } catch (e) {
-
     return res.status(500).json({ success: false, message: 'Failed to load salary settings' });
-
   }
-
 });
-
-
 
 router.put('/settings/salary', async (req, res) => {
-
   try {
-
     const orgId = requireOrg(req, res); if (!orgId) return;
-
     const settings = coerceSalarySettings(req.body || {});
-
     const payload = JSON.stringify(settings);
 
-
-
     // Check if record exists first
-
     let row = await AppSetting.findOne({ where: { key: 'salary_settings', orgAccountId: orgId } });
-
     if (row) {
-
       await row.update({ value: payload });
-
     } else {
-
       row = await AppSetting.create({ key: 'salary_settings', value: payload, orgAccountId: orgId });
-
     }
-
     return res.json({ success: true, settings });
-
   } catch (e) {
-
     console.error('Save salary settings error:', e);
-
     return res.status(500).json({ success: false, message: 'Failed to save salary settings' });
-
   }
-
 });
-
-
 
 // Organization brand name setting
-
 function getDefaultBrandSettings() {
-
   return { displayName: 'ThinkTech' };
-
 }
 
-
-
 router.get('/settings/brand', async (req, res) => {
-
   try {
-
     const orgId = requireOrg(req, res); if (!orgId) return;
-
     const row = await sequelize.models.OrgBrand.findOne({ where: { active: true, orgAccountId: orgId }, order: [['updatedAt', 'DESC']] });
-
     const name = row?.displayName || getDefaultBrandSettings().displayName;
-
     return res.json({ success: true, brand: { displayName: String(name) } });
-
   } catch (e) {
-
     return res.status(500).json({ success: false, message: 'Failed to load brand settings' });
-
   }
-
 });
-
-
 
 router.put('/settings/brand', async (req, res) => {
-
   try {
-
     const orgId = requireOrg(req, res); if (!orgId) return;
-
     const displayName = String(req.body?.displayName || '').trim();
-
     if (!displayName) return res.status(400).json({ success: false, message: 'displayName required' });
-
     const existing = await sequelize.models.OrgBrand.findOne({ where: { active: true, orgAccountId: orgId } });
-
     if (existing) {
-
       await existing.update({ displayName });
-
       return res.json({ success: true, brand: { displayName } });
-
     }
-
     const created = await sequelize.models.OrgBrand.create({ displayName, active: true, orgAccountId: orgId });
-
     return res.json({ success: true, brand: { displayName: created.displayName } });
-
   } catch (e) {
-
     return res.status(500).json({ success: false, message: 'Failed to save brand settings' });
-
   }
-
 });
-
-
 
 // Helper: compute payable days for a given month using saved settings (org-scoped)
-
 router.get('/salary/payable-days', async (req, res) => {
-
   try {
-
     const orgId = requireOrg(req, res); if (!orgId) return;
-
     const year = Number(req.query.year);
-
     const month = Number(req.query.month);
-
     if (!Number.isInteger(year) || !Number.isInteger(month) || month < 1 || month > 12) {
-
       return res.status(400).json({ success: false, message: 'year and month required (e.g., year=2026&month=1)' });
-
     }
-
     const row = await AppSetting.findOne({ where: { key: 'salary_settings', orgAccountId: orgId } });
-
     const settings = row?.value ? JSON.parse(row.value) : getDefaultSalarySettings();
-
     const payableDays = computePayableDays(settings, year, month);
-
     return res.json({ success: true, payableDays, settings: coerceSalarySettings(settings) });
-
   } catch (e) {
-
     return res.status(500).json({ success: false, message: 'Failed to compute payable days' });
-
   }
-
 });
-
-
 
 router.get('/shifts/templates', async (req, res) => {
-
   try {
-
     const orgId = requireOrg(req, res); if (!orgId) return;
-
     const rows = await ShiftTemplate.findAll({ where: { orgAccountId: orgId }, order: [['createdAt', 'DESC']], include: [{ model: ShiftBreak, as: 'breaks' }] });
-
     return res.json({
-
       success: true,
-
       templates: rows.map((t) => (
-
         {
-
           id: t.id,
-
           shiftType: t.shiftType,
-
           name: t.name,
-
           code: t.code,
-
           startTime: t.startTime,
-
           endTime: t.endTime,
-
           workMinutes: t.workMinutes,
-
           bufferMinutes: t.bufferMinutes,
-
           earliestPunchInTime: t.earliestPunchInTime,
-
           latestPunchOutTime: t.latestPunchOutTime,
-
           minPunchOutAfterMinutes: t.minPunchOutAfterMinutes,
-
           maxPunchOutAfterMinutes: t.maxPunchOutAfterMinutes,
-
           halfDayThresholdMinutes: t.halfDayThresholdMinutes,
-
           overtimeStartMinutes: t.overtimeStartMinutes,
-
           autoPunchoutAfterShiftEnd: t.autoPunchoutAfterShiftEnd,
-
           active: t.active !== false,
-
           breaks: (t.breaks || []).map((b) => ({
-
             id: b.id,
-
             category: b.category,
-
             name: b.name,
-
             payType: b.payType,
-
             breakType: b.breakType,
-
             durationMinutes: b.durationMinutes,
-
             startTime: b.startTime,
-
             endTime: b.endTime,
-
             active: b.active !== false,
-
           }
-
           )),
-
         })),
-
     });
-
   } catch (e) {
-
     return res.status(500).json({ success: false, message: 'Failed to load shift templates' });
-
   }
-
 });
 
-
-
 router.post('/shifts/templates', async (req, res) => {
-
   try {
-
     const orgId = requireOrg(req, res); if (!orgId) return;
-
     const {
-
       shiftType,
-
       name,
-
       code,
-
       startTime,
-
       endTime,
-
       workMinutes,
-
       bufferMinutes,
-
       earliestPunchInTime,
-
       latestPunchOutTime,
-
       minPunchOutAfterMinutes,
-
       maxPunchOutAfterMinutes,
-
       halfDayThresholdMinutes,
-
       overtimeStartMinutes,
-
       autoPunchoutAfterShiftEnd,
-
       active,
-
       breaks,
-
     } = req.body || {};
-
-
 
     if (!name) return res.status(400).json({ success: false, message: 'name required' });
 
-
-
     const st = shiftType ? String(shiftType) : 'fixed';
-
     if (!['fixed', 'open', 'rotational'].includes(st)) {
-
       return res.status(400).json({ success: false, message: 'shiftType invalid' });
-
     }
-
-
 
     const start = normalizeTime(startTime);
-
     const end = normalizeTime(endTime);
-
     const wm = workMinutes === undefined || workMinutes === null || workMinutes === '' ? null : Number(workMinutes);
-
     const bm = bufferMinutes === undefined || bufferMinutes === null || bufferMinutes === '' ? 0 : Number(bufferMinutes);
 
-
-
     if (st === 'fixed' || st === 'rotational') {
-
       if (!start || !end) {
-
         return res.status(400).json({ success: false, message: 'startTime and endTime required for this shiftType' });
-
       }
-
     }
-
-
 
     if (st === 'open') {
-
       if (!Number.isFinite(wm) || wm <= 0) {
-
         return res.status(400).json({ success: false, message: 'workMinutes required for open shift' });
-
       }
-
     }
-
-
 
     if (!Number.isFinite(bm) || bm < 0 || bm > 1440) {
-
       return res.status(400).json({ success: false, message: 'bufferMinutes must be between 0 and 1440' });
-
     }
-
-
 
     if (code) {
-
       const existing = await ShiftTemplate.findOne({ where: { code: String(code) } });
-
       if (existing) return res.status(409).json({ success: false, message: 'code already exists' });
-
     }
-
-
 
     const created = await ShiftTemplate.create({
-
       shiftType: st,
-
       name: String(name),
-
       code: code ? String(code) : null,
-
       startTime: start,
-
       endTime: end,
-
       workMinutes: st === 'open' ? wm : null,
-
       bufferMinutes: bm,
-
       earliestPunchInTime: earliestPunchInTime ? normalizeTime(earliestPunchInTime) : null,
-
       latestPunchOutTime: latestPunchOutTime ? normalizeTime(latestPunchOutTime) : null,
-
       minPunchOutAfterMinutes: minPunchOutAfterMinutes != null ? Number(minPunchOutAfterMinutes) : null,
-
       maxPunchOutAfterMinutes: maxPunchOutAfterMinutes != null ? Number(maxPunchOutAfterMinutes) : null,
-
       halfDayThresholdMinutes: halfDayThresholdMinutes != null ? Number(halfDayThresholdMinutes) : null,
-
       overtimeStartMinutes: overtimeStartMinutes != null ? Number(overtimeStartMinutes) : null,
-
       autoPunchoutAfterShiftEnd: autoPunchoutAfterShiftEnd != null ? Number(autoPunchoutAfterShiftEnd) : null,
-
       active: active === undefined ? true : !!active,
-
       orgAccountId: orgId,
-
     });
-
-
 
     if (Array.isArray(breaks) && breaks.length > 0) {
-
       const payload = breaks.map((b) => ({
-
         shiftTemplateId: created.id,
-
         category: b.category ? String(b.category) : null,
-
         name: b.name ? String(b.name) : null,
-
         payType: ['paid', 'unpaid'].includes(String(b.payType)) ? String(b.payType) : 'unpaid',
-
         breakType: ['duration', 'fixed_window'].includes(String(b.breakType)) ? String(b.breakType) : 'duration',
-
         durationMinutes: b.durationMinutes != null ? Number(b.durationMinutes) : null,
-
         startTime: b.startTime ? normalizeTime(b.startTime) : null,
-
         endTime: b.endTime ? normalizeTime(b.endTime) : null,
-
         active: b.active === undefined ? true : !!b.active,
-
       }));
-
       await ShiftBreak.bulkCreate(payload);
-
     }
-
-
 
     return res.json({ success: true, template: created });
-
   } catch (e) {
-
     return res.status(500).json({ success: false, message: 'Failed to create shift template' });
-
   }
-
 });
-
-
 
 router.put('/shifts/templates/:id', async (req, res) => {
-
   try {
-
     const orgId = requireOrg(req, res); if (!orgId) return;
-
     const id = Number(req.params.id);
-
     const row = await ShiftTemplate.findOne({ where: { id, orgAccountId: orgId } });
-
     if (!row) return res.status(404).json({ success: false, message: 'Not found' });
-
-
 
     const {
-
       shiftType,
-
       name,
-
       code,
-
       startTime,
-
       endTime,
-
       workMinutes,
-
       bufferMinutes,
-
       earliestPunchInTime,
-
       latestPunchOutTime,
-
       minPunchOutAfterMinutes,
-
       maxPunchOutAfterMinutes,
-
       halfDayThresholdMinutes,
-
       overtimeStartMinutes,
-
       autoPunchoutAfterShiftEnd,
-
       active,
-
       breaks,
-
     } = req.body || {};
 
-
-
     const st = shiftType !== undefined ? String(shiftType) : row.shiftType;
-
     if (!['fixed', 'open', 'rotational'].includes(st)) {
-
       return res.status(400).json({ success: false, message: 'shiftType invalid' });
-
     }
-
-
 
     const start = startTime !== undefined ? normalizeTime(startTime) : row.startTime;
-
     const end = endTime !== undefined ? normalizeTime(endTime) : row.endTime;
-
     const wm = workMinutes !== undefined ? (workMinutes === null || workMinutes === '' ? null : Number(workMinutes)) : row.workMinutes;
-
     const bm = bufferMinutes !== undefined ? Number(bufferMinutes) : row.bufferMinutes;
 
-
-
     if (st === 'fixed' || st === 'rotational') {
-
       if (!start || !end) {
-
         return res.status(400).json({ success: false, message: 'startTime and endTime required for this shiftType' });
-
       }
-
     }
-
-
 
     if (st === 'open') {
-
       if (!Number.isFinite(wm) || wm <= 0) {
-
         return res.status(400).json({ success: false, message: 'workMinutes required for open shift' });
-
       }
-
     }
-
-
 
     if (!Number.isFinite(bm) || bm < 0 || bm > 1440) {
-
       return res.status(400).json({ success: false, message: 'bufferMinutes must be between 0 and 1440' });
-
     }
-
-
 
     if (code !== undefined) {
-
       const nextCode = code ? String(code) : null;
-
       if (nextCode && nextCode !== row.code) {
-
         const existing = await ShiftTemplate.findOne({ where: { code: nextCode } });
-
         if (existing) return res.status(409).json({ success: false, message: 'code already exists' });
-
       }
-
     }
 
-
-
     await row.update({
-
       shiftType: st,
-
       name: name !== undefined ? String(name) : row.name,
-
       code: code !== undefined ? (code ? String(code) : null) : row.code,
-
       startTime: st === 'open' ? null : start,
-
       endTime: st === 'open' ? null : end,
-
       workMinutes: st === 'open' ? wm : null,
-
       bufferMinutes: bm,
-
       earliestPunchInTime: earliestPunchInTime !== undefined
-
         ? (earliestPunchInTime ? normalizeTime(earliestPunchInTime) : null)
-
         : row.earliestPunchInTime,
-
       latestPunchOutTime: latestPunchOutTime !== undefined
-
         ? (latestPunchOutTime ? normalizeTime(latestPunchOutTime) : null)
-
         : row.latestPunchOutTime,
-
       minPunchOutAfterMinutes: minPunchOutAfterMinutes !== undefined ? (minPunchOutAfterMinutes == null ? null : Number(minPunchOutAfterMinutes)) : row.minPunchOutAfterMinutes,
-
       maxPunchOutAfterMinutes: maxPunchOutAfterMinutes !== undefined ? (maxPunchOutAfterMinutes == null ? null : Number(maxPunchOutAfterMinutes)) : row.maxPunchOutAfterMinutes,
-
       halfDayThresholdMinutes: halfDayThresholdMinutes !== undefined ? (halfDayThresholdMinutes == null ? null : Number(halfDayThresholdMinutes)) : row.halfDayThresholdMinutes,
-
       overtimeStartMinutes: overtimeStartMinutes !== undefined ? (overtimeStartMinutes == null ? null : Number(overtimeStartMinutes)) : row.overtimeStartMinutes,
-
       autoPunchoutAfterShiftEnd: autoPunchoutAfterShiftEnd !== undefined ? (autoPunchoutAfterShiftEnd == null ? null : Number(autoPunchoutAfterShiftEnd)) : row.autoPunchoutAfterShiftEnd,
-
       active: active !== undefined ? !!active : row.active,
-
     });
-
-
 
     if (Array.isArray(breaks)) {
-
       await ShiftBreak.destroy({ where: { shiftTemplateId: row.id } });
-
       if (breaks.length > 0) {
-
         const payload = breaks.map((b) => ({
-
           shiftTemplateId: row.id,
-
           category: b.category ? String(b.category) : null,
-
           name: b.name ? String(b.name) : null,
-
           payType: ['paid', 'unpaid'].includes(String(b.payType)) ? String(b.payType) : 'unpaid',
-
           breakType: ['duration', 'fixed_window'].includes(String(b.breakType)) ? String(b.breakType) : 'duration',
-
           durationMinutes: b.durationMinutes != null ? Number(b.durationMinutes) : null,
-
           startTime: b.startTime ? normalizeTime(b.startTime) : null,
-
           endTime: b.endTime ? normalizeTime(b.endTime) : null,
-
           active: b.active === undefined ? true : !!b.active,
-
         }));
-
         await ShiftBreak.bulkCreate(payload);
-
       }
-
     }
-
-
 
     return res.json({ success: true, template: row });
-
   } catch (e) {
-
     return res.status(500).json({ success: false, message: 'Failed to update shift template' });
-
   }
-
 });
-
-
 
 router.delete('/shifts/templates/:id', async (req, res) => {
-
   try {
-
     const orgId = requireOrg(req, res); if (!orgId) return;
-
     const id = Number(req.params.id);
-
     const row = await ShiftTemplate.findOne({ where: { id, orgAccountId: orgId } });
-
     if (!row) return res.status(404).json({ success: false, message: 'Not found' });
-
     await row.update({ active: false });
-
     return res.json({ success: true });
-
   } catch (e) {
-
     return res.status(500).json({ success: false, message: 'Failed to delete shift template' });
-
   }
-
 });
-
-
 
 router.post('/shifts/assign', async (req, res) => {
-
   try {
-
     const orgId = requireOrg(req, res); if (!orgId) return;
-
     const { userId, shiftTemplateId, effectiveFrom, effectiveTo } = req.body || {};
-
     const uid = Number(userId);
-
     const tid = Number(shiftTemplateId);
-
     if (!Number.isFinite(uid) || uid <= 0) return res.status(400).json({ success: false, message: 'userId required' });
-
     if (!Number.isFinite(tid) || tid <= 0) return res.status(400).json({ success: false, message: 'shiftTemplateId required' });
 
-
-
     const ef = toIsoDateOnly(effectiveFrom || new Date());
-
     if (!ef) return res.status(400).json({ success: false, message: 'effectiveFrom invalid' });
-
     const et = effectiveTo !== undefined ? toIsoDateOnly(effectiveTo) : null;
-
     if (effectiveTo !== undefined && effectiveTo !== null && !et) {
-
       return res.status(400).json({ success: false, message: 'effectiveTo invalid' });
-
     }
-
-
 
     const user = await User.findOne({ where: { id: uid, orgAccountId: orgId, role: 'staff' } });
-
     if (!user) return res.status(404).json({ success: false, message: 'Staff not found' });
-
     const template = await ShiftTemplate.findOne({ where: { id: tid, orgAccountId: orgId, active: true } });
-
     if (!template) return res.status(404).json({ success: false, message: 'Shift template not found' });
 
-
-
     const created = await StaffShiftAssignment.create({
-
       userId: uid,
-
       shiftTemplateId: tid,
-
       effectiveFrom: ef,
-
       effectiveTo: et,
-
     });
-
-
 
     return res.json({ success: true, assignment: created });
-
   } catch (e) {
-
     const msg = String(e?.original?.sqlMessage || e?.message || e);
-
     const dup = /duplicate/i.test(msg);
-
     if (dup) {
-
       return res.status(409).json({ success: false, message: 'Assignment already exists for this effectiveFrom date' });
-
     }
-
     return res.status(500).json({ success: false, message: 'Failed to assign shift' });
-
   }
-
 });
-
-
 
 router.get('/document-types', async (req, res) => {
-
   try {
-
     const orgId = requireOrg(req, res); if (!orgId) return;
-
     const rows = await DocumentType.findAll({ where: { orgAccountId: orgId }, order: [['createdAt', 'DESC']] });
-
     return res.json({
-
       success: true,
-
       documentTypes: rows.map((r) => ({
-
         id: r.id,
-
         key: r.key,
-
         name: r.name,
-
         required: !!r.required,
-
         active: r.active !== false,
-
         allowedMime: r.allowedMime || null,
-
       })),
-
     });
-
   } catch (e) {
-
     return res.status(500).json({ success: false, message: 'Failed to load document types' });
-
   }
-
 });
-
-
 
 router.post('/document-types', async (req, res) => {
-
   try {
-
     const orgId = requireOrg(req, res); if (!orgId) return;
-
     const { key, name, required, active, allowedMime } = req.body || {};
-
     if (!key || !name) {
-
       return res.status(400).json({ success: false, message: 'key and name required' });
-
     }
-
-
 
     const existing = await DocumentType.findOne({ where: { key: String(key), orgAccountId: orgId } });
-
     if (existing) {
-
       return res.status(409).json({ success: false, message: 'Key already exists' });
-
     }
-
-
 
     const created = await DocumentType.create({
-
       key: String(key),
-
       orgAccountId: orgId,
-
       name: String(name),
-
       required: !!required,
-
       active: active === undefined ? true : !!active,
-
       allowedMime: allowedMime ? String(allowedMime) : null,
-
     });
-
-
 
     return res.json({ success: true, documentType: created });
-
   } catch (e) {
-
     return res.status(500).json({ success: false, message: 'Failed to create document type' });
-
   }
-
 });
-
-
 
 router.put('/document-types/:id', async (req, res) => {
-
   try {
-
     const orgId = requireOrg(req, res); if (!orgId) return;
-
     const id = Number(req.params.id);
-
     const row = await DocumentType.findOne({ where: { id, orgAccountId: orgId } });
-
     if (!row) return res.status(404).json({ success: false, message: 'Not found' });
-
-
 
     const { name, required, active, allowedMime } = req.body || {};
-
     await row.update({
-
       name: name !== undefined ? String(name) : row.name,
-
       required: required !== undefined ? !!required : row.required,
-
       active: active !== undefined ? !!active : row.active,
-
       allowedMime: allowedMime !== undefined ? (allowedMime ? String(allowedMime) : null) : row.allowedMime,
-
     });
-
-
 
     return res.json({ success: true, documentType: row });
-
   } catch (e) {
-
     return res.status(500).json({ success: false, message: 'Failed to update document type' });
-
   }
-
 });
-
-
 
 router.delete('/document-types/:id', async (req, res) => {
-
   try {
-
     const orgId = requireOrg(req, res); if (!orgId) return;
-
     const id = Number(req.params.id);
-
     const row = await DocumentType.findOne({ where: { id, orgAccountId: orgId } });
-
     if (!row) return res.status(404).json({ success: false, message: 'Not found' });
-
     await row.update({ active: false });
-
     return res.json({ success: true });
-
   } catch (e) {
-
     return res.status(500).json({ success: false, message: 'Failed to delete document type' });
-
   }
-
 });
-
-
 
 router.put('/settings/work-hours', async (req, res) => {
-
   try {
-
     const orgId = requireOrg(req, res); if (!orgId) return;
-
     const v = Number(req.body?.requiredWorkHours);
-
     if (!Number.isFinite(v) || v <= 0 || v > 24) {
-
       return res.status(400).json({ success: false, message: 'requiredWorkHours must be between 1 and 24' });
-
     }
-
-
 
     const [row] = await AppSetting.findOrCreate({
-
       where: { key: 'required_work_hours', orgAccountId: orgId },
-
       defaults: { value: String(v), orgAccountId: orgId },
-
     });
 
-
-
     if (String(row.value) !== String(v)) {
-
       await row.update({ value: String(v) });
-
     }
 
-
-
     return res.json({ success: true, requiredWorkHours: v });
-
   } catch (e) {
-
     return res.status(500).json({ success: false, message: 'Failed to save setting' });
-
   }
-
 });
-
-
 
 router.get('/admins', async (req, res) => {
-
   if (req.user.role !== 'superadmin') {
-
     return res.status(403).json({ success: false, message: 'Forbidden' });
-
   }
 
-
-
   const admins = await User.findAll({
-
     where: { role: 'admin' },
-
     include: [{ model: StaffProfile, as: 'profile' }],
-
     order: [['createdAt', 'DESC']],
-
   });
-
-
 
   return res.json({
-
     success: true,
-
     admins: admins.map((u) => ({
-
       id: u.id,
-
       phone: u.phone,
-
       active: u.active !== false,
-
       name: u.profile?.name || null,
-
       email: u.profile?.email || null,
-
     })),
-
   });
-
 });
-
-
-
 
 router.get('/staff-salary-list', async (req, res) => {
   try {
@@ -9484,28 +7689,17 @@ router.get('/staff-salary-list', async (req, res) => {
   }
 });
 
-
-
 // Fetch a single staff with full profile details (org-scoped)
-
 router.get('/staff/:id', async (req, res) => {
-
   try {
-
     const orgId = requireOrg(req, res); if (!orgId) return;
-
     const id = Number(req.params.id);
-
     const user = await User.findOne({
-
       where: { id, orgAccountId: orgId, role: 'staff' },
-
       include: [
         { model: StaffProfile, as: 'profile' }
       ]
-
     });
-
     // Fetch shift template separately if profile has shiftSelection
     let shiftTemplate = null;
     if (user?.profile?.shiftSelection) {
@@ -9534,299 +7728,161 @@ router.get('/staff/:id', async (req, res) => {
     });
 
     if (!user) {
-
       return res.status(404).json({ success: false, message: 'Staff not found' });
-
     }
-
     // Safe salaryValues extraction (handles JSON and double-encoded JSON strings)
-
     const pickSalaryValues = (u) => {
-
       let v = u.salaryValues || u.salary_values || null;
-
       if (v && typeof v === 'string') {
-
         try { v = JSON.parse(v); } catch { /* ignore */ }
-
         if (typeof v === 'string') {
-
           try { v = JSON.parse(v); } catch { /* ignore */ }
-
         }
-
       }
-
       return v;
-
     };
 
-
-
     return res.json({
-
       success: true,
-
       staff: {
-
         id: user.id,
-
         phone: user.phone,
-
         active: user.active,
-
         salaryTemplateId: user.salaryTemplateId,
-
         salaryValues: pickSalaryValues(user),
-
         // Provide snake_case fields for Admin UI fallback parsing
-
         basic_salary: user.basicSalary ?? user.basic_salary ?? 0,
-
         hra: user.hra ?? user.hra_amount ?? 0,
-
         da: user.da ?? user.da_amount ?? 0,
-
         special_allowance: user.specialAllowance ?? user.special_allowance ?? 0,
-
         conveyance_allowance: user.conveyanceAllowance ?? user.conveyance_allowance ?? 0,
-
         medical_allowance: user.medicalAllowance ?? user.medical_allowance ?? 0,
-
         telephone_allowance: user.telephoneAllowance ?? user.telephone_allowance ?? 0,
-
         other_allowances: user.otherAllowances ?? user.other_allowances ?? 0,
-
         provident_fund: user.pfDeduction ?? user.provident_fund ?? 0,
-
         esi: user.esiDeduction ?? user.esi ?? 0,
-
         professional_tax: user.professionalTax ?? user.professional_tax ?? 0,
-
         income_tax: user.tdsDeduction ?? user.income_tax ?? 0,
-
         loan_deduction: user.loanDeduction ?? user.loan_deduction ?? 0,
-
         other_deductions: user.otherDeductions ?? user.other_deductions ?? 0,
-
+        photoUrl: user.profile?.photoUrl || null,
+        education: user.profile?.education || null,
+        experience: user.profile?.experience || null,
         profile: user.profile || null,
-
         shiftTemplate: shiftTemplate ? {
           id: shiftTemplate.id,
           name: shiftTemplate.name,
           startTime: shiftTemplate.startTime,
           endTime: shiftTemplate.endTime
         } : null,
-
         attendanceTemplate: attendanceTemplate ? {
           id: attendanceTemplate.id,
           name: attendanceTemplate.name
         } : null
-
       }
-
     });
-
   } catch (e) {
-
     console.error('Get staff by id error:', e);
-
     return res.status(500).json({ success: false, message: 'Failed to fetch staff' });
-
   }
-
 });
 
-
-
 // Update StaffProfile fields for a staff (org-scoped)
-
 router.put('/staff/:id/profile', async (req, res) => {
-
   try {
-
     const orgId = requireOrg(req, res); if (!orgId) return;
-
     const id = req.params.id;
-
     const user = await User.findOne({ where: { id: Number(id), orgAccountId: orgId, role: 'staff' } });
-
     if (!user) {
-
       return res.status(404).json({ success: false, message: 'Staff not found' });
-
     }
-
     const profile = await StaffProfile.findOne({ where: { userId: id } });
-
     if (!profile) {
-
       return res.status(404).json({ success: false, message: 'Staff profile not found' });
-
     }
-
-
 
     // Whitelist updatable fields from StaffProfile
-
     const allowed = [
-
       'name', 'email', 'phone', 'designation', 'department', 'staffType', 'dateOfJoining',
-
       'dob', 'gender', 'maritalStatus', 'bloodGroup', 'emergencyContact', 'currentAddress', 'permanentAddress',
-
       'addressLine1', 'addressLine2', 'city', 'state', 'postalCode',
-
       'attendanceSettingTemplate', 'salaryCycleDate', 'shiftSelection', 'openingBalance', 'salaryDetailAccess', 'allowCurrentCycleSalaryAccess',
-
-      'bankAccountHolderName', 'bankAccountNumber', 'bankIfsc', 'bankName', 'bankBranch', 'upiId'
-
+      'bankAccountHolderName', 'bankAccountNumber', 'bankIfsc', 'bankName', 'bankBranch', 'upiId', 'photoUrl'
     ];
-
     const updates = {};
-
     allowed.forEach(k => { if (req.body[k] !== undefined) updates[k] = req.body[k]; });
-
-
 
     await profile.update(updates);
 
-
-
     return res.json({ success: true, profile });
-
   } catch (e) {
-
     console.error('Update staff profile error:', e);
-
     return res.status(500).json({ success: false, message: 'Failed to update staff profile' });
-
   }
-
 });
 
-
-
 // Attendance list for a given date and optional staff filter (org-scoped)
-
 router.get('/attendance', async (req, res) => {
-
   try {
-
     const orgId = requireOrg(req, res); if (!orgId) return;
-
     const { date, month, staffId } = req.query || {};
 
-
-
     // Support both date and month parameters
-
     if (!date && !month) return res.status(400).json({ success: false, message: 'date or month required' });
-
-
 
     let whereClause;
 
-
-
     if (month) {
-
       // Handle month parameter (YYYY-MM format)
-
       const monthStr = String(month).trim();
-
       if (!/^\d{4}-\d{2}$/.test(monthStr)) {
-
         return res.status(400).json({ success: false, message: 'Invalid month format. Use YYYY-MM' });
-
       }
-
       const [year, monthNum] = monthStr.split('-').map(x => Number(x));
-
       if (!year || !monthNum || monthNum < 1 || monthNum > 12) {
-
         return res.status(400).json({ success: false, message: 'Invalid month values' });
-
       }
-
-
 
       const startDate = new Date(year, monthNum - 1, 1);
-
       const endDate = new Date(year, monthNum, 0); // Last day of month
 
-
-
       whereClause = {
-
         date: {
-
           [Op.between]: [
-
             startDate.toISOString().split('T')[0],
-
             endDate.toISOString().split('T')[0]
-
           ]
-
         }
-
       };
-
     } else {
-
       // Handle single date parameter
-
       whereClause = { date: String(date) };
-
     }
 
-
-
     const orgStaffIds = (await User.findAll({ where: { orgAccountId: orgId, role: 'staff' }, attributes: ['id'] })).map(u => u.id);
-
     const where = { ...whereClause, userId: orgStaffIds };
-
     if (staffId && Number(staffId) > 0) where.userId = Number(staffId);
 
-
-
     const rows = await Attendance.findAll({
-
       where,
-
       order: [['createdAt', 'DESC']],
-
       include: [
-
         { model: User, as: 'user', attributes: ['id'], include: [{ model: StaffProfile, as: 'profile', attributes: ['name', 'staffId', 'department'] }] }
-
       ]
-
     });
 
-
-
     const toTime = (dt) => (dt ? new Date(dt).toTimeString().slice(0, 8) : null);
-
     const data = rows.map(r => {
-
       let status = r.status || 'absent';
-
       if (!r.status) {
-
         if (Number(r.breakTotalSeconds) === -1) status = 'leave';
-
         else if (Number(r.breakTotalSeconds) === -2) status = 'half_day';
-
         else if (r.punchedInAt && r.punchedOutAt) status = 'present';
-
-        else if (r.punchedInAt || r.punchedOutAt) status = 'half_day';
-
+        else if (r.punchedInAt || r.punchedOutAt) {
+          status = r.punchedOutAt ? 'half_day' : 'present';
+        }
       }
-
       return {
-
         id: r.id,
 
         date: r.date,
@@ -11036,7 +9092,7 @@ If you receive this email, the email system is working properly!`
 
 
 
-router.post('/staff', async (req, res) => {
+router.post('/staff', requireRole(['admin', 'staff']), async (req, res) => {
 
   try {
 
@@ -11085,9 +9141,10 @@ router.post('/staff', async (req, res) => {
       allowCurrentCycleSalaryAccess,
 
       active,
-
-      dateOfJoining
-
+      dateOfJoining,
+      photoUrl,
+      education,
+      experience
     } = req.body || {};
 
 
@@ -11549,9 +9606,10 @@ router.post('/staff', async (req, res) => {
       salaryDetailAccess: salaryDetailAccess !== undefined ? Boolean(salaryDetailAccess) : false,
 
       allowCurrentCycleSalaryAccess: allowCurrentCycleSalaryAccess !== undefined ? Boolean(allowCurrentCycleSalaryAccess) : false,
-
       dateOfJoining: dateOfJoining || null,
-
+      photoUrl: photoUrl || null,
+      education: education || null,
+      experience: experience || null,
     });
 
 
@@ -11692,7 +9750,7 @@ router.post('/staff', async (req, res) => {
 
 // Update staff (org-scoped)
 
-router.put('/staff/:id', async (req, res) => {
+router.put('/staff/:id', requireRole(['admin', 'staff']), async (req, res) => {
   try {
     const orgId = requireOrg(req, res); if (!orgId) return;
     const { id } = req.params;
@@ -11714,7 +9772,10 @@ router.put('/staff/:id', async (req, res) => {
       salaryDetailAccess,
       allowCurrentCycleSalaryAccess,
       active,
-      dateOfJoining
+      dateOfJoining,
+      photoUrl,
+      education,
+      experience
     } = req.body || {};
 
     const staff = await User.findOne({ where: { id: Number(id), orgAccountId: orgId, role: 'staff' } });
@@ -11818,6 +9879,9 @@ router.put('/staff/:id', async (req, res) => {
       if (salaryDetailAccess !== undefined) patchProfile.salaryDetailAccess = !!salaryDetailAccess;
       if (allowCurrentCycleSalaryAccess !== undefined) patchProfile.allowCurrentCycleSalaryAccess = !!allowCurrentCycleSalaryAccess;
       if (dateOfJoining) patchProfile.dateOfJoining = dateOfJoining;
+      if (photoUrl !== undefined) patchProfile.photoUrl = photoUrl;
+      if (education !== undefined) patchProfile.education = education;
+      if (experience !== undefined) patchProfile.experience = experience;
       await profile.update(patchProfile);
     }
 
@@ -11832,7 +9896,7 @@ router.put('/staff/:id', async (req, res) => {
 
 // Delete staff (org-scoped)
 
-router.delete('/staff/:id', async (req, res) => {
+router.delete('/staff/:id', requireRole(['admin', 'staff']), async (req, res) => {
 
   try {
 
@@ -11886,16 +9950,16 @@ router.get('/dashboard', async (req, res) => {
 
     const activeStaff = await User.count({ where: { role: 'staff', active: true, orgAccountId: orgId } });
 
-    // Get today's attendance
     const today = new Date().toISOString().slice(0, 10);
 
+    const orgStaffIds = (await User.findAll({ where: { orgAccountId: orgId, role: 'staff' }, attributes: ['id'] })).map(u => u.id);
+
     const presentToday = await Attendance.count({
-      where: { date: today, punchedInAt: { [Op.ne]: null }, orgAccountId: orgId }
+      where: { date: today, punchedInAt: { [Op.ne]: null }, userId: orgStaffIds }
     });
 
-    // Get today's leave count
     const leaveToday = await Attendance.count({
-      where: { date: today, status: 'leave', orgAccountId: orgId }
+      where: { date: today, status: 'leave', userId: orgStaffIds }
     });
 
     // Get today's late arrivals (based on shift start time or 11:00 AM default)
@@ -11974,24 +10038,16 @@ router.get('/dashboard/stats', async (req, res) => {
 
     const activeStaff = await User.count({ where: { role: 'staff', active: true, orgAccountId: orgId } });
 
-
-
-    // Get today's attendance
-
     const today = new Date().toISOString().slice(0, 10);
 
+    const orgStaffIds = (await User.findAll({ where: { orgAccountId: orgId, role: 'staff' }, attributes: ['id'] })).map(u => u.id);
+
     const presentToday = await Attendance.count({
-
-      where: { date: today, punchedInAt: { [Op.ne]: null }, orgAccountId: orgId }
-
+      where: { date: today, punchedInAt: { [Op.ne]: null }, userId: orgStaffIds }
     });
 
-    // Get today's leave count
-
     const leaveToday = await Attendance.count({
-
-      where: { date: today, status: 'leave', orgAccountId: orgId }
-
+      where: { date: today, status: 'leave', userId: orgStaffIds }
     });
 
     // Get today's late arrivals (based on shift start time or 11:00 AM default)

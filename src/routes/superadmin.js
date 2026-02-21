@@ -24,7 +24,7 @@ router.get('/plans', async (_req, res) => {
 
 router.post('/plans', async (req, res) => {
   try {
-    const { code, name, periodDays, price, features, active } = req.body || {};
+    const { code, name, periodDays, price, features, active, expenseEnabled } = req.body || {};
     if (!code || !name || !periodDays) {
       return res.status(400).json({ success: false, message: 'code, name, periodDays required' });
     }
@@ -35,6 +35,7 @@ router.post('/plans', async (req, res) => {
       price: Number(price || 0),
       features: features || null,
       active: active !== false,
+      expenseEnabled: !!expenseEnabled,
     });
     return res.json({ success: true, plan: row });
   } catch (e) {
@@ -46,7 +47,7 @@ router.put('/plans/:id', async (req, res) => {
   try {
     const row = await Plan.findByPk(req.params.id);
     if (!row) return res.status(404).json({ success: false, message: 'Not found' });
-    const { code, name, periodDays, price, features, active } = req.body || {};
+    const { code, name, periodDays, price, features, active, expenseEnabled } = req.body || {};
     await row.update({
       ...(code !== undefined ? { code: String(code).toUpperCase() } : {}),
       ...(name !== undefined ? { name } : {}),
@@ -54,6 +55,7 @@ router.put('/plans/:id', async (req, res) => {
       ...(price !== undefined ? { price: Number(price) } : {}),
       ...(features !== undefined ? { features } : {}),
       ...(active !== undefined ? { active: !!active } : {}),
+      ...(expenseEnabled !== undefined ? { expenseEnabled: !!expenseEnabled } : {}),
     });
     return res.json({ success: true, plan: row });
   } catch (e) {
@@ -262,7 +264,7 @@ router.post('/clients/:id/subscription', async (req, res) => {
     const org = await OrgAccount.findByPk(orgAccountId);
     if (!org) return res.status(404).json({ success: false, message: 'Organization not found' });
 
-    const { planId, planCode, startAt, staffLimit, maxGeolocationStaff, salesEnabled, geolocationEnabled } = req.body || {};
+    const { planId, planCode, startAt, staffLimit, maxGeolocationStaff, salesEnabled, geolocationEnabled, expenseEnabled } = req.body || {};
 
     // Check if client has an active subscription that hasn't expired
     const existingSubscription = await Subscription.findOne({
@@ -329,6 +331,11 @@ router.post('/clients/:id/subscription', async (req, res) => {
           messageArr.push(`Geolocation module ${geolocationEnabled ? 'enabled' : 'disabled'}`);
         }
 
+        if (expenseEnabled !== undefined && !!expenseEnabled !== existingSubscription.expenseEnabled) {
+          updateData.expenseEnabled = !!expenseEnabled;
+          messageArr.push(`Expense module ${expenseEnabled ? 'enabled' : 'disabled'}`);
+        }
+
         if (Object.keys(updateData).length > 0) {
           await existingSubscription.update(updateData);
           return res.json({ success: true, message: messageArr.join(', '), subscription: existingSubscription });
@@ -359,7 +366,8 @@ router.post('/clients/:id/subscription', async (req, res) => {
       staffLimit,
       maxGeolocationStaff,
       salesEnabled,
-      geolocationEnabled
+      geolocationEnabled,
+      expenseEnabled
     });
 
     const sub = await Subscription.create({
@@ -372,6 +380,7 @@ router.post('/clients/:id/subscription', async (req, res) => {
       maxGeolocationStaff: maxGeolocationStaff !== undefined && maxGeolocationStaff !== null ? Number(maxGeolocationStaff) : (plan.maxGeolocationStaff || 0),
       salesEnabled: salesEnabled !== undefined ? !!salesEnabled : (plan.salesEnabled || false),
       geolocationEnabled: geolocationEnabled !== undefined ? !!geolocationEnabled : (plan.geolocationEnabled || false),
+      expenseEnabled: expenseEnabled !== undefined ? !!expenseEnabled : (plan.expenseEnabled || false),
     });
     console.log('Subscription created successfully:', sub.id);
 

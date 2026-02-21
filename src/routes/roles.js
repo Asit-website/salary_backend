@@ -754,4 +754,5 @@ router.get('/user-permissions', authRequired, tenantEnforce, async (req, res) =>
   }
 });
 
+
 module.exports = router;

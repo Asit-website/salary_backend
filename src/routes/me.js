@@ -3,7 +3,7 @@ const { Op } = require('sequelize');
 
 const fs = require('fs');
 const path = require('path');
-const { User, StaffProfile, StaffShiftAssignment, ShiftTemplate, SalaryAccess, StaffAttendanceAssignment, AttendanceTemplate, StaffSalaryAssignment, SalaryTemplate, PayrollCycle, PayrollLine } = require('../models');
+const { User, StaffProfile, StaffShiftAssignment, ShiftTemplate, SalaryAccess, StaffAttendanceAssignment, AttendanceTemplate, StaffSalaryAssignment, SalaryTemplate, PayrollCycle, PayrollLine, ExpenseClaim } = require('../models');
 const { authRequired } = require('../middleware/auth');
 const { upload } = require('../upload');
 const { calculateSalary, generatePayslipPDF } = require('../services/payrollService');
@@ -568,6 +568,40 @@ router.get('/payroll-status', async (req, res) => {
   } catch (e) {
     console.error('My payroll status error:', e);
     return res.status(500).json({ success: false, message: 'Failed to get payroll status' });
+  }
+});
+
+// Create expense claim for current logged-in user
+router.post('/expenses', upload.single('attachment'), async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const { expenseType, expenseDate, billNumber, amount, description } = req.body || {};
+
+    const amt = Number(amount);
+    if (!Number.isFinite(amt) || amt <= 0) return res.status(400).json({ success: false, message: 'Valid amount required' });
+
+    let attachmentUrl = null;
+    if (req.file) {
+      const rel = path.join('uploads', 'claims', req.file.filename).replace(/\\/g, '/');
+      attachmentUrl = `/${rel}`;
+    }
+
+    const row = await ExpenseClaim.create({
+      userId,
+      claimId: `EC-${Date.now()}`,
+      expenseType: expenseType || null,
+      expenseDate: expenseDate || new Date().toISOString().slice(0, 10),
+      billNumber: billNumber || null,
+      amount: amt,
+      description: description || null,
+      attachmentUrl,
+      status: 'pending',
+    });
+
+    return res.json({ success: true, claim: row });
+  } catch (e) {
+    console.error('Create my expense error:', e);
+    return res.status(500).json({ success: false, message: 'Failed to create expense claim' });
   }
 });
 

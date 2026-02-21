@@ -29,6 +29,12 @@ module.exports = (sequelize) => {
         allowNull: false,
         defaultValue: false,
         field: 'geolocation_enabled'
+      },
+      expenseEnabled: {
+        type: DataTypes.BOOLEAN,
+        allowNull: false,
+        defaultValue: false,
+        field: 'expense_enabled'
       }
     },
     { tableName: 'subscriptions', underscored: true }

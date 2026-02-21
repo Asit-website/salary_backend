@@ -23,7 +23,7 @@ module.exports = (sequelize) => {
       type: DataTypes.BIGINT.UNSIGNED,
       allowNull: true,
       field: 'org_account_id'
-    }
+    },
   }, {
     tableName: 'roles',
     underscored: false,  // Database has mixed case columns

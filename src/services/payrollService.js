@@ -301,9 +301,28 @@ async function calculateSalary(userId, monthKey) {
     liveDeductions['loan_emi'] = loanDeduction;
   }
 
-  const finalEarnings = earnings;
+  const finalEarnings = { ...earnings };
   const finalIncentives = incentives;
   const finalDeductions = liveDeductions;
+
+  // FETCH SETTLED EXPENSES
+  try {
+    const { ExpenseClaim } = require('../models');
+    const settledExpenses = await ExpenseClaim.findAll({
+      where: {
+        userId: u.id,
+        status: 'settled',
+        expenseDate: { [Op.gte]: start, [Op.lte]: endKey }
+      }
+    });
+
+    for (const exp of settledExpenses) {
+      const label = `EXPENSE: ${exp.expenseType || 'Claim'}`;
+      finalEarnings[label] = (finalEarnings[label] || 0) + Number(exp.amount || 0);
+    }
+  } catch (e) {
+    console.error('Error fetching expenses for payroll:', e);
+  }
 
   const sumObj = (o) => Object.values(o || {}).reduce((s, v) => s + (Number(v) || 0), 0);
   const totalEarnings = Math.round(sumObj(finalEarnings) * ratio);

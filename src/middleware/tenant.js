@@ -42,7 +42,8 @@ async function tenantEnforce(req, res, next) {
       staffLimit: sub.staffLimit || sub.plan?.staffLimit || 0,
       maxGeolocationStaff: sub.maxGeolocationStaff !== null ? sub.maxGeolocationStaff : (sub.plan?.maxGeolocationStaff || 0),
       salesEnabled: sub.salesEnabled !== null && sub.salesEnabled !== undefined ? (!!sub.salesEnabled || !!sub.plan?.salesEnabled) : !!sub.plan?.salesEnabled,
-      geolocationEnabled: sub.geolocationEnabled !== null && sub.geolocationEnabled !== undefined ? (!!sub.geolocationEnabled || !!sub.plan?.geolocationEnabled) : !!sub.plan?.geolocationEnabled
+      geolocationEnabled: sub.geolocationEnabled !== null && sub.geolocationEnabled !== undefined ? (!!sub.geolocationEnabled || !!sub.plan?.geolocationEnabled) : !!sub.plan?.geolocationEnabled,
+      expenseEnabled: sub.expenseEnabled !== null && sub.expenseEnabled !== undefined ? (!!sub.expenseEnabled || !!sub.plan?.expenseEnabled) : !!sub.plan?.expenseEnabled
     };
     return next();
   } catch (e) {

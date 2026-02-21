@@ -298,15 +298,15 @@ router.get('/status', async (req, res) => {
 
   // Use the stored status from database if available, otherwise calculate
   let dayStatus = record?.status || 'ABSENT';
-  
+
   // If no stored status but user has punched in, calculate based on work hours
   if (!record?.status && record?.punchedInAt) {
     if (workSeconds > REQUIRED_WORK_SECONDS) dayStatus = 'OVERTIME';
     else if (workSeconds >= REQUIRED_WORK_SECONDS) dayStatus = 'PRESENT';
     else if (record?.punchedOutAt) dayStatus = 'HALF_DAY';
-    else dayStatus = 'HALF_DAY';
+    else dayStatus = 'PRESENT';
   }
-  
+
   // If admin marked half-day explicitly via sentinel, force HALF_DAY
   if (record && Number(record.breakTotalSeconds) === -2) {
     dayStatus = 'HALF_DAY';
@@ -434,7 +434,7 @@ router.get('/history', async (req, res) => {
         breakSeconds = totalBreakSeconds;
 
         const workEnd = punchedOutAt || (record.isOnBreak && record.breakStartedAt ? new Date(record.breakStartedAt) : (key === todayKey() ? now : punchedInAt));
-        
+
         // Calculate total work time (punch out - punch in)
         const totalWorkSeconds = Math.max(0, diffSeconds(punchedInAt, workEnd));
 
@@ -446,15 +446,15 @@ router.get('/history', async (req, res) => {
           maxBreakMinutes,
           effectiveHoursRule,
         });
-        
+
         overtimeSeconds = workingSeconds > REQUIRED_WORK_SECONDS ? workingSeconds - REQUIRED_WORK_SECONDS : 0;
 
-        console.log(`History ${key}: Total=${Math.floor(totalWorkSeconds/60)}min, Break=${Math.floor(totalBreakSeconds/60)}min, MaxAllowed=${maxBreakMinutes}min, Effective=${Math.floor(workingSeconds/60)}min`);
+        console.log(`History ${key}: Total=${Math.floor(totalWorkSeconds / 60)}min, Break=${Math.floor(totalBreakSeconds / 60)}min, MaxAllowed=${maxBreakMinutes}min, Effective=${Math.floor(workingSeconds / 60)}min`);
 
         // Calculate status if not stored
         if (workingSeconds > REQUIRED_WORK_SECONDS) dayStatus = 'OVERTIME';
         else if (workingSeconds >= REQUIRED_WORK_SECONDS) dayStatus = 'PRESENT';
-        else dayStatus = 'HALF_DAY';
+        else dayStatus = key === todayKey() ? 'PRESENT' : 'HALF_DAY';
       } else {
         const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
         const cur = new Date(d.getFullYear(), d.getMonth(), d.getDate());
@@ -584,8 +584,14 @@ router.post('/punch-in', upload.single('photo'), async (req, res) => {
     const photoUrl = `/uploads/${req.file.filename}`;
 
     const record = existing
-      ? await existing.update({ punchedInAt: now, punchInPhotoUrl: photoUrl })
-      : await Attendance.create({ userId: req.user.id, date: key, punchedInAt: now, punchInPhotoUrl: photoUrl });
+      ? await existing.update({ punchedInAt: now, punchInPhotoUrl: photoUrl, orgAccountId: req.user.orgAccountId })
+      : await Attendance.create({
+        userId: req.user.id,
+        date: key,
+        punchedInAt: now,
+        punchInPhotoUrl: photoUrl,
+        orgAccountId: req.user.orgAccountId
+      });
 
     return res.json({ success: true, attendance: record });
   } catch (e) {
@@ -642,21 +648,21 @@ router.post('/punch-out', upload.single('photo'), async (req, res) => {
     const now = new Date();
     // Enforce punch-out window relative to punch-in if configured
     const hasTimeRestrictions = (shiftTpl && (shiftTpl.minPunchOutAfterMinutes || shiftTpl.maxPunchOutAfterMinutes)) ||
-                                (tpl && (tpl.minPunchOutAfterMinutes || tpl.maxPunchOutAfterMinutes));
-    
+      (tpl && (tpl.minPunchOutAfterMinutes || tpl.maxPunchOutAfterMinutes));
+
     if (hasTimeRestrictions) {
       const inAt = record?.punchedInAt ? new Date(record.punchedInAt) : null;
       if (!inAt) {
         return res.status(409).json({ success: false, message: 'Please punch-in first' });
       }
-      
+
       // Check shift template restrictions first, then template restrictions
       const minMinutes = shiftTpl?.minPunchOutAfterMinutes || tpl?.minPunchOutAfterMinutes || 0;
       const maxMinutes = shiftTpl?.maxPunchOutAfterMinutes || tpl?.maxPunchOutAfterMinutes || 0;
-      
+
       const minMs = Number(minMinutes) * 60000;
       const maxMs = Number(maxMinutes) * 60000;
-      
+
       if (Number(minMinutes)) {
         if (now.getTime() < inAt.getTime() + minMs) {
           return res.status(409).json({ success: false, message: `Punch-out allowed after ${minMinutes} minutes from punch-in` });
@@ -680,17 +686,17 @@ router.post('/punch-out', upload.single('photo'), async (req, res) => {
     const totalWorkSeconds = diffSeconds(punchedInAt, now) - breakTotalSeconds;
     const totalWorkMinutes = Math.floor(totalWorkSeconds / 60);
     const totalWorkHours = totalWorkSeconds / 3600;
-    
+
     let status = 'present';
     let overtimeMinutes = 0;
-    
+
     // Use shift template rules if available, otherwise fall back to defaults
     if (shiftTpl) {
       // Calculate overtime minutes
       if (shiftTpl.overtimeStartMinutes && totalWorkMinutes > shiftTpl.overtimeStartMinutes) {
         overtimeMinutes = totalWorkMinutes - shiftTpl.overtimeStartMinutes;
       }
-      
+
       // Calculate status based on half-day threshold
       if (shiftTpl.halfDayThresholdMinutes && totalWorkMinutes < shiftTpl.halfDayThresholdMinutes) {
         status = 'half_day';
@@ -704,12 +710,12 @@ router.post('/punch-out', upload.single('photo'), async (req, res) => {
     } else {
       // Fallback logic for when no shift template is assigned
       const standardWorkMinutes = 8 * 60; // 8 hours in minutes
-      
+
       // Calculate overtime
       if (totalWorkMinutes > standardWorkMinutes) {
         overtimeMinutes = totalWorkMinutes - standardWorkMinutes;
       }
-      
+
       // Calculate status
       if (totalWorkMinutes < 60) {
         status = 'absent';
@@ -732,7 +738,7 @@ router.post('/punch-out', upload.single('photo'), async (req, res) => {
       totalWorkHours: totalWorkHours,
       overtimeMinutes: overtimeMinutes,
     });
-    
+
     console.log(`Attendance status calculated: ${status} for ${totalWorkHours.toFixed(2)} hours worked`);
     return res.json({ success: true, attendance: record });
   } catch (e) {
@@ -763,7 +769,7 @@ router.get('/report', async (req, res) => {
     console.log('Fetching attendance for date:', date, 'formatted as:', formattedDate, 'user:', req.user.id);
 
     const record = await Attendance.findOne({ where: { userId: req.user.id, date: formattedDate } });
-    
+
     console.log('Found record:', record ? 'YES' : 'NO');
     if (record) {
       console.log('Record data:', {
@@ -779,7 +785,7 @@ router.get('/report', async (req, res) => {
     } else {
       // Try to find any record for this user around this date (for debugging)
       const nearbyRecords = await Attendance.findAll({
-        where: { 
+        where: {
           userId: req.user.id,
           date: {
             [Op.between]: [
@@ -793,10 +799,10 @@ router.get('/report', async (req, res) => {
       console.log('Nearby records found:', nearbyRecords.length);
       nearbyRecords.forEach(r => console.log(`- ${r.date}: ${r.punchedInAt ? 'PUNCHED IN' : 'NO PUNCH IN'}`));
     }
-    
+
     if (!record) {
-      return res.json({ 
-        success: true, 
+      return res.json({
+        success: true,
         data: {
           punchIn: null,
           punchOut: null,
@@ -838,8 +844,8 @@ router.get('/report', async (req, res) => {
         effectiveHoursRule,
       });
       effectiveWorkingHours = effectiveWorkSeconds / 3600;
-      
-      console.log(`Effective hours calculation: Total=${Math.floor(totalWorkSeconds/60)}min, Break=${Math.floor(actualBreakSeconds/60)}min, Rule=${effectiveHoursRule || 'default'}, MaxAllowed=${maxBreakMinutes}min, Effective=${effectiveWorkingHours.toFixed(2)}hr`);
+
+      console.log(`Effective hours calculation: Total=${Math.floor(totalWorkSeconds / 60)}min, Break=${Math.floor(actualBreakSeconds / 60)}min, Rule=${effectiveHoursRule || 'default'}, MaxAllowed=${maxBreakMinutes}min, Effective=${effectiveWorkingHours.toFixed(2)}hr`);
     }
 
     const data = {
@@ -864,7 +870,7 @@ router.get('/report', async (req, res) => {
 router.get('/weekly', async (req, res) => {
   try {
     const { startDate, endDate } = req.query;
-    
+
     if (!startDate || !endDate || !/^\d{4}-\d{2}-\d{2}$/.test(startDate) || !/^\d{4}-\d{2}-\d{2}$/.test(endDate)) {
       return res.status(400).json({ success: false, message: 'Valid start and end dates required (YYYY-MM-DD)' });
     }
@@ -882,7 +888,7 @@ router.get('/weekly', async (req, res) => {
     // Get max break duration setting and template rule
     const maxBreakSetting = await AppSetting.findOne({ where: { key: 'MAX_BREAK_DURATION' } });
     const maxBreakMinutes = maxBreakSetting ? parseInt(maxBreakSetting.value) : 0;
-    
+
     // Get effective hours rule from template
     const tpl = await getEffectiveTemplate(req.user.id);
     const effectiveHoursRule = tpl ? (tpl.effectiveHoursRule ?? tpl.effective_hours_rule ?? null) : null;
@@ -893,16 +899,16 @@ router.get('/weekly', async (req, res) => {
     const weeklyHours = [];
     const start = new Date(startDate);
     const end = new Date(endDate);
-    
+
     console.log(`Found ${records.length} attendance records for user ${req.user.id} from ${startDate} to ${endDate}`);
     console.log('Records:', records.map(r => ({ date: r.date, punchedInAt: r.punchedInAt, punchedOutAt: r.punchedOutAt })));
 
     for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
       const dateStr = isoDate(d);
       const record = records.find(r => r.date === dateStr);
-      
+
       console.log(`Processing date ${dateStr}, record found:`, !!record);
-      
+
       if (record && record.punchedInAt && record.punchedOutAt) {
         // Calculate total work time (punch out - punch in)
         const totalWorkSeconds = diffSeconds(new Date(record.punchedInAt), new Date(record.punchedOutAt));
@@ -917,7 +923,7 @@ router.get('/weekly', async (req, res) => {
         });
         const effectiveHours = effectiveWorkSeconds / 3600;
 
-        console.log(`Date ${dateStr}: Total=${Math.floor(totalWorkSeconds/60)}min, Break=${Math.floor(actualBreakSeconds/60)}min, Rule=${effectiveHoursRule || 'default'}, MaxAllowed=${maxBreakMinutes}min, Effective=${effectiveHours.toFixed(2)}hr`);
+        console.log(`Date ${dateStr}: Total=${Math.floor(totalWorkSeconds / 60)}min, Break=${Math.floor(actualBreakSeconds / 60)}min, Rule=${effectiveHoursRule || 'default'}, MaxAllowed=${maxBreakMinutes}min, Effective=${effectiveHours.toFixed(2)}hr`);
 
         weeklyHours.push(effectiveHours);
       } else {
@@ -926,9 +932,9 @@ router.get('/weekly', async (req, res) => {
       }
     }
 
-    return res.json({ 
-      success: true, 
-      data: { 
+    return res.json({
+      success: true,
+      data: {
         weeklyHours,
         startDate,
         endDate,
@@ -950,7 +956,7 @@ router.get('/report/pdf', async (req, res) => {
     }
 
     const record = await Attendance.findOne({ where: { userId: req.user.id, date } });
-    
+
     if (!record) {
       return res.status(404).json({ success: false, message: 'No attendance record found for this date' });
     }
@@ -993,16 +999,16 @@ router.get('/report/pdf', async (req, res) => {
           </tr>
           <tr>
             <td>Break Duration</td>
-            <td>${record.breakTotalSeconds ? 
-              (record.breakTotalSeconds < 60 ? 
-                `${record.breakTotalSeconds} sec` : 
-                `${Math.floor(record.breakTotalSeconds / 60)} min ${record.breakTotalSeconds % 60} sec`) : 
-              '0 min'}</td>
+            <td>${record.breakTotalSeconds ?
+        (record.breakTotalSeconds < 60 ?
+          `${record.breakTotalSeconds} sec` :
+          `${Math.floor(record.breakTotalSeconds / 60)} min ${record.breakTotalSeconds % 60} sec`) :
+        '0 min'}</td>
           </tr>
           <tr>
             <td>Total Work Hours</td>
-            <td>${record.punchedInAt && record.punchedOutAt ? 
-              `${Math.floor((new Date(record.punchedOutAt) - new Date(record.punchedInAt)) / 3600000)} hours` : '--'}</td>
+            <td>${record.punchedInAt && record.punchedOutAt ?
+        `${Math.floor((new Date(record.punchedOutAt) - new Date(record.punchedInAt)) / 3600000)} hours` : '--'}</td>
           </tr>
         </table>
         
@@ -1028,10 +1034,10 @@ router.get('/report/pdf', async (req, res) => {
         '--disable-gpu'
       ]
     });
-    
+
     const page = await browser.newPage();
     await page.setContent(html, { waitUntil: 'networkidle0' });
-    
+
     const pdf = await page.pdf({
       format: 'A4',
       printBackground: true,
@@ -1042,18 +1048,18 @@ router.get('/report/pdf', async (req, res) => {
         left: '20mm'
       }
     });
-    
+
     await browser.close();
-    
+
     // Set headers for PDF download
     res.setHeader('Content-Type', 'application/pdf');
     res.setHeader('Content-Disposition', `attachment; filename=attendance-report-${date}.pdf`);
     res.setHeader('Content-Length', pdf.length);
-    
+
     res.send(pdf);
   } catch (e) {
     console.error('PDF generation error:', e);
-    
+
     // Fallback: return HTML if PDF generation fails
     if (e.message.includes('Puppeteer') || e.message.includes('browser')) {
       const record = await Attendance.findOne({ where: { userId: req.user.id, date: req.query.date } });
@@ -1099,8 +1105,8 @@ router.get('/report/pdf', async (req, res) => {
             </tr>
             <tr>
               <td>Total Work Hours</td>
-              <td>${record.punchedInAt && record.punchedOutAt ? 
-                `${Math.floor((new Date(record.punchedOutAt) - new Date(record.punchedInAt)) / 3600000)} hours` : '--'}</td>
+              <td>${record.punchedInAt && record.punchedOutAt ?
+          `${Math.floor((new Date(record.punchedOutAt) - new Date(record.punchedInAt)) / 3600000)} hours` : '--'}</td>
             </tr>
           </table>
           
@@ -1111,12 +1117,12 @@ router.get('/report/pdf', async (req, res) => {
         </body>
         </html>
       `;
-      
+
       res.setHeader('Content-Type', 'text/html');
       res.setHeader('Content-Disposition', `inline; filename=attendance-report-${req.query.date}.html`);
       return res.send(html);
     }
-    
+
     return res.status(500).json({ success: false, message: 'Failed to generate PDF report' });
   }
 });
@@ -1125,7 +1131,7 @@ router.get('/report/pdf', async (req, res) => {
 router.put('/settings/max-break', async (req, res) => {
   try {
     const { maxBreakMinutes } = req.body;
-    
+
     if (typeof maxBreakMinutes !== 'number' || maxBreakMinutes < 0) {
       return res.status(400).json({ success: false, message: 'Valid maxBreakMinutes required' });
     }
@@ -1136,10 +1142,10 @@ router.put('/settings/max-break', async (req, res) => {
       value: String(maxBreakMinutes)
     });
 
-    return res.json({ 
-      success: true, 
+    return res.json({
+      success: true,
       message: 'Maximum break duration updated successfully',
-      maxBreakMinutes 
+      maxBreakMinutes
     });
   } catch (e) {
     console.error('Update max break error:', e);
@@ -1152,10 +1158,10 @@ router.get('/settings/max-break', async (req, res) => {
   try {
     const setting = await AppSetting.findOne({ where: { key: 'MAX_BREAK_DURATION' } });
     const maxBreakMinutes = setting ? parseInt(setting.value) : 0;
-    
-    return res.json({ 
-      success: true, 
-      data: { maxBreakMinutes } 
+
+    return res.json({
+      success: true,
+      data: { maxBreakMinutes }
     });
   } catch (e) {
     console.error('Get max break error:', e);
@@ -1177,14 +1183,14 @@ const getCurrentMaxBreakMinutes = async () => {
 // Helper function to calculate effective working hours
 const calculateEffectiveWorkingHours = (punchedInAt, punchedOutAt, breakTotalSeconds, maxBreakMinutes = 0) => {
   if (!punchedInAt || !punchedOutAt) return 0;
-  
+
   const totalWorkSeconds = diffSeconds(new Date(punchedInAt), new Date(punchedOutAt));
   const maxBreakSeconds = maxBreakMinutes * 60;
-  
+
   // Only deduct break time that exceeds the allowed maximum
   const deductibleBreakSeconds = Math.max(0, (breakTotalSeconds || 0) - maxBreakSeconds);
   const effectiveWorkSeconds = Math.max(0, totalWorkSeconds - deductibleBreakSeconds);
-  
+
   return effectiveWorkSeconds / 3600; // Convert to hours
 };
 
@@ -1193,23 +1199,23 @@ router.get('/user/:userId', async (req, res) => {
   try {
     const { userId } = req.params;
     const { year, month } = req.query;
-    
+
     if (!year || !month) {
       return res.status(400).json({ success: false, message: 'Year and month are required' });
     }
-    
+
     // Parse year and month
     const yearNum = parseInt(year);
     const monthNum = parseInt(month);
-    
+
     if (isNaN(yearNum) || isNaN(monthNum) || monthNum < 1 || monthNum > 12) {
       return res.status(400).json({ success: false, message: 'Invalid year or month' });
     }
-    
+
     // Get all attendance records for the user in the specified month
     const startDate = new Date(yearNum, monthNum - 1, 1);
     const endDate = new Date(yearNum, monthNum, 0); // Last day of month
-    
+
     const attendanceRecords = await Attendance.findAll({
       where: {
         userId: userId,
@@ -1219,7 +1225,7 @@ router.get('/user/:userId', async (req, res) => {
       },
       order: [['date', 'ASC']]
     });
-    
+
     // Get leave requests for this month
     const leaveRequests = await LeaveRequest.findAll({
       where: {
@@ -1231,29 +1237,29 @@ router.get('/user/:userId', async (req, res) => {
       },
       order: [['startDate', 'ASC']]
     });
-    
+
     // Process attendance records to determine status for each day
     const processedRecords = [];
-    
+
     for (let day = 1; day <= endDate.getDate(); day++) {
       const currentDate = new Date(yearNum, monthNum - 1, day);
       const dateStr = currentDate.toISOString().split('T')[0];
-      
+
       // Check if there's an attendance record for this date
       const attendance = attendanceRecords.find(record => {
         const recordDate = new Date(record.date).toISOString().split('T')[0];
         return recordDate === dateStr;
       });
-      
+
       // Check if there's an approved leave for this date
       const leave = leaveRequests.find(leave => {
         const leaveStart = new Date(leave.startDate).toISOString().split('T')[0];
         const leaveEnd = new Date(leave.endDate).toISOString().split('T')[0];
         return dateStr >= leaveStart && dateStr <= leaveEnd;
       });
-      
+
       let status = 'absent'; // Default status
-      
+
       if (leave) {
         // If there's an approved leave, mark as leave
         status = 'leave';
@@ -1273,7 +1279,7 @@ router.get('/user/:userId', async (req, res) => {
           status = 'weekly_off';
         }
       }
-      
+
       processedRecords.push({
         date: dateStr,
         status: status,
@@ -1283,12 +1289,12 @@ router.get('/user/:userId', async (req, res) => {
         leaveReason: leave?.reason || null
       });
     }
-    
+
     res.json({
       success: true,
       data: processedRecords
     });
-    
+
   } catch (error) {
     console.error('Error fetching user attendance:', error);
     res.status(500).json({ success: false, message: 'Internal server error' });
@@ -1299,26 +1305,26 @@ router.get('/user/:userId', async (req, res) => {
 router.post('/ping', async (req, res) => {
   try {
     const { latitude, longitude, accuracy, source } = req.body || {};
-    
+
     // Validate required fields
     if (!latitude || !longitude) {
-      return res.status(400).json({ 
-        success: false, 
-        message: 'Latitude and longitude are required' 
+      return res.status(400).json({
+        success: false,
+        message: 'Latitude and longitude are required'
       });
     }
-    
+
     // Validate coordinates
     const lat = parseFloat(latitude);
     const lng = parseFloat(longitude);
-    
+
     if (isNaN(lat) || isNaN(lng) || lat < -90 || lat > 90 || lng < -180 || lng > 180) {
-      return res.status(400).json({ 
-        success: false, 
-        message: 'Invalid latitude or longitude values' 
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid latitude or longitude values'
       });
     }
-    
+
     // Create location ping record
     const locationPing = await LocationPing.create({
       userId: req.user.id,
@@ -1327,14 +1333,14 @@ router.post('/ping', async (req, res) => {
       accuracyMeters: accuracy ? parseInt(accuracy) : null,
       source: source || 'mobile'
     });
-    
+
     console.log(`Location ping recorded for user ${req.user.id}:`, {
       latitude: lat,
       longitude: lng,
       accuracy: accuracy,
       source: source
     });
-    
+
     res.json({
       success: true,
       message: 'Location ping recorded successfully',
@@ -1343,12 +1349,12 @@ router.post('/ping', async (req, res) => {
         timestamp: locationPing.createdAt
       }
     });
-    
+
   } catch (error) {
     console.error('Location ping error:', error);
-    res.status(500).json({ 
-      success: false, 
-      message: 'Failed to record location ping' 
+    res.status(500).json({
+      success: false,
+      message: 'Failed to record location ping'
     });
   }
 });
@@ -1357,10 +1363,10 @@ router.post('/ping', async (req, res) => {
 async function processAutoPunchouts() {
   try {
     console.log('Starting auto-punchout process...');
-    
+
     const now = new Date();
     const today = todayKey(now);
-    
+
     // Find all staff who are punched in but not punched out today
     const pendingAttendances = await Attendance.findAll({
       where: {
@@ -1383,24 +1389,24 @@ async function processAutoPunchouts() {
         }
       ]
     });
-    
+
     console.log(`Found ${pendingAttendances.length} pending attendances for auto-punchout`);
-    
+
     for (const attendance of pendingAttendances) {
       const shiftTemplate = attendance.shiftAssignment?.template;
-      
+
       if (!shiftTemplate || !shiftTemplate.autoPunchoutAfterShiftEnd) continue;
-      
+
       // Calculate shift end time
       const punchedInAt = new Date(attendance.punchedInAt);
       let shiftEndTime;
-      
+
       if (shiftTemplate.shiftType === 'fixed' && shiftTemplate.startTime && shiftTemplate.endTime) {
         // For fixed shifts, use the defined end time
         const [hours, minutes, seconds] = shiftTemplate.endTime.split(':').map(Number);
         shiftEndTime = new Date(punchedInAt);
         shiftEndTime.setHours(hours, minutes, seconds || 0, 0);
-        
+
         // Handle overnight shifts
         if (shiftEndTime < punchedInAt) {
           shiftEndTime.setDate(shiftEndTime.getDate() + 1);
@@ -1410,22 +1416,22 @@ async function processAutoPunchouts() {
         const workMinutes = shiftTemplate.workMinutes || 480; // Default 8 hours
         shiftEndTime = new Date(punchedInAt.getTime() + workMinutes * 60 * 1000);
       }
-      
+
       // Calculate auto-punchout time (shift end + configured hours)
       const autoPunchoutTime = new Date(shiftEndTime.getTime() + (shiftTemplate.autoPunchoutAfterShiftEnd * 60 * 60 * 1000));
-      
+
       // Check if it's time to auto-punchout
       if (now >= autoPunchoutTime) {
         console.log(`Auto-punching out user ${attendance.userId} at ${now.toISOString()}`);
-        
+
         // Calculate work duration and attendance status
         const totalWorkSeconds = (now.getTime() - punchedInAt.getTime()) / 1000;
         const totalWorkMinutes = Math.floor(totalWorkSeconds / 60);
         const totalWorkHours = totalWorkSeconds / 3600;
-        
+
         let status = 'present';
         let overtimeMinutes = 0;
-        
+
         // Use shift template rules for attendance calculation
         if (shiftTemplate.halfDayThresholdMinutes && totalWorkMinutes < shiftTemplate.halfDayThresholdMinutes) {
           status = 'half_day';
@@ -1436,12 +1442,12 @@ async function processAutoPunchouts() {
         } else {
           status = 'present';
         }
-        
+
         // Calculate overtime
         if (shiftTemplate.overtimeStartMinutes && totalWorkMinutes > shiftTemplate.overtimeStartMinutes) {
           overtimeMinutes = totalWorkMinutes - shiftTemplate.overtimeStartMinutes;
         }
-        
+
         // Update attendance record
         await attendance.update({
           punchedOutAt: now,
@@ -1454,11 +1460,11 @@ async function processAutoPunchouts() {
           overtimeMinutes: overtimeMinutes,
           autoPunchout: true, // Mark as auto-punchout
         });
-        
+
         console.log(`Auto-punchout completed for user ${attendance.userId}: ${status}, ${totalWorkMinutes} mins worked, ${overtimeMinutes} mins overtime`);
       }
     }
-    
+
     console.log('Auto-punchout process completed');
   } catch (error) {
     console.error('Auto-punchout process error:', error);
@@ -1470,26 +1476,26 @@ router.post('/auto-punchout', async (req, res) => {
   try {
     const orgId = requireOrg(req, res);
     if (!orgId) return;
-    
+
     // Only allow admin users to trigger auto-punchout
     if (!req.user.roles || !req.user.roles.includes('admin')) {
-      return res.status(403).json({ 
-        success: false, 
-        message: 'Admin access required' 
+      return res.status(403).json({
+        success: false,
+        message: 'Admin access required'
       });
     }
-    
+
     await processAutoPunchouts();
-    
+
     res.json({
       success: true,
       message: 'Auto-punchout process completed'
     });
   } catch (error) {
     console.error('Auto-punchout endpoint error:', error);
-    res.status(500).json({ 
-      success: false, 
-      message: 'Failed to process auto-punchout' 
+    res.status(500).json({
+      success: false,
+      message: 'Failed to process auto-punchout'
     });
   }
 });
