@@ -35,10 +35,15 @@ const defineRole = require('./Role');
 const definePermission = require('./Permission');
 const defineRolePermission = require('./RolePermission');
 const defineUserRole = require('./UserRole');
+const defineBadge = require('./Badge');
+const defineBadgePermission = require('./BadgePermission');
+const defineStaffBadge = require('./StaffBadge');
 const defineAssignedJob = require('./AssignedJob');
 const defineSalesTarget = require('./SalesTarget');
 const defineOrder = require('./Order');
 const defineOrderItem = require('./OrderItem');
+const defineOrderProduct = require('./OrderProduct');
+const defineStaffOrderProduct = require('./StaffOrderProduct');
 const defineIncentiveTarget = require('./IncentiveTarget');
 const defineSite = require('./Site');
 const defineWorkUnit = require('./WorkUnit');
@@ -108,10 +113,15 @@ const Role = defineRole(sequelize);
 const Permission = definePermission(sequelize);
 const RolePermission = defineRolePermission(sequelize);
 const UserRole = defineUserRole(sequelize);
+const Badge = defineBadge(sequelize);
+const BadgePermission = defineBadgePermission(sequelize);
+const StaffBadge = defineStaffBadge(sequelize);
 const AssignedJob = defineAssignedJob(sequelize);
 const SalesTarget = defineSalesTarget(sequelize);
 const Order = defineOrder(sequelize);
 const OrderItem = defineOrderItem(sequelize);
+const OrderProduct = defineOrderProduct(sequelize);
+const StaffOrderProduct = defineStaffOrderProduct(sequelize);
 const IncentiveTarget = defineIncentiveTarget(sequelize);
 const Site = defineSite(sequelize);
 const WorkUnit = defineWorkUnit(sequelize);
@@ -268,6 +278,12 @@ AssignedJob.hasMany(Order, { foreignKey: 'assignedJobId', as: 'orders' });
 Order.belongsTo(AssignedJob, { foreignKey: 'assignedJobId', as: 'assignedJob' });
 Order.hasMany(OrderItem, { foreignKey: 'orderId', as: 'items' });
 OrderItem.belongsTo(Order, { foreignKey: 'orderId', as: 'order' });
+OrgAccount.hasMany(OrderProduct, { foreignKey: 'orgAccountId', as: 'orderProducts' });
+OrderProduct.belongsTo(OrgAccount, { foreignKey: 'orgAccountId', as: 'orgAccount' });
+OrderProduct.hasMany(StaffOrderProduct, { foreignKey: 'orderProductId', as: 'staffAssignments' });
+StaffOrderProduct.belongsTo(OrderProduct, { foreignKey: 'orderProductId', as: 'product' });
+User.hasMany(StaffOrderProduct, { foreignKey: 'userId', as: 'orderProductAssignments' });
+StaffOrderProduct.belongsTo(User, { foreignKey: 'userId', as: 'user' });
 
 // Construction models associations
 Site.hasMany(WorkUnit, { foreignKey: 'siteId', as: 'workUnits' });
@@ -344,6 +360,26 @@ User.belongsToMany(Role, {
 Role.belongsToMany(User, {
   through: UserRole,
   foreignKey: 'roleId',
+  otherKey: 'userId',
+  as: 'users'
+});
+
+// Badge / Badge Permission associations
+OrgAccount.hasMany(Badge, { foreignKey: 'orgAccountId', as: 'badges' });
+Badge.belongsTo(OrgAccount, { foreignKey: 'orgAccountId', as: 'orgAccount' });
+
+Badge.hasMany(BadgePermission, { foreignKey: 'badgeId', as: 'permissions' });
+BadgePermission.belongsTo(Badge, { foreignKey: 'badgeId', as: 'badge' });
+
+User.belongsToMany(Badge, {
+  through: StaffBadge,
+  foreignKey: 'userId',
+  otherKey: 'badgeId',
+  as: 'badges'
+});
+Badge.belongsToMany(User, {
+  through: StaffBadge,
+  foreignKey: 'badgeId',
   otherKey: 'userId',
   as: 'users'
 });
@@ -439,12 +475,17 @@ module.exports = {
   Permission,
   RolePermission,
   UserRole,
+  Badge,
+  BadgePermission,
+  StaffBadge,
 
   AssignedJob,
   Client,
   SalesTarget,
   Order,
   OrderItem,
+  OrderProduct,
+  StaffOrderProduct,
   IncentiveTarget,
   Site,
   WorkUnit,

@@ -6,6 +6,7 @@ module.exports = (sequelize) => {
     latitude: { type: DataTypes.DECIMAL(10, 7), allowNull: false },
     longitude: { type: DataTypes.DECIMAL(10, 7), allowNull: false },
     accuracyMeters: { type: DataTypes.INTEGER.UNSIGNED, allowNull: true },
+    address: { type: DataTypes.STRING(255), allowNull: true },
     source: { type: DataTypes.STRING(32), allowNull: true },
   }, { tableName: 'location_pings', timestamps: true });
   return LocationPing;

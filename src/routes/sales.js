@@ -17,6 +17,8 @@ const {
   OrderItem,
   IncentiveTarget,
   OtpVerify,
+  OrderProduct,
+  StaffOrderProduct,
 } = require('../models');
 
 const router = express.Router();
@@ -70,6 +72,39 @@ router.use((req, res, next) => {
     return res.status(403).json({ success: false, message: 'Sales module is not enabled for your subscription' });
   }
   next();
+});
+
+// Order product options assigned to logged-in staff
+router.get('/order-products', async (req, res) => {
+  try {
+    const orgId = req.tenantOrgAccountId || req.user?.orgAccountId || null;
+    if (!orgId) return res.status(403).json({ success: false, message: 'No organization in context' });
+
+    const rows = await StaffOrderProduct.findAll({
+      where: {
+        orgAccountId: orgId,
+        userId: req.user.id,
+        isActive: true,
+      },
+      include: [{ model: OrderProduct, as: 'product' }],
+      order: [['id', 'DESC']],
+    });
+
+    const products = rows
+      .map((r) => r.product)
+      .filter(Boolean)
+      .map((p) => ({
+        id: p.id,
+        name: p.name,
+        size: p.size,
+        defaultQty: Number(p.defaultQty || 1),
+        defaultPrice: Number(p.defaultPrice || 0),
+      }));
+
+    return res.json({ success: true, products });
+  } catch (e) {
+    return res.status(500).json({ success: false, message: 'Failed to load order products' });
+  }
 });
 
 // Send OTP to client for visit verification
@@ -145,6 +180,8 @@ router.post('/visit', upload.single('clientSignature'), async (req, res) => {
       clientOtp,
       checkInLat,
       checkInLng,
+      checkInAltitude,
+      checkInAddress,
       assignedJobId,
     } = req.body || {};
 
@@ -184,6 +221,11 @@ router.post('/visit', upload.single('clientSignature'), async (req, res) => {
       await otpRecord.update({ consumedAt: new Date() }, { transaction: t });
     }
 
+    const parsedCheckInLat = checkInLat !== undefined && checkInLat !== null && checkInLat !== '' ? Number(checkInLat) : null;
+    const parsedCheckInLng = checkInLng !== undefined && checkInLng !== null && checkInLng !== '' ? Number(checkInLng) : null;
+    const parsedCheckInAltitude = checkInAltitude !== undefined && checkInAltitude !== null && checkInAltitude !== '' ? Number(checkInAltitude) : null;
+    const hasValidGeo = Number.isFinite(parsedCheckInLat) && Number.isFinite(parsedCheckInLng);
+
     const visit = await SalesVisit.create({
       userId: req.user.id,
       visitDate: visitDate ? new Date(visitDate) : new Date(),
@@ -196,9 +238,11 @@ router.post('/visit', upload.single('clientSignature'), async (req, res) => {
       madeOrder: madeOrder ? String(madeOrder) === 'true' || String(madeOrder) === '1' : false,
       amount: Number(amount || 0) || 0,
       clientOtp: clientOtp || null,
-      checkInLat: checkInLat !== undefined && checkInLat !== null && checkInLat !== '' ? Number(checkInLat) : null,
-      checkInLng: checkInLng !== undefined && checkInLng !== null && checkInLng !== '' ? Number(checkInLng) : null,
-      checkInTime: (checkInLat && checkInLng) ? new Date() : null,
+      checkInLat: hasValidGeo ? parsedCheckInLat : null,
+      checkInLng: hasValidGeo ? parsedCheckInLng : null,
+      checkInAltitude: Number.isFinite(parsedCheckInAltitude) ? parsedCheckInAltitude : null,
+      checkInAddress: checkInAddress ? String(checkInAddress).slice(0, 255) : (location ? String(location).slice(0, 255) : null),
+      checkInTime: hasValidGeo ? new Date() : null,
     }, { transaction: t });
 
     // Handle client signature - same pattern as order proof
@@ -285,6 +329,10 @@ router.post('/orders', upload.single('proof'), async (req, res) => {
     const orderDate = body.orderDate ? new Date(body.orderDate) : new Date();
     const paymentMethod = body.paymentMethod || null;
     const remarks = body.remarks || null;
+    const checkInLat = body.checkInLat !== undefined && body.checkInLat !== null && body.checkInLat !== '' ? Number(body.checkInLat) : null;
+    const checkInLng = body.checkInLng !== undefined && body.checkInLng !== null && body.checkInLng !== '' ? Number(body.checkInLng) : null;
+    const checkInAltitude = body.checkInAltitude !== undefined && body.checkInAltitude !== null && body.checkInAltitude !== '' ? Number(body.checkInAltitude) : null;
+    const checkInAddress = body.checkInAddress ? String(body.checkInAddress).slice(0, 255) : null;
 
     // items can be JSON string or array
     let items = [];
@@ -303,6 +351,10 @@ router.post('/orders', upload.single('proof'), async (req, res) => {
       orderDate,
       paymentMethod,
       remarks,
+      checkInLat: Number.isFinite(checkInLat) ? checkInLat : null,
+      checkInLng: Number.isFinite(checkInLng) ? checkInLng : null,
+      checkInAltitude: Number.isFinite(checkInAltitude) ? checkInAltitude : null,
+      checkInAddress,
       netAmount,
       gstAmount,
       totalAmount,

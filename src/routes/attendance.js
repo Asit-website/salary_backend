@@ -656,8 +656,16 @@ router.post('/location/ping', async (req, res) => {
     const lat = Number(req.body?.lat ?? req.body?.latitude);
     const lng = Number(req.body?.lng ?? req.body?.longitude);
     const accuracy = req.body?.accuracyMeters !== undefined ? Number(req.body.accuracyMeters) : null;
+    const address = req.body?.address ? String(req.body.address).slice(0, 255) : null;
     if (!Number.isFinite(lat) || !Number.isFinite(lng)) return res.status(400).json({ success: false, message: 'lat/lng required' });
-    const row = await LocationPing.create({ userId: req.user.id, latitude: lat, longitude: lng, accuracyMeters: Number.isFinite(accuracy) ? accuracy : null, source: 'staff' });
+    const row = await LocationPing.create({
+      userId: req.user.id,
+      latitude: lat,
+      longitude: lng,
+      accuracyMeters: Number.isFinite(accuracy) ? accuracy : null,
+      address,
+      source: 'staff'
+    });
     return res.json({ success: true, ping: row });
   } catch (e) {
     return res.status(500).json({ success: false, message: 'Failed to record location' });
@@ -1365,7 +1373,7 @@ router.get('/user/:userId', async (req, res) => {
 // Location ping endpoint for tracking staff between punch-in and punch-out
 router.post('/ping', async (req, res) => {
   try {
-    const { latitude, longitude, accuracy, source } = req.body || {};
+    const { latitude, longitude, accuracy, source, address } = req.body || {};
 
     // Validate required fields
     if (!latitude || !longitude) {
@@ -1392,6 +1400,7 @@ router.post('/ping', async (req, res) => {
       latitude: lat,
       longitude: lng,
       accuracyMeters: accuracy ? parseInt(accuracy) : null,
+      address: address ? String(address).slice(0, 255) : null,
       source: source || 'mobile'
     });
 

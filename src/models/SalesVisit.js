@@ -19,6 +19,8 @@ module.exports = (sequelize) => {
       clientOtp: { type: DataTypes.STRING(10), allowNull: true },
       checkInLat: { type: DataTypes.DECIMAL(10, 7), allowNull: true },
       checkInLng: { type: DataTypes.DECIMAL(10, 7), allowNull: true },
+      checkInAltitude: { type: DataTypes.DECIMAL(10, 2), allowNull: true },
+      checkInAddress: { type: DataTypes.STRING(255), allowNull: true },
       checkInTime: { type: DataTypes.DATE, allowNull: true },
       verified: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: false },
       orgAccountId: { type: DataTypes.BIGINT.UNSIGNED, allowNull: true, field: 'org_account_id' },

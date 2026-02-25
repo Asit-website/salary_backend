@@ -224,12 +224,15 @@ router.put('/clients/:id', async (req, res) => {
       const existingOrg = await OrgAccount.findOne({
         where: {
           phone: normalizedPhone,
-          id: { [Op.ne]: req.params.id } // Exclude current client
+          id: { [Op.ne]: row.id } // Exclude current client
         }
       });
       const existingUser = await User.findOne({ where: { phone: String(normalizedPhone) } });
 
-      if (existingOrg || existingUser) {
+      // Allow if same phone belongs to this client's own user (e.g., org admin created for this client)
+      const isUserFromSameClient = !!existingUser && Number(existingUser.orgAccountId || 0) === Number(row.id);
+
+      if (existingOrg || (existingUser && !isUserFromSameClient)) {
         return res.status(400).json({
           success: false,
           message: 'Phone number already exists in the system'

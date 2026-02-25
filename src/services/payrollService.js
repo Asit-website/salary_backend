@@ -10,6 +10,33 @@ const {
   AppSetting, StaffLoan, OrgAccount // Added StaffLoan and OrgAccount
 } = require('../models');
 
+function getMonthRange(monthKey) {
+  const [yy, mm] = String(monthKey || '').split('-').map(Number);
+  const start = `${monthKey}-01`;
+  const end = new Date(yy, mm, 0);
+  const endKey = `${end.getFullYear()}-${String(end.getMonth() + 1).padStart(2, '0')}-${String(end.getDate()).padStart(2, '0')}`;
+  return { yy, mm, start, end, endKey };
+}
+
+async function computeOvertimeMeta({ userId, monthKey, overtimeBaseSalary }) {
+  const { start, endKey, end } = getMonthRange(monthKey);
+  const rows = await Attendance.findAll({
+    where: { userId, date: { [Op.gte]: start, [Op.lte]: endKey } },
+    attributes: ['overtimeMinutes']
+  });
+  const overtimeMinutes = rows.reduce((s, r) => s + (Number(r.overtimeMinutes || 0) || 0), 0);
+  const overtimeHours = overtimeMinutes / 60;
+  const daysInMonth = Number(end.getDate() || 30);
+  const hourlyRate = daysInMonth > 0 ? (Number(overtimeBaseSalary || 0) / (daysInMonth * 8)) : 0;
+  const overtimePay = Math.round(Math.max(0, overtimeHours) * Math.max(0, hourlyRate));
+  return {
+    overtimeMinutes,
+    overtimeHours: Number(overtimeHours.toFixed(2)),
+    overtimeHourlyRate: Number(hourlyRate.toFixed(2)),
+    overtimePay
+  };
+}
+
 async function calculateSalary(userId, monthKey) {
   const u = await User.findByPk(userId, {
     include: [
@@ -110,6 +137,33 @@ async function calculateSalary(userId, monthKey) {
       const payableDays = Math.round(totalsObj.ratio * daysInMonth);
       attendanceSummary = { present: payableDays, absent: daysInMonth - payableDays };
     }
+
+    // Backfill overtime info for legacy lines that were generated before overtime pay support
+    try {
+      const overtimeBaseSalary = Number(earnings?.basic_salary || u.basicSalary || 0) + Number(earnings?.da || u.da || 0);
+      const ot = await computeOvertimeMeta({ userId: u.id, monthKey, overtimeBaseSalary });
+      if (ot.overtimePay > 0 && !Number(earnings?.overtime_pay || 0)) {
+        earnings = { ...(earnings || {}), overtime_pay: ot.overtimePay };
+      }
+      attendanceSummary = {
+        ...(attendanceSummary || {}),
+        overtimeMinutes: Number(attendanceSummary?.overtimeMinutes || ot.overtimeMinutes || 0),
+        overtimeHours: Number(attendanceSummary?.overtimeHours || ot.overtimeHours || 0),
+        overtimeHourlyRate: Number(attendanceSummary?.overtimeHourlyRate || ot.overtimeHourlyRate || 0),
+        overtimePay: Number(attendanceSummary?.overtimePay || ot.overtimePay || 0),
+      };
+      const te = Object.values(earnings || {}).reduce((s, v) => s + (Number(v) || 0), 0);
+      const ti = Object.values(incentives || {}).reduce((s, v) => s + (Number(v) || 0), 0);
+      const td = Object.values(deductions || {}).reduce((s, v) => s + (Number(v) || 0), 0);
+      totalsObj = {
+        ...(totalsObj || {}),
+        totalEarnings: te,
+        totalIncentives: ti,
+        totalDeductions: td,
+        grossSalary: te + ti,
+        netSalary: te + ti - td,
+      };
+    } catch (_) { /* non-fatal */ }
 
     return {
       success: true,
@@ -325,17 +379,26 @@ async function calculateSalary(userId, monthKey) {
   }
 
   const sumObj = (o) => Object.values(o || {}).reduce((s, v) => s + (Number(v) || 0), 0);
-  const totalEarnings = Math.round(sumObj(finalEarnings) * ratio);
+  let proratedEarnings = Math.round(sumObj(finalEarnings) * ratio);
   const totalIncentives = Math.round(sumObj(finalIncentives) * ratio);
   const totalDeductions = Math.round(sumObj(finalDeductions) * ratio);
-  const grossSalary = totalEarnings + totalIncentives;
+
+  // Overtime pay: based on attendance overtime minutes and hourly basic rate
+  const overtimeBaseSalary = Number(earnings?.basic_salary || sd.basicSalary || 0) + Number(earnings?.da || sd.da || 0);
+  const overtimeMeta = await computeOvertimeMeta({ userId: u.id, monthKey, overtimeBaseSalary });
+  if (overtimeMeta.overtimePay > 0) {
+    finalEarnings.overtime_pay = overtimeMeta.overtimePay;
+    proratedEarnings += overtimeMeta.overtimePay;
+  }
+
+  const grossSalary = proratedEarnings + totalIncentives;
   const netSalary = grossSalary - totalDeductions;
 
   return {
     success: true,
     monthKey,
     totals: {
-      totalEarnings,
+      totalEarnings: proratedEarnings,
       totalIncentives,
       totalDeductions,
       grossSalary,
@@ -344,7 +407,11 @@ async function calculateSalary(userId, monthKey) {
     },
     attendanceSummary: {
       present, half, leave, paidLeave: paidLeaveCount, unpaidLeave,
-      absent: absent + unpaidLeave, weeklyOff: weeklyOffCount, holidays: holidaysCount, ratio
+      absent: absent + unpaidLeave, weeklyOff: weeklyOffCount, holidays: holidaysCount, ratio,
+      overtimeMinutes: overtimeMeta.overtimeMinutes,
+      overtimeHours: overtimeMeta.overtimeHours,
+      overtimeHourlyRate: overtimeMeta.overtimeHourlyRate,
+      overtimePay: overtimeMeta.overtimePay,
     },
     earnings: finalEarnings,
     incentives: finalIncentives,
@@ -425,6 +492,11 @@ async function generatePayslipPDF(data, savePath = null) {
   const workDays = att.present !== undefined ?
     (Number(att.present || 0) + Number(att.absent || 0) + Number(att.paidLeave || 0) + Number(att.weeklyOff || 0) + Number(att.holidays || 0))
     : new Date(new Date(monthKey + '-01').getFullYear(), new Date(monthKey + '-01').getMonth() + 1, 0).getDate();
+  const overtimeHours = Number(att.overtimeHours || 0);
+  const overtimeMinutes = Number(att.overtimeMinutes || 0);
+  const overtimeRate = Number(att.overtimeHourlyRate || 0);
+  const overtimePay = Number(att.overtimePay || (earnings && earnings.overtime_pay) || 0);
+  const showOvertime = overtimeMinutes > 0 || overtimePay > 0;
 
   const html = `
     <!DOCTYPE html>
@@ -481,6 +553,9 @@ async function generatePayslipPDF(data, savePath = null) {
           <div class="info-row"><strong>Status:</strong> ${data.isPaid || data.paidAt ? 'PAID' : 'DUE'}</div>
           <div class="info-row"><strong>Generated:</strong> ${dateFmt(generatedAt || new Date())}</div>
           <div class="info-row"><strong>Working Days:</strong> ${workDays}</div>
+          ${showOvertime ? `<div class="info-row"><strong>Overtime:</strong> ${overtimeHours.toFixed(2)}h (${overtimeMinutes}m)</div>` : ''}
+          ${showOvertime ? `<div class="info-row"><strong>OT Rate:</strong> ${fmt(overtimeRate)}/hr</div>` : ''}
+          ${showOvertime ? `<div class="info-row"><strong>OT Pay:</strong> ${fmt(overtimePay)}</div>` : ''}
         </div>
       </div>
 

@@ -20,6 +20,7 @@ const securityRoutes = require('./src/routes/security');
 const salaryTemplateRoutes = require('./src/routes/salaryTemplates');
 const subscriptionRoutes = require('./src/routes/subscription');
 const rolesRoutes = require('./src/routes/roles');
+const userAccessRoutes = require('./src/routes/userAccess');
 const letterRoutes = require('./src/routes/letter');
 const { tenantEnforce } = require('./src/middleware/tenant');
 const { scheduleSubscriptionSweep } = require('./src/jobs/subscriptionSweep');
@@ -78,6 +79,7 @@ app.get('/health', (_req, res) => res.json({ ok: true }));
 
 app.use('/admin/letters', letterRoutes);
 app.use('/auth', authRoutes);
+app.use('/admin/user-access', userAccessRoutes);
 app.use('/admin', adminRoutes);
 app.use('/superadmin', superadminRoutes);
 app.use('/attendance', attendanceRoutes);

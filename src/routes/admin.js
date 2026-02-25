@@ -19,7 +19,7 @@ function getCellValue(cell) {
 
 
 
-const { sequelize, User, StaffProfile, AppSetting, DocumentType, ShiftTemplate, ShiftBreak, ShiftRotationalSlot, StaffShiftAssignment, SalaryAccess, AttendanceTemplate, StaffAttendanceAssignment, SalaryTemplate, StaffSalaryAssignment, Site, WorkUnit, Route, RouteStop, StaffRouteAssignment, SiteCheckpoint, PatrolLog, LeaveTemplate, LeaveTemplateCategory, StaffLeaveAssignment, LeaveBalance, LeaveRequest, AIAnomaly, ReliabilityScore, SalaryForecast, Attendance, Client, AssignedJob, SalesTarget, HolidayTemplate, HolidayDate, StaffHolidayAssignment, Subscription, Plan, SalesVisit, Asset, AssetAssignment, AssetMaintenance, StaffLoan } = require('../models');
+const { sequelize, User, StaffProfile, AppSetting, DocumentType, ShiftTemplate, ShiftBreak, ShiftRotationalSlot, StaffShiftAssignment, SalaryAccess, AttendanceTemplate, StaffAttendanceAssignment, SalaryTemplate, StaffSalaryAssignment, Site, WorkUnit, Route, RouteStop, StaffRouteAssignment, SiteCheckpoint, PatrolLog, LeaveTemplate, LeaveTemplateCategory, StaffLeaveAssignment, LeaveBalance, LeaveRequest, AIAnomaly, ReliabilityScore, SalaryForecast, Attendance, Client, AssignedJob, SalesTarget, HolidayTemplate, HolidayDate, StaffHolidayAssignment, Subscription, Plan, SalesVisit, Asset, AssetAssignment, AssetMaintenance, StaffLoan, OrderProduct, StaffOrderProduct } = require('../models');
 
 const multer = require('multer');
 
@@ -68,7 +68,7 @@ function requireOrg(req, res) {
 
 router.use(authRequired);
 
-router.use(requireRole(['admin', 'superadmin']));
+router.use(requireRole(['admin', 'superadmin', 'staff']));
 
 router.use(tenantEnforce);
 
@@ -247,6 +247,7 @@ router.get('/payroll/:cycleId/export', async (req, res) => {
       'Staff ID', 'Name', 'Designation', 'Department',
       'Month',
       'Working Days', 'Present', 'Half', 'Absent', 'Paid Leave', 'Unpaid Leave', 'Weekly Off', 'Holidays', 'Payable Days',
+      'Overtime Hours', 'Overtime Minutes', 'Overtime Rate/Hour', 'Overtime Pay',
       ...sortedEarnings,
       ...sortedIncentives,
       ...sortedDeductions,
@@ -270,6 +271,12 @@ router.get('/payroll/:cycleId/export', async (req, res) => {
       const ratio = Number(t.ratio || s.ratio || 0);
       const pod = ratio * daysInMonth;
       const attPct = (ratio * 100).toFixed(2);
+      const overtimeMinutes = Number(s.overtimeMinutes || 0);
+      const overtimeHours = Number(s.overtimeHours || (overtimeMinutes / 60) || 0);
+      const overtimeBaseSalary = Number((e.basic_salary ?? u.basicSalary ?? 0) || 0) + Number((e.da ?? 0) || 0);
+      const fallbackOtRate = daysInMonth > 0 ? (overtimeBaseSalary / (daysInMonth * 8)) : 0;
+      const overtimeRate = Number(s.overtimeHourlyRate || fallbackOtRate || 0);
+      const overtimePay = Number(s.overtimePay || e.overtime_pay || Math.round(overtimeHours * overtimeRate) || 0);
 
       const rowData = [
         u.staffId,
@@ -286,6 +293,10 @@ router.get('/payroll/:cycleId/export', async (req, res) => {
         Number(s.weeklyOff || 0),
         Number(s.holidays || 0),
         pod.toFixed(2),
+        overtimeHours,
+        overtimeMinutes,
+        Number(overtimeRate.toFixed(2)),
+        overtimePay,
         ...sortedEarnings.map(k => {
           // If the key is basic_salary, show the fixed amount from user profile
           if (k.toLowerCase() === 'basic_salary' || k.toLowerCase() === 'basicsalary') {
@@ -456,7 +467,10 @@ router.get('/staff/:id/salary-compute', async (req, res) => {
 
     // Attendance map
 
-    const atts = await Attendance.findAll({ where: { userId: u.id, date: { [Op.gte]: start, [Op.lte]: endKey } }, attributes: ['status', 'date'] });
+    const atts = await Attendance.findAll({
+      where: { userId: u.id, date: { [Op.gte]: start, [Op.lte]: endKey } },
+      attributes: ['status', 'date', 'overtimeMinutes']
+    });
 
     const attMap = {}; for (const a of atts) { attMap[String(a.date).slice(0, 10)] = String(a.status || '').toLowerCase(); }
 
@@ -578,23 +592,34 @@ router.get('/staff/:id/salary-compute', async (req, res) => {
 
     const ratio = daysInMonth > 0 ? Math.max(0, Math.min(1, (present + half * 0.5 + weeklyOff + holidays + paidLeave) / daysInMonth)) : 1;
 
+    const overtimeMinutes = atts.reduce((s, a) => s + (Number(a.overtimeMinutes || 0) || 0), 0);
+    const overtimeHours = overtimeMinutes / 60;
+    const overtimeBaseSalary = Number(e?.basic_salary || sd.basicSalary || 0) + Number(e?.da || sd.da || 0);
+    const overtimeHourlyRate = daysInMonth > 0 ? (overtimeBaseSalary / (daysInMonth * 8)) : 0;
+    const overtimePay = Math.round(Math.max(0, overtimeHours) * Math.max(0, overtimeHourlyRate));
+
+    const earningsWithOvertime = { ...(e || {}) };
+    if (overtimePay > 0) earningsWithOvertime.overtime_pay = overtimePay;
+
     const totals = {
-
-      totalEarnings: Math.round(sum(e) * ratio),
-
+      totalEarnings: Math.round(sum(earningsWithOvertime) * ratio),
       totalIncentives: Math.round(sum(i) * ratio),
-
       totalDeductions: Math.round(sum(d) * ratio),
-
     };
 
     totals.grossSalary = totals.totalEarnings + totals.totalIncentives;
 
     totals.netSalary = totals.grossSalary - totals.totalDeductions;
 
-    const attendanceSummary = { present, half, leave, paidLeave, unpaidLeave, absent: absent + unpaidLeave, weeklyOff, holidays, ratio };
+    const attendanceSummary = {
+      present, half, leave, paidLeave, unpaidLeave, absent: absent + unpaidLeave, weeklyOff, holidays, ratio,
+      overtimeMinutes,
+      overtimeHours: Number(overtimeHours.toFixed(2)),
+      overtimeHourlyRate: Number(overtimeHourlyRate.toFixed(2)),
+      overtimePay
+    };
 
-    return res.json({ success: true, monthKey, userId, totals, attendanceSummary, earnings: e, incentives: i, deductions: d });
+    return res.json({ success: true, monthKey, userId, totals, attendanceSummary, earnings: earningsWithOvertime, incentives: i, deductions: d });
 
   } catch (e) {
 
@@ -1127,8 +1152,10 @@ router.post('/payroll/:cycleId/compute', async (req, res) => {
 
 
       // Attendance summary and proration for the month
-
-      const atts = await Attendance.findAll({ where: { userId: u.id, date: { [Op.gte]: start, [Op.lte]: endKey } }, attributes: ['status', 'date'] });
+      const atts = await Attendance.findAll({
+        where: { userId: u.id, date: { [Op.gte]: start, [Op.lte]: endKey } },
+        attributes: ['status', 'date', 'overtimeMinutes']
+      });
 
       const attMap = {};
 
@@ -1318,14 +1345,6 @@ router.post('/payroll/:cycleId/compute', async (req, res) => {
 
 
 
-      const baseTotalE = totalsFromMonth ? Number(totalsFromMonth.totalEarnings || 0) : sum(e);
-
-      const baseTotalI = totalsFromMonth ? Number(totalsFromMonth.totalIncentives || 0) : sum(i);
-
-      const baseTotalD = totalsFromMonth ? Number(totalsFromMonth.totalDeductions || 0) : sum(finalDeductions);
-
-
-
       // Pro-rate individual keys first (User wants to see 54, 7 in Edit)
       const prorate = (obj, r) => {
         const res = {};
@@ -1339,7 +1358,17 @@ router.post('/payroll/:cycleId/compute', async (req, res) => {
       const finalI = prorate(i, ratio);
       const finalD = prorate(finalDeductions, ratio);
 
-      // Sum pro-rated components for totals to ensure consistency (Fix 7+1=8 mismatch)
+      // Overtime computation: shift-rule/no-shift logic is already persisted in attendance.overtimeMinutes
+      const overtimeMinutes = atts.reduce((s, a) => s + (Number(a.overtimeMinutes || 0) || 0), 0);
+      const overtimeHours = overtimeMinutes / 60;
+      const overtimeBaseSalary = Number(e?.basic_salary || sd.basicSalary || 0) + Number(e?.da || sd.da || 0);
+      const hourlyRate = daysInMonth > 0 ? (overtimeBaseSalary / (daysInMonth * 8)) : 0;
+      const overtimePay = Math.round(Math.max(0, overtimeHours) * Math.max(0, hourlyRate));
+      if (overtimePay > 0) {
+        finalE.overtime_pay = overtimePay;
+      }
+
+      // Sum pro-rated components for totals to ensure consistency
       const sumObj = (obj) => Object.values(obj || {}).reduce((s, v) => s + (Number(v) || 0), 0);
 
       const totalEarnings = sumObj(finalE);
@@ -1349,7 +1378,13 @@ router.post('/payroll/:cycleId/compute', async (req, res) => {
       const netSalary = grossSalary - totalDeductions;
 
       const totalAbsent = absent + unpaidLeave;
-      const attendanceSummary = { present, half, leave, paidLeave, unpaidLeave, absent: totalAbsent, weeklyOff, holidays, ratio };
+      const attendanceSummary = {
+        present, half, leave, paidLeave, unpaidLeave, absent: totalAbsent, weeklyOff, holidays, ratio,
+        overtimeMinutes,
+        overtimeHours: Number(overtimeHours.toFixed(2)),
+        overtimeHourlyRate: Number(hourlyRate.toFixed(2)),
+        overtimePay
+      };
       const totals = { totalEarnings, totalIncentives, totalDeductions, grossSalary, netSalary, ratio };
 
       // Check if line exists and is manual
@@ -1580,6 +1615,16 @@ router.get('/sales/visits', async (req, res) => {
 
       location: r.location || null,
 
+      checkInLat: r.checkInLat || null,
+
+      checkInLng: r.checkInLng || null,
+
+      checkInAltitude: r.checkInAltitude || null,
+
+      checkInAddress: r.checkInAddress || null,
+
+      checkInTime: r.checkInTime || null,
+
       madeOrder: !!r.madeOrder,
 
       amount: Number(r.amount || 0),
@@ -1667,6 +1712,8 @@ router.get('/sales/visits/:id', async (req, res) => {
       clientOtp: row.clientOtp || null,
       checkInLat: row.checkInLat || null,
       checkInLng: row.checkInLng || null,
+      checkInAltitude: row.checkInAltitude || null,
+      checkInAddress: row.checkInAddress || null,
       checkInTime: row.checkInTime || null,
       createdAt: row.createdAt,
       updatedAt: row.updatedAt,
@@ -1812,6 +1859,14 @@ router.get('/sales/orders', async (req, res) => {
       totalAmount: Number(r.totalAmount || r.total_amount || 0),
 
       items: itemsCount[r.id] || 0,
+
+      checkInLat: r.checkInLat || null,
+
+      checkInLng: r.checkInLng || null,
+
+      checkInAltitude: r.checkInAltitude || null,
+
+      checkInAddress: r.checkInAddress || null,
 
     }));
 
@@ -1988,6 +2043,14 @@ router.get('/sales/orders/:id', async (req, res) => {
       paymentMethod: row.paymentMethod || null,
 
       remarks: row.remarks || null,
+
+      checkInLat: row.checkInLat || null,
+
+      checkInLng: row.checkInLng || null,
+
+      checkInAltitude: row.checkInAltitude || null,
+
+      checkInAddress: row.checkInAddress || null,
 
       netAmount: Number(row.netAmount || row.net_amount || 0),
 
@@ -11628,6 +11691,360 @@ router.get('/geofence/assignments/:userId', async (req, res) => {
 
 
 
+// --- Settings: Order products + staff assignment (org-scoped) ---
+
+router.get('/settings/order-products', async (req, res) => {
+
+  try {
+
+    if (req.user.role === 'staff') {
+
+      return res.status(403).json({ success: false, message: 'Only admin can manage order products' });
+
+    }
+
+    const orgId = requireOrg(req, res); if (!orgId) return;
+
+    const rows = await OrderProduct.findAll({
+
+      where: { orgAccountId: orgId },
+
+      order: [['sortOrder', 'ASC'], ['id', 'DESC']],
+
+    });
+
+    return res.json({ success: true, products: rows });
+
+  } catch (e) {
+
+    return res.status(500).json({ success: false, message: 'Failed to load order products' });
+
+  }
+
+});
+
+router.post('/settings/order-products', async (req, res) => {
+
+  try {
+
+    if (req.user.role === 'staff') {
+
+      return res.status(403).json({ success: false, message: 'Only admin can manage order products' });
+
+    }
+
+    const orgId = requireOrg(req, res); if (!orgId) return;
+
+    const body = req.body || {};
+
+    const name = String(body.name || '').trim();
+
+    if (!name) return res.status(400).json({ success: false, message: 'name required' });
+
+    const size = body.size !== undefined && body.size !== null ? String(body.size).trim() : null;
+
+    const defaultQty = Math.max(1, Number(body.defaultQty || 1));
+
+    const defaultPrice = Math.max(0, Number(body.defaultPrice || 0));
+
+    const sortOrder = Math.max(0, Number(body.sortOrder || 0));
+
+    const isActive = body.isActive === undefined ? true : !!body.isActive;
+
+    const row = await OrderProduct.create({
+
+      orgAccountId: orgId,
+
+      name,
+
+      size: size || null,
+
+      defaultQty,
+
+      defaultPrice,
+
+      sortOrder,
+
+      isActive,
+
+      createdById: req.user?.id || null,
+
+      updatedById: req.user?.id || null,
+
+    });
+
+    return res.json({ success: true, product: row });
+
+  } catch (e) {
+
+    return res.status(500).json({ success: false, message: 'Failed to create order product' });
+
+  }
+
+});
+
+router.put('/settings/order-products/:id', async (req, res) => {
+
+  try {
+
+    if (req.user.role === 'staff') {
+
+      return res.status(403).json({ success: false, message: 'Only admin can manage order products' });
+
+    }
+
+    const orgId = requireOrg(req, res); if (!orgId) return;
+
+    const row = await OrderProduct.findOne({ where: { id: Number(req.params.id), orgAccountId: orgId } });
+
+    if (!row) return res.status(404).json({ success: false, message: 'Product not found' });
+
+    const body = req.body || {};
+
+    const patch = { updatedById: req.user?.id || null };
+
+    if (body.name !== undefined) patch.name = String(body.name || '').trim();
+
+    if (body.size !== undefined) patch.size = body.size ? String(body.size).trim() : null;
+
+    if (body.defaultQty !== undefined) patch.defaultQty = Math.max(1, Number(body.defaultQty || 1));
+
+    if (body.defaultPrice !== undefined) patch.defaultPrice = Math.max(0, Number(body.defaultPrice || 0));
+
+    if (body.sortOrder !== undefined) patch.sortOrder = Math.max(0, Number(body.sortOrder || 0));
+
+    if (body.isActive !== undefined) patch.isActive = !!body.isActive;
+
+    if (patch.name !== undefined && !patch.name) {
+
+      return res.status(400).json({ success: false, message: 'name required' });
+
+    }
+
+    await row.update(patch);
+
+    return res.json({ success: true, product: row });
+
+  } catch (e) {
+
+    return res.status(500).json({ success: false, message: 'Failed to update order product' });
+
+  }
+
+});
+
+router.delete('/settings/order-products/:id', async (req, res) => {
+
+  try {
+
+    if (req.user.role === 'staff') {
+
+      return res.status(403).json({ success: false, message: 'Only admin can manage order products' });
+
+    }
+
+    const orgId = requireOrg(req, res); if (!orgId) return;
+
+    const row = await OrderProduct.findOne({ where: { id: Number(req.params.id), orgAccountId: orgId } });
+
+    if (!row) return res.status(404).json({ success: false, message: 'Product not found' });
+
+    await row.destroy();
+
+    return res.json({ success: true });
+
+  } catch (e) {
+
+    return res.status(500).json({ success: false, message: 'Failed to delete order product' });
+
+  }
+
+});
+
+router.get('/settings/order-products/staff', async (req, res) => {
+
+  try {
+
+    if (req.user.role === 'staff') {
+
+      return res.status(403).json({ success: false, message: 'Only admin can manage order products' });
+
+    }
+
+    const orgId = requireOrg(req, res); if (!orgId) return;
+
+    const [staffRows, assignedRows] = await Promise.all([
+
+      User.findAll({
+
+        where: { orgAccountId: orgId, role: 'staff' },
+
+        attributes: ['id', 'phone'],
+
+        include: [{ model: StaffProfile, as: 'profile' }],
+
+        order: [['id', 'DESC']],
+
+      }),
+
+      StaffOrderProduct.findAll({
+
+        where: { orgAccountId: orgId, isActive: true },
+
+        include: [{ model: OrderProduct, as: 'product' }],
+
+        order: [['id', 'DESC']],
+
+      }),
+
+    ]);
+
+    const byUser = new Map();
+
+    for (const a of assignedRows) {
+
+      const uid = Number(a.userId);
+
+      if (!Number.isFinite(uid)) continue;
+
+      if (!byUser.has(uid)) byUser.set(uid, []);
+
+      byUser.get(uid).push({
+
+        id: a.orderProductId,
+
+        name: a.product?.name || null,
+
+        size: a.product?.size || null,
+
+      });
+
+    }
+
+    const staff = staffRows.map((u) => ({
+
+      id: u.id,
+
+      phone: u.phone,
+
+      name: u.profile?.name || u.phone || `User #${u.id}`,
+
+      products: byUser.get(Number(u.id)) || [],
+
+    }));
+
+    return res.json({ success: true, staff });
+
+  } catch (e) {
+
+    return res.status(500).json({ success: false, message: 'Failed to load staff assignments' });
+
+  }
+
+});
+
+router.put('/settings/order-products/staff/:userId', async (req, res) => {
+
+  const t = await sequelize.transaction();
+
+  try {
+
+    if (req.user.role === 'staff') {
+
+      await t.rollback();
+
+      return res.status(403).json({ success: false, message: 'Only admin can assign products' });
+
+    }
+
+    const orgId = requireOrg(req, res); if (!orgId) { await t.rollback(); return; }
+
+    const userId = Number(req.params.userId);
+
+    if (!Number.isFinite(userId)) {
+
+      await t.rollback();
+
+      return res.status(400).json({ success: false, message: 'Invalid userId' });
+
+    }
+
+    const staff = await User.findOne({
+
+      where: { id: userId, orgAccountId: orgId, role: 'staff' },
+
+      transaction: t,
+
+    });
+
+    if (!staff) {
+
+      await t.rollback();
+
+      return res.status(404).json({ success: false, message: 'Staff not found' });
+
+    }
+
+    const incoming = Array.isArray(req.body?.productIds) ? req.body.productIds : [];
+
+    const productIds = [...new Set(incoming.map((x) => Number(x)).filter(Number.isFinite))];
+
+    if (productIds.length > 0) {
+
+      const count = await OrderProduct.count({
+
+        where: { id: productIds, orgAccountId: orgId },
+
+        transaction: t,
+
+      });
+
+      if (count !== productIds.length) {
+
+        await t.rollback();
+
+        return res.status(400).json({ success: false, message: 'One or more products are invalid' });
+
+      }
+
+    }
+
+    await StaffOrderProduct.destroy({ where: { orgAccountId: orgId, userId }, transaction: t });
+
+    if (productIds.length > 0) {
+
+      const rows = productIds.map((pid) => ({
+
+        orgAccountId: orgId,
+
+        userId,
+
+        orderProductId: pid,
+
+        assignedById: req.user?.id || null,
+
+        isActive: true,
+
+      }));
+
+      await StaffOrderProduct.bulkCreate(rows, { transaction: t });
+
+    }
+
+    await t.commit();
+
+    return res.json({ success: true });
+
+  } catch (e) {
+
+    try { await t.rollback(); } catch (_) { }
+
+    return res.status(500).json({ success: false, message: 'Failed to save staff product assignment' });
+
+  }
+
+});
+
 // --- Sales: Clients CRUD --- (org-scoped)
 
 router.get('/sales/clients', async (req, res) => {
@@ -13337,7 +13754,7 @@ router.get('/geolocation', async (req, res) => {
 
         accuracy: ping.accuracyMeters,
 
-        address: null // Will be populated later if needed
+        address: ping.address || null
 
       });
 
@@ -13615,7 +14032,7 @@ router.get('/geolocation/:staffId/timeline', async (req, res) => {
 
       accuracy: ping.accuracyMeters,
 
-      address: null // Can be enhanced with geocoding later
+      address: ping.address || null
 
     }));
 
