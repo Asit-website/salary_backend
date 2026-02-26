@@ -74,38 +74,37 @@ router.use((req, res, next) => {
   next();
 });
 
-// Order product options assigned to logged-in staff
+// Order product options for the organization
 router.get('/order-products', async (req, res) => {
   try {
     const orgId = req.tenantOrgAccountId || req.user?.orgAccountId || null;
+    console.log('[DEBUG] /order-products orgId:', orgId);
     if (!orgId) return res.status(403).json({ success: false, message: 'No organization in context' });
 
-    const rows = await StaffOrderProduct.findAll({
+    const products = await OrderProduct.findAll({
       where: {
         orgAccountId: orgId,
-        userId: req.user.id,
         isActive: true,
       },
-      include: [{ model: OrderProduct, as: 'product' }],
-      order: [['id', 'DESC']],
+      order: [['sortOrder', 'ASC'], ['id', 'DESC']],
     });
+    console.log('[DEBUG] /order-products found count:', products.length);
 
-    const products = rows
-      .map((r) => r.product)
-      .filter(Boolean)
-      .map((p) => ({
-        id: p.id,
-        name: p.name,
-        size: p.size,
-        defaultQty: Number(p.defaultQty || 1),
-        defaultPrice: Number(p.defaultPrice || 0),
-      }));
+    const data = products.map((p) => ({
+      id: p.id,
+      name: p.name,
+      size: p.size,
+      defaultQty: Number(p.defaultQty || 1),
+      defaultPrice: Number(p.defaultPrice || 0),
+    }));
 
-    return res.json({ success: true, products });
+    return res.json({ success: true, products: data });
   } catch (e) {
+    console.error('Failed to load order products:', e);
     return res.status(500).json({ success: false, message: 'Failed to load order products' });
   }
 });
+
 
 // Send OTP to client for visit verification
 router.post('/send-client-otp', async (req, res) => {
@@ -345,6 +344,7 @@ router.post('/orders', upload.single('proof'), async (req, res) => {
     const totalAmount = netAmount + gstAmount;
 
     const order = await Order.create({
+      orgAccountId: req.tenantOrgAccountId,
       userId: req.user.id,
       clientId: Number.isFinite(clientId) ? clientId : null,
       assignedJobId: Number.isFinite(assignedJobId) ? assignedJobId : null,
@@ -396,6 +396,10 @@ router.post('/orders', upload.single('proof'), async (req, res) => {
         }
       }
     } catch (_) { }
+
+    // Trigger incentive processing
+    const salesIncentiveService = require('../services/salesIncentiveService');
+    salesIncentiveService.processOrder(order.id).catch(err => console.error('Incentive processing failed:', err));
 
     return res.json({ success: true, order: out });
   } catch (e) {

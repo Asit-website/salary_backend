@@ -77,6 +77,10 @@ const defineAssetMaintenance = require('./AssetMaintenance');
 const defineStaffLoan = require('./StaffLoan');
 const defineLetterTemplate = require('./LetterTemplate');
 const defineStaffLetter = require('./StaffLetter');
+const defineSalesIncentiveRule = require('./SalesIncentiveRule');
+const defineStaffIncentiveRule = require('./StaffIncentiveRule');
+const defineStaffSalesIncentive = require('./StaffSalesIncentive');
+
 
 const User = defineUser(sequelize);
 const StaffProfile = defineStaffProfile(sequelize);
@@ -155,6 +159,10 @@ const AssetMaintenance = defineAssetMaintenance(sequelize);
 const StaffLoan = defineStaffLoan(sequelize);
 const LetterTemplate = defineLetterTemplate(sequelize);
 const StaffLetter = defineStaffLetter(sequelize);
+const SalesIncentiveRule = defineSalesIncentiveRule(sequelize);
+const StaffIncentiveRule = defineStaffIncentiveRule(sequelize);
+const StaffSalesIncentive = defineStaffSalesIncentive(sequelize);
+
 
 // Leave Template associations (after models are defined)
 LeaveTemplate.hasMany(LeaveTemplateCategory, { foreignKey: 'leaveTemplateId', as: 'categories' });
@@ -284,6 +292,32 @@ OrderProduct.hasMany(StaffOrderProduct, { foreignKey: 'orderProductId', as: 'sta
 StaffOrderProduct.belongsTo(OrderProduct, { foreignKey: 'orderProductId', as: 'product' });
 User.hasMany(StaffOrderProduct, { foreignKey: 'userId', as: 'orderProductAssignments' });
 StaffOrderProduct.belongsTo(User, { foreignKey: 'userId', as: 'user' });
+
+SalesIncentiveRule.belongsTo(OrgAccount, { foreignKey: 'orgAccountId', as: 'orgAccount' });
+OrgAccount.hasMany(SalesIncentiveRule, { foreignKey: 'orgAccountId', as: 'salesIncentiveRules' });
+
+StaffIncentiveRule.belongsTo(User, { foreignKey: 'staffUserId', as: 'staff' });
+User.hasMany(StaffIncentiveRule, { foreignKey: 'staffUserId', as: 'incentiveRuleAssignments' });
+
+StaffIncentiveRule.belongsTo(SalesIncentiveRule, { foreignKey: 'incentiveRuleId', as: 'rule' });
+SalesIncentiveRule.hasMany(StaffIncentiveRule, { foreignKey: 'incentiveRuleId', as: 'staffAssignments' });
+
+StaffIncentiveRule.belongsTo(OrgAccount, { foreignKey: 'orgAccountId', as: 'orgAccount' });
+OrgAccount.hasMany(StaffIncentiveRule, { foreignKey: 'orgAccountId', as: 'staffIncentiveRuleAssignments' });
+
+// Staff Sales Incentives (Achievements)
+StaffSalesIncentive.belongsTo(OrgAccount, { foreignKey: 'orgAccountId', as: 'orgAccount' });
+OrgAccount.hasMany(StaffSalesIncentive, { foreignKey: 'orgAccountId', as: 'achievedIncentives' });
+
+StaffSalesIncentive.belongsTo(User, { foreignKey: 'staffUserId', as: 'staff' });
+User.hasMany(StaffSalesIncentive, { foreignKey: 'staffUserId', as: 'achievedIncentives' });
+
+StaffSalesIncentive.belongsTo(SalesIncentiveRule, { foreignKey: 'incentiveRuleId', as: 'rule' });
+SalesIncentiveRule.hasMany(StaffSalesIncentive, { foreignKey: 'incentiveRuleId', as: 'achievements' });
+
+StaffSalesIncentive.belongsTo(Order, { foreignKey: 'orderId', as: 'order' });
+Order.hasMany(StaffSalesIncentive, { foreignKey: 'orderId', as: 'incentives' });
+
 
 // Construction models associations
 Site.hasMany(WorkUnit, { foreignKey: 'siteId', as: 'workUnits' });
@@ -519,4 +553,8 @@ module.exports = {
   StaffLoan,
   LetterTemplate,
   StaffLetter,
+  SalesIncentiveRule,
+  StaffIncentiveRule,
+  StaffSalesIncentive,
 };
+

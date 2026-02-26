@@ -7,7 +7,7 @@ const {
   StaffAttendanceAssignment, AttendanceTemplate, StaffSalaryAssignment, SalaryTemplate,
   Attendance, LeaveRequest, WeeklyOffTemplate, StaffWeeklyOffAssignment,
   HolidayTemplate, HolidayDate, StaffHolidayAssignment, PayrollCycle, PayrollLine,
-  AppSetting, StaffLoan, OrgAccount // Added StaffLoan and OrgAccount
+  AppSetting, StaffLoan, OrgAccount, StaffSalesIncentive, SalesIncentiveRule
 } = require('../models');
 
 function getMonthRange(monthKey) {
@@ -379,19 +379,55 @@ async function calculateSalary(userId, monthKey) {
   }
 
   const sumObj = (o) => Object.values(o || {}).reduce((s, v) => s + (Number(v) || 0), 0);
-  let proratedEarnings = Math.round(sumObj(finalEarnings) * ratio);
-  const totalIncentives = Math.round(sumObj(finalIncentives) * ratio);
-  const totalDeductions = Math.round(sumObj(finalDeductions) * ratio);
 
-  // Overtime pay: based on attendance overtime minutes and hourly basic rate
+  // Pro-rate deductions
+  Object.keys(finalDeductions).forEach(k => {
+    finalDeductions[k] = Math.round(Number(finalDeductions[k] || 0) * ratio);
+  });
+  const totalDeductions = sumObj(finalDeductions);
+
+  // Pro-rate standard incentives
+  Object.keys(finalIncentives).forEach(k => {
+    finalIncentives[k] = Math.round(Number(finalIncentives[k] || 0) * ratio);
+  });
+
+  // FETCH APPROVED SALES INCENTIVES (Not pro-rated)
+  try {
+    const approvedIncentives = await StaffSalesIncentive.findAll({
+      where: {
+        staffUserId: u.id,
+        status: 'approved',
+        approvedAt: { [Op.gte]: start, [Op.lte]: endKey }
+      },
+      include: [{ model: SalesIncentiveRule, as: 'rule', attributes: ['name'] }]
+    });
+
+    for (const inc of approvedIncentives) {
+      const label = `SALES_INCENTIVE: ${inc.rule?.name || 'Incentive'}`;
+      finalIncentives[label] = (finalIncentives[label] || 0) + Number(inc.incentiveAmount || 0);
+    }
+  } catch (e) {
+    console.error('Error fetching sales incentives for payroll:', e);
+  }
+  const totalIncentives = sumObj(finalIncentives);
+
+  // Pro-rate standard earnings, keep Expenses as is
+  Object.keys(finalEarnings).forEach(k => {
+    if (!k.startsWith('EXPENSE:')) {
+      finalEarnings[k] = Math.round(Number(finalEarnings[k] || 0) * ratio);
+    }
+  });
+
+  // Overtime pay
   const overtimeBaseSalary = Number(earnings?.basic_salary || sd.basicSalary || 0) + Number(earnings?.da || sd.da || 0);
   const overtimeMeta = await computeOvertimeMeta({ userId: u.id, monthKey, overtimeBaseSalary });
   if (overtimeMeta.overtimePay > 0) {
     finalEarnings.overtime_pay = overtimeMeta.overtimePay;
-    proratedEarnings += overtimeMeta.overtimePay;
   }
 
-  const grossSalary = proratedEarnings + totalIncentives;
+  const totalEarnings = sumObj(finalEarnings);
+
+  const grossSalary = totalEarnings + totalIncentives;
   const netSalary = grossSalary - totalDeductions;
 
   return {

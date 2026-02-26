@@ -73,7 +73,7 @@ router.post('/send-otp', async (req, res) => {
     try {
       const expiresAt = new Date(Date.now() + ttlMs);
       const lastSentAt = new Date();
-      const existing = await OtpVerify.findOne({ where: { phone: normalizedPhone }, order: [['createdAt','DESC']] });
+      const existing = await OtpVerify.findOne({ where: { phone: normalizedPhone }, order: [['createdAt', 'DESC']] });
       if (!existing) {
         await OtpVerify.create({ phone: normalizedPhone, code, expiresAt, consumedAt: null, lastSentAt });
       } else {
@@ -139,7 +139,7 @@ router.post('/verify-otp', async (req, res) => {
 
     // Mark consumed in DB for the latest matching code
     try {
-      const row = await OtpVerify.findOne({ where: { phone: normalizedPhone, code: String(code) }, order: [['createdAt','DESC']] });
+      const row = await OtpVerify.findOne({ where: { phone: normalizedPhone, code: String(code) }, order: [['createdAt', 'DESC']] });
       if (row) await row.update({ consumedAt: new Date() });
     } catch (e) {
       // ignore
@@ -170,7 +170,7 @@ router.post('/verify-otp', async (req, res) => {
         if (!sub || new Date(sub.endAt) < now) {
           return res.status(402).json({ success: false, message: 'Subscription expired' });
         }
-      } catch (_) {}
+      } catch (_) { }
     }
 
     const profile = await StaffProfile.findOne({ where: { userId: user.id } });
@@ -178,7 +178,7 @@ router.post('/verify-otp', async (req, res) => {
 
     const secret = process.env.JWT_SECRET || 'dev_secret_change_me';
     const token = jwt.sign(
-      { id: user.id, role: user.role, phone: user.phone, name },
+      { id: user.id, role: user.role, phone: user.phone, name, orgAccountId: user.orgAccountId },
       secret,
       { expiresIn: process.env.JWT_EXPIRES_IN || '7d' }
     );
@@ -186,7 +186,7 @@ router.post('/verify-otp', async (req, res) => {
     return res.json({
       success: true,
       token,
-      user: { id: user.id, role: user.role, phone: user.phone, name },
+      user: { id: user.id, role: user.role, phone: user.phone, name, orgAccountId: user.orgAccountId },
     });
   } catch (e) {
     return res.status(500).json({ success: false, message: 'Failed to verify OTP' });
@@ -228,7 +228,7 @@ router.post('/login', async (req, res) => {
         if (!sub || new Date(sub.endAt) < now) {
           return res.status(402).json({ success: false, message: 'Subscription expired' });
         }
-      } catch (_) {}
+      } catch (_) { }
     }
 
     const profile = await StaffProfile.findOne({ where: { userId: user.id } });
@@ -236,7 +236,7 @@ router.post('/login', async (req, res) => {
 
     const secret = process.env.JWT_SECRET || 'dev_secret_change_me';
     const token = jwt.sign(
-      { id: user.id, role: user.role, phone: user.phone, name },
+      { id: user.id, role: user.role, phone: user.phone, name, orgAccountId: user.orgAccountId },
       secret,
       { expiresIn: process.env.JWT_EXPIRES_IN || '7d' }
     );
@@ -244,7 +244,7 @@ router.post('/login', async (req, res) => {
     return res.json({
       success: true,
       token,
-      user: { id: user.id, role: user.role, phone: user.phone, name },
+      user: { id: user.id, role: user.role, phone: user.phone, name, orgAccountId: user.orgAccountId },
     });
   } catch (e) {
     return res.status(500).json({ success: false, message: 'Login failed' });
@@ -260,16 +260,16 @@ router.post('/signup-admin', async (req, res) => {
     }
 
     const normalizedPhone = normalizePhone(phone);
-    
+
     // Check if phone number already exists in either User or OrgAccount table
     const existingUser = await User.findOne({ where: { phone: String(normalizedPhone) } });
     const { OrgAccount } = require('../models');
     const existingOrg = await OrgAccount.findOne({ where: { phone: String(normalizedPhone) } });
-    
+
     if (existingUser || existingOrg) {
-      return res.status(400).json({ 
-        success: false, 
-        message: 'Phone number already exists in the system' 
+      return res.status(400).json({
+        success: false,
+        message: 'Phone number already exists in the system'
       });
     }
 
@@ -287,7 +287,7 @@ router.post('/signup-admin', async (req, res) => {
 
     const hash = await bcrypt.hash(String(password || '123456'), 10);
     const admin = await User.create({ role: 'admin', orgAccountId: org.id, phone: String(normalizedPhone), passwordHash: hash, active: true });
-    try { await StaffProfile.create({ userId: admin.id, name: String(name) }); } catch (_) {}
+    try { await StaffProfile.create({ userId: admin.id, name: String(name) }); } catch (_) { }
 
     // Send admin signup review email to business email
     if (businessEmail) {

@@ -22,6 +22,8 @@ const subscriptionRoutes = require('./src/routes/subscription');
 const rolesRoutes = require('./src/routes/roles');
 const userAccessRoutes = require('./src/routes/userAccess');
 const letterRoutes = require('./src/routes/letter');
+const salesIncentiveRoutes = require('./src/routes/salesIncentive');
+
 const { tenantEnforce } = require('./src/middleware/tenant');
 const { scheduleSubscriptionSweep } = require('./src/jobs/subscriptionSweep');
 const { scheduleSubscriptionExpiryReminders } = require('./src/jobs');
@@ -78,6 +80,8 @@ app.use('/uploads', express.static(uploadsDir));
 app.get('/health', (_req, res) => res.json({ ok: true }));
 
 app.use('/admin/letters', letterRoutes);
+app.use('/admin/sales-incentives', salesIncentiveRoutes);
+
 app.use('/auth', authRoutes);
 app.use('/admin/user-access', userAccessRoutes);
 app.use('/admin', adminRoutes);

@@ -1356,6 +1356,24 @@ router.post('/payroll/:cycleId/compute', async (req, res) => {
 
       const finalE = prorate(e, ratio);
       const finalI = prorate(i, ratio);
+
+      // Fetch approved Sales Incentives (Not pro-rated)
+      try {
+        const { StaffSalesIncentive, SalesIncentiveRule } = require('../models');
+        const approvedIncentives = await StaffSalesIncentive.findAll({
+          where: {
+            staffUserId: u.id,
+            status: 'approved',
+            approvedAt: { [Op.gte]: start, [Op.lte]: endKey }
+          },
+          include: [{ model: SalesIncentiveRule, as: 'rule', attributes: ['name'] }]
+        });
+
+        for (const inc of approvedIncentives) {
+          const label = `SALES_INCENTIVE: ${inc.rule?.name || 'Incentive'}`;
+          finalI[label] = (finalI[label] || 0) + Number(inc.incentiveAmount || 0);
+        }
+      } catch (e) { }
       const finalD = prorate(finalDeductions, ratio);
 
       // Overtime computation: shift-rule/no-shift logic is already persisted in attendance.overtimeMinutes
@@ -1855,6 +1873,10 @@ router.get('/sales/orders', async (req, res) => {
       staffName: (() => { const uid = r.userId ?? r.user_id; return (uid && userMap[uid]) ? userMap[uid] : null; })(),
 
       clientName: (r.clientId && clientMap[r.clientId]) ? clientMap[r.clientId] : null,
+
+      netAmount: Number(r.netAmount || r.net_amount || 0),
+
+      gstAmount: Number(r.gstAmount || r.gst_amount || 0),
 
       totalAmount: Number(r.totalAmount || r.total_amount || 0),
 
