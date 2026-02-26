@@ -366,13 +366,13 @@ async function calculateSalary(userId, monthKey) {
       where: {
         userId: u.id,
         status: 'settled',
-        expenseDate: { [Op.gte]: start, [Op.lte]: endKey }
+        settledAt: { [Op.gte]: start, [Op.lte]: endKey }
       }
     });
 
     for (const exp of settledExpenses) {
       const label = `EXPENSE: ${exp.expenseType || 'Claim'}`;
-      finalEarnings[label] = (finalEarnings[label] || 0) + Number(exp.amount || 0);
+      finalEarnings[label] = (finalEarnings[label] || 0) + Number(exp.approvedAmount || exp.amount || 0);
     }
   } catch (e) {
     console.error('Error fetching expenses for payroll:', e);
@@ -380,9 +380,11 @@ async function calculateSalary(userId, monthKey) {
 
   const sumObj = (o) => Object.values(o || {}).reduce((s, v) => s + (Number(v) || 0), 0);
 
-  // Pro-rate deductions
+  // Pro-rate deductions (Except LOAN_EMI)
   Object.keys(finalDeductions).forEach(k => {
-    finalDeductions[k] = Math.round(Number(finalDeductions[k] || 0) * ratio);
+    if (k !== 'loan_emi') {
+      finalDeductions[k] = Math.round(Number(finalDeductions[k] || 0) * ratio);
+    }
   });
   const totalDeductions = sumObj(finalDeductions);
 
@@ -434,7 +436,7 @@ async function calculateSalary(userId, monthKey) {
     success: true,
     monthKey,
     totals: {
-      totalEarnings: proratedEarnings,
+      totalEarnings,
       totalIncentives,
       totalDeductions,
       grossSalary,

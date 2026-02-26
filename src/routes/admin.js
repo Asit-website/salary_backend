@@ -907,7 +907,7 @@ router.post('/payroll/:cycleId/compute', async (req, res) => {
 
     const orgId = requireOrg(req, res); if (!orgId) return;
 
-    const { PayrollCycle, PayrollLine, User, Attendance, LeaveRequest, StaffLoan } = require('../models');
+    const { PayrollCycle, PayrollLine, User, Attendance, LeaveRequest, StaffLoan, ExpenseClaim } = require('../models');
 
     const cycleId = Number(req.params.cycleId);
 
@@ -1346,15 +1346,40 @@ router.post('/payroll/:cycleId/compute', async (req, res) => {
 
 
       // Pro-rate individual keys first (User wants to see 54, 7 in Edit)
-      const prorate = (obj, r) => {
+      const prorate = (obj, r, exemptKeys = []) => {
         const res = {};
         Object.entries(obj || {}).forEach(([k, v]) => {
-          res[k] = Math.ceil(Number(v || 0) * r);
+          if (exemptKeys.includes(k)) {
+            res[k] = Math.round(Number(v || 0));
+          } else {
+            res[k] = Math.ceil(Number(v || 0) * r);
+          }
         });
         return res;
       };
 
       const finalE = prorate(e, ratio);
+
+      // Fetch approved and settled expenses for this month (NOT pro-rated)
+      try {
+        const settledExpenses = await ExpenseClaim.findAll({
+          where: {
+            userId: u.id,
+            // Remove strict orgAccountId check here because older claims might have it null,
+            // and we already verified 'u' belongs to 'orgId' in the User.findAll above.
+            status: 'settled',
+            settledAt: { [Op.gte]: start, [Op.lte]: endKey }
+          }
+        });
+
+        for (const exp of settledExpenses) {
+          const label = `EXPENSE: ${exp.expenseType || 'Claim'}`;
+          finalE[label] = (finalE[label] || 0) + Number(exp.approvedAmount || exp.amount || 0);
+        }
+      } catch (err) {
+        console.error('Error fetching expenses for persistent payroll:', err);
+      }
+
       const finalI = prorate(i, ratio);
 
       // Fetch approved Sales Incentives (Not pro-rated)
@@ -1374,7 +1399,7 @@ router.post('/payroll/:cycleId/compute', async (req, res) => {
           finalI[label] = (finalI[label] || 0) + Number(inc.incentiveAmount || 0);
         }
       } catch (e) { }
-      const finalD = prorate(finalDeductions, ratio);
+      const finalD = prorate(finalDeductions, ratio, ['loan_emi']);
 
       // Overtime computation: shift-rule/no-shift logic is already persisted in attendance.overtimeMinutes
       const overtimeMinutes = atts.reduce((s, a) => s + (Number(a.overtimeMinutes || 0) || 0), 0);
@@ -4917,7 +4942,7 @@ router.post('/staff/:id/expenses', upload.single('attachment'), async (req, res)
       attachmentUrl,
 
       status: 'pending',
-
+      orgAccountId: req.user.orgAccountId || null,
     });
 
     return res.json({ success: true, claim: row });
@@ -7275,7 +7300,7 @@ router.put('/settings/salary', async (req, res) => {
 
 // Organization brand name setting
 function getDefaultBrandSettings() {
-  return { displayName: 'ThinkTech' };
+  return { displayName: 'Your Company Name' };
 }
 
 router.get('/settings/brand', async (req, res) => {
@@ -9027,7 +9052,51 @@ router.post('/attendance', async (req, res) => {
 
 });
 
+// ── Bulk Mark Attendance ──────────────────────────────────────────────────────
+router.post('/attendance/bulk', async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
+    const body = req.body || {};
 
+    const staffIds = Array.isArray(body.staffIds) ? body.staffIds.map(Number).filter(n => Number.isFinite(n)) : [];
+    const dateIso = toIsoDateOnly(body.date || body.dateIso);
+    const statusRaw = String(body.status || '').toLowerCase();
+    const status = ['present', 'absent', 'half_day', 'leave'].includes(statusRaw) ? statusRaw : 'present';
+    const checkIn = normalizeTime(body.checkIn);
+    const checkOut = normalizeTime(body.checkOut);
+
+    if (staffIds.length === 0) {
+      return res.status(400).json({ success: false, message: 'staffIds array required' });
+    }
+    if (!dateIso) {
+      return res.status(400).json({ success: false, message: 'Valid date required' });
+    }
+
+    const joinDateTime = (t) => (t ? new Date(`${dateIso}T${normalizeTime(t)}`) : null);
+
+    let basePayload = { punchedInAt: joinDateTime(checkIn), punchedOutAt: joinDateTime(checkOut), status };
+    if (status === 'leave') basePayload = { punchedInAt: null, punchedOutAt: null, breakTotalSeconds: -1, status };
+    else if (status === 'absent') basePayload = { punchedInAt: null, punchedOutAt: null, breakTotalSeconds: 0, status };
+    else if (status === 'half_day') basePayload.breakTotalSeconds = -2;
+
+    const results = [];
+    for (const uid of staffIds) {
+      const user = await User.findOne({ where: { id: uid, orgAccountId: orgId, role: 'staff' } });
+      if (!user) continue;
+      const [row, created] = await Attendance.findOrCreate({
+        where: { userId: uid, date: dateIso },
+        defaults: basePayload
+      });
+      if (!created) await row.update(basePayload);
+      results.push({ userId: uid, created });
+    }
+
+    return res.json({ success: true, count: results.length, results });
+  } catch (e) {
+    console.error('Bulk save attendance error:', e);
+    return res.status(500).json({ success: false, message: 'Failed to save bulk attendance' });
+  }
+});
 
 // Get salary template fields for staff creation (org-scoped)
 

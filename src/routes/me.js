@@ -596,6 +596,7 @@ router.post('/expenses', upload.single('attachment'), async (req, res) => {
       description: description || null,
       attachmentUrl,
       status: 'pending',
+      orgAccountId: req.user.orgAccountId || null,
     });
 
     return res.json({ success: true, claim: row });
