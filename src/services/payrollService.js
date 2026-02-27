@@ -7,7 +7,8 @@ const {
   StaffAttendanceAssignment, AttendanceTemplate, StaffSalaryAssignment, SalaryTemplate,
   Attendance, LeaveRequest, WeeklyOffTemplate, StaffWeeklyOffAssignment,
   HolidayTemplate, HolidayDate, StaffHolidayAssignment, PayrollCycle, PayrollLine,
-  AppSetting, StaffLoan, OrgAccount, StaffSalesIncentive, SalesIncentiveRule
+  AppSetting, StaffLoan, OrgAccount, StaffSalesIncentive, SalesIncentiveRule,
+  AttendanceAutomationRule
 } = require('../models');
 
 function getMonthRange(monthKey) {
@@ -337,7 +338,70 @@ async function calculateSalary(userId, monthKey) {
     }
   }
 
-  const payableUnits = present + (half * 0.5) + weeklyOffCount + holidaysCount + paidLeaveCount;
+  const payableUnitsRaw = present + (half * 0.5) + weeklyOffCount + holidaysCount + paidLeaveCount;
+
+  // Late Entry Penalty Logic
+  let lateCount = 0;
+  let latePenaltyDays = 0;
+  try {
+    const penaltyRule = await AttendanceAutomationRule.findOne({
+      where: { key: 'late_punchin_penalty', orgAccountId: u.orgAccountId, active: true }
+    });
+    if (penaltyRule) {
+      let config = penaltyRule.config;
+      if (typeof config === 'string') { try { config = JSON.parse(config); } catch (e) { config = {}; } }
+
+      if (config.active !== false) {
+        const threshold = Number(config.threshold || 3);
+        const deductionDays = Number(config.deduction || 1);
+
+        // Fetch attendance with punch-in times for late check
+        const detailedAtts = await Attendance.findAll({
+          where: { userId: u.id, date: { [Op.gte]: start, [Op.lte]: endKey } },
+          attributes: ['date', 'punchedInAt']
+        });
+
+        for (const a of detailedAtts) {
+          if (!a.punchedInAt) continue;
+
+          // Get shift for this specific date
+          const dateStr = a.date;
+          const shiftAsg = await StaffShiftAssignment.findOne({
+            where: { userId: u.id, active: true },
+            include: [{
+              model: ShiftTemplate,
+              as: 'template',
+              where: { active: true }
+            }],
+            order: [['id', 'DESC']]
+          });
+
+          if (shiftAsg?.template?.startTime) {
+            const punchIn = new Date(a.punchedInAt);
+            const punchInTime = punchIn.getHours() * 3600 + punchIn.getMinutes() * 60 + punchIn.getSeconds();
+
+            const [sh, sm, ss] = shiftAsg.template.startTime.split(':').map(Number);
+            const shiftStartTime = sh * 3600 + sm * 60 + (ss || 0);
+
+            // Use rule-specific lateMinutes (grace period)
+            const gracePeriodSeconds = (Number(config.lateMinutes || 15)) * 60;
+
+            if (punchInTime > (shiftStartTime + gracePeriodSeconds)) {
+              lateCount += 1;
+            }
+          }
+        }
+
+        if (lateCount >= threshold) {
+          latePenaltyDays = Math.floor(lateCount / threshold) * deductionDays;
+        }
+      }
+    }
+  } catch (err) {
+    console.error('Error calculating late penalty:', err);
+  }
+
+  const payableUnits = Math.max(0, payableUnitsRaw - latePenaltyDays);
   const ratio = daysInMonth > 0 ? Math.max(0, Math.min(1, payableUnits / daysInMonth)) : 1;
 
   const loanDeduction = await calculateLoanDeduction();
@@ -445,7 +509,8 @@ async function calculateSalary(userId, monthKey) {
     },
     attendanceSummary: {
       present, half, leave, paidLeave: paidLeaveCount, unpaidLeave,
-      absent: absent + unpaidLeave, weeklyOff: weeklyOffCount, holidays: holidaysCount, ratio,
+      absent: absent + unpaidLeave + latePenaltyDays, weeklyOff: weeklyOffCount, holidays: holidaysCount, ratio,
+      lateCount, latePenaltyDays,
       overtimeMinutes: overtimeMeta.overtimeMinutes,
       overtimeHours: overtimeMeta.overtimeHours,
       overtimeHourlyRate: overtimeMeta.overtimeHourlyRate,

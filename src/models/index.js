@@ -12,6 +12,8 @@ const defineAppSetting = require('./AppSetting');
 const defineDocumentType = require('./DocumentType');
 const defineStaffDocument = require('./StaffDocument');
 const defineExpenseClaim = require('./ExpenseClaim');
+const defineAppraisal = require('./Appraisal');
+const defineRating = require('./Rating');
 const defineShiftTemplate = require('./ShiftTemplate');
 const defineHolidayTemplate = require('./HolidayTemplate');
 const defineHolidayDate = require('./HolidayDate');
@@ -69,6 +71,7 @@ const defineGeofenceTemplate = require('./GeofenceTemplate');
 const defineGeofenceSite = require('./GeofenceSite');
 const defineStaffGeofenceAssignment = require('./StaffGeofenceAssignment');
 const defineLocationPing = require('./LocationPing');
+const defineDeviceInfo = require('./DeviceInfo');
 const definePayrollCycle = require('./PayrollCycle');
 const definePayrollLine = require('./PayrollLine');
 const defineAsset = require('./Asset');
@@ -80,6 +83,7 @@ const defineStaffLetter = require('./StaffLetter');
 const defineSalesIncentiveRule = require('./SalesIncentiveRule');
 const defineStaffIncentiveRule = require('./StaffIncentiveRule');
 const defineStaffSalesIncentive = require('./StaffSalesIncentive');
+const defineAttendanceAutomationRule = require('./AttendanceAutomationRule');
 
 
 const User = defineUser(sequelize);
@@ -94,6 +98,8 @@ const AppSetting = defineAppSetting(sequelize);
 const DocumentType = defineDocumentType(sequelize);
 const StaffDocument = defineStaffDocument(sequelize);
 const ExpenseClaim = defineExpenseClaim(sequelize, require('sequelize'));
+const Appraisal = defineAppraisal(sequelize);
+const Rating = defineRating(sequelize);
 const ShiftTemplate = defineShiftTemplate(sequelize);
 const HolidayTemplate = defineHolidayTemplate(sequelize);
 const HolidayDate = defineHolidayDate(sequelize);
@@ -151,6 +157,7 @@ const GeofenceTemplate = defineGeofenceTemplate(sequelize);
 const GeofenceSite = defineGeofenceSite(sequelize);
 const StaffGeofenceAssignment = defineStaffGeofenceAssignment(sequelize);
 const LocationPing = defineLocationPing(sequelize);
+const DeviceInfo = defineDeviceInfo(sequelize);
 const PayrollCycle = definePayrollCycle(sequelize);
 const PayrollLine = definePayrollLine(sequelize);
 const Asset = defineAsset(sequelize);
@@ -162,6 +169,7 @@ const StaffLetter = defineStaffLetter(sequelize);
 const SalesIncentiveRule = defineSalesIncentiveRule(sequelize);
 const StaffIncentiveRule = defineStaffIncentiveRule(sequelize);
 const StaffSalesIncentive = defineStaffSalesIncentive(sequelize);
+const AttendanceAutomationRule = defineAttendanceAutomationRule(sequelize);
 
 
 // Leave Template associations (after models are defined)
@@ -233,6 +241,12 @@ GeofenceTemplate.hasMany(StaffGeofenceAssignment, { foreignKey: 'geofenceTemplat
 StaffGeofenceAssignment.belongsTo(GeofenceTemplate, { foreignKey: 'geofenceTemplateId', as: 'template' });
 User.hasMany(LocationPing, { foreignKey: 'userId', as: 'locationPings' });
 LocationPing.belongsTo(User, { foreignKey: 'userId', as: 'user' });
+User.hasMany(DeviceInfo, { foreignKey: 'userId', as: 'devices' });
+DeviceInfo.belongsTo(User, { foreignKey: 'userId', as: 'user' });
+User.hasMany(Appraisal, { foreignKey: 'userId', as: 'appraisals' });
+Appraisal.belongsTo(User, { foreignKey: 'userId', as: 'user' });
+User.hasMany(Rating, { foreignKey: 'userId', as: 'ratings' });
+Rating.belongsTo(User, { foreignKey: 'userId', as: 'user' });
 
 User.hasOne(SalaryAccess, { foreignKey: 'userId', as: 'salaryAccess' });
 SalaryAccess.belongsTo(User, { foreignKey: 'userId', as: 'user' });
@@ -486,6 +500,8 @@ module.exports = {
   DocumentType,
   StaffDocument,
   ExpenseClaim,
+  Appraisal,
+  Rating,
   ShiftTemplate,
   ShiftBreak,
   ShiftRotationalSlot,
@@ -545,16 +561,12 @@ module.exports = {
   GeofenceSite,
   StaffGeofenceAssignment,
   LocationPing,
+  DeviceInfo,
   PayrollCycle,
   PayrollLine,
   Asset,
   AssetAssignment,
   AssetMaintenance,
-  StaffLoan,
-  LetterTemplate,
-  StaffLetter,
-  SalesIncentiveRule,
-  StaffIncentiveRule,
-  StaffSalesIncentive,
+  StaffLoan, LetterTemplate, StaffLetter, SalesIncentiveRule, StaffIncentiveRule, StaffSalesIncentive,
+  AttendanceAutomationRule
 };
-

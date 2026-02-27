@@ -2,7 +2,7 @@ const express = require('express');
 const { Op } = require('sequelize');
 const puppeteer = require('puppeteer');
 
-const { Attendance, LeaveRequest, AppSetting, AttendanceTemplate, StaffAttendanceAssignment, StaffShiftAssignment, ShiftTemplate, StaffHolidayAssignment, HolidayTemplate, HolidayDate, StaffGeofenceAssignment, GeofenceTemplate, GeofenceSite, LocationPing } = require('../models');
+const { Attendance, LeaveRequest, AppSetting, AttendanceTemplate, StaffAttendanceAssignment, StaffShiftAssignment, ShiftTemplate, StaffHolidayAssignment, HolidayTemplate, HolidayDate, StaffGeofenceAssignment, GeofenceTemplate, GeofenceSite, LocationPing, DeviceInfo } = require('../models');
 const { authRequired } = require('../middleware/auth');
 const { requireRole } = require('../middleware/roles');
 const { upload } = require('../upload');
@@ -239,6 +239,57 @@ function computeEffectiveWorkingSeconds({ totalWorkSeconds, actualBreakSeconds, 
       // Default: deduct only excess breaks beyond the allowed max
       const deductibleBreakSeconds = Math.max(0, (actualBreakSeconds || 0) - maxBreakSeconds);
       return Math.max(0, totalWorkSeconds - deductibleBreakSeconds);
+  }
+}
+
+function deriveDevicePayload(req) {
+  const body = req.body || {};
+  const ua = String(req.headers['user-agent'] || '').trim();
+  const rawDeviceId = body.deviceId || req.headers['x-device-id'] || ua || `${req.user?.id || 'staff'}-unknown`;
+  const source = String(body.source || '').toLowerCase();
+  return {
+    deviceId: String(rawDeviceId).slice(0, 128),
+    brand: body.deviceBrand || req.headers['x-device-brand'] || null,
+    model: body.deviceModel || req.headers['x-device-model'] || null,
+    platform: body.platform || req.headers['x-platform'] || (source.includes('web') ? 'web' : 'mobile'),
+    osVersion: body.osVersion || req.headers['x-os-version'] || null,
+    appVersion: body.appVersion || req.headers['x-app-version'] || null,
+    userAgent: ua ? ua.slice(0, 255) : null,
+  };
+}
+
+async function touchDeviceInfo(req) {
+  try {
+    const orgAccountId = Number(req.user?.orgAccountId || req.tenantOrgAccountId || 0);
+    if (!orgAccountId || !req.user?.id) return;
+    const payload = deriveDevicePayload(req);
+    if (!payload.deviceId) return;
+
+    const existing = await DeviceInfo.findOne({
+      where: {
+        orgAccountId,
+        userId: req.user.id,
+        deviceId: payload.deviceId,
+      },
+    });
+
+    const next = {
+      ...payload,
+      lastSeenAt: new Date(),
+      isActive: true,
+    };
+
+    if (existing) {
+      await existing.update(next);
+    } else {
+      await DeviceInfo.create({
+        orgAccountId,
+        userId: req.user.id,
+        ...next,
+      });
+    }
+  } catch (_) {
+    // Device capture is best-effort and must not block attendance flow.
   }
 }
 
@@ -634,14 +685,25 @@ router.post('/punch-in', upload.single('photo'), async (req, res) => {
     }
     const photoUrl = `/uploads/${req.file.filename}`;
 
+    const address = req.body?.address ? String(req.body.address) : null;
     const record = existing
-      ? await existing.update({ punchedInAt: now, punchInPhotoUrl: photoUrl, orgAccountId: req.user.orgAccountId })
+      ? await existing.update({
+        punchedInAt: now,
+        punchInPhotoUrl: photoUrl,
+        orgAccountId: req.user.orgAccountId,
+        latitude: lat,
+        longitude: lng,
+        address
+      })
       : await Attendance.create({
         userId: req.user.id,
         date: key,
         punchedInAt: now,
         punchInPhotoUrl: photoUrl,
-        orgAccountId: req.user.orgAccountId
+        orgAccountId: req.user.orgAccountId,
+        latitude: lat,
+        longitude: lng,
+        address
       });
 
     return res.json({ success: true, attendance: record });
@@ -658,14 +720,15 @@ router.post('/location/ping', async (req, res) => {
     const accuracy = req.body?.accuracyMeters !== undefined ? Number(req.body.accuracyMeters) : null;
     const address = req.body?.address ? String(req.body.address).slice(0, 255) : null;
     if (!Number.isFinite(lat) || !Number.isFinite(lng)) return res.status(400).json({ success: false, message: 'lat/lng required' });
-    const row = await LocationPing.create({
-      userId: req.user.id,
-      latitude: lat,
-      longitude: lng,
-      accuracyMeters: Number.isFinite(accuracy) ? accuracy : null,
-      address,
-      source: 'staff'
-    });
+      const row = await LocationPing.create({
+        userId: req.user.id,
+        latitude: lat,
+        longitude: lng,
+        accuracyMeters: Number.isFinite(accuracy) ? accuracy : null,
+        address,
+        source: req.body?.source ? String(req.body.source).slice(0, 32) : 'staff'
+      });
+    await touchDeviceInfo(req);
     return res.json({ success: true, ping: row });
   } catch (e) {
     return res.status(500).json({ success: false, message: 'Failed to record location' });
@@ -797,6 +860,7 @@ router.post('/punch-out', upload.single('photo'), async (req, res) => {
       }
     }
 
+    const address = req.body?.address ? String(req.body.address) : null;
     await record.update({
       punchedOutAt: now,
       punchOutPhotoUrl: photoUrl,
@@ -806,6 +870,9 @@ router.post('/punch-out', upload.single('photo'), async (req, res) => {
       status: status,
       totalWorkHours: totalWorkHours,
       overtimeMinutes: overtimeMinutes,
+      punchOutLatitude: lat,
+      punchOutLongitude: lng,
+      punchOutAddress: address
     });
 
     console.log(`Attendance status calculated: ${status} for ${totalWorkHours.toFixed(2)} hours worked`);
@@ -1403,6 +1470,7 @@ router.post('/ping', async (req, res) => {
       address: address ? String(address).slice(0, 255) : null,
       source: source || 'mobile'
     });
+    await touchDeviceInfo(req);
 
     console.log(`Location ping recorded for user ${req.user.id}:`, {
       latitude: lat,

@@ -23,6 +23,17 @@ module.exports = (sequelize) => {
 
       punchInPhotoUrl: { type: DataTypes.STRING(255), allowNull: true },
       punchOutPhotoUrl: { type: DataTypes.STRING(255), allowNull: true },
+
+      // Punch-in Location
+      latitude: { type: DataTypes.DECIMAL(10, 8), allowNull: true },
+      longitude: { type: DataTypes.DECIMAL(11, 8), allowNull: true },
+      address: { type: DataTypes.TEXT, allowNull: true },
+
+      // Punch-out Location
+      punchOutLatitude: { type: DataTypes.DECIMAL(10, 8), allowNull: true, field: 'punch_out_latitude' },
+      punchOutLongitude: { type: DataTypes.DECIMAL(11, 8), allowNull: true, field: 'punch_out_longitude' },
+      punchOutAddress: { type: DataTypes.TEXT, allowNull: true, field: 'punch_out_address' },
+
       note: { type: DataTypes.TEXT, allowNull: true }, // Admin notes for attendance
       orgAccountId: { type: DataTypes.BIGINT.UNSIGNED, allowNull: true, field: 'org_account_id' },
     },

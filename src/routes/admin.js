@@ -19,7 +19,7 @@ function getCellValue(cell) {
 
 
 
-const { sequelize, User, StaffProfile, AppSetting, DocumentType, ShiftTemplate, ShiftBreak, ShiftRotationalSlot, StaffShiftAssignment, SalaryAccess, AttendanceTemplate, StaffAttendanceAssignment, SalaryTemplate, StaffSalaryAssignment, Site, WorkUnit, Route, RouteStop, StaffRouteAssignment, SiteCheckpoint, PatrolLog, LeaveTemplate, LeaveTemplateCategory, StaffLeaveAssignment, LeaveBalance, LeaveRequest, AIAnomaly, ReliabilityScore, SalaryForecast, Attendance, Client, AssignedJob, SalesTarget, HolidayTemplate, HolidayDate, StaffHolidayAssignment, Subscription, Plan, SalesVisit, Asset, AssetAssignment, AssetMaintenance, StaffLoan, OrderProduct, StaffOrderProduct } = require('../models');
+const { sequelize, User, StaffProfile, Role, Permission, AppSetting, DocumentType, ShiftTemplate, ShiftBreak, ShiftRotationalSlot, StaffShiftAssignment, SalaryAccess, AttendanceTemplate, StaffAttendanceAssignment, SalaryTemplate, StaffSalaryAssignment, Site, WorkUnit, Route, RouteStop, StaffRouteAssignment, SiteCheckpoint, PatrolLog, LeaveTemplate, LeaveTemplateCategory, StaffLeaveAssignment, LeaveBalance, LeaveRequest, AIAnomaly, ReliabilityScore, SalaryForecast, Attendance, Client, AssignedJob, SalesTarget, HolidayTemplate, HolidayDate, StaffHolidayAssignment, Subscription, Plan, SalesVisit, Asset, AssetAssignment, AssetMaintenance, StaffLoan, OrderProduct, StaffOrderProduct, AttendanceAutomationRule, StaffGeofenceAssignment, GeofenceTemplate, GeofenceSite, DeviceInfo, Appraisal, Rating } = require('../models');
 
 const multer = require('multer');
 
@@ -71,6 +71,366 @@ router.use(authRequired);
 router.use(requireRole(['admin', 'superadmin', 'staff']));
 
 router.use(tenantEnforce);
+
+function getDeviceLiveStatus(lastSeenAt) {
+  if (!lastSeenAt) return 'offline';
+  const diffMs = Date.now() - new Date(lastSeenAt).getTime();
+  if (diffMs <= 10 * 60 * 1000) return 'online';
+  if (diffMs <= 60 * 60 * 1000) return 'idle';
+  return 'offline';
+}
+
+function monthKeySafe(input) {
+  const raw = String(input || '').trim();
+  if (/^\d{4}-\d{2}$/.test(raw)) return raw;
+  const now = new Date();
+  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+}
+
+function dateOnlySafe(input) {
+  const raw = String(input || '').trim();
+  if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) return raw;
+  return new Date().toISOString().slice(0, 10);
+}
+
+function escapeHtml(input) {
+  return String(input || '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+async function sendAppraisalNotificationEmail({ toEmail, staffName, orgName, appraisalTitle, appraisalPercent, periodMonth, effectiveFrom, status, remarks }) {
+  if (!toEmail) return { skipped: true, reason: 'missing_email' };
+  const pct = Number.isFinite(Number(appraisalPercent)) ? Number(appraisalPercent).toFixed(2) : '0.00';
+  const safeName = escapeHtml(staffName || 'Staff');
+  const safeOrg = escapeHtml(orgName || 'Your Organization');
+  const safeTitle = escapeHtml(appraisalTitle || 'Appraisal Update');
+  const safePeriod = escapeHtml(periodMonth || '-');
+  const safeEffective = escapeHtml(effectiveFrom || '-');
+  const safeStatus = escapeHtml(status || 'DRAFT');
+  const safeRemarks = escapeHtml(remarks || 'No additional remarks');
+
+  const mailOptions = {
+    from: `"${emailFrom.name}" <${emailFrom.address}>`,
+    to: toEmail,
+    subject: `Salary Appraisal Update: ${pct}%`,
+    html: `
+      <div style="font-family:Arial,sans-serif;max-width:640px;margin:0 auto;padding:20px;background:#f6f8fb;">
+        <div style="background:#fff;border:1px solid #e7ecf3;border-radius:10px;padding:24px;">
+          <h2 style="margin:0 0 12px;color:#125EC9;">Salary Appraisal Notification</h2>
+          <p style="margin:0 0 12px;color:#222;">Dear <strong>${safeName}</strong>,</p>
+          <p style="margin:0 0 14px;color:#222;">
+            Your salary appraisal has been updated in <strong>${safeOrg}</strong>.
+          </p>
+          <div style="background:#f3f8ff;border:1px solid #d9e8ff;border-radius:8px;padding:14px 16px;margin:0 0 14px;">
+            <p style="margin:0 0 6px;"><strong>Appraisal:</strong> ${safeTitle}</p>
+            <p style="margin:0 0 6px;"><strong>Appraisal %:</strong> ${pct}%</p>
+            <p style="margin:0 0 6px;"><strong>Period:</strong> ${safePeriod}</p>
+            <p style="margin:0 0 6px;"><strong>Effective From:</strong> ${safeEffective}</p>
+            <p style="margin:0;"><strong>Status:</strong> ${safeStatus}</p>
+          </div>
+          <p style="margin:0 0 8px;"><strong>Remarks:</strong> ${safeRemarks}</p>
+          <p style="margin:16px 0 0;color:#555;">Please contact HR/Admin for any clarification.</p>
+        </div>
+      </div>
+    `,
+  };
+
+  const info = await transporter.sendMail(mailOptions);
+  return { success: true, messageId: info?.messageId };
+}
+
+router.get('/device-management/devices', async (req, res) => {
+  try {
+    if (req.user?.role === 'staff') {
+      return res.status(403).json({ success: false, message: 'Forbidden' });
+    }
+    const orgId = requireOrg(req, res); if (!orgId) return;
+    const q = String(req.query?.q || '').trim().toLowerCase();
+    const statusFilter = String(req.query?.status || '').trim().toLowerCase();
+
+    const rows = await DeviceInfo.findAll({
+      where: { orgAccountId: orgId },
+      include: [{
+        model: User,
+        as: 'user',
+        attributes: ['id', 'phone'],
+        include: [{ model: StaffProfile, as: 'profile', attributes: ['name'] }],
+      }],
+      order: [['lastSeenAt', 'DESC']],
+    });
+
+    const devices = rows.map((r) => {
+      const status = getDeviceLiveStatus(r.lastSeenAt);
+      return {
+        id: r.id,
+        userId: r.userId,
+        staff: r.user?.profile?.name || r.user?.phone || `Staff #${r.userId}`,
+        phone: r.user?.phone || '',
+        deviceId: r.deviceId,
+        brand: r.brand || null,
+        model: r.model || 'Unknown Device',
+        platform: r.platform || 'Unknown',
+        osVersion: r.osVersion || null,
+        appVersion: r.appVersion || null,
+        userAgent: r.userAgent || null,
+        lastSeenAt: r.lastSeenAt,
+        status,
+      };
+    }).filter((d) => {
+      if (statusFilter && d.status !== statusFilter) return false;
+      if (!q) return true;
+      const hay = `${d.staff} ${d.phone} ${d.model} ${d.brand || ''} ${d.platform} ${d.deviceId}`.toLowerCase();
+      return hay.includes(q);
+    });
+
+    const summary = {
+      total: devices.length,
+      online: devices.filter((d) => d.status === 'online').length,
+      idle: devices.filter((d) => d.status === 'idle').length,
+      offline: devices.filter((d) => d.status === 'offline').length,
+    };
+
+    return res.json({ success: true, devices, summary });
+  } catch (error) {
+    return res.status(500).json({ success: false, message: 'Failed to load devices' });
+  }
+});
+
+router.get('/performance/appraisals', async (req, res) => {
+  try {
+    if (req.user?.role === 'staff') return res.status(403).json({ success: false, message: 'Forbidden' });
+    const orgId = requireOrg(req, res); if (!orgId) return;
+    const periodMonth = monthKeySafe(req.query?.periodMonth);
+
+    const rows = await Appraisal.findAll({
+      where: { orgAccountId: orgId, periodMonth },
+      include: [{ model: User, as: 'user', attributes: ['id', 'phone'], include: [{ model: StaffProfile, as: 'profile', attributes: ['name'] }] }],
+      order: [['updatedAt', 'DESC']],
+    });
+
+    const data = rows.map((r) => ({
+      id: r.id,
+      userId: r.userId,
+      staff: r.user?.profile?.name || r.user?.phone || `Staff #${r.userId}`,
+      phone: r.user?.phone || '',
+      title: r.title,
+      periodMonth: r.periodMonth,
+      effectiveFrom: r.effectiveFrom || null,
+      score: r.score == null ? null : Number(r.score),
+      status: r.status,
+      remarks: r.remarks || '',
+      updatedAt: r.updatedAt,
+    }));
+    return res.json({ success: true, data });
+  } catch (_) {
+    return res.status(500).json({ success: false, message: 'Failed to load appraisals' });
+  }
+});
+
+router.post('/performance/appraisals', async (req, res) => {
+  try {
+    if (req.user?.role === 'staff') return res.status(403).json({ success: false, message: 'Forbidden' });
+    const orgId = requireOrg(req, res); if (!orgId) return;
+    const body = req.body || {};
+    const userId = Number(body.userId);
+    const title = String(body.title || '').trim();
+    const periodMonth = monthKeySafe(body.periodMonth);
+    const effectiveFrom = dateOnlySafe(body.effectiveFrom);
+    const score = body.score == null || body.score === '' ? null : Number(body.score);
+    const status = ['DRAFT', 'SUBMITTED', 'COMPLETED'].includes(body.status) ? body.status : 'DRAFT';
+    const remarks = body.remarks ? String(body.remarks) : null;
+
+    if (!Number.isFinite(userId) || !title) {
+      return res.status(400).json({ success: false, message: 'userId and title are required' });
+    }
+
+    if (score != null && (!Number.isFinite(score) || score < 0 || score > 100)) {
+      return res.status(400).json({ success: false, message: 'Appraisal % must be between 0 and 100' });
+    }
+
+    const row = await Appraisal.create({
+      orgAccountId: orgId,
+      userId,
+      title,
+      periodMonth,
+      effectiveFrom,
+      score: Number.isFinite(score) ? score : null,
+      status,
+      remarks,
+      reviewedBy: req.user?.id || null,
+    });
+
+    try {
+      const [staffUser, brandRow] = await Promise.all([
+        User.findByPk(userId, { include: [{ model: StaffProfile, as: 'profile', attributes: ['name', 'email'] }] }),
+        sequelize.models.OrgBrand?.findOne({ where: { orgAccountId: orgId, active: true }, order: [['id', 'DESC']] }),
+      ]);
+      const toEmail = staffUser?.profile?.email || null;
+      await sendAppraisalNotificationEmail({
+        toEmail,
+        staffName: staffUser?.profile?.name || staffUser?.phone || `Staff #${userId}`,
+        orgName: brandRow?.displayName || 'Your Organization',
+        appraisalTitle: row.title,
+        appraisalPercent: row.score == null ? 0 : Number(row.score),
+        periodMonth: row.periodMonth,
+        effectiveFrom: row.effectiveFrom,
+        status: row.status,
+        remarks: row.remarks,
+      });
+    } catch (mailError) {
+      console.error('Appraisal notification email failed:', mailError?.message || mailError);
+    }
+
+    return res.json({ success: true, appraisal: row });
+  } catch (_) {
+    return res.status(500).json({ success: false, message: 'Failed to create appraisal' });
+  }
+});
+
+router.put('/performance/appraisals/:id', async (req, res) => {
+  try {
+    if (req.user?.role === 'staff') return res.status(403).json({ success: false, message: 'Forbidden' });
+    const orgId = requireOrg(req, res); if (!orgId) return;
+    const id = Number(req.params.id);
+    const row = await Appraisal.findOne({ where: { id, orgAccountId: orgId } });
+    if (!row) return res.status(404).json({ success: false, message: 'Appraisal not found' });
+    const body = req.body || {};
+    const payload = {};
+    if (body.title !== undefined) payload.title = String(body.title || '').trim();
+    if (body.periodMonth !== undefined) payload.periodMonth = monthKeySafe(body.periodMonth);
+    if (body.effectiveFrom !== undefined) payload.effectiveFrom = dateOnlySafe(body.effectiveFrom);
+    if (body.score !== undefined) {
+      const score = body.score == null || body.score === '' ? null : Number(body.score);
+      if (score != null && (!Number.isFinite(score) || score < 0 || score > 100)) {
+        return res.status(400).json({ success: false, message: 'Appraisal % must be between 0 and 100' });
+      }
+      payload.score = Number.isFinite(score) ? score : null;
+    }
+    if (body.status !== undefined && ['DRAFT', 'SUBMITTED', 'COMPLETED'].includes(body.status)) payload.status = body.status;
+    if (body.remarks !== undefined) payload.remarks = body.remarks ? String(body.remarks) : null;
+    payload.reviewedBy = req.user?.id || null;
+    await row.update(payload);
+
+    try {
+      const [staffUser, brandRow] = await Promise.all([
+        User.findByPk(row.userId, { include: [{ model: StaffProfile, as: 'profile', attributes: ['name', 'email'] }] }),
+        sequelize.models.OrgBrand?.findOne({ where: { orgAccountId: orgId, active: true }, order: [['id', 'DESC']] }),
+      ]);
+      const toEmail = staffUser?.profile?.email || null;
+      await sendAppraisalNotificationEmail({
+        toEmail,
+        staffName: staffUser?.profile?.name || staffUser?.phone || `Staff #${row.userId}`,
+        orgName: brandRow?.displayName || 'Your Organization',
+        appraisalTitle: row.title,
+        appraisalPercent: row.score == null ? 0 : Number(row.score),
+        periodMonth: row.periodMonth,
+        effectiveFrom: row.effectiveFrom,
+        status: row.status,
+        remarks: row.remarks,
+      });
+    } catch (mailError) {
+      console.error('Appraisal notification email failed:', mailError?.message || mailError);
+    }
+
+    return res.json({ success: true, appraisal: row });
+  } catch (_) {
+    return res.status(500).json({ success: false, message: 'Failed to update appraisal' });
+  }
+});
+
+router.get('/performance/ratings', async (req, res) => {
+  try {
+    if (req.user?.role === 'staff') return res.status(403).json({ success: false, message: 'Forbidden' });
+    const orgId = requireOrg(req, res); if (!orgId) return;
+    const month = monthKeySafe(req.query?.month);
+    const start = `${month}-01`;
+    const end = new Date(Number(month.slice(0, 4)), Number(month.slice(5, 7)), 0);
+    const endDate = `${month}-${String(end.getDate()).padStart(2, '0')}`;
+
+    const rows = await Rating.findAll({
+      where: { orgAccountId: orgId, ratedAt: { [Op.between]: [start, endDate] } },
+      include: [{ model: User, as: 'user', attributes: ['id', 'phone'], include: [{ model: StaffProfile, as: 'profile', attributes: ['name'] }] }],
+      order: [['ratedAt', 'DESC'], ['updatedAt', 'DESC']],
+    });
+
+    const data = rows.map((r) => ({
+      id: r.id,
+      userId: r.userId,
+      staff: r.user?.profile?.name || r.user?.phone || `Staff #${r.userId}`,
+      phone: r.user?.phone || '',
+      metric: r.metric,
+      rating: Number(r.rating || 0),
+      maxRating: Number(r.maxRating || 5),
+      note: r.note || '',
+      ratedAt: r.ratedAt,
+    }));
+    return res.json({ success: true, data });
+  } catch (_) {
+    return res.status(500).json({ success: false, message: 'Failed to load ratings' });
+  }
+});
+
+router.post('/performance/ratings', async (req, res) => {
+  try {
+    if (req.user?.role === 'staff') return res.status(403).json({ success: false, message: 'Forbidden' });
+    const orgId = requireOrg(req, res); if (!orgId) return;
+    const body = req.body || {};
+    const userId = Number(body.userId);
+    const metric = String(body.metric || '').trim();
+    const rating = Number(body.rating);
+    const maxRating = body.maxRating == null || body.maxRating === '' ? 5 : Number(body.maxRating);
+    const ratedAt = body.ratedAt ? String(body.ratedAt) : new Date().toISOString().slice(0, 10);
+    const note = body.note ? String(body.note) : null;
+    if (!Number.isFinite(userId) || !metric || !Number.isFinite(rating)) {
+      return res.status(400).json({ success: false, message: 'userId, metric and rating are required' });
+    }
+    const row = await Rating.create({
+      orgAccountId: orgId,
+      userId,
+      metric,
+      rating,
+      maxRating: Number.isFinite(maxRating) ? maxRating : 5,
+      ratedAt,
+      note,
+      ratedBy: req.user?.id || null,
+    });
+    return res.json({ success: true, rating: row });
+  } catch (_) {
+    return res.status(500).json({ success: false, message: 'Failed to create rating' });
+  }
+});
+
+router.put('/performance/ratings/:id', async (req, res) => {
+  try {
+    if (req.user?.role === 'staff') return res.status(403).json({ success: false, message: 'Forbidden' });
+    const orgId = requireOrg(req, res); if (!orgId) return;
+    const id = Number(req.params.id);
+    const row = await Rating.findOne({ where: { id, orgAccountId: orgId } });
+    if (!row) return res.status(404).json({ success: false, message: 'Rating not found' });
+    const body = req.body || {};
+    const payload = {};
+    if (body.metric !== undefined) payload.metric = String(body.metric || '').trim();
+    if (body.rating !== undefined) {
+      const value = Number(body.rating);
+      if (Number.isFinite(value)) payload.rating = value;
+    }
+    if (body.maxRating !== undefined) {
+      const value = Number(body.maxRating);
+      if (Number.isFinite(value)) payload.maxRating = value;
+    }
+    if (body.ratedAt !== undefined) payload.ratedAt = String(body.ratedAt);
+    if (body.note !== undefined) payload.note = body.note ? String(body.note) : null;
+    payload.ratedBy = req.user?.id || null;
+    await row.update(payload);
+    return res.json({ success: true, rating: row });
+  } catch (_) {
+    return res.status(500).json({ success: false, message: 'Failed to update rating' });
+  }
+});
 
 
 
@@ -7331,6 +7691,41 @@ router.put('/settings/brand', async (req, res) => {
   }
 });
 
+// Automation Rules
+router.get('/settings/automation-rules', async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
+    const rules = await AttendanceAutomationRule.findAll({ where: { orgAccountId: orgId, active: true } });
+    return res.json({ success: true, rules });
+  } catch (e) {
+    return res.status(500).json({ success: false, message: 'Failed to load automation rules' });
+  }
+});
+
+router.put('/settings/automation-rules', async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
+    const { key, config, active } = req.body;
+    if (!key) return res.status(400).json({ success: false, message: 'rule key required' });
+
+    const [rule, created] = await AttendanceAutomationRule.findOrCreate({
+      where: { key, orgAccountId: orgId },
+      defaults: { config: typeof config === 'object' ? JSON.stringify(config) : config, active: active ?? true, orgAccountId: orgId }
+    });
+
+    if (!created) {
+      await rule.update({
+        config: typeof config === 'object' ? JSON.stringify(config) : config,
+        active: active ?? rule.active
+      });
+    }
+
+    return res.json({ success: true, rule });
+  } catch (e) {
+    return res.status(500).json({ success: false, message: 'Failed to save automation rule' });
+  }
+});
+
 // Helper: compute payable days for a given month using saved settings (org-scoped)
 router.get('/salary/payable-days', async (req, res) => {
   try {
@@ -8027,21 +8422,47 @@ router.get('/attendance', async (req, res) => {
       where,
       order: [['createdAt', 'DESC']],
       include: [
-        { model: User, as: 'user', attributes: ['id'], include: [{ model: StaffProfile, as: 'profile', attributes: ['name', 'staffId', 'department'] }] }
+        {
+          model: User,
+          as: 'user',
+          attributes: ['id'],
+          include: [
+            { model: StaffProfile, as: 'profile', attributes: ['name', 'staffId', 'department', 'phone'] },
+            {
+              model: Role,
+              as: 'roles',
+              attributes: ['name'],
+              through: { attributes: [] },
+              include: [
+                { model: Permission, as: 'permissions', attributes: ['name'], through: { attributes: [] } }
+              ]
+            }
+          ]
+        }
       ]
     });
 
-    const toTime = (dt) => (dt ? new Date(dt).toTimeString().slice(0, 8) : null);
+    const toTime = (iso) => {
+      if (!iso) return null;
+      return new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false });
+    };
+
     const data = rows.map(r => {
-      let status = r.status || 'absent';
-      if (!r.status) {
-        if (Number(r.breakTotalSeconds) === -1) status = 'leave';
-        else if (Number(r.breakTotalSeconds) === -2) status = 'half_day';
+      let status = 'absent';
+      if (r.punchedInAt) {
+        if (r.status === 'leave') status = 'leave';
         else if (r.punchedInAt && r.punchedOutAt) status = 'present';
         else if (r.punchedInAt || r.punchedOutAt) {
           status = r.punchedOutAt ? 'half_day' : 'present';
         }
       }
+
+      // Flatten permissions across all roles
+      const perms = new Set();
+      (r.user?.roles || []).forEach(role => {
+        (role.permissions || []).forEach(p => perms.add(p.name));
+      });
+
       return {
         id: r.id,
         userId: r.userId,
@@ -8055,10 +8476,25 @@ router.get('/attendance', async (req, res) => {
 
         status,
 
-        user: { name: r.user?.profile?.name || null },
+        user: {
+          name: r.user?.profile?.name || null,
+          roles: (r.user?.roles || []).map(role => role.name),
+          permissions: Array.from(perms)
+        },
 
-        staffProfile: { staffId: r.user?.profile?.staffId || null, department: r.user?.profile?.department || null }
+        staffProfile: {
+          staffId: r.user?.profile?.staffId || null,
+          department: r.user?.profile?.department || null,
+          phone: r.user?.profile?.phone || null
+        },
 
+        // Location data
+        latitude: r.latitude,
+        longitude: r.longitude,
+        address: r.address,
+        punchOutLatitude: r.punchOutLatitude,
+        punchOutLongitude: r.punchOutLongitude,
+        punchOutAddress: r.punchOutAddress,
       };
 
     });
@@ -13451,6 +13887,780 @@ router.get('/reports/org-attendance', async (req, res) => {
     console.error('Org attendance report error:', error);
 
     res.status(500).json({ success: false, message: 'Failed to generate attendance report' });
+
+  }
+
+});
+
+
+
+// Organization-based Detailed Attendance Reports (Geolocation)
+
+router.get('/reports/org-detailed-attendance', async (req, res) => {
+
+  try {
+
+    const orgId = requireOrg(req, res); if (!orgId) return;
+
+    const { month, year, format, employeeIds } = req.query;
+
+    const startDate = month && year ? new Date(year, month - 1, 1) : new Date(new Date().getFullYear(), new Date().getMonth(), 1);
+
+    const endDate = new Date(startDate.getFullYear(), startDate.getMonth() + 1, 0);
+
+
+
+    let staffWhereClause = { orgAccountId: orgId, role: 'staff' };
+
+    if (employeeIds) {
+
+      const empIds = employeeIds.split(',').map(id => parseInt(id.trim())).filter(id => !isNaN(id));
+
+      if (empIds.length > 0) staffWhereClause.id = { [Op.in]: empIds };
+
+    }
+
+
+
+    const staffList = await User.findAll({
+
+      where: staffWhereClause,
+
+      include: [{ model: StaffProfile, as: 'profile' }],
+
+      order: [['id', 'ASC']]
+
+    });
+
+
+
+    if (!staffList.length) return res.json({ success: true, data: [] });
+
+
+
+    const staffIds = staffList.map(s => s.id);
+
+    const attendanceData = await Attendance.findAll({
+
+      where: {
+
+        userId: staffIds,
+
+        date: {
+
+          [Op.gte]: startDate.toISOString().split('T')[0],
+
+          [Op.lte]: endDate.toISOString().split('T')[0]
+
+        }
+
+      },
+
+      include: [{
+
+        model: User,
+
+        as: 'user',
+
+        include: [{ model: StaffProfile, as: 'profile' }]
+
+      }],
+
+      order: [['date', 'DESC']]
+
+    });
+
+
+
+    // Fetch Geofence Assignments to deduce site names
+
+    const geofenceAssignments = await StaffGeofenceAssignment.findAll({
+
+      where: { userId: staffIds },
+
+      include: [{
+
+        model: GeofenceTemplate,
+
+        as: 'template',
+
+        include: [{ model: GeofenceSite, as: 'sites' }]
+
+      }]
+
+    });
+
+
+
+    const getGeofenceAtDate = (userId, dateStr) => {
+
+      const assignments = geofenceAssignments.filter(a => a.userId === userId && a.active !== false && a.template && a.template.active !== false);
+
+      assignments.sort((a, b) => new Date(b.effectiveFrom) - new Date(a.effectiveFrom));
+
+      const activeAsg = assignments.find(a => {
+
+        if (a.effectiveFrom && String(a.effectiveFrom) > dateStr) return false;
+
+        if (a.effectiveTo && String(a.effectiveTo) < dateStr) return false;
+
+        return true;
+
+      });
+
+      if (!activeAsg || !activeAsg.template.sites) return null;
+
+      return activeAsg.template.sites.filter(s => s.active !== false).map(s => s.name).join(', ');
+
+    };
+
+
+
+    if (format === 'excel') {
+
+      const workbook = new exceljs.Workbook();
+
+      const worksheet = workbook.addWorksheet('Detailed Attendance Report');
+
+
+
+      worksheet.columns = [
+
+        { header: 'Employee Name', key: 'employeeName', width: 22 },
+
+        { header: 'Phone Number', key: 'phone', width: 15 },
+
+        { header: 'Department', key: 'department', width: 15 },
+
+        { header: 'Date', key: 'date', width: 15 },
+
+        { header: 'Punch In', key: 'punchIn', width: 12 },
+
+        { header: 'Punch In Lat', key: 'punchInLat', width: 15 },
+
+        { header: 'Punch In Lng', key: 'punchInLng', width: 15 },
+
+        { header: 'Punch In Address', key: 'punchInAddress', width: 40 },
+
+        { header: 'Punch Out', key: 'punchOut', width: 12 },
+
+        { header: 'Punch Out Lat', key: 'punchOutLat', width: 15 },
+
+        { header: 'Punch Out Lng', key: 'punchOutLng', width: 15 },
+
+        { header: 'Punch Out Address', key: 'punchOutAddress', width: 40 },
+
+        { header: 'Assigned Geofence', key: 'assignedGeofence', width: 30 },
+
+        { header: 'Work Hours', key: 'workHours', width: 12 },
+
+        { header: 'Status', key: 'status', width: 15 }
+
+      ];
+
+
+
+      attendanceData.forEach(att => {
+
+        const punchInTime = att.punchedInAt ? new Date(att.punchedInAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : 'N/A';
+
+        const punchOutTime = att.punchedOutAt ? new Date(att.punchedOutAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : 'N/A';
+
+        const assignedGeofence = getGeofenceAtDate(att.userId, att.date);
+
+
+
+        let workHours = 'N/A';
+
+        if (att.punchedInAt && att.punchedOutAt) {
+
+          const hours = (new Date(att.punchedOutAt) - new Date(att.punchedInAt)) / (1000 * 60 * 60);
+
+          workHours = hours.toFixed(2) + ' hrs';
+
+        }
+
+
+
+        worksheet.addRow({
+
+          employeeName: att.user?.profile?.name || 'N/A',
+
+          phone: att.user?.phone || 'N/A',
+
+          department: att.user?.profile?.department || 'N/A',
+
+          date: new Date(att.date).toLocaleDateString(),
+
+          punchIn: punchInTime,
+
+          punchInLat: att.latitude || 'N/A',
+
+          punchInLng: att.longitude || 'N/A',
+
+          punchInAddress: att.address || 'N/A',
+
+          punchOut: punchOutTime,
+
+          punchOutLat: att.punchOutLatitude || 'N/A',
+
+          punchOutLng: att.punchOutLongitude || 'N/A',
+
+          punchOutAddress: att.punchOutAddress || 'N/A',
+
+          assignedGeofence: assignedGeofence || 'N/A',
+
+          workHours: workHours,
+
+          status: att.status || 'N/A'
+
+        });
+
+      });
+
+
+
+      worksheet.getRow(1).font = { bold: true };
+
+      worksheet.getRow(1).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE0E0E0' } };
+
+
+
+      res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+
+      res.setHeader('Content-Disposition', `attachment; filename=org-detailed-attendance-report-${startDate.getFullYear()}-${startDate.getMonth() + 1}.xlsx`);
+
+      await workbook.xlsx.write(res);
+
+      return;
+
+    }
+
+
+
+    // For API response
+
+    const formattedData = attendanceData.map(att => {
+
+      return {
+
+        ...att.toJSON(),
+
+        assignedGeofence: getGeofenceAtDate(att.userId, att.date)
+
+      };
+
+    });
+
+
+
+    res.json({ success: true, data: formattedData, month: startDate.getMonth() + 1, year: startDate.getFullYear() });
+
+  } catch (error) {
+
+    console.error('Org detailed attendance report error:', error);
+
+    res.status(500).json({ success: false, message: 'Failed to generate detailed attendance report' });
+
+  }
+
+});
+
+
+
+// Organization-based Applied Leave Reports
+
+router.get('/reports/org-applied-leave', async (req, res) => {
+
+  try {
+
+    const orgId = requireOrg(req, res); if (!orgId) return;
+
+    const { month, year, format, employeeIds } = req.query;
+
+    const startDate = month && year ? new Date(year, month - 1, 1) : new Date(new Date().getFullYear(), new Date().getMonth(), 1);
+
+    const endDate = new Date(startDate.getFullYear(), startDate.getMonth() + 1, 0);
+
+
+
+    let staffWhereClause = { orgAccountId: orgId, role: 'staff' };
+
+    if (employeeIds) {
+
+      const empIds = employeeIds.split(',').map(id => parseInt(id.trim())).filter(id => !isNaN(id));
+
+      if (empIds.length > 0) staffWhereClause.id = { [Op.in]: empIds };
+
+    }
+
+
+
+    const staffList = await User.findAll({ where: staffWhereClause });
+
+    if (!staffList.length) return res.json({ success: true, data: [] });
+
+
+
+    const leaveData = await LeaveRequest.findAll({
+
+      where: {
+
+        userId: staffList.map(s => s.id),
+
+        createdAt: {
+
+          [Op.gte]: startDate,
+
+          [Op.lte]: endDate
+
+        }
+
+      },
+
+      include: [{
+
+        model: User,
+
+        as: 'user',
+
+        include: [{ model: StaffProfile, as: 'profile' }]
+
+      }]
+
+    });
+
+
+
+    if (format === 'excel') {
+
+      const workbook = new exceljs.Workbook();
+
+      const worksheet = workbook.addWorksheet('Applied Leave Report');
+
+      worksheet.columns = [
+
+        { header: 'Employee Name', key: 'employeeName', width: 20 },
+
+        { header: 'Employee ID', key: 'employeeId', width: 15 },
+
+        { header: 'Department', key: 'department', width: 15 },
+
+        { header: 'Leave Type', key: 'leaveType', width: 15 },
+
+        { header: 'Start Date', key: 'startDate', width: 15 },
+
+        { header: 'End Date', key: 'endDate', width: 15 },
+
+        { header: 'Days', key: 'days', width: 10 },
+
+        { header: 'Status', key: 'status', width: 10 },
+
+        { header: 'Reason', key: 'reason', width: 25 },
+
+        { header: 'Applied On', key: 'appliedOn', width: 15 }
+
+      ];
+
+
+
+      leaveData.forEach(leave => {
+
+        const days = Math.ceil((new Date(leave.endDate) - new Date(leave.startDate)) / (1000 * 60 * 60 * 24)) + 1;
+
+        worksheet.addRow({
+
+          employeeName: leave.user?.profile?.name || 'N/A',
+
+          employeeId: leave.user?.phone || 'N/A',
+
+          department: leave.user?.profile?.department || 'N/A',
+
+          leaveType: leave.leaveType || 'N/A',
+
+          startDate: new Date(leave.startDate).toLocaleDateString(),
+
+          endDate: new Date(leave.endDate).toLocaleDateString(),
+
+          days: days,
+
+          status: leave.status || 'N/A',
+
+          reason: leave.reason || 'N/A',
+
+          appliedOn: new Date(leave.createdAt).toLocaleDateString()
+
+        });
+
+      });
+
+
+
+      worksheet.getRow(1).font = { bold: true };
+
+      worksheet.getRow(1).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE0E0E0' } };
+
+      res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+
+      res.setHeader('Content-Disposition', `attachment; filename=org-applied-leave-report-${startDate.getFullYear()}-${startDate.getMonth() + 1}.xlsx`);
+
+      await workbook.xlsx.write(res);
+
+      return;
+
+    }
+
+
+
+    res.json({ success: true, data: leaveData });
+
+  } catch (error) {
+
+    console.error('Org applied leave report error:', error);
+
+    res.status(500).json({ success: false, message: 'Failed to generate applied leave report' });
+
+  }
+
+});
+
+
+
+// Organization-based Leave Balance Reports
+
+router.get('/reports/org-leave-balance', async (req, res) => {
+
+  try {
+
+    const orgId = requireOrg(req, res); if (!orgId) return;
+
+    const { format, employeeIds } = req.query;
+
+
+
+    let staffWhereClause = { orgAccountId: orgId, role: 'staff' };
+
+    if (employeeIds) {
+
+      const empIds = employeeIds.split(',').map(id => parseInt(id.trim())).filter(id => !isNaN(id));
+
+      if (empIds.length > 0) staffWhereClause.id = { [Op.in]: empIds };
+
+    }
+
+
+
+    const staffList = await User.findAll({ where: staffWhereClause });
+
+    if (!staffList.length) return res.json({ success: true, data: [] });
+
+
+
+    const balanceData = await LeaveBalance.findAll({
+
+      where: {
+
+        userId: staffList.map(s => s.id),
+
+        orgAccountId: orgId
+
+      },
+
+      include: [{
+
+        model: User,
+
+        as: 'user',
+
+        include: [{ model: StaffProfile, as: 'profile' }]
+
+      }]
+
+    });
+
+
+
+    if (format === 'excel') {
+
+      const workbook = new exceljs.Workbook();
+
+      const worksheet = workbook.addWorksheet('Leave Balance Report');
+
+      worksheet.columns = [
+
+        { header: 'Employee Name', key: 'employeeName', width: 20 },
+
+        { header: 'Employee ID', key: 'employeeId', width: 15 },
+
+        { header: 'Department', key: 'department', width: 15 },
+
+        { header: 'Category', key: 'category', width: 15 },
+
+        { header: 'Allocated', key: 'allocated', width: 10 },
+
+        { header: 'Used', key: 'used', width: 10 },
+
+        { header: 'Remaining', key: 'remaining', width: 10 }
+
+      ];
+
+
+
+      balanceData.forEach(bal => {
+
+        worksheet.addRow({
+
+          employeeName: bal.user?.profile?.name || 'N/A',
+
+          employeeId: bal.user?.phone || 'N/A',
+
+          department: bal.user?.profile?.department || 'N/A',
+
+          category: bal.categoryKey || 'N/A',
+
+          allocated: bal.allocated || 0,
+
+          used: bal.used || 0,
+
+          remaining: bal.remaining || 0
+
+        });
+
+      });
+
+
+
+      worksheet.getRow(1).font = { bold: true };
+
+      worksheet.getRow(1).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE0E0E0' } };
+
+      res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+
+      res.setHeader('Content-Disposition', `attachment; filename=org-leave-balance-report.xlsx`);
+
+      await workbook.xlsx.write(res);
+
+      return;
+
+    }
+
+
+
+    res.json({ success: true, data: balanceData });
+
+  } catch (error) {
+
+    console.error('Org leave balance report error:', error);
+
+    res.status(500).json({ success: false, message: 'Failed to generate leave balance report' });
+
+  }
+
+});
+
+
+
+// Organization-based Punch Matrix Reports
+
+router.get('/reports/org-punch-matrix', async (req, res) => {
+
+  try {
+
+    const orgId = requireOrg(req, res); if (!orgId) return;
+
+    const { month, year, format, employeeIds } = req.query;
+
+    const startDate = month && year ? new Date(year, month - 1, 1) : new Date(new Date().getFullYear(), new Date().getMonth(), 1);
+
+    const endDate = new Date(startDate.getFullYear(), startDate.getMonth() + 1, 0);
+
+    const daysInMonth = endDate.getDate();
+
+
+
+    let staffWhereClause = { orgAccountId: orgId, role: 'staff' };
+
+    if (employeeIds) {
+
+      const empIds = employeeIds.split(',').map(id => parseInt(id.trim())).filter(id => !isNaN(id));
+
+      if (empIds.length > 0) staffWhereClause.id = { [Op.in]: empIds };
+
+    }
+
+
+
+    const staffList = await User.findAll({
+
+      where: staffWhereClause,
+
+      include: [{ model: StaffProfile, as: 'profile' }],
+
+      order: [['id', 'ASC']]
+
+    });
+
+
+
+    if (!staffList.length) return res.json({ success: true, data: [] });
+
+
+
+    const attendanceData = await Attendance.findAll({
+
+      where: {
+
+        userId: staffList.map(s => s.id),
+
+        date: {
+
+          [Op.gte]: startDate.toISOString().split('T')[0],
+
+          [Op.lte]: endDate.toISOString().split('T')[0]
+
+        }
+
+      }
+
+    });
+
+
+
+    // Map attendance to matrix: { userId: { date: [times] } }
+
+    const matrix = {};
+
+    attendanceData.forEach(att => {
+
+      if (!matrix[att.userId]) matrix[att.userId] = {};
+
+      if (!matrix[att.userId][att.date]) matrix[att.userId][att.date] = [];
+
+      if (att.punchedInAt) {
+
+        matrix[att.userId][att.date].push(new Date(att.punchedInAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false }));
+
+      }
+
+    });
+
+
+
+    if (format === 'excel') {
+
+      const workbook = new exceljs.Workbook();
+
+      const worksheet = workbook.addWorksheet('Punch Report');
+
+
+
+      // Prepare headers
+
+      const columns = [
+
+        { header: 'S.N.', key: 'sn', width: 5 },
+
+        { header: 'Staff Name', key: 'staffName', width: 25 }
+
+      ];
+
+
+
+      for (let i = 1; i <= daysInMonth; i++) {
+
+        const dayStr = i.toString().padStart(2, '0');
+
+        const dateStr = `${dayStr}-${(startDate.getMonth() + 1).toString().padStart(2, '0')}-${startDate.getFullYear()}`;
+
+        columns.push({ header: dateStr, key: `day_${i}`, width: 12 });
+
+      }
+
+      worksheet.columns = columns;
+
+
+
+      // Add rows
+
+      staffList.forEach((staff, index) => {
+
+        const rowData = {
+
+          sn: index + 1,
+
+          staffName: staff.profile?.name || 'N/A'
+
+        };
+
+
+
+        for (let i = 1; i <= daysInMonth; i++) {
+
+          const dateKey = new Date(startDate.getFullYear(), startDate.getMonth(), i).toISOString().split('T')[0];
+
+          rowData[`day_${i}`] = (matrix[staff.id] && matrix[staff.id][dateKey]) ? matrix[staff.id][dateKey].join('; ') : '';
+
+        }
+
+        worksheet.addRow(rowData);
+
+      });
+
+
+
+      // Style header
+
+      worksheet.getRow(1).font = { bold: true };
+
+      worksheet.getRow(1).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE0E0E0' } };
+
+      worksheet.getRow(1).alignment = { horizontal: 'center' };
+
+
+
+      // Border for all cells
+
+      worksheet.eachRow({ includeEmpty: true }, (row) => {
+
+        row.eachCell({ includeEmpty: true }, (cell) => {
+
+          cell.border = {
+
+            top: { style: 'thin' },
+
+            left: { style: 'thin' },
+
+            bottom: { style: 'thin' },
+
+            right: { style: 'thin' }
+
+          };
+
+        });
+
+      });
+
+
+
+      res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+
+      res.setHeader('Content-Disposition', `attachment; filename=punch-report-${startDate.getFullYear()}-${startDate.getMonth() + 1}.xlsx`);
+
+      await workbook.xlsx.write(res);
+
+      return;
+
+    }
+
+
+
+    res.json({ success: true, data: { staffList, matrix, daysInMonth, startDate } });
+
+  } catch (error) {
+
+    console.error('Org punch matrix report error:', error);
+
+    res.status(500).json({ success: false, message: 'Failed to generate punch matrix report' });
 
   }
 
