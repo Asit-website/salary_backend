@@ -117,59 +117,75 @@ router.post('/issue', async (req, res) => {
     const orgId = requireOrg(req, res);
     if (!orgId) return;
 
-    const { staffUserId, templateId, customContent, title } = req.body;
-    if (!staffUserId) return res.status(400).json({ success: false, message: 'Staff user ID is required' });
+    const { staffUserId, staffUserIds, templateId, customContent, title } = req.body || {};
+    const normalizedIds = Array.isArray(staffUserIds)
+        ? staffUserIds.map((v) => Number(v)).filter((v) => Number.isFinite(v) && v > 0)
+        : (staffUserId ? [Number(staffUserId)].filter((v) => Number.isFinite(v) && v > 0) : []);
+    if (normalizedIds.length === 0) {
+        return res.status(400).json({ success: false, message: 'At least one staff user ID is required' });
+    }
 
     try {
-        // Search by userId and verify via User association since some profiles might have null orgAccountId
-        const staff = await StaffProfile.findOne({
-            where: { userId: staffUserId },
-            include: [{
-                model: User,
-                as: 'user',
-                where: { orgAccountId: orgId }
-            }]
-        });
+        const template = templateId ? await LetterTemplate.findOne({ where: { id: templateId, orgAccountId: orgId } }) : null;
+        if (templateId && !template) return res.status(404).json({ success: false, message: 'Template not found' });
+        const created = [];
+        const skipped = [];
+        for (const id of normalizedIds) {
+            // Search by userId and verify via User association since some profiles might have null orgAccountId
+            const staff = await StaffProfile.findOne({
+                where: { userId: id },
+                include: [{
+                    model: User,
+                    as: 'user',
+                    where: { orgAccountId: orgId }
+                }]
+            });
+            if (!staff) {
+                skipped.push({ staffUserId: id, reason: 'Staff profile not found' });
+                continue;
+            }
 
-        if (!staff) return res.status(404).json({ success: false, message: 'Staff profile not found' });
+            let finalContent = customContent;
+            let finalTitle = title;
+            if (template) {
+                finalContent = replacePlaceholders(template.content, staff);
+                finalTitle = finalTitle || template.title;
+            }
 
-        let finalContent = customContent;
-        let finalTitle = title;
+            if (!finalContent) {
+                skipped.push({ staffUserId: id, reason: 'Content is required' });
+                continue;
+            }
 
-        if (templateId) {
-            const template = await LetterTemplate.findOne({ where: { id: templateId, orgAccountId: orgId } });
-            if (!template) return res.status(404).json({ success: false, message: 'Template not found' });
+            const issuedLetter = await StaffLetter.create({
+                staffId: id,
+                letterTemplateId: templateId || null,
+                title: finalTitle || 'Untitled Letter',
+                content: finalContent,
+                issuedBy: req.user.id,
+                orgAccountId: orgId
+            });
+            created.push(issuedLetter);
 
-            finalContent = replacePlaceholders(template.content, staff);
-            finalTitle = finalTitle || template.title;
+            // Send email notification to staff
+            if (staff.email) {
+                sendStaffLetterEmail(
+                    staff.email,
+                    staff.name || 'Staff Member',
+                    finalTitle || 'Letter Issued',
+                    finalContent
+                ).catch(err => console.error('Failed to send letter email:', err));
+            } else {
+                console.warn(`Staff member ${id} has no email address. Skipping email notification.`);
+            }
         }
-
-        if (!finalContent) return res.status(400).json({ success: false, message: 'Content is required' });
-
-        const issuedLetter = await StaffLetter.create({
-            staffId: staffUserId,
-            letterTemplateId: templateId || null,
-            title: finalTitle || 'Untitled Letter',
-            content: finalContent,
-            issuedBy: req.user.id,
-            orgAccountId: orgId
+        return res.json({
+            success: true,
+            issuedLetter: created[0] || null,
+            issuedLetters: created,
+            createdCount: created.length,
+            skipped,
         });
-
-        // Send email notification to staff
-        if (staff.email) {
-            console.log(`Attempting to send letter email to: ${staff.email}`);
-            // Don't await this to keep response fast, or await if reliability is preferred
-            sendStaffLetterEmail(
-                staff.email,
-                staff.name || 'Staff Member',
-                finalTitle || 'Letter Issued',
-                finalContent
-            ).catch(err => console.error('Failed to send letter email:', err));
-        } else {
-            console.warn(`Staff member ${staffUserId} has no email address. Skipping email notification.`);
-        }
-
-        res.json({ success: true, issuedLetter });
     } catch (e) {
         res.status(500).json({ success: false, message: e.message });
     }

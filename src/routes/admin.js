@@ -3618,6 +3618,72 @@ router.delete('/business-functions/:id', async (req, res) => {
 
 
 
+// Assign one department to multiple staff (org-scoped)
+router.post('/business-functions/assign-department', async (req, res) => {
+
+  try {
+
+    const orgId = requireOrg(req, res); if (!orgId) return;
+    const { department, staffUserIds } = req.body || {};
+
+    const dept = String(department || '').trim();
+    const userIds = Array.isArray(staffUserIds)
+      ? [...new Set(staffUserIds.map(v => Number(v)).filter(v => Number.isFinite(v) && v > 0))]
+      : [];
+
+    if (!dept) return res.status(400).json({ success: false, message: 'department is required' });
+    if (!userIds.length) return res.status(400).json({ success: false, message: 'staffUserIds is required' });
+
+    const deptFn = await BusinessFunction.findOne({
+      where: { orgAccountId: orgId, name: { [Op.like]: 'department' } },
+      include: [{ model: BusinessFunctionValue, as: 'values' }],
+    });
+
+    const deptValues = (deptFn?.values || [])
+      .map(v => String(v.value || '').trim().toLowerCase())
+      .filter(Boolean);
+    if (deptValues.length && !deptValues.includes(dept.toLowerCase())) {
+      return res.status(400).json({ success: false, message: 'Invalid department value' });
+    }
+
+    const users = await User.findAll({
+      where: { id: { [Op.in]: userIds }, role: 'staff', orgAccountId: orgId },
+      attributes: ['id'],
+      include: [{ model: StaffProfile, as: 'profile', attributes: ['userId', 'department'] }],
+    });
+    const validUserIds = users.map(u => u.id);
+
+    if (!validUserIds.length) {
+      return res.status(404).json({ success: false, message: 'No valid staff found for assignment' });
+    }
+
+    await Promise.all(validUserIds.map(async (userId) => {
+      const [profile] = await StaffProfile.findOrCreate({
+        where: { userId },
+        defaults: { userId, department: dept },
+      });
+      if (profile.department !== dept) {
+        await profile.update({ department: dept });
+      }
+    }));
+
+    return res.json({
+      success: true,
+      message: `Department assigned to ${validUserIds.length} staff`,
+      assignedCount: validUserIds.length,
+      department: dept,
+    });
+
+  } catch (e) {
+
+    console.error('Assign department bulk error:', e);
+    return res.status(500).json({ success: false, message: 'Failed to assign department' });
+
+  }
+
+});
+
+
 // Effective attendance template for a user
 
 router.get('/settings/attendance-templates/effective/:userId', async (req, res) => {
@@ -4500,14 +4566,22 @@ router.get('/staff/import-template', async (req, res) => {
   try {
     const workbook = new exceljs.Workbook();
     const worksheet = workbook.addWorksheet('Staff Import Template');
+    const STAFF_IMPORT_HEADERS = [
+      'Name',
+      'Staff ID',
+      'Phone Number',
+      'Designation',
+      'Joining Date (YYYY-MM-DD)',
+      'Email Address',
+    ];
 
     worksheet.columns = [
-      { header: 'Name', key: 'name', width: 25 },
-      { header: 'Staff ID', key: 'staffId', width: 15 },
-      { header: 'Phone Number', key: 'phone', width: 15 },
-      { header: 'Designation', key: 'designation', width: 20 },
-      { header: 'Joining Date (YYYY-MM-DD)', key: 'joiningDate', width: 25 },
-      { header: 'Email Address', key: 'email', width: 30 },
+      { header: STAFF_IMPORT_HEADERS[0], key: 'name', width: 25 },
+      { header: STAFF_IMPORT_HEADERS[1], key: 'staffId', width: 15 },
+      { header: STAFF_IMPORT_HEADERS[2], key: 'phone', width: 15 },
+      { header: STAFF_IMPORT_HEADERS[3], key: 'designation', width: 20 },
+      { header: STAFF_IMPORT_HEADERS[4], key: 'joiningDate', width: 25 },
+      { header: STAFF_IMPORT_HEADERS[5], key: 'email', width: 30 },
     ];
 
     // Add a sample row
@@ -4544,6 +4618,36 @@ router.post('/staff/import', uploadMemory.single('file'), async (req, res) => {
     const workbook = new exceljs.Workbook();
     await workbook.xlsx.load(req.file.buffer);
     const worksheet = workbook.getWorksheet(1);
+    if (!worksheet) return res.status(400).json({ success: false, message: 'Invalid Excel file' });
+
+    const STAFF_IMPORT_HEADERS = [
+      'Name',
+      'Staff ID',
+      'Phone Number',
+      'Designation',
+      'Joining Date (YYYY-MM-DD)',
+      'Email Address',
+    ];
+    const headerRow = worksheet.getRow(1);
+    const uploadedHeaders = STAFF_IMPORT_HEADERS.map((_, idx) => String(getCellValue(headerRow.getCell(idx + 1)) || '').trim());
+    const expectedHeaders = STAFF_IMPORT_HEADERS.map((h) => String(h).trim());
+    const headersMatch = expectedHeaders.every((h, idx) => uploadedHeaders[idx] === h);
+
+    // Reject if there are extra non-empty headers beyond expected columns
+    let hasExtraHeaders = false;
+    if (Array.isArray(headerRow.values)) {
+      for (let col = STAFF_IMPORT_HEADERS.length + 1; col <= headerRow.values.length; col++) {
+        const v = String(getCellValue(headerRow.getCell(col)) || '').trim();
+        if (v) { hasExtraHeaders = true; break; }
+      }
+    }
+
+    if (!headersMatch || hasExtraHeaders) {
+      return res.status(400).json({
+        success: false,
+        message: `Invalid Excel headers. Please use the downloaded template exactly. Expected: ${expectedHeaders.join(', ')}`,
+      });
+    }
 
     const results = {
       success: 0,
@@ -12960,6 +13064,31 @@ router.put('/sales/assignments/:id', async (req, res) => {
 
 });
 
+// Delete all staff (org-scoped)
+router.delete('/staff', requireRole(['admin']), async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
+
+    const staffRows = await User.findAll({
+      where: { orgAccountId: orgId, role: 'staff' },
+      attributes: ['id'],
+    });
+    const staffIds = staffRows.map((r) => Number(r.id)).filter((v) => Number.isFinite(v));
+
+    if (staffIds.length === 0) {
+      return res.json({ success: true, message: 'No staff to delete', deletedCount: 0 });
+    }
+
+    await StaffProfile.destroy({ where: { userId: staffIds } });
+    const deletedCount = await User.destroy({ where: { id: staffIds, orgAccountId: orgId, role: 'staff' } });
+
+    return res.json({ success: true, message: 'All staff deleted successfully', deletedCount });
+  } catch (e) {
+    console.error('Delete all staff error:', e);
+    return res.status(500).json({ success: false, message: 'Failed to delete all staff' });
+  }
+});
+
 router.delete('/sales/assignments/:id', async (req, res) => {
   try {
     const orgId = requireOrg(req, res); if (!orgId) return;
@@ -14738,6 +14867,146 @@ router.get('/reports/org-punch-matrix', async (req, res) => {
 
 
 // Organization-based Sales Reports
+
+// Organization-based Attendance Matrix Reports (status + OT + half-day)
+router.get('/reports/org-attendance-matrix', async (req, res) => {
+
+  try {
+
+    const orgId = requireOrg(req, res); if (!orgId) return;
+    const { month, year, format, employeeIds } = req.query;
+
+    const startDate = month && year ? new Date(year, month - 1, 1) : new Date(new Date().getFullYear(), new Date().getMonth(), 1);
+    const endDate = new Date(startDate.getFullYear(), startDate.getMonth() + 1, 0);
+    const daysInMonth = endDate.getDate();
+
+    let staffWhereClause = { orgAccountId: orgId, role: 'staff' };
+    if (employeeIds) {
+      const empIds = employeeIds.split(',').map(id => parseInt(id.trim())).filter(id => !isNaN(id));
+      if (empIds.length > 0) staffWhereClause.id = { [Op.in]: empIds };
+    }
+
+    const staffList = await User.findAll({
+      where: staffWhereClause,
+      include: [{ model: StaffProfile, as: 'profile' }],
+      order: [['id', 'ASC']]
+    });
+
+    if (!staffList.length) return res.json({ success: true, data: { staffList: [], matrix: {}, summary: {}, daysInMonth, startDate } });
+
+    const attendanceData = await Attendance.findAll({
+      where: {
+        userId: staffList.map(s => s.id),
+        date: {
+          [Op.gte]: startDate.toISOString().split('T')[0],
+          [Op.lte]: endDate.toISOString().split('T')[0]
+        }
+      },
+      order: [['date', 'ASC']]
+    });
+
+    const matrix = {};
+    const summary = {};
+    const toStatusCode = (att) => {
+      const s = String(att?.status || '').toLowerCase();
+      if (s === 'present') return 'P';
+      if (s === 'absent') return 'A';
+      if (s === 'leave') return 'L';
+      if (s === 'half_day' || s === 'half-day' || s === 'halfday') return 'HD';
+      if (s === 'weekly_off' || s === 'weekly-off' || s === 'weeklyoff') return 'WO';
+      if (s === 'holiday') return 'H';
+      if (att?.punchedInAt || att?.punchedOutAt) return 'P';
+      return '-';
+    };
+
+    staffList.forEach((s) => {
+      matrix[s.id] = {};
+      summary[s.id] = { halfDays: 0, overtimeMinutes: 0 };
+    });
+
+    attendanceData.forEach(att => {
+      if (!matrix[att.userId]) matrix[att.userId] = {};
+      if (!summary[att.userId]) summary[att.userId] = { halfDays: 0, overtimeMinutes: 0 };
+
+      const statusCode = toStatusCode(att);
+      const otMin = Math.max(0, Number(att.overtimeMinutes || 0) || 0);
+      if (statusCode === 'HD') summary[att.userId].halfDays += 1;
+      if (otMin > 0) summary[att.userId].overtimeMinutes += otMin;
+
+      matrix[att.userId][att.date] = otMin > 0 ? `${statusCode} OT${otMin}m` : statusCode;
+    });
+
+    if (format === 'excel') {
+
+      const workbook = new exceljs.Workbook();
+      const worksheet = workbook.addWorksheet('Attendance Report');
+
+      const columns = [
+        { header: 'S.N.', key: 'sn', width: 6 },
+        { header: 'Staff Name', key: 'staffName', width: 24 }
+      ];
+      for (let i = 1; i <= daysInMonth; i++) {
+        const dayStr = i.toString().padStart(2, '0');
+        columns.push({ header: dayStr, key: `day_${i}`, width: 10 });
+      }
+      columns.push({ header: 'Half Days', key: 'halfDays', width: 12 });
+      columns.push({ header: 'OT (Min)', key: 'overtimeMinutes', width: 12 });
+      worksheet.columns = columns;
+
+      staffList.forEach((staff, index) => {
+        const rowData = {
+          sn: index + 1,
+          staffName: staff.profile?.name || 'N/A',
+          halfDays: summary[staff.id]?.halfDays || 0,
+          overtimeMinutes: summary[staff.id]?.overtimeMinutes || 0
+        };
+        for (let i = 1; i <= daysInMonth; i++) {
+          const dateKey = new Date(startDate.getFullYear(), startDate.getMonth(), i).toISOString().split('T')[0];
+          rowData[`day_${i}`] = (matrix[staff.id] && matrix[staff.id][dateKey]) ? matrix[staff.id][dateKey] : '-';
+        }
+        worksheet.addRow(rowData);
+      });
+
+      worksheet.getRow(1).font = { bold: true };
+      worksheet.getRow(1).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE0E0E0' } };
+      worksheet.getRow(1).alignment = { horizontal: 'center' };
+      worksheet.eachRow({ includeEmpty: true }, (row) => {
+        row.eachCell({ includeEmpty: true }, (cell) => {
+          cell.border = {
+            top: { style: 'thin' },
+            left: { style: 'thin' },
+            bottom: { style: 'thin' },
+            right: { style: 'thin' }
+          };
+        });
+      });
+
+      res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+      res.setHeader('Content-Disposition', `attachment; filename=attendance-report-${startDate.getFullYear()}-${startDate.getMonth() + 1}.xlsx`);
+      await workbook.xlsx.write(res);
+      return;
+    }
+
+    return res.json({
+      success: true,
+      data: { staffList, matrix, summary, daysInMonth, startDate },
+      legend: {
+        P: 'Present',
+        A: 'Absent',
+        L: 'Leave',
+        HD: 'Half Day',
+        WO: 'Weekly Off',
+        H: 'Holiday',
+        OT: 'Overtime minutes'
+      }
+    });
+
+  } catch (error) {
+    console.error('Org attendance matrix report error:', error);
+    return res.status(500).json({ success: false, message: 'Failed to generate attendance matrix report' });
+  }
+
+});
 
 router.get('/reports/org-sales', async (req, res) => {
 
