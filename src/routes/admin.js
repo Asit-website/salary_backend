@@ -12824,11 +12824,38 @@ router.post('/sales/assignments', async (req, res) => {
 
     const { clientId, staffUserId, title, description, status, assignedOn, dueDate } = req.body || {};
 
+    const normalizedClientId = Number(clientId) || null;
+    const normalizedStaffUserId = Number(staffUserId) || null;
+    const normalizedDueDate = dueDate ? new Date(dueDate) : null;
+    const now = new Date();
+
+    if (!normalizedClientId || !normalizedStaffUserId) {
+      return res.status(400).json({ success: false, message: 'Client and staff are required' });
+    }
+
+    const duplicateWhere = {
+      orgAccountId: orgId,
+      clientId: normalizedClientId,
+      staffUserId: normalizedStaffUserId,
+      status: { [Op.ne]: 'complete' },
+      [Op.or]: [
+        { dueDate: null },
+        { dueDate: { [Op.gte]: now } },
+      ],
+    };
+    const existing = await AssignedJob.findOne({ where: duplicateWhere, order: [['id', 'DESC']] });
+    if (existing) {
+      return res.status(409).json({
+        success: false,
+        message: 'This staff is already assigned to this client until due date. You can reassign after due date expires or complete/delete current assignment.',
+      });
+    }
+
     const payload = {
 
-      clientId: Number(clientId) || null,
+      clientId: normalizedClientId,
 
-      staffUserId: Number(staffUserId) || null,
+      staffUserId: normalizedStaffUserId,
 
       title: title ? String(title) : null,
 
@@ -12838,7 +12865,7 @@ router.post('/sales/assignments', async (req, res) => {
 
       assignedOn: assignedOn ? new Date(assignedOn) : new Date(),
 
-      dueDate: dueDate ? new Date(dueDate) : null,
+      dueDate: normalizedDueDate,
 
       orgAccountId: orgId,
 
@@ -12877,10 +12904,37 @@ router.put('/sales/assignments/:id', async (req, res) => {
     const { clientId, staffUserId, title, description, status, assignedOn, dueDate } = req.body || {};
 
     const patch = {};
+    const nextClientId = clientId !== undefined ? (Number(clientId) || null) : (row.clientId ?? row.client_id ?? null);
+    const nextStaffUserId = staffUserId !== undefined ? (Number(staffUserId) || null) : (row.staffUserId ?? row.staff_user_id ?? null);
+    const nextDueDate = dueDate !== undefined ? (dueDate ? new Date(dueDate) : null) : (row.dueDate ?? row.due_date ?? null);
+    const now = new Date();
 
-    if (clientId !== undefined) patch.clientId = Number(clientId) || null;
+    if (!nextClientId || !nextStaffUserId) {
+      return res.status(400).json({ success: false, message: 'Client and staff are required' });
+    }
 
-    if (staffUserId !== undefined) patch.staffUserId = Number(staffUserId) || null;
+    const duplicateWhere = {
+      orgAccountId: orgId,
+      clientId: nextClientId,
+      staffUserId: nextStaffUserId,
+      status: { [Op.ne]: 'complete' },
+      id: { [Op.ne]: id },
+      [Op.or]: [
+        { dueDate: null },
+        { dueDate: { [Op.gte]: now } },
+      ],
+    };
+    const existing = await AssignedJob.findOne({ where: duplicateWhere, order: [['id', 'DESC']] });
+    if (existing) {
+      return res.status(409).json({
+        success: false,
+        message: 'This staff is already assigned to this client until due date. You can reassign after due date expires or complete/delete current assignment.',
+      });
+    }
+
+    if (clientId !== undefined) patch.clientId = nextClientId;
+
+    if (staffUserId !== undefined) patch.staffUserId = nextStaffUserId;
 
     if (title !== undefined) patch.title = title ? String(title) : null;
 
@@ -12890,7 +12944,7 @@ router.put('/sales/assignments/:id', async (req, res) => {
 
     if (assignedOn !== undefined) patch.assignedOn = assignedOn ? new Date(assignedOn) : null;
 
-    if (dueDate !== undefined) patch.dueDate = dueDate ? new Date(dueDate) : null;
+    if (dueDate !== undefined) patch.dueDate = nextDueDate;
 
     await row.update(patch);
 
@@ -12904,6 +12958,21 @@ router.put('/sales/assignments/:id', async (req, res) => {
 
   }
 
+});
+
+router.delete('/sales/assignments/:id', async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
+    const { AssignedJob } = sequelize.models;
+    const id = Number(req.params.id);
+    const row = await AssignedJob.findOne({ where: { id, orgAccountId: orgId } });
+    if (!row) return res.status(404).json({ success: false, message: 'Not found' });
+    await row.destroy();
+    return res.json({ success: true });
+  } catch (e) {
+    console.error('Delete assignment error:', e);
+    return res.status(500).json({ success: false, message: 'Failed to delete assignment' });
+  }
 });
 
 
