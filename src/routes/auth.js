@@ -2,7 +2,7 @@ const express = require('express');
 const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs');
 
-const { User, StaffProfile, OtpVerify } = require('../models');
+const { User, StaffProfile, OtpVerify, OrgAccount, ChannelPartner } = require('../models');
 const otpStore = require('../otpStore');
 
 // Minimal SMS sender using the provided HTTP API
@@ -45,6 +45,21 @@ function normalizePhone(phone) {
   const digits = String(phone || '').replace(/[^0-9]/g, '');
   if (!digits) return '';
   return digits.length > 10 ? digits.slice(-10) : digits;
+}
+
+async function validateChannelPartnerMapping({ phone, channelPartnerId }) {
+  const normalizedPhone = normalizePhone(phone);
+  if (!normalizedPhone) return;
+
+  const partner = await ChannelPartner.findOne({ where: { phone: String(normalizedPhone) } });
+  if (!partner) return;
+
+  const providedId = String(channelPartnerId || '').trim();
+  if (!providedId || providedId !== String(partner.channelPartnerId || '')) {
+    const err = new Error(`Channel Partner ID required for phone ${normalizedPhone}. Use ID ${partner.channelPartnerId}.`);
+    err.statusCode = 400;
+    throw err;
+  }
 }
 
 router.post('/send-otp', async (req, res) => {
@@ -263,7 +278,6 @@ router.post('/signup-admin', async (req, res) => {
 
     // Check if phone number already exists in either User or OrgAccount table
     const existingUser = await User.findOne({ where: { phone: String(normalizedPhone) } });
-    const { OrgAccount } = require('../models');
     const existingOrg = await OrgAccount.findOne({ where: { phone: String(normalizedPhone) } });
 
     if (existingUser || existingOrg) {
@@ -272,6 +286,8 @@ router.post('/signup-admin', async (req, res) => {
         message: 'Phone number already exists in the system'
       });
     }
+
+    await validateChannelPartnerMapping({ phone: normalizedPhone, channelPartnerId });
 
     const org = await OrgAccount.create({
       name: String(businessName),
@@ -301,6 +317,9 @@ router.post('/signup-admin', async (req, res) => {
 
     return res.json({ success: true, orgAccountId: org.id, userId: admin.id });
   } catch (e) {
+    if (e?.statusCode) {
+      return res.status(e.statusCode).json({ success: false, message: e.message || 'Validation failed' });
+    }
     return res.status(500).json({ success: false, message: 'Signup failed' });
   }
 });

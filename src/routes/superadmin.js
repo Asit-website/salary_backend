@@ -3,11 +3,32 @@ const router = express.Router();
 const jwt = require('jsonwebtoken');
 
 const { sequelize } = require('../sequelize');
-const { Plan, OrgAccount, Subscription, User, Permission, Role, StaffProfile } = require('../models');
+const { Plan, OrgAccount, Subscription, User, Permission, Role, StaffProfile, ChannelPartner } = require('../models');
 const bcrypt = require('bcryptjs');
 const { authRequired } = require('../middleware/auth');
 const { requireRole } = require('../middleware/roles');
 const { Op } = require('sequelize');
+
+function normalizePhone(phone) {
+  const digits = String(phone || '').replace(/[^0-9]/g, '');
+  if (!digits) return '';
+  return digits.length > 10 ? digits.slice(-10) : digits;
+}
+
+async function validateChannelPartnerMapping({ phone, channelPartnerId }) {
+  const normalizedPhone = normalizePhone(phone);
+  if (!normalizedPhone) return;
+
+  const partner = await ChannelPartner.findOne({ where: { phone: String(normalizedPhone) } });
+  if (!partner) return;
+
+  const providedId = String(channelPartnerId || '').trim();
+  if (!providedId || providedId !== String(partner.channelPartnerId || '')) {
+    const err = new Error(`Channel Partner ID required for phone ${normalizedPhone}. Use ID ${partner.channelPartnerId}.`);
+    err.statusCode = 400;
+    throw err;
+  }
+}
 
 router.use(authRequired);
 router.use(requireRole(['superadmin']));
@@ -60,6 +81,136 @@ router.put('/plans/:id', async (req, res) => {
     return res.json({ success: true, plan: row });
   } catch (e) {
     return res.status(500).json({ success: false, message: 'Failed to update plan' });
+  }
+});
+
+// Channel Partners
+router.get('/channel-partners', async (_req, res) => {
+  try {
+    const rows = await ChannelPartner.findAll({ order: [['createdAt', 'DESC']] });
+    return res.json({ success: true, channelPartners: rows });
+  } catch (_) {
+    return res.status(500).json({ success: false, message: 'Failed to load channel partners' });
+  }
+});
+
+router.post('/channel-partners', async (req, res) => {
+  try {
+    const {
+      name,
+      channelPartnerId,
+      phone,
+      status = 'ACTIVE',
+      clientType,
+      location,
+      extra,
+      businessEmail,
+      state,
+      city,
+      roleDescription,
+      employeeCount
+    } = req.body || {};
+    if (!name) return res.status(400).json({ success: false, message: 'name required' });
+    if (!channelPartnerId) return res.status(400).json({ success: false, message: 'channelPartnerId required' });
+
+    const normalizedPartnerId = String(channelPartnerId || '').trim();
+    const partnerIdExists = await ChannelPartner.findOne({ where: { channelPartnerId: normalizedPartnerId } });
+    if (partnerIdExists) {
+      return res.status(400).json({ success: false, message: 'Channel Partner ID already exists' });
+    }
+
+    const normalizedPhone = normalizePhone(phone);
+    if (normalizedPhone) {
+      const exists = await ChannelPartner.findOne({ where: { phone: String(normalizedPhone) } });
+      if (exists) {
+        return res.status(400).json({ success: false, message: 'Phone already linked to another channel partner' });
+      }
+    }
+
+    const row = await ChannelPartner.create({
+      name,
+      channelPartnerId: normalizedPartnerId,
+      phone: normalizedPhone || null,
+      status,
+      clientType: clientType || null,
+      location: location || null,
+      businessEmail: businessEmail || null,
+      state: state || null,
+      city: city || null,
+      roleDescription: roleDescription || null,
+      employeeCount: employeeCount || null,
+      extra: extra || null,
+    });
+
+    return res.json({ success: true, channelPartner: row });
+  } catch (_) {
+    return res.status(500).json({ success: false, message: 'Failed to create channel partner' });
+  }
+});
+
+router.put('/channel-partners/:id', async (req, res) => {
+  try {
+    const row = await ChannelPartner.findByPk(req.params.id);
+    if (!row) return res.status(404).json({ success: false, message: 'Not found' });
+
+    const {
+      name,
+      channelPartnerId,
+      phone,
+      status,
+      clientType,
+      location,
+      extra,
+      businessEmail,
+      state,
+      city,
+      roleDescription,
+      employeeCount
+    } = req.body || {};
+
+    if (phone !== undefined) {
+      const normalizedPhone = normalizePhone(phone);
+      if (normalizedPhone) {
+        const exists = await ChannelPartner.findOne({
+          where: { phone: String(normalizedPhone), id: { [Op.ne]: row.id } }
+        });
+        if (exists) {
+          return res.status(400).json({ success: false, message: 'Phone already linked to another channel partner' });
+        }
+      }
+    }
+
+    if (channelPartnerId !== undefined) {
+      const normalizedPartnerId = String(channelPartnerId || '').trim();
+      if (!normalizedPartnerId) {
+        return res.status(400).json({ success: false, message: 'channelPartnerId required' });
+      }
+      const exists = await ChannelPartner.findOne({
+        where: { channelPartnerId: normalizedPartnerId, id: { [Op.ne]: row.id } }
+      });
+      if (exists) {
+        return res.status(400).json({ success: false, message: 'Channel Partner ID already exists' });
+      }
+    }
+
+    await row.update({
+      ...(name !== undefined ? { name } : {}),
+      ...(channelPartnerId !== undefined ? { channelPartnerId: String(channelPartnerId || '').trim() } : {}),
+      ...(phone !== undefined ? { phone: normalizePhone(phone) || null } : {}),
+      ...(status !== undefined ? { status } : {}),
+      ...(clientType !== undefined ? { clientType } : {}),
+      ...(location !== undefined ? { location } : {}),
+      ...(businessEmail !== undefined ? { businessEmail } : {}),
+      ...(state !== undefined ? { state } : {}),
+      ...(city !== undefined ? { city } : {}),
+      ...(roleDescription !== undefined ? { roleDescription } : {}),
+      ...(employeeCount !== undefined ? { employeeCount } : {}),
+      ...(extra !== undefined ? { extra } : {}),
+    });
+
+    return res.json({ success: true, channelPartner: row });
+  } catch (_) {
+    return res.status(500).json({ success: false, message: 'Failed to update channel partner' });
   }
 });
 
@@ -154,8 +305,9 @@ router.post('/clients', async (req, res) => {
     if (!name) return res.status(400).json({ success: false, message: 'name required' });
 
     // Check if phone number already exists in either OrgAccount or User table
-    if (phone) {
-      const normalizedPhone = String(phone).replace(/[^0-9]/g, '').slice(-10);
+    const normalizedPhone = normalizePhone(phone);
+
+    if (normalizedPhone) {
       const existingOrg = await OrgAccount.findOne({ where: { phone: normalizedPhone } });
       const existingUser = await User.findOne({ where: { phone: String(normalizedPhone) } });
 
@@ -167,9 +319,11 @@ router.post('/clients', async (req, res) => {
       }
     }
 
+    await validateChannelPartnerMapping({ phone: normalizedPhone, channelPartnerId });
+
     const row = await OrgAccount.create({
       name,
-      phone: phone ? String(phone).replace(/[^0-9]/g, '').slice(-10) : null,
+      phone: normalizedPhone || null,
       status,
       clientType: clientType || null,
       location: location || null,
@@ -208,6 +362,9 @@ router.post('/clients', async (req, res) => {
     } catch (_) { }
     return res.json({ success: true, client: row });
   } catch (e) {
+    if (e?.statusCode) {
+      return res.status(e.statusCode).json({ success: false, message: e.message || 'Validation failed' });
+    }
     return res.status(500).json({ success: false, message: 'Failed to create client' });
   }
 });
@@ -219,8 +376,9 @@ router.put('/clients/:id', async (req, res) => {
     const { name, phone, status, clientType, location, extra, businessEmail, state, city, channelPartnerId, roleDescription, employeeCount } = req.body || {};
 
     // Check if phone number already exists in either OrgAccount or User table (excluding current client)
-    if (phone) {
-      const normalizedPhone = String(phone).replace(/[^0-9]/g, '').slice(-10);
+    const normalizedPhone = normalizePhone(phone);
+
+    if (normalizedPhone) {
       const existingOrg = await OrgAccount.findOne({
         where: {
           phone: normalizedPhone,
@@ -240,9 +398,13 @@ router.put('/clients/:id', async (req, res) => {
       }
     }
 
+    if (phone !== undefined) {
+      await validateChannelPartnerMapping({ phone: normalizedPhone, channelPartnerId });
+    }
+
     await row.update({
       ...(name !== undefined ? { name } : {}),
-      ...(phone !== undefined ? { phone: phone ? String(phone).replace(/[^0-9]/g, '').slice(-10) : null } : {}),
+      ...(phone !== undefined ? { phone: normalizedPhone || null } : {}),
       ...(status !== undefined ? { status } : {}),
       ...(clientType !== undefined ? { clientType } : {}),
       ...(location !== undefined ? { location } : {}),
@@ -256,6 +418,9 @@ router.put('/clients/:id', async (req, res) => {
     });
     return res.json({ success: true, client: row });
   } catch (e) {
+    if (e?.statusCode) {
+      return res.status(e.statusCode).json({ success: false, message: e.message || 'Validation failed' });
+    }
     return res.status(500).json({ success: false, message: 'Failed to update client' });
   }
 });

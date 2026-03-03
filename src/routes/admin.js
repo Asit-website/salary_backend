@@ -12256,6 +12256,21 @@ router.post('/geofence/assign', async (req, res) => {
 
     if (!tpl) return res.status(404).json({ success: false, message: 'Geofence template not found' });
 
+    const existingActive = await StaffGeofenceAssignment.findOne({
+      where: {
+        userId: Number(userId),
+        geofenceTemplateId: Number(geofenceTemplateId),
+        active: true,
+      },
+      order: [['id', 'DESC']],
+    });
+    if (existingActive) {
+      return res.status(409).json({
+        success: false,
+        message: 'This staff is already assigned to this geofence template',
+      });
+    }
+
     const row = await StaffGeofenceAssignment.create({
 
       userId: Number(userId),
@@ -13059,6 +13074,69 @@ router.put('/sales/assignments/:id', async (req, res) => {
     console.error('Update assignment error:', e);
 
     return res.status(500).json({ success: false, message: 'Failed to update assignment' });
+
+  }
+
+});
+
+// List assignments for a template (with staff details) (org-scoped)
+router.get('/geofence/templates/:id/assignments', async (req, res) => {
+
+  try {
+
+    const orgId = requireOrg(req, res); if (!orgId) return;
+
+    const { StaffGeofenceAssignment, GeofenceTemplate } = sequelize.models;
+    const templateId = Number(req.params.id);
+
+    const tpl = await GeofenceTemplate.findOne({ where: { id: templateId, orgAccountId: orgId } });
+    if (!tpl) return res.status(404).json({ success: false, message: 'Geofence template not found' });
+
+    const rows = await StaffGeofenceAssignment.findAll({
+
+      where: { geofenceTemplateId: templateId },
+      order: [['createdAt', 'DESC']],
+      include: [{
+        model: User,
+        as: 'user',
+        attributes: ['id', 'phone', 'active'],
+        include: [{ model: StaffProfile, as: 'profile', attributes: ['name', 'staffId', 'department', 'designation'] }],
+      }],
+
+    });
+
+    return res.json({ success: true, assignments: rows });
+
+  } catch (e) {
+
+    return res.status(500).json({ success: false, message: 'Failed to load template assignments' });
+
+  }
+
+});
+
+// Unassign staff geofence assignment (org-scoped)
+router.delete('/geofence/assign/:id', async (req, res) => {
+
+  try {
+
+    const orgId = requireOrg(req, res); if (!orgId) return;
+
+    const { StaffGeofenceAssignment, GeofenceTemplate } = sequelize.models;
+    const assignmentId = Number(req.params.id);
+
+    const row = await StaffGeofenceAssignment.findByPk(assignmentId);
+    if (!row) return res.status(404).json({ success: false, message: 'Assignment not found' });
+
+    const tpl = await GeofenceTemplate.findOne({ where: { id: row.geofenceTemplateId, orgAccountId: orgId } });
+    if (!tpl) return res.status(403).json({ success: false, message: 'Forbidden' });
+
+    await row.destroy();
+    return res.json({ success: true });
+
+  } catch (e) {
+
+    return res.status(500).json({ success: false, message: 'Failed to unassign geofence' });
 
   }
 

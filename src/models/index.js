@@ -30,6 +30,7 @@ const defineStaffSalaryAssignment = require('./StaffSalaryAssignment');
 const defineSalesVisit = require('./SalesVisit');
 const defineSalesVisitAttachment = require('./SalesVisitAttachment');
 const defineOrgAccount = require('./OrgAccount');
+const defineChannelPartner = require('./ChannelPartner');
 const defineClient = require('./Client');              // keep this
 const definePlan = require('./Plan');
 const defineSubscription = require('./Subscription');
@@ -116,6 +117,7 @@ const StaffSalaryAssignment = defineStaffSalaryAssignment(sequelize);
 const SalesVisit = defineSalesVisit(sequelize);
 const SalesVisitAttachment = defineSalesVisitAttachment(sequelize);
 const OrgAccount = defineOrgAccount(sequelize);
+const ChannelPartner = defineChannelPartner(sequelize);
 const Client = defineClient(sequelize);                // keep this
 const Plan = definePlan(sequelize);
 const Subscription = defineSubscription(sequelize);
@@ -375,6 +377,8 @@ SalaryForecast.belongsTo(User, { foreignKey: 'userId', as: 'user' });
 // OrgAccount tenancy associations
 OrgAccount.hasMany(User, { foreignKey: 'orgAccountId', as: 'users' });
 User.belongsTo(OrgAccount, { foreignKey: 'orgAccountId', as: 'orgAccount' });
+ChannelPartner.hasMany(OrgAccount, { foreignKey: 'channelPartnerId', sourceKey: 'channelPartnerId', as: 'clients' });
+OrgAccount.belongsTo(ChannelPartner, { foreignKey: 'channelPartnerId', targetKey: 'channelPartnerId', as: 'channelPartner' });
 
 // Subscription / Plan associations (OrgAccount-based)
 OrgAccount.hasMany(Subscription, { foreignKey: 'orgAccountId', as: 'subscriptions' });
@@ -519,6 +523,7 @@ module.exports = {
   SalesVisitAttachment,
 
   OrgAccount,
+  ChannelPartner,
   Plan,
   Subscription,
   Role,
