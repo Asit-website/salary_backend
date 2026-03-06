@@ -267,74 +267,156 @@ async function calculateSalary(userId, monthKey) {
     }
   } catch (_) { }
 
-  // Weekly off config
+  // Weekly off config (apply only when staff has an effective assignment in this month window)
   let woConfig = [];
+  let hasWeeklyOffAssignment = false;
   try {
     if (WeeklyOffTemplate && StaffWeeklyOffAssignment) {
-      const asg = await StaffWeeklyOffAssignment.findOne({ where: { userId: u.id, active: true }, order: [['id', 'DESC']] });
+      const asg = await StaffWeeklyOffAssignment.findOne({
+        where: {
+          userId: u.id,
+          effectiveFrom: { [Op.lte]: endKey },
+          [Op.or]: [{ effectiveTo: null }, { effectiveTo: { [Op.gte]: start } }],
+        },
+        order: [['effectiveFrom', 'DESC'], ['id', 'DESC']]
+      });
       if (asg) {
+        hasWeeklyOffAssignment = true;
         const tpl = await WeeklyOffTemplate.findByPk(asg.weeklyOffTemplateId || asg.weekly_off_template_id);
-        woConfig = (tpl && Array.isArray(tpl.config)) ? tpl.config : (tpl?.config || []);
+        let rawCfg = tpl?.config;
+        // Robust mult-stage parsing for potentially multi-stringified JSON
+        while (typeof rawCfg === 'string' && rawCfg.trim().startsWith('[')) {
+          try {
+            const p = JSON.parse(rawCfg);
+            if (p === rawCfg) break;
+            rawCfg = p;
+          } catch (e) { break; }
+        }
+        woConfig = Array.isArray(rawCfg) ? rawCfg : [];
       }
     }
   } catch (_) { }
 
   // Holiday set
   let holidaySet = new Set();
+  const toDateKey = (v) => {
+    if (!v) return '';
+    if (v instanceof Date && !Number.isNaN(v.getTime())) {
+      return `${v.getFullYear()}-${String(v.getMonth() + 1).padStart(2, '0')}-${String(v.getDate()).padStart(2, '0')}`;
+    }
+    const raw = String(v);
+    const m = raw.match(/\d{4}-\d{2}-\d{2}/);
+    if (m && m[0]) return m[0];
+    const d = new Date(v);
+    if (!Number.isNaN(d.getTime())) {
+      return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+    }
+    return '';
+  };
   try {
-    const hasg = await StaffHolidayAssignment.findOne({ where: { userId: u.id, active: true }, order: [['id', 'DESC']] });
+    let hasg = await StaffHolidayAssignment.findOne({
+      where: {
+        userId: u.id,
+        effectiveFrom: { [Op.lte]: endKey },
+        [Op.or]: [{ effectiveTo: null }, { effectiveTo: { [Op.gte]: start } }],
+      },
+      order: [['effectiveFrom', 'DESC'], ['id', 'DESC']],
+    });
     if (hasg) {
-      const tpl = await HolidayTemplate.findByPk(hasg.holidayTemplateId || hasg.holiday_template_id, {
-        include: [{ model: HolidayDate, as: 'holidays' }]
-      });
-      const hs = Array.isArray(tpl?.holidays) ? tpl.holidays : [];
-      holidaySet = new Set(hs.filter(h => h && h.active !== false && String(h.date) >= start && String(h.date) <= endKey).map(h => String(h.date).slice(0, 10)));
+      const tplId = Number(hasg.holidayTemplateId || hasg.holiday_template_id);
+      const hs = Number.isFinite(tplId)
+        ? await HolidayDate.findAll({
+          where: {
+            holidayTemplateId: tplId,
+            active: { [Op.not]: false },
+            date: { [Op.gte]: start, [Op.lte]: endKey },
+          },
+          attributes: ['date', 'active'],
+        })
+        : [];
+      holidaySet = new Set(
+        hs
+          .map(h => ({ h, key: toDateKey(h?.date) }))
+          .filter(x => x.h && x.h.active !== false && x.key && x.key >= start && x.key <= endKey)
+          .map(x => x.key)
+      );
     } else {
-      const rows = await HolidayDate.findAll({ where: { active: { [Op.not]: false }, date: { [Op.gte]: start, [Op.lte]: endKey } }, attributes: ['date', 'active'] });
-      holidaySet = new Set(rows.map(r => String(r.date).slice(0, 10)));
+      // No holiday assignment for this staff in org -> do not apply org-wide holidays.
+      holidaySet = new Set();
     }
   } catch (_) { }
 
   // Helper to check weekly off
   const isWeeklyOffForDate = (configArray, jsDate) => {
-    if (!Array.isArray(configArray) || configArray.length === 0) return false;
-    const dayIndex = jsDate.getDay(); // 0=Sun
-    const dayNames = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
-    const dayName = dayNames[dayIndex];
-    return configArray.some(c => {
-      if (typeof c === 'string') return c.toLowerCase() === dayName;
-      if (c && c.day) return String(c.day).toLowerCase() === dayName;
+    try {
+      let config = configArray;
+      // Robust mult-stage parsing for potentially multi-stringified JSON
+      while (typeof config === 'string' && config.trim().startsWith('[')) {
+        try {
+          const p = JSON.parse(config);
+          if (p === config) break;
+          config = p;
+        } catch (e) { break; }
+      }
+      if (!Array.isArray(config)) return false;
+
+      const dow = jsDate.getDay(); // 0=Sun
+      const wk = Math.floor((jsDate.getDate() - 1) / 7) + 1; // 1..5
+      for (const cfg of config) {
+        if (cfg && Number(cfg.day) === dow) {
+          if (cfg.weeks === 'all') return true;
+          if (Array.isArray(cfg.weeks) && cfg.weeks.includes(wk)) return true;
+        }
+      }
       return false;
-    });
+    } catch (_) { return false; }
   };
 
-  // Classify each calendar day
+  // Classify calendar days (for current month, only count till today)
   let present = 0, half = 0, leave = 0, paidLeaveCount = 0, unpaidLeave = 0, weeklyOffCount = 0, holidaysCount = 0, absent = 0;
   const daysInMonth = end.getDate();
+  const now = new Date();
+  const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const isCurrentMonth = Number(yy) === now.getFullYear() && Number(mm) === (now.getMonth() + 1);
 
   for (let dnum = 1; dnum <= daysInMonth; dnum++) {
     const dt = new Date(yy, mm - 1, dnum);
     const key = `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, '0')}-${String(dnum).padStart(2, '0')}`;
     const s = attMap[key];
 
+    // For current month projection, future days are absent unless explicitly marked with work/leave state.
+    // For current month projection, future days are not counted toward absence/work unless explicitly entered.
+    if (isCurrentMonth && dt > todayStart && (!s || s === 'weekly_off' || s === 'holiday')) {
+      // Still count Weekly Off and Holidays in projection for full month gross calculation
+      const isWO = hasWeeklyOffAssignment ? isWeeklyOffForDate(woConfig, dt) : false;
+      const isH = holidaySet.has(key);
+      if (isH || s === 'holiday') { holidaysCount += 1; }
+      else if (isWO || s === 'weekly_off') { weeklyOffCount += 1; }
+      continue;
+    }
+
     if (s === 'present') { present += 1; continue; }
     if (s === 'half_day') { half += 1; continue; }
     if (s === 'leave') { leave += 1; if (paidLeaveSet.has(key)) paidLeaveCount += 1; else if (unpaidLeaveSet.has(key)) unpaidLeave += 1; continue; }
+    if (s === 'weekly_off') { weeklyOffCount += 1; continue; }
+    if (s === 'holiday') { holidaysCount += 1; continue; }
+
+    // No explicit attendance or 'absent' marked: check if it's a WO/Holiday first
+    const isWO = hasWeeklyOffAssignment ? isWeeklyOffForDate(woConfig, dt) : false;
+    const isH = holidaySet.has(key);
+
+    if (isH) { holidaysCount += 1; continue; }
+    if (isWO) { weeklyOffCount += 1; continue; }
+
     if (s === 'absent') { absent += 1; continue; }
 
-    // No explicit attendance record
-    const isWO = isWeeklyOffForDate(woConfig, dt);
-    const isH = holidaySet.has(key);
-    if (!isWO && !isH) {
-      if (paidLeaveSet.has(key)) { leave += 1; paidLeaveCount += 1; }
-      else if (unpaidLeaveSet.has(key)) { leave += 1; unpaidLeave += 1; }
-      else {
-        // Only count as absent if the date is in the past (today or before)
-        const today = new Date(); today.setHours(0, 0, 0, 0);
-        if (dt <= today) { absent += 1; }
-      }
-    } else {
-      if (isH) holidaysCount += 1; else weeklyOffCount += 1;
+    // For past days with no record at all
+    if (paidLeaveSet.has(key)) { leave += 1; paidLeaveCount += 1; }
+    else if (unpaidLeaveSet.has(key)) { leave += 1; unpaidLeave += 1; }
+    else {
+      // Only count as absent if the date is in the past (today or before)
+      const today = new Date(); today.setHours(0, 0, 0, 0);
+      if (dt <= today) { absent += 1; }
     }
   }
 
@@ -402,7 +484,8 @@ async function calculateSalary(userId, monthKey) {
   }
 
   const payableUnits = Math.max(0, payableUnitsRaw - latePenaltyDays);
-  const ratio = daysInMonth > 0 ? Math.max(0, Math.min(1, payableUnits / daysInMonth)) : 1;
+  const daysForRatio = daysInMonth;
+  const ratio = daysForRatio > 0 ? Math.max(0, Math.min(1, payableUnits / daysForRatio)) : 1;
 
   const loanDeduction = await calculateLoanDeduction();
 

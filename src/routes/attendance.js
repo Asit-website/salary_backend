@@ -2,7 +2,7 @@ const express = require('express');
 const { Op } = require('sequelize');
 const puppeteer = require('puppeteer');
 
-const { Attendance, LeaveRequest, AppSetting, AttendanceTemplate, StaffAttendanceAssignment, StaffShiftAssignment, ShiftTemplate, StaffHolidayAssignment, HolidayTemplate, HolidayDate, StaffGeofenceAssignment, GeofenceTemplate, GeofenceSite, LocationPing, DeviceInfo } = require('../models');
+const { Attendance, LeaveRequest, AppSetting, AttendanceTemplate, StaffAttendanceAssignment, StaffShiftAssignment, ShiftTemplate, StaffHolidayAssignment, HolidayTemplate, HolidayDate, StaffGeofenceAssignment, GeofenceTemplate, GeofenceSite, LocationPing, DeviceInfo, WeeklyOffTemplate, StaffWeeklyOffAssignment } = require('../models');
 const { authRequired } = require('../middleware/auth');
 const { requireRole } = require('../middleware/roles');
 const { upload } = require('../upload');
@@ -127,6 +127,53 @@ function toHhMmSs(date) {
   const m = String(date.getMinutes()).padStart(2, '0');
   const s = String(date.getSeconds()).padStart(2, '0');
   return `${h}:${m}:${s}`;
+}
+
+function getMonthWeekNumber(d) {
+  const day = d.getDate();
+  return Math.floor((day - 1) / 7) + 1; // 1..5
+}
+
+function normalizeWeeklyOffWeeks(input) {
+  if (input === 'all') return 'all';
+  if (Array.isArray(input)) {
+    const lowered = input.map(v => String(v).toLowerCase());
+    if (lowered.includes('all') || lowered.includes('0')) return 'all';
+    const nums = Array.from(new Set(input.map(v => Number(v)).filter(n => Number.isFinite(n) && n >= 1 && n <= 5)));
+    return nums;
+  }
+  const single = String(input ?? '').toLowerCase();
+  if (single === 'all' || single === '0') return 'all';
+  const n = Number(input);
+  if (Number.isFinite(n) && n >= 1 && n <= 5) return [n];
+  return [];
+}
+
+function isWeeklyOffForDate(configArray, jsDate) {
+  try {
+    let config = configArray;
+    // Robust mult-stage parsing for potentially multi-stringified JSON
+    while (typeof config === 'string' && config.trim().startsWith('[')) {
+      try {
+        const p = JSON.parse(config);
+        if (p === config) break;
+        config = p;
+      } catch (e) { break; }
+    }
+    if (!Array.isArray(config)) return false;
+
+    const dow = jsDate.getDay(); // 0=Sun
+    const wk = getMonthWeekNumber(jsDate);
+
+    for (const cfg of config) {
+      if (cfg && Number(cfg.day) === dow) {
+        const weeks = normalizeWeeklyOffWeeks(cfg.weeks);
+        if (weeks === 'all') return true;
+        if (Array.isArray(weeks) && weeks.includes(wk)) return true;
+      }
+    }
+    return false;
+  } catch (_) { return false; }
 }
 
 function cmpTime(a, b) {
@@ -295,58 +342,75 @@ async function touchDeviceInfo(req) {
 
 router.get('/status', async (req, res) => {
   const key = typeof req.query.date === 'string' && req.query.date.trim() ? String(req.query.date).trim() : todayKey();
-  const record = await Attendance.findOne({ where: { userId: req.user.id, date: key } });
+  const userId = req.user.id;
+  const record = await Attendance.findOne({ where: { userId, date: key } });
 
-  const REQUIRED_WORK_SECONDS = await getRequiredWorkSecondsFor(req.user.id, key);
+  const REQUIRED_WORK_SECONDS = await getRequiredWorkSecondsFor(userId, key);
   // Load max allowed paid break minutes
   const maxBreakSetting = await AppSetting.findOne({ where: { key: 'MAX_BREAK_DURATION' } });
   const maxBreakMinutes = maxBreakSetting ? parseInt(maxBreakSetting.value) : 0;
-  const tpl = await getEffectiveTemplate(req.user.id);
+  const tpl = await getEffectiveTemplate(userId);
   const effectiveHoursRule = tpl ? (tpl.effectiveHoursRule ?? tpl.effective_hours_rule ?? null) : null;
-  const assignedShift = await getEffectiveShiftTemplate(req.user.id, key);
+  const assignedShift = await getEffectiveShiftTemplate(userId, key);
 
   const now = new Date();
-  // If today is a paid holiday for this user and no attendance record exists, mark PRESENT with zero values
-  const isHoliday = await isPaidHoliday(req.user.id, key);
-  const isApprovedLeave = await hasApprovedLeave(req.user.id, key);
-  if (!record && isHoliday) {
-    return res.json({
-      success: true,
-      status: {
-        date: key,
-        punchedInAt: null,
-        punchedOutAt: null,
-        punchInPhotoUrl: null,
-        punchOutPhotoUrl: null,
-        isOnBreak: false,
-        breakStartedAt: null,
-        breakSeconds: 0,
-        workingSeconds: 0,
-        overtimeSeconds: 0,
-        requiredWorkSeconds: REQUIRED_WORK_SECONDS,
-        dayStatus: 'PRESENT',
-      },
-    });
+
+  // 1. Holiday check
+  const isHoliday = await isPaidHoliday(userId, key);
+
+  // 2. Weekly Off check
+  const woAsg = await StaffWeeklyOffAssignment.findOne({
+    where: { userId, effectiveFrom: { [Op.lte]: key } },
+    order: [['effectiveFrom', 'DESC']]
+  });
+  let isWO = false;
+  if (woAsg) {
+    const wTpl = await WeeklyOffTemplate.findByPk(woAsg.weeklyOffTemplateId || woAsg.weekly_off_template_id);
+    let raw = wTpl?.config;
+    while (typeof raw === 'string' && raw.trim().startsWith('[')) {
+      try { raw = JSON.parse(raw); } catch (_) { break; }
+    }
+    const woConfig = Array.isArray(raw) ? raw : [];
+    const dateObj = new Date(`${key}T00:00:00`);
+    isWO = isWeeklyOffForDate(woConfig, dateObj);
   }
-  if (!record && isApprovedLeave) {
-    return res.json({
-      success: true,
-      status: {
-        date: key,
-        punchedInAt: null,
-        punchedOutAt: null,
-        punchInPhotoUrl: null,
-        punchOutPhotoUrl: null,
-        isOnBreak: false,
-        breakStartedAt: null,
-        breakSeconds: 0,
-        workingSeconds: 0,
-        overtimeSeconds: 0,
-        requiredWorkSeconds: REQUIRED_WORK_SECONDS,
-        dayStatus: 'LEAVE',
-      },
-    });
+
+  const isApprovedLeave = await hasApprovedLeave(userId, key);
+
+  // Default behaviors when no record exists
+  if (!record) {
+    if (isHoliday) {
+      return res.json({
+        success: true,
+        status: {
+          date: key, punchedInAt: null, punchedOutAt: null, punchInPhotoUrl: null, punchOutPhotoUrl: null,
+          isOnBreak: false, breakStartedAt: null, breakSeconds: 0, workingSeconds: 0, overtimeSeconds: 0,
+          requiredWorkSeconds: REQUIRED_WORK_SECONDS, dayStatus: 'HOLIDAY',
+        },
+      });
+    }
+    if (isWO) {
+      return res.json({
+        success: true,
+        status: {
+          date: key, punchedInAt: null, punchedOutAt: null, punchInPhotoUrl: null, punchOutPhotoUrl: null,
+          isOnBreak: false, breakStartedAt: null, breakSeconds: 0, workingSeconds: 0, overtimeSeconds: 0,
+          requiredWorkSeconds: REQUIRED_WORK_SECONDS, dayStatus: 'WEEKLY_OFF',
+        },
+      });
+    }
+    if (isApprovedLeave) {
+      return res.json({
+        success: true,
+        status: {
+          date: key, punchedInAt: null, punchedOutAt: null, punchInPhotoUrl: null, punchOutPhotoUrl: null,
+          isOnBreak: false, breakStartedAt: null, breakSeconds: 0, workingSeconds: 0, overtimeSeconds: 0,
+          requiredWorkSeconds: REQUIRED_WORK_SECONDS, dayStatus: 'LEAVE',
+        },
+      });
+    }
   }
+
   const punchedInAt = record?.punchedInAt ? new Date(record.punchedInAt) : null;
   const punchedOutAt = record?.punchedOutAt ? new Date(record.punchedOutAt) : null;
 
@@ -360,18 +424,9 @@ router.get('/status', async (req, res) => {
     return res.json({
       success: true,
       status: {
-        date: key,
-        punchedInAt: null,
-        punchedOutAt: null,
-        punchInPhotoUrl: null,
-        punchOutPhotoUrl: null,
-        isOnBreak: false,
-        breakStartedAt: null,
-        breakSeconds: 0,
-        workingSeconds: 0,
-        overtimeSeconds: 0,
-        requiredWorkSeconds: REQUIRED_WORK_SECONDS,
-        dayStatus: 'LEAVE',
+        date: key, punchedInAt: null, punchedOutAt: null, punchInPhotoUrl: null, punchOutPhotoUrl: null,
+        isOnBreak: false, breakStartedAt: null, breakSeconds: 0, workingSeconds: 0, overtimeSeconds: 0,
+        requiredWorkSeconds: REQUIRED_WORK_SECONDS, dayStatus: 'LEAVE',
       },
     });
   }
@@ -389,14 +444,28 @@ router.get('/status', async (req, res) => {
   const overtimeSeconds = workSeconds > REQUIRED_WORK_SECONDS ? workSeconds - REQUIRED_WORK_SECONDS : 0;
 
   // Use the stored status from database if available, otherwise calculate
-  let dayStatus = record?.status || 'ABSENT';
+  let dayStatus = record?.status?.toUpperCase() || (isWO ? 'WEEKLY_OFF' : (isHoliday ? 'HOLIDAY' : 'ABSENT'));
 
-  // If no stored status but user has punched in, calculate based on work hours
+  // If no stored status but user has punched in, calculate based on work hours and shift rules
   if (!record?.status && record?.punchedInAt) {
-    if (workSeconds > REQUIRED_WORK_SECONDS) dayStatus = 'OVERTIME';
-    else if (workSeconds >= REQUIRED_WORK_SECONDS) dayStatus = 'PRESENT';
-    else if (record?.punchedOutAt) dayStatus = 'HALF_DAY';
-    else dayStatus = 'PRESENT';
+    const totalWorkMinutes = Math.floor(workSeconds / 60);
+    if (assignedShift) {
+      if (assignedShift.overtimeStartMinutes && totalWorkMinutes > assignedShift.overtimeStartMinutes) {
+        dayStatus = 'OVERTIME';
+      } else if (assignedShift.halfDayThresholdMinutes && totalWorkMinutes < assignedShift.halfDayThresholdMinutes) {
+        dayStatus = 'HALF_DAY';
+      } else if (totalWorkMinutes < 60) {
+        dayStatus = 'ABSENT';
+      } else {
+        dayStatus = 'PRESENT';
+      }
+    } else {
+      // Fallback if no shift assigned
+      if (workSeconds > REQUIRED_WORK_SECONDS) dayStatus = 'OVERTIME';
+      else if (workSeconds >= REQUIRED_WORK_SECONDS) dayStatus = 'PRESENT';
+      else if (record?.punchedOutAt || totalWorkMinutes > 30) dayStatus = 'HALF_DAY';
+      else dayStatus = 'PRESENT';
+    }
   }
 
   // If admin marked half-day explicitly via sentinel, force HALF_DAY
@@ -419,19 +488,13 @@ router.get('/status', async (req, res) => {
       overtimeSeconds,
       requiredWorkSeconds: REQUIRED_WORK_SECONDS,
       dayStatus,
-      totalWorkHours: record?.totalWorkHours || null, // Add total work hours from database
+      totalWorkHours: record?.totalWorkHours || null,
       assignedShift: assignedShift ? {
-        id: assignedShift.id,
-        name: assignedShift.name,
-        shiftType: assignedShift.shiftType,
-        startTime: assignedShift.startTime,
-        endTime: assignedShift.endTime,
-        workMinutes: assignedShift.workMinutes,
-        bufferMinutes: assignedShift.bufferMinutes,
-        earliestPunchInTime: assignedShift.earliestPunchInTime,
-        latestPunchOutTime: assignedShift.latestPunchOutTime,
-        minPunchOutAfterMinutes: assignedShift.minPunchOutAfterMinutes,
-        maxPunchOutAfterMinutes: assignedShift.maxPunchOutAfterMinutes,
+        id: assignedShift.id, name: assignedShift.name, shiftType: assignedShift.shiftType,
+        startTime: assignedShift.startTime, endTime: assignedShift.endTime,
+        workMinutes: assignedShift.workMinutes, bufferMinutes: assignedShift.bufferMinutes,
+        earliestPunchInTime: assignedShift.earliestPunchInTime, latestPunchOutTime: assignedShift.latestPunchOutTime,
+        minPunchOutAfterMinutes: assignedShift.minPunchOutAfterMinutes, maxPunchOutAfterMinutes: assignedShift.maxPunchOutAfterMinutes,
       } : null,
     },
   });
@@ -439,18 +502,17 @@ router.get('/status', async (req, res) => {
 
 router.get('/history', async (req, res) => {
   try {
-    const REQUIRED_WORK_SECONDS = await getRequiredWorkSecondsFor(req.user.id);
+    const userId = req.user.id;
+    const REQUIRED_WORK_SECONDS = await getRequiredWorkSecondsFor(userId);
     const parsed = parseMonth(req.query.month);
     const now = new Date();
-    const tpl = await getEffectiveTemplate(req.user.id);
+    const todayStr = todayKey(now);
+
+    const tpl = await getEffectiveTemplate(userId);
     const effectiveHoursRule = tpl ? (tpl.effectiveHoursRule ?? tpl.effective_hours_rule ?? null) : null;
 
-    // Get max break duration setting and template rule
     const maxBreakSetting = await AppSetting.findOne({ where: { key: 'MAX_BREAK_DURATION' } });
     const maxBreakMinutes = maxBreakSetting ? parseInt(maxBreakSetting.value) : 0;
-    const maxBreakSeconds = maxBreakMinutes * 60;
-
-    console.log('History calculation - Max break allowed:', maxBreakMinutes, 'minutes');
 
     const y = parsed ? parsed.y : now.getFullYear();
     const mo = parsed ? parsed.mo : now.getMonth() + 1;
@@ -460,43 +522,65 @@ router.get('/history', async (req, res) => {
     const startKey = isoDate(start);
     const endKey = isoDate(end);
 
+    // Fetch everything needed once
     const attendanceRows = await Attendance.findAll({
-      where: {
-        userId: req.user.id,
-        date: { [Op.between]: [startKey, endKey] },
-      },
+      where: { userId, date: { [Op.between]: [startKey, endKey] } },
       order: [['date', 'ASC']],
     });
-    const attendanceByDate = new Map(attendanceRows.map((r) => [String(r.date), r]));
+    const attMap = new Map(attendanceRows.map((r) => [String(r.date), r]));
 
     const leaveRows = await LeaveRequest.findAll({
-      where: {
-        userId: req.user.id,
-        status: 'APPROVED',
-        startDate: { [Op.lte]: endKey },
-        endDate: { [Op.gte]: startKey },
-      },
-      order: [['startDate', 'ASC']],
+      where: { userId, status: 'APPROVED', startDate: { [Op.lte]: endKey }, endDate: { [Op.gte]: startKey } },
     });
 
-    const leaveForDate = (dateKey) => {
-      for (const l of leaveRows) {
-        if (String(l.startDate) <= dateKey && String(l.endDate) >= dateKey) return l;
+    // Holiday Template
+    const holidayAsg = await StaffHolidayAssignment.findOne({
+      where: { userId, effectiveFrom: { [Op.lte]: endKey } },
+      order: [['effectiveFrom', 'DESC']]
+    });
+    let holidaySet = new Set();
+    if (holidayAsg) {
+      const hTpl = await HolidayTemplate.findByPk(holidayAsg.holidayTemplateId, {
+        include: [{ model: HolidayDate, as: 'holidays', where: { active: { [Op.ne]: false } }, required: false }]
+      });
+      if (hTpl?.holidays) {
+        hTpl.holidays.forEach(h => holidaySet.add(String(h.date)));
       }
-      return null;
-    };
+    }
 
-    const summary = { present: 0, absent: 0, halfDay: 0, leave: 0, overtime: 0 };
+    // Weekly Off Template
+    const woAsg = await StaffWeeklyOffAssignment.findOne({
+      where: { userId, effectiveFrom: { [Op.lte]: endKey } },
+      order: [['effectiveFrom', 'DESC']]
+    });
+    let woConfig = [];
+    if (woAsg) {
+      const wTpl = await WeeklyOffTemplate.findByPk(woAsg.weeklyOffTemplateId || woAsg.weekly_off_template_id);
+      let raw = wTpl?.config;
+      while (typeof raw === 'string' && raw.trim().startsWith('[')) {
+        try { raw = JSON.parse(raw); } catch (_) { break; }
+      }
+      woConfig = Array.isArray(raw) ? raw : [];
+    }
+
+    const summary = { present: 0, absent: 0, halfDay: 0, leave: 0, overtime: 0, weeklyOff: 0, holiday: 0 };
     const days = [];
 
-    const totalDays = end.getDate();
-    for (let i = 0; i < totalDays; i++) {
-      const d = addDays(start, i);
+    const totalDaysRemainingInMonth = end.getDate();
+    for (let i = 0; i < totalDaysRemainingInMonth; i++) {
+      const d = new Date(y, mo - 1, i + 1);
       const key = isoDate(d);
+      const record = attMap.get(key);
+      const isH = holidaySet.has(key);
+      const isWO = isWeeklyOffForDate(woConfig, d);
 
-      const record = attendanceByDate.get(key);
-      const isHoliday = await isPaidHoliday(req.user.id, key);
-      const leave = leaveForDate(key);
+      let leaveReq = null;
+      for (const lr of leaveRows) {
+        if (String(lr.startDate) <= key && String(lr.endDate) >= key) {
+          leaveReq = lr;
+          break;
+        }
+      }
 
       let dayStatus = 'ABSENT';
       let workingSeconds = 0;
@@ -504,56 +588,67 @@ router.get('/history', async (req, res) => {
       let overtimeSeconds = 0;
       let leaveType = null;
 
-      // Reflect admin-marked LEAVE without requiring a LeaveRequest row
-      const isAdminLeave = record && (Number(record?.breakTotalSeconds) === -1 || String(record?.status || '').toLowerCase() === 'leave');
-      const isAdminHalf = record && (Number(record?.breakTotalSeconds) === -2 || String(record?.status || '').toLowerCase() === 'half_day');
+      const isAdminLeave = record && (Number(record.breakTotalSeconds) === -1 || String(record.status || '').toLowerCase() === 'leave');
+      const isAdminHalf = record && (Number(record.breakTotalSeconds) === -2 || String(record.status || '').toLowerCase() === 'half_day');
 
-      // Use the stored status from database if available, otherwise calculate
-      if (leave || isAdminLeave) {
-        dayStatus = 'LEAVE';
-        leaveType = leave?.leaveType || 'ADMIN';
-      } else if (isAdminHalf) {
-        dayStatus = 'HALF_DAY';
-      } else if (record?.status) {
-        // Use the stored status from punchout calculation
-        dayStatus = record.status.toUpperCase();
-      } else if (record?.punchedInAt) {
-        const punchedInAt = new Date(record.punchedInAt);
-        const punchedOutAt = record.punchedOutAt ? new Date(record.punchedOutAt) : null;
-        const baseBreak = Number(record.breakTotalSeconds || 0);
-        const runningBreak = record.isOnBreak && record.breakStartedAt ? diffSeconds(new Date(record.breakStartedAt), now) : 0;
-        const totalBreakSeconds = baseBreak + runningBreak;
-        breakSeconds = totalBreakSeconds;
-
-        const workEnd = punchedOutAt || (record.isOnBreak && record.breakStartedAt ? new Date(record.breakStartedAt) : (key === todayKey() ? now : punchedInAt));
-
-        // Calculate total work time (punch out - punch in)
-        const totalWorkSeconds = Math.max(0, diffSeconds(punchedInAt, workEnd));
-
-        // Apply effective hours rule from template
+      if (record?.punchedInAt && !isAdminLeave && !isAdminHalf) {
+        const inAt = new Date(record.punchedInAt);
+        const outAt = record.punchedOutAt ? new Date(record.punchedOutAt) : (key === todayStr ? now : inAt);
+        const bBase = Number(record.breakTotalSeconds || 0);
+        const bRun = record.isOnBreak && record.breakStartedAt ? diffSeconds(new Date(record.breakStartedAt), now) : 0;
+        breakSeconds = bBase + bRun;
+        const totalWork = Math.max(0, diffSeconds(inAt, outAt));
         workingSeconds = computeEffectiveWorkingSeconds({
-          totalWorkSeconds,
-          actualBreakSeconds: totalBreakSeconds,
+          totalWorkSeconds: totalWork,
+          actualBreakSeconds: breakSeconds,
           requiredWorkSeconds: REQUIRED_WORK_SECONDS,
           maxBreakMinutes,
-          effectiveHoursRule,
+          effectiveHoursRule
         });
-
         overtimeSeconds = workingSeconds > REQUIRED_WORK_SECONDS ? workingSeconds - REQUIRED_WORK_SECONDS : 0;
 
-        console.log(`History ${key}: Total=${Math.floor(totalWorkSeconds / 60)}min, Break=${Math.floor(totalBreakSeconds / 60)}min, MaxAllowed=${maxBreakMinutes}min, Effective=${Math.floor(workingSeconds / 60)}min`);
-
-        // Calculate status if not stored
-        if (workingSeconds > REQUIRED_WORK_SECONDS) dayStatus = 'OVERTIME';
-        else if (workingSeconds >= REQUIRED_WORK_SECONDS) dayStatus = 'PRESENT';
-        else dayStatus = key === todayKey() ? 'PRESENT' : 'HALF_DAY';
-      } else {
-        const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-        const cur = new Date(d.getFullYear(), d.getMonth(), d.getDate());
-        if (!record && isHoliday) {
-          dayStatus = 'PRESENT';
+        if (record.status) {
+          dayStatus = record.status.toUpperCase();
         } else {
-          dayStatus = cur > today ? 'NA' : 'ABSENT';
+          // Calculate status based on shift rules for history consistency
+          const shiftTpl = await getEffectiveShiftTemplate(userId, key);
+          const totalWorkMinutes = Math.floor(workingSeconds / 60);
+          if (shiftTpl) {
+            if (shiftTpl.overtimeStartMinutes && totalWorkMinutes > shiftTpl.overtimeStartMinutes) {
+              dayStatus = 'OVERTIME';
+            } else if (shiftTpl.halfDayThresholdMinutes && totalWorkMinutes < shiftTpl.halfDayThresholdMinutes) {
+              dayStatus = 'HALF_DAY';
+            } else if (totalWorkMinutes < 60) {
+              dayStatus = 'ABSENT';
+            } else {
+              dayStatus = 'PRESENT';
+            }
+          } else {
+            if (workingSeconds > REQUIRED_WORK_SECONDS) dayStatus = 'OVERTIME';
+            else if (workingSeconds >= REQUIRED_WORK_SECONDS) dayStatus = 'PRESENT';
+            else dayStatus = key === todayStr ? 'PRESENT' : 'HALF_DAY';
+          }
+        }
+      } else if (record?.status && !isAdminLeave && !isAdminHalf) {
+        dayStatus = record.status.toUpperCase();
+        workingSeconds = Math.round((Number(record.totalWorkHours) || 0) * 3600);
+        breakSeconds = Number(record.breakTotalSeconds || 0);
+        overtimeSeconds = (Number(record.overtimeMinutes) || 0) * 60;
+      } else {
+        // No attendance record or explicit admin override
+        if (leaveReq || isAdminLeave) {
+          dayStatus = 'LEAVE';
+          leaveType = leaveReq?.leaveType || 'ADMIN';
+        } else if (isAdminHalf) {
+          dayStatus = 'HALF_DAY';
+        } else if (isH) {
+          dayStatus = 'HOLIDAY';
+        } else if (isWO) {
+          dayStatus = 'WEEKLY_OFF';
+        } else {
+          const todayObj = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+          const curObj = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+          dayStatus = curObj > todayObj ? 'NA' : 'ABSENT';
         }
       }
 
@@ -562,6 +657,8 @@ router.get('/history', async (req, res) => {
       else if (dayStatus === 'HALF_DAY') summary.halfDay += 1;
       else if (dayStatus === 'LEAVE') summary.leave += 1;
       else if (dayStatus === 'OVERTIME') summary.overtime += 1;
+      else if (dayStatus === 'HOLIDAY') summary.holiday += 1;
+      else if (dayStatus === 'WEEKLY_OFF') summary.weeklyOff += 1;
 
       days.push({ date: key, dayStatus, workingSeconds, breakSeconds, overtimeSeconds, leaveType });
     }
@@ -575,6 +672,7 @@ router.get('/history', async (req, res) => {
       days,
     });
   } catch (e) {
+    console.error('Attendance history error:', e);
     return res.status(500).json({ success: false, message: 'Failed to load attendance history' });
   }
 });
@@ -720,14 +818,14 @@ router.post('/location/ping', async (req, res) => {
     const accuracy = req.body?.accuracyMeters !== undefined ? Number(req.body.accuracyMeters) : null;
     const address = req.body?.address ? String(req.body.address).slice(0, 255) : null;
     if (!Number.isFinite(lat) || !Number.isFinite(lng)) return res.status(400).json({ success: false, message: 'lat/lng required' });
-      const row = await LocationPing.create({
-        userId: req.user.id,
-        latitude: lat,
-        longitude: lng,
-        accuracyMeters: Number.isFinite(accuracy) ? accuracy : null,
-        address,
-        source: req.body?.source ? String(req.body.source).slice(0, 32) : 'staff'
-      });
+    const row = await LocationPing.create({
+      userId: req.user.id,
+      latitude: lat,
+      longitude: lng,
+      accuracyMeters: Number.isFinite(accuracy) ? accuracy : null,
+      address,
+      source: req.body?.source ? String(req.body.source).slice(0, 32) : 'staff'
+    });
     await touchDeviceInfo(req);
     return res.json({ success: true, ping: row });
   } catch (e) {

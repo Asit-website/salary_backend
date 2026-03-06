@@ -869,6 +869,7 @@ router.get('/staff/:id/salary-compute', async (req, res) => {
     // Weekly off / holidays
 
     let woConfig = [];
+    let hasWeeklyOffAssignment = false;
 
     try {
 
@@ -876,33 +877,84 @@ router.get('/staff/:id/salary-compute', async (req, res) => {
 
       if (WeeklyOffTemplate && StaffWeeklyOffAssignment) {
 
-        const asg = await StaffWeeklyOffAssignment.findOne({ where: { userId: u.id, active: true }, order: [['id', 'DESC']] });
+        const asg = await StaffWeeklyOffAssignment.findOne({
+          where: {
+            userId: u.id,
+            effectiveFrom: { [Op.lte]: endKey },
+            [Op.or]: [{ effectiveTo: null }, { effectiveTo: { [Op.gte]: start } }],
+          },
+          order: [['effectiveFrom', 'DESC'], ['id', 'DESC']],
+        });
 
-        if (asg) { const tpl = await WeeklyOffTemplate.findByPk(asg.weeklyOffTemplateId || asg.weekly_off_template_id); woConfig = (tpl && Array.isArray(tpl.config)) ? tpl.config : (tpl?.config || []); }
+        if (asg) {
+          hasWeeklyOffAssignment = true;
+          const tpl = await WeeklyOffTemplate.findByPk(asg.weeklyOffTemplateId || asg.weekly_off_template_id);
+          let rawCfg = tpl?.config;
+          // Robust mult-stage parsing for potentially multi-stringified JSON
+          while (typeof rawCfg === 'string' && rawCfg.trim().startsWith('[')) {
+            try {
+              const p = JSON.parse(rawCfg);
+              if (p === rawCfg) break;
+              rawCfg = p;
+            } catch (e) { break; }
+          }
+          woConfig = Array.isArray(rawCfg) ? rawCfg : [];
+        }
 
       }
 
     } catch (_) { }
 
     let holidaySet = new Set();
+    const toDateKey = (v) => {
+      if (!v) return '';
+      if (v instanceof Date && !Number.isNaN(v.getTime())) {
+        return `${v.getFullYear()}-${String(v.getMonth() + 1).padStart(2, '0')}-${String(v.getDate()).padStart(2, '0')}`;
+      }
+      const raw = String(v);
+      const m = raw.match(/\d{4}-\d{2}-\d{2}/);
+      if (m && m[0]) return m[0];
+      const d = new Date(v);
+      if (!Number.isNaN(d.getTime())) {
+        return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+      }
+      return '';
+    };
 
     try {
 
-      const hasg = await StaffHolidayAssignment.findOne({ where: { userId: u.id, active: true }, order: [['id', 'DESC']] });
+      const hasg = await StaffHolidayAssignment.findOne({
+        where: {
+          userId: u.id,
+          effectiveFrom: { [Op.lte]: endKey },
+          [Op.or]: [{ effectiveTo: null }, { effectiveTo: { [Op.gte]: start } }],
+        },
+        order: [['effectiveFrom', 'DESC'], ['id', 'DESC']],
+      });
 
       if (hasg) {
 
-        const tpl = await HolidayTemplate.findByPk(hasg.holidayTemplateId || hasg.holiday_template_id, { include: [{ model: HolidayDate, as: 'holidays' }] });
-
-        const hs = Array.isArray(tpl?.holidays) ? tpl.holidays : [];
-
-        holidaySet = new Set(hs.filter(h => h && h.active !== false && String(h.date) >= start && String(h.date) <= endKey).map(h => String(h.date).slice(0, 10)));
+        const tplId = Number(hasg.holidayTemplateId || hasg.holiday_template_id);
+        const hs = Number.isFinite(tplId)
+          ? await HolidayDate.findAll({
+            where: {
+              holidayTemplateId: tplId,
+              active: { [Op.not]: false },
+              date: { [Op.gte]: start, [Op.lte]: endKey },
+            },
+            attributes: ['date', 'active'],
+          })
+          : [];
+        holidaySet = new Set(
+          hs
+            .map(h => toDateKey(h?.date))
+            .filter(k => k && k >= start && k <= endKey)
+        );
 
       } else {
 
-        const rows = await HolidayDate.findAll({ where: { active: { [Op.not]: false }, date: { [Op.gte]: start, [Op.lte]: endKey } }, attributes: ['date', 'active'] });
-
-        holidaySet = new Set(rows.map(r => String(r.date).slice(0, 10)));
+        // No holiday assignment for this staff in org -> do not apply org-wide holidays.
+        holidaySet = new Set();
 
       }
 
@@ -910,47 +962,42 @@ router.get('/staff/:id/salary-compute', async (req, res) => {
 
 
 
-    // Classify each calendar day
-
+    // Classify calendar days (for current month, only count till today)
     let present = 0, half = 0, leave = 0, paidLeave = 0, unpaidLeave = 0, weeklyOff = 0, holidays = 0, absent = 0;
+    const daysInMonth = end.getDate();
+    const now = new Date();
+    const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    const isCurrentMonth = Number(yy) === now.getFullYear() && Number(mm) === (now.getMonth() + 1);
 
-    for (let dnum = 1; dnum <= end.getDate(); dnum++) {
-
+    for (let dnum = 1; dnum <= daysInMonth; dnum++) {
       const dt = new Date(yy, mm - 1, dnum);
-
       const key = `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, '0')}-${String(dnum).padStart(2, '0')}`;
-
       const s = attMap[key];
 
       if (s === 'present') { present += 1; continue; }
-
       if (s === 'half_day') { half += 1; continue; }
-
       if (s === 'leave') { leave += 1; if (paidLeaveSet.has(key)) paidLeave += 1; else if (unpaidLeaveSet.has(key)) unpaidLeave += 1; continue; }
+      if (s === 'weekly_off') { weeklyOff += 1; continue; }
+      if (s === 'holiday') { holidays += 1; continue; }
 
-      if (s === 'absent') { absent += 1; continue; }
-
-      const isWO = isWeeklyOffForDate(woConfig, dt);
-
+      const isWO = hasWeeklyOffAssignment ? isWeeklyOffForDate(woConfig, dt) : false;
       const isH = holidaySet.has(key);
 
-      if (!isWO && !isH) {
+      if (isH) { holidays += 1; continue; }
+      if (isWO) { weeklyOff += 1; continue; }
 
-        if (paidLeaveSet.has(key)) { leave += 1; paidLeave += 1; }
+      if (isCurrentMonth && dt > todayStart) { absent += 1; continue; }
+      if (s === 'absent') { absent += 1; continue; }
 
-        else if (unpaidLeaveSet.has(key)) { leave += 1; unpaidLeave += 1; }
-
-        else { absent += 1; }
-
-      } else { if (isH) holidays += 1; else weeklyOff += 1; }
-
+      if (paidLeaveSet.has(key)) { leave += 1; paidLeave += 1; }
+      else if (unpaidLeaveSet.has(key)) { leave += 1; unpaidLeave += 1; }
+      else { absent += 1; }
     }
 
 
 
-    const daysInMonth = end.getDate();
-
-    const ratio = daysInMonth > 0 ? Math.max(0, Math.min(1, (present + half * 0.5 + weeklyOff + holidays + paidLeave) / daysInMonth)) : 1;
+    const daysForRatio = daysInMonth;
+    const ratio = daysForRatio > 0 ? Math.max(0, Math.min(1, (present + half * 0.5 + weeklyOff + holidays + paidLeave) / daysForRatio)) : 1;
 
     const overtimeMinutes = atts.reduce((s, a) => s + (Number(a.overtimeMinutes || 0) || 0), 0);
     const overtimeHours = overtimeMinutes / 60;
@@ -1574,10 +1621,24 @@ router.post('/payroll/:cycleId/compute', async (req, res) => {
 
 
       // Derive weekly off config and holiday set (counts will be computed in the per-day loop)
-
       let weeklyOff = 0, holidays = 0;
+      const toDateKey = (v) => {
+        if (!v) return '';
+        if (v instanceof Date && !Number.isNaN(v.getTime())) {
+          return `${v.getFullYear()}-${String(v.getMonth() + 1).padStart(2, '0')}-${String(v.getDate()).padStart(2, '0')}`;
+        }
+        const raw = String(v);
+        const m = raw.match(/\d{4}-\d{2}-\d{2}/);
+        if (m && m[0]) return m[0];
+        const d = new Date(v);
+        if (!Number.isNaN(d.getTime())) {
+          return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+        }
+        return '';
+      };
 
       let woConfig = [];
+      let hasWeeklyOffAssignment = false;
 
       try {
 
@@ -1585,14 +1646,28 @@ router.post('/payroll/:cycleId/compute', async (req, res) => {
 
         if (WeeklyOffTemplate && StaffWeeklyOffAssignment) {
 
-          const asg = await StaffWeeklyOffAssignment.findOne({ where: { userId: u.id, active: true }, order: [['id', 'DESC']] });
+          const asg = await StaffWeeklyOffAssignment.findOne({
+            where: {
+              userId: u.id,
+              effectiveFrom: { [Op.lte]: endKey },
+              [Op.or]: [{ effectiveTo: null }, { effectiveTo: { [Op.gte]: start } }],
+            },
+            order: [['effectiveFrom', 'DESC'], ['id', 'DESC']],
+          });
 
           if (asg) {
-
+            hasWeeklyOffAssignment = true;
             const tpl = await WeeklyOffTemplate.findByPk(asg.weeklyOffTemplateId || asg.weekly_off_template_id);
-
-            woConfig = (tpl && Array.isArray(tpl.config)) ? tpl.config : (tpl?.config || []);
-
+            let rawCfg = tpl?.config;
+            // Robust mult-stage parsing for potentially multi-stringified JSON
+            while (typeof rawCfg === 'string' && rawCfg.trim().startsWith('[')) {
+              try {
+                const p = JSON.parse(rawCfg);
+                if (p === rawCfg) break;
+                rawCfg = p;
+              } catch (e) { break; }
+            }
+            woConfig = Array.isArray(rawCfg) ? rawCfg : [];
           }
 
         }
@@ -1605,21 +1680,36 @@ router.post('/payroll/:cycleId/compute', async (req, res) => {
 
         let holidayDates = [];
 
-        const hasg = await StaffHolidayAssignment.findOne({ where: { userId: u.id, active: true }, order: [['id', 'DESC']] });
+        const hasg = await StaffHolidayAssignment.findOne({
+          where: {
+            userId: u.id,
+            effectiveFrom: { [Op.lte]: endKey },
+            [Op.or]: [{ effectiveTo: null }, { effectiveTo: { [Op.gte]: start } }],
+          },
+          order: [['effectiveFrom', 'DESC'], ['id', 'DESC']],
+        });
 
         if (hasg) {
-
-          const tpl = await HolidayTemplate.findByPk(hasg.holidayTemplateId || hasg.holiday_template_id, { include: [{ model: HolidayDate, as: 'holidays' }] });
-
-          const hs = Array.isArray(tpl?.holidays) ? tpl.holidays : [];
-
-          holidayDates = hs.filter(h => h && h.active !== false && String(h.date) >= start && String(h.date) <= endKey).map(h => String(h.date).slice(0, 10));
+          const tplId = Number(hasg.holidayTemplateId || hasg.holiday_template_id);
+          const hs = Number.isFinite(tplId)
+            ? await HolidayDate.findAll({
+              where: {
+                holidayTemplateId: tplId,
+                active: { [Op.not]: false },
+                date: { [Op.gte]: start, [Op.lte]: endKey },
+              },
+              attributes: ['date', 'active'],
+            })
+            : [];
+          holidayDates = hs
+            .map(h => ({ h, key: toDateKey(h?.date) }))
+            .filter(x => x.h && x.h.active !== false && x.key && x.key >= start && x.key <= endKey)
+            .map(x => x.key);
 
         } else {
 
-          const rows = await HolidayDate.findAll({ where: { active: { [Op.not]: false }, date: { [Op.gte]: start, [Op.lte]: endKey } }, attributes: ['date', 'active'] });
-
-          holidayDates = rows.map(r => String(r.date).slice(0, 10));
+          // No holiday assignment for this staff in org -> do not apply org-wide holidays.
+          holidayDates = [];
 
         }
 
@@ -1637,71 +1727,49 @@ router.post('/payroll/:cycleId/compute', async (req, res) => {
 
 
 
-      // Category counts: classify every calendar day into a bucket
-
+      // Category counts: classify calendar days (for current month, only count till today)
       let present = 0, half = 0, leave = 0, absent = 0, paidLeave = 0, unpaidLeave = 0;
+      const daysInMonth = end.getDate();
+      const now = new Date();
+      const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+      const isCurrentMonth = Number(yy) === now.getFullYear() && Number(mm) === (now.getMonth() + 1);
 
-      for (let dnum = 1; dnum <= end.getDate(); dnum++) {
-
+      for (let dnum = 1; dnum <= daysInMonth; dnum++) {
         const dt = new Date(yy, mm - 1, dnum);
-
         const key = `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, '0')}-${String(dnum).padStart(2, '0')}`;
-
         const s = attMap[key];
 
         if (s === 'present') { present += 1; continue; }
-
         if (s === 'half_day') { half += 1; continue; }
-
         if (s === 'leave') {
-
           leave += 1;
-
           if (paidLeaveSet.has(key)) paidLeave += 1; else if (unpaidLeaveSet.has(key)) unpaidLeave += 1;
-
           continue;
-
         }
+        if (s === 'weekly_off') { weeklyOff += 1; continue; }
+        if (s === 'holiday') { holidays += 1; continue; }
 
-        if (s === 'absent') { absent += 1; continue; }
-
-        // No explicit attendance -> treat as weeklyOff or holiday; else absent
-
-        const isWO = (() => { try { return isWeeklyOffForDate(woConfig, dt); } catch (_) { return false; } })();
-
+        const isWO = (() => { try { return hasWeeklyOffAssignment ? isWeeklyOffForDate(woConfig, dt) : false; } catch (_) { return false; } })();
         const isH = (typeof _holidaySet !== 'undefined') ? _holidaySet.has(key) : false;
 
-        if (!isWO && !isH) {
+        if (isH) { holidays += 1; continue; }
+        if (isWO) { weeklyOff += 1; continue; }
 
-          // If covered by leave request but no attendance row, classify via sets
+        if (isCurrentMonth && dt > todayStart) { absent += 1; continue; }
+        if (s === 'absent') { absent += 1; continue; }
 
-          if (paidLeaveSet.has(key)) { leave += 1; paidLeave += 1; }
-
-          else if (unpaidLeaveSet.has(key)) { leave += 1; unpaidLeave += 1; }
-
-          else { absent += 1; }
-
-        } else {
-
-          // No explicit attendance and day is WO or Holiday -> count them
-
-          if (isH) { holidays += 1; }
-
-          else if (isWO) { weeklyOff += 1; }
-
-        }
-
+        if (paidLeaveSet.has(key)) { leave += 1; paidLeave += 1; }
+        else if (unpaidLeaveSet.has(key)) { leave += 1; unpaidLeave += 1; }
+        else { absent += 1; }
       }
 
 
 
       // Proration by payable units: present(1) + half(0.5) + weeklyOff(1) + holidays(1) + paidLeave(1)
 
-      const daysInMonth = end.getDate();
-
       const payableUnits = present + (half * 0.5) + weeklyOff + holidays + paidLeave;
-
-      const ratio = daysInMonth > 0 ? Math.max(0, Math.min(1, payableUnits / daysInMonth)) : 1;
+      const daysForRatio = daysInMonth;
+      const ratio = daysForRatio > 0 ? Math.max(0, Math.min(1, payableUnits / daysForRatio)) : 1;
 
 
 
@@ -2719,71 +2787,56 @@ router.put('/settings/kyb', async (req, res) => {
     const orgId = requireOrg(req, res); if (!orgId) return;
 
     const {
-
       businessType,
-
       gstin,
-
       businessName,
-
       businessAddress,
-
       cin,
-
       directorName,
-
       companyPan,
-
       bankAccountNumber,
-
       ifsc,
-
+      docCertificateIncorp,
+      docCompanyPan,
+      docDirectorPan,
+      docCancelledCheque,
+      docDirectorId,
+      docGstinCertificate
     } = req.body || {};
 
+    const payload = {};
+    if (businessType !== undefined) payload.businessType = businessType ? String(businessType) : null;
+    if (gstin !== undefined) payload.gstin = gstin ? String(gstin).toUpperCase() : null;
+    if (businessName !== undefined) payload.businessName = businessName ? String(businessName) : null;
+    if (businessAddress !== undefined) payload.businessAddress = businessAddress ? String(businessAddress) : null;
+    if (cin !== undefined) payload.cin = cin ? String(cin).toUpperCase() : null;
+    if (directorName !== undefined) payload.directorName = directorName ? String(directorName) : null;
+    if (companyPan !== undefined) payload.companyPan = companyPan ? String(companyPan).toUpperCase() : null;
+    if (bankAccountNumber !== undefined) payload.bankAccountNumber = bankAccountNumber ? String(bankAccountNumber) : null;
+    if (ifsc !== undefined) payload.ifsc = ifsc ? String(ifsc).toUpperCase() : null;
+    
+    // Only update docs if they are explicitly provided (not null/undefined)
+    if (docCertificateIncorp) payload.docCertificateIncorp = docCertificateIncorp;
+    if (docCompanyPan) payload.docCompanyPan = docCompanyPan;
+    if (docDirectorPan) payload.docDirectorPan = docDirectorPan;
+    if (docCancelledCheque) payload.docCancelledCheque = docCancelledCheque;
+    if (docDirectorId) payload.docDirectorId = docDirectorId;
+    if (docGstinCertificate) payload.docGstinCertificate = docGstinCertificate;
 
-
-    const payload = {
-
-      businessType: businessType ? String(businessType) : null,
-
-      gstin: gstin ? String(gstin).toUpperCase() : null,
-
-      businessName: businessName ? String(businessName) : null,
-
-      businessAddress: businessAddress ? String(businessAddress) : null,
-
-      cin: cin ? String(cin).toUpperCase() : null,
-
-      directorName: directorName ? String(directorName) : null,
-
-      companyPan: companyPan ? String(companyPan).toUpperCase() : null,
-
-      bankAccountNumber: bankAccountNumber ? String(bankAccountNumber) : null,
-
-      ifsc: ifsc ? String(ifsc).toUpperCase() : null,
-
-    };
-
-
-
-    const existing = await sequelize.models.OrgKyb.findOne({ where: { active: true, orgAccountId: orgId } });
+    const { OrgKyb } = require('../models');
+    const existing = await OrgKyb.findOne({ where: { active: true, orgAccountId: orgId } });
 
     if (existing) {
-
       await existing.update(payload);
-
       return res.json({ success: true });
-
     }
 
-    await sequelize.models.OrgKyb.create({ ...payload, active: true, orgAccountId: orgId });
-
+    await OrgKyb.create({ ...payload, active: true, orgAccountId: orgId });
     return res.json({ success: true });
 
   } catch (e) {
-
+    console.error('KYB Save Error:', e);
     return res.status(500).json({ success: false, message: 'Failed to save KYB settings' });
-
   }
 
 });
@@ -3108,32 +3161,49 @@ function getMonthWeekNumber(d) {
 
 }
 
+function normalizeWeeklyOffWeeks(input) {
+
+  if (input === 'all') return 'all';
+  if (Array.isArray(input)) {
+    const lowered = input.map(v => String(v).toLowerCase());
+    if (lowered.includes('all') || lowered.includes('0')) return 'all';
+    const nums = Array.from(new Set(input.map(v => Number(v)).filter(n => Number.isFinite(n) && n >= 1 && n <= 5)));
+    return nums;
+  }
+  const single = String(input ?? '').toLowerCase();
+  if (single === 'all' || single === '0') return 'all';
+  const n = Number(input);
+  if (Number.isFinite(n) && n >= 1 && n <= 5) return [n];
+  return [];
+}
+
 
 
 function isWeeklyOffForDate(configArray, jsDate) {
-
   try {
+    let config = configArray;
+    // Robust mult-stage parsing for potentially multi-stringified JSON
+    while (typeof config === 'string' && config.trim().startsWith('[')) {
+      try {
+        const p = JSON.parse(config);
+        if (p === config) break;
+        config = p;
+      } catch (e) { break; }
+    }
+    if (!Array.isArray(config)) return false;
 
     const dow = jsDate.getDay(); // 0=Sun
-
     const wk = getMonthWeekNumber(jsDate);
 
-    for (const cfg of Array.isArray(configArray) ? configArray : []) {
-
+    for (const cfg of config) {
       if (cfg && Number(cfg.day) === dow) {
-
-        if (cfg.weeks === 'all') return true;
-
-        if (Array.isArray(cfg.weeks) && cfg.weeks.includes(wk)) return true;
-
+        const weeks = normalizeWeeklyOffWeeks(cfg.weeks);
+        if (weeks === 'all') return true;
+        if (Array.isArray(weeks) && weeks.includes(wk)) return true;
       }
-
     }
-
     return false;
-
   } catch (_) { return false; }
-
 }
 
 
@@ -3174,7 +3244,11 @@ router.post('/weekly-off/templates', async (req, res) => {
 
     if (!name) return res.status(400).json({ success: false, message: 'name required' });
 
-    const norm = Array.isArray(config) ? config.filter(x => x && x.day != null).map(x => ({ day: Number(x.day), weeks: x.weeks === 'all' ? 'all' : Array.isArray(x.weeks) ? x.weeks.map(Number) : [] })) : [];
+    const norm = Array.isArray(config)
+      ? config
+        .filter(x => x && x.day != null)
+        .map(x => ({ day: Number(x.day), weeks: normalizeWeeklyOffWeeks(x.weeks) }))
+      : [];
 
     const row = await sequelize.models.WeeklyOffTemplate.create({ name: String(name), config: norm, active: active === undefined ? true : !!active, orgAccountId: orgId });
 
@@ -3214,7 +3288,11 @@ router.put('/weekly-off/templates/:id', async (req, res) => {
 
     if (config !== undefined) {
 
-      patch.config = Array.isArray(config) ? config.filter(x => x && x.day != null).map(x => ({ day: Number(x.day), weeks: x.weeks === 'all' ? 'all' : Array.isArray(x.weeks) ? x.weeks.map(Number) : [] })) : [];
+      patch.config = Array.isArray(config)
+        ? config
+          .filter(x => x && x.day != null)
+          .map(x => ({ day: Number(x.day), weeks: normalizeWeeklyOffWeeks(x.weeks) }))
+        : [];
 
     }
 
@@ -3276,6 +3354,55 @@ router.post('/weekly-off/assign', async (req, res) => {
 
   }
 
+});
+
+// Get assigned staff for a weekly off template
+router.get('/weekly-off/templates/:id/assignments', async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
+    const { StaffWeeklyOffAssignment, WeeklyOffTemplate } = sequelize.models;
+    const templateId = Number(req.params.id);
+
+    const tpl = await WeeklyOffTemplate.findOne({ where: { id: templateId, orgAccountId: orgId } });
+    if (!tpl) return res.status(404).json({ success: false, message: 'Weekly off template not found' });
+
+    const rows = await StaffWeeklyOffAssignment.findAll({
+      where: { weeklyOffTemplateId: templateId },
+      order: [['createdAt', 'DESC']],
+      include: [{
+        model: User,
+        as: 'user',
+        attributes: ['id', 'phone', 'active'],
+        include: [{ model: StaffProfile, as: 'profile', attributes: ['name', 'staffId', 'department', 'designation'] }],
+      }],
+    });
+    return res.json({ success: true, assignments: rows });
+  } catch (e) {
+    return res.status(500).json({ success: false, message: 'Failed to load assignments' });
+  }
+});
+
+// Unassign staff from weekly off template
+router.delete('/weekly-off/assign/:id', async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
+    const { StaffWeeklyOffAssignment } = sequelize.models;
+    const id = Number(req.params.id);
+    
+    const assignment = await StaffWeeklyOffAssignment.findOne({
+      where: { id },
+      include: [{ model: User, as: 'user', attributes: ['orgAccountId'] }]
+    });
+
+    if (!assignment || assignment.user?.orgAccountId !== orgId) {
+      return res.status(404).json({ success: false, message: 'Assignment not found' });
+    }
+
+    await assignment.destroy();
+    return res.json({ success: true });
+  } catch (e) {
+    return res.status(500).json({ success: false, message: 'Failed to unassign staff' });
+  }
 });
 
 
@@ -3675,12 +3802,69 @@ router.post('/business-functions/assign-department', async (req, res) => {
     });
 
   } catch (e) {
-
     console.error('Assign department bulk error:', e);
     return res.status(500).json({ success: false, message: 'Failed to assign department' });
-
   }
+});
 
+// Get staff assigned to a specific department
+router.get('/business-functions/department/:name/staff', async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
+    const departmentName = String(req.params.name || '').trim();
+
+    if (!departmentName) {
+      return res.status(400).json({ success: false, message: 'Department name is required' });
+    }
+
+    const staffProfiles = await StaffProfile.findAll({
+      where: { department: departmentName },
+      include: [{
+        model: User,
+        as: 'user',
+        where: { orgAccountId: orgId, role: 'staff' },
+        attributes: ['id', 'phone', 'active']
+      }],
+      order: [['createdAt', 'DESC']]
+    });
+
+    return res.json({ success: true, staff: staffProfiles });
+  } catch (e) {
+    console.error('Get department staff error:', e);
+    return res.status(500).json({ success: false, message: 'Failed to load department staff' });
+  }
+});
+
+// Remove staff from a department
+router.delete('/business-functions/department/:name/staff/:userId', async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
+    const departmentName = String(req.params.name || '').trim();
+    const userId = Number(req.params.userId);
+
+    if (!departmentName || !userId) {
+      return res.status(400).json({ success: false, message: 'Department name and User ID are required' });
+    }
+
+    const user = await User.findOne({ where: { id: userId, orgAccountId: orgId } });
+    if (!user) return res.status(404).json({ success: false, message: 'Staff member not found in this organization' });
+
+    const profile = await StaffProfile.findOne({
+      where: { userId, department: departmentName }
+    });
+
+    if (!profile) {
+      return res.status(404).json({ success: false, message: 'Staff is not assigned to this department' });
+    }
+
+    // Unassign by setting department to null
+    await profile.update({ department: null });
+
+    return res.json({ success: true, message: 'Staff removed from department successfully' });
+  } catch (e) {
+    console.error('Remove department staff error:', e);
+    return res.status(500).json({ success: false, message: 'Failed to remove staff from department' });
+  }
 });
 
 
@@ -3991,6 +4175,53 @@ router.post('/leave/assign', async (req, res) => {
 
 });
 
+// Get assigned staff for a leave template
+router.get('/leave/templates/:id/assignments', async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
+    const templateId = Number(req.params.id);
+
+    const tpl = await LeaveTemplate.findOne({ where: { id: templateId, orgAccountId: orgId } });
+    if (!tpl) return res.status(404).json({ success: false, message: 'Leave template not found' });
+
+    const rows = await StaffLeaveAssignment.findAll({
+      where: { leaveTemplateId: templateId },
+      order: [['createdAt', 'DESC']],
+      include: [{
+        model: User,
+        as: 'user',
+        attributes: ['id', 'phone', 'active'],
+        include: [{ model: StaffProfile, as: 'profile', attributes: ['name', 'staffId', 'department', 'designation'] }],
+      }],
+    });
+    return res.json({ success: true, assignments: rows });
+  } catch (e) {
+    return res.status(500).json({ success: false, message: 'Failed to load assignments' });
+  }
+});
+
+// Unassign staff from leave template
+router.delete('/leave/assign/:id', async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
+    const id = Number(req.params.id);
+    
+    const assignment = await StaffLeaveAssignment.findOne({
+      where: { id },
+      include: [{ model: User, as: 'user', attributes: ['orgAccountId'] }]
+    });
+
+    if (!assignment || assignment.user?.orgAccountId !== orgId) {
+      return res.status(404).json({ success: false, message: 'Assignment not found' });
+    }
+
+    await assignment.destroy();
+    return res.json({ success: true });
+  } catch (e) {
+    return res.status(500).json({ success: false, message: 'Failed to unassign staff' });
+  }
+});
+
 
 
 // --- Holiday Templates & Assignments --- (org-scoped)
@@ -4193,8 +4424,25 @@ router.post('/holidays/assign', async (req, res) => {
 
 
 
-    const payload = users.map(uid => ({ userId: Number(uid), holidayTemplateId: tplId, effectiveFrom: from, effectiveTo: to }));
+    const numericIds = Array.from(new Set(users.map((uid) => Number(uid)).filter((n) => Number.isFinite(n) && n > 0)));
+    if (!numericIds.length) return res.status(400).json({ success: false, message: 'Valid staff userId(s) required' });
 
+    const validStaff = await User.findAll({
+      where: { id: { [Op.in]: numericIds }, role: 'staff', orgAccountId: orgId },
+      attributes: ['id'],
+    });
+    const validIds = validStaff.map((u) => Number(u.id));
+    if (!validIds.length) return res.status(400).json({ success: false, message: 'Selected staff not found in this organization' });
+
+    // Keep latest assignment row per user+template to avoid duplicate confusion.
+    await StaffHolidayAssignment.destroy({
+      where: {
+        userId: { [Op.in]: validIds },
+        holidayTemplateId: tplId,
+      },
+    });
+
+    const payload = validIds.map(uid => ({ userId: uid, holidayTemplateId: tplId, effectiveFrom: from, effectiveTo: to }));
     await StaffHolidayAssignment.bulkCreate(payload);
 
     return res.json({ success: true });
@@ -4207,7 +4455,54 @@ router.post('/holidays/assign', async (req, res) => {
 
 });
 
+// Get assigned staff for a holiday template
+router.get('/holidays/templates/:id/assignments', async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
+    const { StaffHolidayAssignment } = sequelize.models;
+    const templateId = Number(req.params.id);
 
+    const tpl = await HolidayTemplate.findOne({ where: { id: templateId, orgAccountId: orgId } });
+    if (!tpl) return res.status(404).json({ success: false, message: 'Holiday template not found' });
+
+    const rows = await StaffHolidayAssignment.findAll({
+      where: { holidayTemplateId: templateId },
+      order: [['createdAt', 'DESC']],
+      include: [{
+        model: User,
+        as: 'user',
+        attributes: ['id', 'phone', 'active'],
+        include: [{ model: StaffProfile, as: 'profile', attributes: ['name', 'staffId', 'department', 'designation'] }],
+      }],
+    });
+    return res.json({ success: true, assignments: rows });
+  } catch (e) {
+    return res.status(500).json({ success: false, message: 'Failed to load assignments' });
+  }
+});
+
+// Unassign staff from holiday template
+router.delete('/holidays/assign/:id', async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
+    const { StaffHolidayAssignment } = sequelize.models;
+    const id = Number(req.params.id);
+    
+    const assignment = await StaffHolidayAssignment.findOne({
+      where: { id },
+      include: [{ model: User, as: 'user', attributes: ['orgAccountId'] }]
+    });
+
+    if (!assignment || assignment.user?.orgAccountId !== orgId) {
+      return res.status(404).json({ success: false, message: 'Assignment not found' });
+    }
+
+    await assignment.destroy();
+    return res.json({ success: true });
+  } catch (e) {
+    return res.status(500).json({ success: false, message: 'Failed to unassign staff' });
+  }
+});
 
 // Staff stats: total, active, newHires (last 7 days), onLeave (today overlaps) (org-scoped)
 
@@ -4303,9 +4598,37 @@ router.get('/settings/attendance-templates', async (req, res) => {
 
     const orgId = requireOrg(req, res); if (!orgId) return;
 
-    const rows = await AttendanceTemplate.findAll({ where: { orgAccountId: orgId }, order: [['createdAt', 'DESC']] });
+    const rows = await AttendanceTemplate.findAll({
+      where: { orgAccountId: orgId },
+      order: [['createdAt', 'DESC']]
+    });
 
-    return res.json({ success: true, data: rows });
+    const templateIds = rows.map(r => Number(r.id)).filter(Number.isFinite);
+    const countsRaw = templateIds.length
+      ? await StaffAttendanceAssignment.findAll({
+          attributes: [
+            'attendanceTemplateId',
+            [sequelize.fn('COUNT', sequelize.col('id')), 'count'],
+          ],
+          where: { attendanceTemplateId: templateIds },
+          group: ['attendanceTemplateId'],
+          raw: true,
+        })
+      : [];
+
+    const countByTemplateId = new Map(
+      (countsRaw || []).map((row) => [
+        Number(row.attendanceTemplateId),
+        Number(row.count || 0),
+      ])
+    );
+
+    const data = rows.map((row) => ({
+      ...row.toJSON(),
+      assignedCount: countByTemplateId.get(Number(row.id)) || 0,
+    }));
+
+    return res.json({ success: true, data });
 
   } catch (e) {
 
@@ -4443,38 +4766,33 @@ router.put('/settings/attendance-templates/:id', async (req, res) => {
 
 
 
-// Get assigned staff ids for a template
-
+// Get assigned staff for a template
 router.get('/settings/attendance-templates/:id/assignments', async (req, res) => {
-
   try {
-
     const id = Number(req.params.id);
 
-    const rows = await StaffAttendanceAssignment.findAll({ where: { attendanceTemplateId: id } });
+    const rows = await StaffAttendanceAssignment.findAll({ 
+      where: { attendanceTemplateId: id },
+      include: [{
+        model: User,
+        as: 'user',
+        attributes: ['id', 'phone', 'active'],
+        include: [{ model: StaffProfile, as: 'profile', attributes: ['name', 'staffId', 'department', 'designation'] }],
+      }],
+      order: [['createdAt', 'DESC']]
+    });
 
     const staffIds = rows.map(r => r.userId);
-
-    return res.json({ success: true, staffIds });
-
+    return res.json({ success: true, staffIds, assignments: rows });
   } catch (e) {
-
     return res.status(500).json({ success: false, message: 'Failed to load assignments' });
-
   }
-
 });
 
-
-
 // Assign staff to a template (replace-all)
-
 router.post('/settings/attendance-templates/:id/assign', async (req, res) => {
-
   try {
-
     const id = Number(req.params.id);
-
     const { staffIds } = req.body || {};
 
     if (!Array.isArray(staffIds)) return res.status(400).json({ success: false, message: 'staffIds array required' });
@@ -4482,23 +4800,33 @@ router.post('/settings/attendance-templates/:id/assign', async (req, res) => {
     await StaffAttendanceAssignment.destroy({ where: { attendanceTemplateId: id } });
 
     const payload = staffIds
-
       .map(sid => Number(sid))
-
       .filter(n => Number.isFinite(n))
-
       .map(n => ({ attendanceTemplateId: id, userId: n }));
 
     if (payload.length) await StaffAttendanceAssignment.bulkCreate(payload);
 
     return res.json({ success: true, assigned: payload.length });
-
   } catch (e) {
-
     return res.status(500).json({ success: false, message: 'Failed to assign staff' });
-
   }
+});
 
+// Unassign specific staff from attendance template
+router.delete('/settings/attendance-templates/assign/:assignmentId', async (req, res) => {
+  try {
+    const assignmentId = Number(req.params.assignmentId);
+    
+    const assignment = await StaffAttendanceAssignment.findOne({ where: { id: assignmentId } });
+    if (!assignment) {
+      return res.status(404).json({ success: false, message: 'Assignment not found' });
+    }
+
+    await assignment.destroy();
+    return res.json({ success: true });
+  } catch (e) {
+    return res.status(500).json({ success: false, message: 'Failed to unassign staff' });
+  }
 });
 
 
