@@ -2,7 +2,7 @@ const express = require('express');
 const { Op } = require('sequelize');
 const puppeteer = require('puppeteer');
 
-const { Attendance, LeaveRequest, AppSetting, AttendanceTemplate, StaffAttendanceAssignment, StaffShiftAssignment, ShiftTemplate, StaffHolidayAssignment, HolidayTemplate, HolidayDate, StaffGeofenceAssignment, GeofenceTemplate, GeofenceSite, LocationPing, DeviceInfo, WeeklyOffTemplate, StaffWeeklyOffAssignment } = require('../models');
+const { Attendance, LeaveRequest, AppSetting, AttendanceTemplate, StaffAttendanceAssignment, StaffShiftAssignment, ShiftTemplate, StaffHolidayAssignment, HolidayTemplate, HolidayDate, StaffGeofenceAssignment, GeofenceTemplate, GeofenceSite, LocationPing, DeviceInfo, WeeklyOffTemplate, StaffWeeklyOffAssignment, AttendanceAutomationRule } = require('../models');
 const { authRequired } = require('../middleware/auth');
 const { requireRole } = require('../middleware/roles');
 const { upload } = require('../upload');
@@ -473,6 +473,30 @@ router.get('/status', async (req, res) => {
     dayStatus = 'HALF_DAY';
   }
 
+  // Late check for the current day
+  let isLate = false;
+  try {
+    const penaltyRule = await AttendanceAutomationRule.findOne({
+      where: { key: 'late_punchin_penalty', orgAccountId: req.user.orgAccountId, active: true }
+    });
+    if (penaltyRule && punchedInAt && assignedShift?.startTime) {
+      let config = penaltyRule.config;
+      if (typeof config === 'string') {
+        try { config = JSON.parse(config); } catch (e) {
+          try { config = JSON.parse(JSON.parse(config)); } catch (__) { config = {}; }
+        }
+      }
+      const graceMinutes = Number(config.lateMinutes || 15);
+      const [sh, sm, ss] = assignedShift.startTime.split(':').map(Number);
+      const shiftStartSeconds = sh * 3600 + sm * 60 + (ss || 0);
+      const lateThresholdSeconds = shiftStartSeconds + (graceMinutes * 60);
+
+      const istDate = new Date(punchedInAt.getTime() + (5.5 * 3600 * 1000));
+      const punchInSeconds = istDate.getUTCHours() * 3600 + istDate.getUTCMinutes() * 60 + istDate.getUTCSeconds();
+      if (punchInSeconds > lateThresholdSeconds) isLate = true;
+    }
+  } catch (_) {}
+
   return res.json({
     success: true,
     status: {
@@ -488,6 +512,7 @@ router.get('/status', async (req, res) => {
       overtimeSeconds,
       requiredWorkSeconds: REQUIRED_WORK_SECONDS,
       dayStatus,
+      isLate,
       totalWorkHours: record?.totalWorkHours || null,
       assignedShift: assignedShift ? {
         id: assignedShift.id, name: assignedShift.name, shiftType: assignedShift.shiftType,
@@ -563,7 +588,28 @@ router.get('/history', async (req, res) => {
       woConfig = Array.isArray(raw) ? raw : [];
     }
 
+    // Late Penalty Rule Fetch
+    let lateThreshold = 3, lateGrace = 15;
+    let lateRuleActive = false;
+    try {
+      const penaltyRule = await AttendanceAutomationRule.findOne({
+        where: { key: 'late_punchin_penalty', orgAccountId: req.user.orgAccountId, active: true }
+      });
+      if (penaltyRule) {
+        let config = penaltyRule.config;
+        if (typeof config === 'string') {
+          try { config = JSON.parse(config); } catch (e) {
+            try { config = JSON.parse(JSON.parse(config)); } catch (__) { config = {}; }
+          }
+        }
+        lateThreshold = Number(config.threshold || 3);
+        lateGrace = Number(config.lateMinutes || 15);
+        lateRuleActive = penaltyRule.active && config.active !== false;
+      }
+    } catch (_) {}
+
     const summary = { present: 0, absent: 0, halfDay: 0, leave: 0, overtime: 0, weeklyOff: 0, holiday: 0 };
+    let lateRunningCount = 0;
     const days = [];
 
     const totalDaysRemainingInMonth = end.getDate();
@@ -652,7 +698,36 @@ router.get('/history', async (req, res) => {
         }
       }
 
-      if (dayStatus === 'PRESENT') summary.present += 1;
+      // Late Penalty Calculation
+      let isLateThisDay = false;
+      let isPenaltyDay = false;
+      let lateReason = null;
+
+      if (lateRuleActive && record?.punchedInAt && (dayStatus === 'PRESENT' || dayStatus === 'OVERTIME' || dayStatus === 'HALF_DAY')) {
+        const shiftTpl = await getEffectiveShiftTemplate(userId, key);
+        if (shiftTpl?.startTime) {
+          const [sh, sm, ss] = shiftTpl.startTime.split(':').map(Number);
+          const shiftStartSec = sh * 3600 + sm * 60 + (ss || 0);
+          
+          const punchIn = new Date(record.punchedInAt);
+          const istDate = new Date(punchIn.getTime() + (5.5 * 3600 * 1000));
+          const punchInSec = istDate.getUTCHours() * 3600 + istDate.getUTCMinutes() * 60 + istDate.getUTCSeconds();
+          
+          if (punchInSec > (shiftStartSec + lateGrace * 60)) {
+            isLateThisDay = true;
+            lateRunningCount++;
+            if (lateThreshold > 0 && lateRunningCount % lateThreshold === 0) {
+              isPenaltyDay = true;
+              lateReason = `Late Punch-In Penalty (${lateRunningCount}th late)`;
+            } else {
+              const diffMin = Math.floor((punchInSec - shiftStartSec) / 60);
+              lateReason = `Late arrival (${diffMin} min)`;
+            }
+          }
+        }
+      }
+
+      if (dayStatus === 'PRESENT' || dayStatus === 'OVERTIME') summary.present += 1;
       else if (dayStatus === 'ABSENT') summary.absent += 1;
       else if (dayStatus === 'HALF_DAY') summary.halfDay += 1;
       else if (dayStatus === 'LEAVE') summary.leave += 1;
@@ -660,7 +735,17 @@ router.get('/history', async (req, res) => {
       else if (dayStatus === 'HOLIDAY') summary.holiday += 1;
       else if (dayStatus === 'WEEKLY_OFF') summary.weeklyOff += 1;
 
-      days.push({ date: key, dayStatus, workingSeconds, breakSeconds, overtimeSeconds, leaveType });
+      days.push({ 
+        date: key, 
+        dayStatus, 
+        workingSeconds, 
+        breakSeconds, 
+        overtimeSeconds, 
+        leaveType,
+        isLate: isLateThisDay,
+        isPenaltyDay: isPenaltyDay,
+        reason: lateReason
+      });
     }
 
     return res.json({

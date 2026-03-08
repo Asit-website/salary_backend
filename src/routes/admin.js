@@ -19,7 +19,7 @@ function getCellValue(cell) {
 
 
 
-const { sequelize, User, StaffProfile, Role, Permission, AppSetting, DocumentType, ShiftTemplate, ShiftBreak, ShiftRotationalSlot, StaffShiftAssignment, SalaryAccess, AttendanceTemplate, StaffAttendanceAssignment, SalaryTemplate, StaffSalaryAssignment, Site, WorkUnit, Route, RouteStop, StaffRouteAssignment, SiteCheckpoint, PatrolLog, LeaveTemplate, LeaveTemplateCategory, StaffLeaveAssignment, LeaveBalance, LeaveRequest, AIAnomaly, ReliabilityScore, SalaryForecast, Attendance, Client, AssignedJob, SalesTarget, HolidayTemplate, HolidayDate, StaffHolidayAssignment, Subscription, Plan, SalesVisit, Asset, AssetAssignment, AssetMaintenance, StaffLoan, OrderProduct, StaffOrderProduct, AttendanceAutomationRule, StaffGeofenceAssignment, GeofenceTemplate, GeofenceSite, DeviceInfo, Appraisal, Rating } = require('../models');
+const { sequelize, User, StaffProfile, Role, Permission, AppSetting, DocumentType, ShiftTemplate, ShiftBreak, ShiftRotationalSlot, StaffShiftAssignment, SalaryAccess, AttendanceTemplate, StaffAttendanceAssignment, SalaryTemplate, StaffSalaryAssignment, Site, WorkUnit, Route, RouteStop, StaffRouteAssignment, SiteCheckpoint, PatrolLog, LeaveTemplate, LeaveTemplateCategory, StaffLeaveAssignment, LeaveBalance, LeaveRequest, AIAnomaly, ReliabilityScore, SalaryForecast, Attendance, Client, AssignedJob, SalesTarget, HolidayTemplate, HolidayDate, StaffHolidayAssignment, WeeklyOffTemplate, StaffWeeklyOffAssignment, Subscription, Plan, SalesVisit, Asset, AssetAssignment, AssetMaintenance, StaffLoan, OrderProduct, StaffOrderProduct, AttendanceAutomationRule, StaffGeofenceAssignment, GeofenceTemplate, GeofenceSite, DeviceInfo, Appraisal, Rating } = require('../models');
 
 const multer = require('multer');
 
@@ -974,7 +974,7 @@ router.get('/staff/:id/salary-compute', async (req, res) => {
       const key = `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, '0')}-${String(dnum).padStart(2, '0')}`;
       const s = attMap[key];
 
-      if (s === 'present') { present += 1; continue; }
+      if (s === 'present' || s === 'overtime') { present += 1; continue; }
       if (s === 'half_day') { half += 1; continue; }
       if (s === 'leave') { leave += 1; if (paidLeaveSet.has(key)) paidLeave += 1; else if (unpaidLeaveSet.has(key)) unpaidLeave += 1; continue; }
       if (s === 'weekly_off') { weeklyOff += 1; continue; }
@@ -1739,7 +1739,7 @@ router.post('/payroll/:cycleId/compute', async (req, res) => {
         const key = `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, '0')}-${String(dnum).padStart(2, '0')}`;
         const s = attMap[key];
 
-        if (s === 'present') { present += 1; continue; }
+        if (s === 'present' || s === 'overtime') { present += 1; continue; }
         if (s === 'half_day') { half += 1; continue; }
         if (s === 'leave') {
           leave += 1;
@@ -2814,7 +2814,7 @@ router.put('/settings/kyb', async (req, res) => {
     if (companyPan !== undefined) payload.companyPan = companyPan ? String(companyPan).toUpperCase() : null;
     if (bankAccountNumber !== undefined) payload.bankAccountNumber = bankAccountNumber ? String(bankAccountNumber) : null;
     if (ifsc !== undefined) payload.ifsc = ifsc ? String(ifsc).toUpperCase() : null;
-    
+
     // Only update docs if they are explicitly provided (not null/undefined)
     if (docCertificateIncorp) payload.docCertificateIncorp = docCertificateIncorp;
     if (docCompanyPan) payload.docCompanyPan = docCompanyPan;
@@ -3388,7 +3388,7 @@ router.delete('/weekly-off/assign/:id', async (req, res) => {
     const orgId = requireOrg(req, res); if (!orgId) return;
     const { StaffWeeklyOffAssignment } = sequelize.models;
     const id = Number(req.params.id);
-    
+
     const assignment = await StaffWeeklyOffAssignment.findOne({
       where: { id },
       include: [{ model: User, as: 'user', attributes: ['orgAccountId'] }]
@@ -3920,6 +3920,27 @@ router.get('/settings/attendance-templates/effective/:userId', async (req, res) 
 
   }
 
+
+});
+
+router.get('/shifts/effective/:userId', async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
+    const { userId } = req.params;
+    const uid = Number(userId);
+    const dateIso = toIsoDateOnly(new Date());
+
+    const asg = await StaffShiftAssignment.findOne({
+      where: { userId: uid, effectiveFrom: { [Op.lte]: dateIso } },
+      order: [['effectiveFrom', 'DESC']],
+      include: [{ model: ShiftTemplate, as: 'template' }]
+    });
+
+    return res.json({ success: true, shift: asg?.template || null });
+  } catch (e) {
+    console.error('Effective shift error:', e);
+    return res.status(500).json({ success: false, message: 'Failed to fetch effective shift' });
+  }
 });
 
 
@@ -4205,7 +4226,7 @@ router.delete('/leave/assign/:id', async (req, res) => {
   try {
     const orgId = requireOrg(req, res); if (!orgId) return;
     const id = Number(req.params.id);
-    
+
     const assignment = await StaffLeaveAssignment.findOne({
       where: { id },
       include: [{ model: User, as: 'user', attributes: ['orgAccountId'] }]
@@ -4487,7 +4508,7 @@ router.delete('/holidays/assign/:id', async (req, res) => {
     const orgId = requireOrg(req, res); if (!orgId) return;
     const { StaffHolidayAssignment } = sequelize.models;
     const id = Number(req.params.id);
-    
+
     const assignment = await StaffHolidayAssignment.findOne({
       where: { id },
       include: [{ model: User, as: 'user', attributes: ['orgAccountId'] }]
@@ -4606,14 +4627,14 @@ router.get('/settings/attendance-templates', async (req, res) => {
     const templateIds = rows.map(r => Number(r.id)).filter(Number.isFinite);
     const countsRaw = templateIds.length
       ? await StaffAttendanceAssignment.findAll({
-          attributes: [
-            'attendanceTemplateId',
-            [sequelize.fn('COUNT', sequelize.col('id')), 'count'],
-          ],
-          where: { attendanceTemplateId: templateIds },
-          group: ['attendanceTemplateId'],
-          raw: true,
-        })
+        attributes: [
+          'attendanceTemplateId',
+          [sequelize.fn('COUNT', sequelize.col('id')), 'count'],
+        ],
+        where: { attendanceTemplateId: templateIds },
+        group: ['attendanceTemplateId'],
+        raw: true,
+      })
       : [];
 
     const countByTemplateId = new Map(
@@ -4771,7 +4792,7 @@ router.get('/settings/attendance-templates/:id/assignments', async (req, res) =>
   try {
     const id = Number(req.params.id);
 
-    const rows = await StaffAttendanceAssignment.findAll({ 
+    const rows = await StaffAttendanceAssignment.findAll({
       where: { attendanceTemplateId: id },
       include: [{
         model: User,
@@ -4816,7 +4837,7 @@ router.post('/settings/attendance-templates/:id/assign', async (req, res) => {
 router.delete('/settings/attendance-templates/assign/:assignmentId', async (req, res) => {
   try {
     const assignmentId = Number(req.params.assignmentId);
-    
+
     const assignment = await StaffAttendanceAssignment.findOne({ where: { id: assignmentId } });
     if (!assignment) {
       return res.status(404).json({ success: false, message: 'Assignment not found' });
@@ -6689,16 +6710,18 @@ function computeItemAmount(item, ctx) {
 
         const toTime = (dt) => (dt ? new Date(dt).toTimeString().slice(0, 8) : null);
         const data = rows.map(r => {
-          let status = r.status || 'absent';
-          if (!r.status) {
-            if (Number(r.breakTotalSeconds) === -1) status = 'leave';
-            else if (Number(r.breakTotalSeconds) === -2) status = 'half_day';
-            else if (r.punchedInAt && r.punchedOutAt) {
+          let status = String(r.status || '').toLowerCase();
+          if (Number(r.breakTotalSeconds) === -1) status = 'leave';
+          else if (Number(r.breakTotalSeconds) === -2) status = 'half_day';
+          else if (!r.status) {
+            if (r.punchedInAt && r.punchedOutAt) {
               const durMs = new Date(r.punchedOutAt) - new Date(r.punchedInAt);
               const durH = durMs / (1000 * 60 * 60);
               status = durH >= 4 ? 'present' : 'half_day';
             } else if (r.punchedInAt || r.punchedOutAt) {
               status = r.punchedOutAt ? 'half_day' : 'present';
+            } else {
+              status = 'absent';
             }
           }
           return {
@@ -8880,12 +8903,14 @@ router.get('/attendance', async (req, res) => {
     };
 
     const data = rows.map(r => {
-      let status = 'absent';
-      if (r.punchedInAt) {
-        if (r.status === 'leave') status = 'leave';
-        else if (r.punchedInAt && r.punchedOutAt) status = 'present';
-        else if (r.punchedInAt || r.punchedOutAt) {
-          status = r.punchedOutAt ? 'half_day' : 'present';
+      let status = String(r.status || '').toLowerCase();
+      if (Number(r.breakTotalSeconds) === -2) status = 'half_day';
+      else if (Number(r.breakTotalSeconds) === -1) status = 'leave';
+      else if (!status) {
+        status = 'absent';
+        if (r.punchedInAt) {
+          if (r.punchedInAt && r.punchedOutAt) status = 'present';
+          else if (r.punchedInAt || r.punchedOutAt) status = r.punchedOutAt ? 'half_day' : 'present';
         }
       }
 
@@ -8905,6 +8930,7 @@ router.get('/attendance', async (req, res) => {
 
         checkOut: toTime(r.punchedOutAt),
         note: r.note || '',
+        overtimeMinutes: r.overtimeMinutes || 0,
 
         status,
 
@@ -9830,7 +9856,7 @@ router.post('/attendance', async (req, res) => {
 
     const statusRaw = String(body.status || '').toLowerCase();
 
-    const status = ['present', 'absent', 'half_day', 'leave'].includes(statusRaw) ? statusRaw : 'present';
+    const status = ['present', 'absent', 'half_day', 'leave', 'overtime'].includes(statusRaw) ? statusRaw : 'present';
 
     const checkIn = normalizeTime(body.checkIn);
 
@@ -9867,30 +9893,47 @@ router.post('/attendance', async (req, res) => {
     const joinDateTime = (t) => (t ? new Date(`${dateIso}T${normalizeTime(t)}`) : null);
 
     let payload = {
-
       punchedInAt: joinDateTime(checkIn),
-
       punchedOutAt: joinDateTime(checkOut),
-
-      status
-
+      status,
     };
-
     if (status === 'leave') {
-
       payload = { punchedInAt: null, punchedOutAt: null, breakTotalSeconds: -1, status };
-
     } else if (status === 'absent') {
-
       payload = { punchedInAt: null, punchedOutAt: null, breakTotalSeconds: 0, status };
-
     } else if (status === 'half_day') {
-
       // keep provided times, but mark half-day explicitly via sentinel
-
       payload.breakTotalSeconds = -2;
-
+    } else {
+      // For present or overtime, ensure any existing sentinel is cleared if status is explicitly provided
+      payload.breakTotalSeconds = 0;
     }
+    // Overtime minutes: auto-compute if shift has rule, else accept provided minutes
+    try {
+      const { StaffShiftAssignment, ShiftTemplate } = require('../models');
+      const asg = await StaffShiftAssignment.findOne({
+        where: { userId: uid, effectiveFrom: { [Op.lte]: dateIso } },
+        order: [['effectiveFrom', 'DESC']]
+      });
+      let otMin = null;
+      if (asg) {
+        const tpl = await ShiftTemplate.findByPk(asg.shiftTemplateId || asg.shift_template_id);
+        const startAfter = Number(tpl?.overtimeStartMinutes || 0);
+        if (Number.isFinite(startAfter) && startAfter > 0 && payload.punchedInAt && payload.punchedOutAt) {
+          const diffMin = Math.floor((payload.punchedOutAt - payload.punchedInAt) / 60000);
+          if (diffMin > startAfter) otMin = diffMin - startAfter;
+        }
+      }
+      if (otMin != null) {
+        payload.overtimeMinutes = otMin;
+        if (otMin > 0 && status !== 'half_day' && status !== 'leave' && status !== 'absent') payload.status = 'overtime';
+      } else {
+        const provided = req.body?.overtimeMinutes;
+        if (status === 'overtime' && Number.isFinite(Number(provided)) && Number(provided) >= 0) {
+          payload.overtimeMinutes = Number(provided);
+        }
+      }
+    } catch (_) { /* ignore */ }
 
 
 
@@ -9929,7 +9972,7 @@ router.post('/attendance/bulk', async (req, res) => {
     const staffIds = Array.isArray(body.staffIds) ? body.staffIds.map(Number).filter(n => Number.isFinite(n)) : [];
     const dateIso = toIsoDateOnly(body.date || body.dateIso);
     const statusRaw = String(body.status || '').toLowerCase();
-    const status = ['present', 'absent', 'half_day', 'leave'].includes(statusRaw) ? statusRaw : 'present';
+    const status = ['present', 'absent', 'half_day', 'leave', 'overtime'].includes(statusRaw) ? statusRaw : 'present';
     const checkIn = normalizeTime(body.checkIn);
     const checkOut = normalizeTime(body.checkOut);
 
@@ -9946,16 +9989,45 @@ router.post('/attendance/bulk', async (req, res) => {
     if (status === 'leave') basePayload = { punchedInAt: null, punchedOutAt: null, breakTotalSeconds: -1, status };
     else if (status === 'absent') basePayload = { punchedInAt: null, punchedOutAt: null, breakTotalSeconds: 0, status };
     else if (status === 'half_day') basePayload.breakTotalSeconds = -2;
+    else basePayload.breakTotalSeconds = 0; // Clear sentinel for present/overtime
 
     const results = [];
     for (const uid of staffIds) {
       const user = await User.findOne({ where: { id: uid, orgAccountId: orgId, role: 'staff' } });
       if (!user) continue;
+      const payload = { ...basePayload };
+      // Compute OT minutes per staff (shift rule), else take provided
+      try {
+        const { StaffShiftAssignment, ShiftTemplate } = require('../models');
+        const asg = await StaffShiftAssignment.findOne({
+          where: { userId: uid, effectiveFrom: { [Op.lte]: dateIso } },
+          order: [['effectiveFrom', 'DESC']]
+        });
+        let otMin = null;
+        if (asg) {
+          const tpl = await ShiftTemplate.findByPk(asg.shiftTemplateId || asg.shift_template_id);
+          const startAfter = Number(tpl?.overtimeStartMinutes || 0);
+          if (Number.isFinite(startAfter) && startAfter > 0 && payload.punchedInAt && payload.punchedOutAt) {
+            const diffMin = Math.floor((payload.punchedOutAt - payload.punchedInAt) / 60000);
+            if (diffMin > startAfter) otMin = diffMin - startAfter;
+          }
+        }
+        if (otMin != null) {
+          payload.overtimeMinutes = otMin;
+          if (otMin > 0 && payload.status !== 'half_day' && payload.status !== 'leave' && payload.status !== 'absent') payload.status = 'overtime';
+        } else {
+          const provided = Array.isArray(body.rows) ? (body.rows.find(r => (r.userId === uid || r.userId === Number(uid)))?.overtimeMinutes) : body.overtimeMinutes;
+          if (payload.status === 'overtime' && Number.isFinite(Number(provided)) && Number(provided) >= 0) {
+            payload.overtimeMinutes = Number(provided);
+          }
+        }
+      } catch (_) { /* ignore */ }
+
       const [row, created] = await Attendance.findOrCreate({
         where: { userId: uid, date: dateIso },
-        defaults: basePayload
+        defaults: payload
       });
-      if (!created) await row.update(basePayload);
+      if (!created) await row.update(payload);
       results.push({ userId: uid, created });
     }
 
@@ -15200,7 +15272,8 @@ router.get('/reports/org-punch-matrix', async (req, res) => {
 
         for (let i = 1; i <= daysInMonth; i++) {
 
-          const dateKey = new Date(startDate.getFullYear(), startDate.getMonth(), i).toISOString().split('T')[0];
+          const d = new Date(startDate.getFullYear(), startDate.getMonth(), i);
+          const dateKey = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 
           rowData[`day_${i}`] = (matrix[staff.id] && matrix[staff.id][dateKey]) ? matrix[staff.id][dateKey].join('; ') : '';
 
@@ -15311,8 +15384,82 @@ router.get('/reports/org-attendance-matrix', async (req, res) => {
       order: [['date', 'ASC']]
     });
 
+    // Fetch Weekly Off Assignments
+    const woAssignments = await StaffWeeklyOffAssignment.findAll({
+      where: {
+        userId: staffList.map(s => s.id),
+        [Op.or]: [
+          { effectiveTo: null },
+          { effectiveTo: { [Op.gte]: startDate.toISOString().split('T')[0] } }
+        ],
+        effectiveFrom: { [Op.lte]: endDate.toISOString().split('T')[0] }
+      },
+      include: [{ model: WeeklyOffTemplate, as: 'template' }]
+    });
+
+    // Fetch Holiday Assignments
+    const holidayAssignments = await StaffHolidayAssignment.findAll({
+      where: {
+        userId: staffList.map(s => s.id),
+        [Op.or]: [
+          { effectiveTo: null },
+          { effectiveTo: { [Op.gte]: startDate.toISOString().split('T')[0] } }
+        ],
+        effectiveFrom: { [Op.lte]: endDate.toISOString().split('T')[0] }
+      },
+      include: [{
+        model: HolidayTemplate,
+        as: 'template',
+        include: [{
+          model: HolidayDate,
+          as: 'holidays',
+          where: {
+            date: {
+              [Op.gte]: startDate.toISOString().split('T')[0],
+              [Op.lte]: endDate.toISOString().split('T')[0]
+            }
+          }
+        }]
+      }]
+    });
+
+    // Fetch Late Penalty Rule
+    let lateThreshold = 3, lateGrace = 15;
+    let lateRuleActive = false;
+    try {
+      const penaltyRule = await AttendanceAutomationRule.findOne({
+        where: { key: 'late_punchin_penalty', orgAccountId: orgId, active: true }
+      });
+      if (penaltyRule) {
+        let config = penaltyRule.config;
+        if (typeof config === 'string') {
+          try { config = JSON.parse(config); } catch (e) {
+            try { config = JSON.parse(JSON.parse(config)); } catch (__) { config = {}; }
+          }
+        }
+        lateThreshold = Number(config.threshold || 3);
+        lateGrace = Number(config.lateMinutes || 15);
+        lateRuleActive = penaltyRule.active && config.active !== false;
+      }
+    } catch (_) {}
+
+    // Fetch Shift Assignments for all staff in range
+    const shiftAssignments = await StaffShiftAssignment.findAll({
+      where: {
+        userId: staffList.map(s => s.id),
+        [Op.or]: [
+          { effectiveTo: null },
+          { effectiveTo: { [Op.gte]: startDate.toISOString().split('T')[0] } }
+        ],
+        effectiveFrom: { [Op.lte]: endDate.toISOString().split('T')[0] }
+      },
+      include: [{ model: ShiftTemplate, as: 'template' }],
+      order: [['effectiveFrom', 'ASC']]
+    });
+
     const matrix = {};
     const summary = {};
+
     const toStatusCode = (att) => {
       const s = String(att?.status || '').toLowerCase();
       if (s === 'present') return 'P';
@@ -15322,24 +15469,117 @@ router.get('/reports/org-attendance-matrix', async (req, res) => {
       if (s === 'weekly_off' || s === 'weekly-off' || s === 'weeklyoff') return 'WO';
       if (s === 'holiday') return 'H';
       if (att?.punchedInAt || att?.punchedOutAt) return 'P';
-      return '-';
+      return null;
     };
 
     staffList.forEach((s) => {
       matrix[s.id] = {};
-      summary[s.id] = { halfDays: 0, overtimeMinutes: 0 };
+      summary[s.id] = { halfDays: 0, overtimeMinutes: 0, lateDays: 0, penaltyDays: 0 };
     });
 
-    attendanceData.forEach(att => {
-      if (!matrix[att.userId]) matrix[att.userId] = {};
-      if (!summary[att.userId]) summary[att.userId] = { halfDays: 0, overtimeMinutes: 0 };
+    // Helper to format date as YYYY-MM-DD in local time
+    const formatLocalISO = (date) => {
+      const y = date.getFullYear();
+      const m = String(date.getMonth() + 1).padStart(2, '0');
+      const d = String(date.getDate()).padStart(2, '0');
+      return `${y}-${m}-${d}`;
+    };
 
-      const statusCode = toStatusCode(att);
-      const otMin = Math.max(0, Number(att.overtimeMinutes || 0) || 0);
-      if (statusCode === 'HD') summary[att.userId].halfDays += 1;
-      if (otMin > 0) summary[att.userId].overtimeMinutes += otMin;
+    // Map all days (explicit records, late status, WO, and Holidays) in one pass per staff
+    staffList.forEach(staff => {
+      const userWoAsg = woAssignments.filter(a => a.userId === staff.id);
+      const userHolAsg = holidayAssignments.filter(a => a.userId === staff.id);
+      let staffLateCount = 0; // Local counter for threshold calculation
 
-      matrix[att.userId][att.date] = otMin > 0 ? `${statusCode} OT${otMin}m` : statusCode;
+      for (let i = 1; i <= daysInMonth; i++) {
+        const d = new Date(startDate.getFullYear(), startDate.getMonth(), i);
+        const dateKey = formatLocalISO(d);
+        const record = attendanceData.find(a => a.userId === staff.id && a.date === dateKey);
+
+        if (record) {
+          const statusCode = toStatusCode(record) || 'P';
+          const otMin = Math.max(0, Number(record.overtimeMinutes || 0) || 0);
+          if (statusCode === 'HD') summary[staff.id].halfDays += 1;
+          if (otMin > 0) summary[staff.id].overtimeMinutes += otMin;
+
+          let lateIndicator = '';
+          if (lateRuleActive) {
+            const s = statusCode.toLowerCase();
+            const isPresentLike = s === 'p' || s === 'hd' || s === 'overtime' || (!s && record.punchedInAt);
+            
+            if (isPresentLike) {
+              const dayShiftAsg = shiftAssignments
+                .filter(asg => asg.userId === staff.id && dateKey >= asg.effectiveFrom && (!asg.effectiveTo || dateKey <= asg.effectiveTo))
+                .sort((a, b) => b.effectiveFrom.localeCompare(a.effectiveFrom))[0];
+              
+              const shiftTpl = dayShiftAsg?.template;
+              if (shiftTpl?.startTime && record.punchedInAt) {
+                const punchIn = new Date(record.punchedInAt);
+                const istDate = new Date(punchIn.getTime() + (5.5 * 3600 * 1000));
+                const punchInSec = istDate.getUTCHours() * 3600 + istDate.getUTCMinutes() * 60 + istDate.getUTCSeconds();
+                
+                const [sh, sm, ss] = shiftTpl.startTime.split(':').map(Number);
+                const shiftStartSec = sh * 3600 + sm * 60 + (ss || 0);
+                
+                if (punchInSec > (shiftStartSec + lateGrace * 60)) {
+                  staffLateCount++;
+                  summary[staff.id].lateDays += 1;
+                  if (lateThreshold > 0 && staffLateCount % lateThreshold === 0) {
+                    summary[staff.id].penaltyDays += 1;
+                    lateIndicator = ' (Penalty)';
+                  } else {
+                    lateIndicator = ' (L)';
+                  }
+                }
+              }
+            }
+          }
+          matrix[staff.id][dateKey] = otMin > 0 ? `${statusCode}${lateIndicator} OT${otMin}m` : `${statusCode}${lateIndicator}`;
+        } else {
+          // Check Holidays first
+          let isHoliday = false;
+          for (const asg of userHolAsg) {
+            if (dateKey >= asg.effectiveFrom && (!asg.effectiveTo || dateKey <= asg.effectiveTo)) {
+              if (asg.template?.holidays?.some(hd => hd.date === dateKey)) {
+                isHoliday = true;
+                break;
+              }
+            }
+          }
+
+          if (isHoliday) {
+            matrix[staff.id][dateKey] = 'H';
+            continue;
+          }
+
+          // Check Weekly Off
+          let isWO = false;
+          for (const asg of userWoAsg) {
+            if (dateKey >= asg.effectiveFrom && (!asg.effectiveTo || dateKey <= asg.effectiveTo)) {
+              let config = asg.template?.config || [];
+              if (typeof config === 'string') {
+                try { config = JSON.parse(config); } catch (_) { 
+                  try { config = JSON.parse(JSON.parse(config)); } catch (__) { config = []; }
+                }
+              }
+              const configArr = Array.isArray(config) ? config : [];
+              const dayOfWeek = d.getDay();
+              const weekOfMonth = Math.ceil(d.getDate() / 7);
+
+              const match = configArr.find(c =>
+                c && Number(c.day) === dayOfWeek &&
+                (c.weeks === 'all' || (Array.isArray(c.weeks) && c.weeks.map(Number).includes(weekOfMonth)))
+              );
+              if (match) {
+                isWO = true;
+                break;
+              }
+            }
+          }
+
+          matrix[staff.id][dateKey] = isWO ? 'WO' : '-';
+        }
+      }
     });
 
     if (format === 'excel') {
@@ -15357,6 +15597,8 @@ router.get('/reports/org-attendance-matrix', async (req, res) => {
       }
       columns.push({ header: 'Half Days', key: 'halfDays', width: 12 });
       columns.push({ header: 'OT (Min)', key: 'overtimeMinutes', width: 12 });
+      columns.push({ header: 'Late Days', key: 'lateDays', width: 12 });
+      columns.push({ header: 'Penalty Days', key: 'penaltyDays', width: 12 });
       worksheet.columns = columns;
 
       staffList.forEach((staff, index) => {
@@ -15364,10 +15606,12 @@ router.get('/reports/org-attendance-matrix', async (req, res) => {
           sn: index + 1,
           staffName: staff.profile?.name || 'N/A',
           halfDays: summary[staff.id]?.halfDays || 0,
-          overtimeMinutes: summary[staff.id]?.overtimeMinutes || 0
+          overtimeMinutes: summary[staff.id]?.overtimeMinutes || 0,
+          lateDays: summary[staff.id]?.lateDays || 0,
+          penaltyDays: summary[staff.id]?.penaltyDays || 0
         };
         for (let i = 1; i <= daysInMonth; i++) {
-          const dateKey = new Date(startDate.getFullYear(), startDate.getMonth(), i).toISOString().split('T')[0];
+          const dateKey = formatLocalISO(new Date(startDate.getFullYear(), startDate.getMonth(), i));
           rowData[`day_${i}`] = (matrix[staff.id] && matrix[staff.id][dateKey]) ? matrix[staff.id][dateKey] : '-';
         }
         worksheet.addRow(rowData);
@@ -15403,7 +15647,9 @@ router.get('/reports/org-attendance-matrix', async (req, res) => {
         HD: 'Half Day',
         WO: 'Weekly Off',
         H: 'Holiday',
-        OT: 'Overtime minutes'
+        OT: 'Overtime minutes',
+        L: 'Late arrival - mark as (L)',
+        Penalty: 'Late Penalty - mark as (Penalty)'
       }
     });
 

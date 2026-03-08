@@ -431,51 +431,56 @@ async function calculateSalary(userId, monthKey) {
     });
     if (penaltyRule) {
       let config = penaltyRule.config;
-      if (typeof config === 'string') { try { config = JSON.parse(config); } catch (e) { config = {}; } }
+      if (typeof config === 'string') {
+        try { config = JSON.parse(config); } catch (e) {
+          try { config = JSON.parse(JSON.parse(config)); } catch (__) { config = {}; }
+        }
+      }
 
-      if (config.active !== false) {
-        const threshold = Number(config.threshold || 3);
-        const deductionDays = Number(config.deduction || 1);
+      const isRuleActive = config.active !== false && penaltyRule.active;
+      if (isRuleActive) {
+        const thresholdDays = Number(config.threshold || 3);
+        const deductionPerCycle = Number(config.deduction || 1);
+        const graceMinutes = Number(config.lateMinutes || 15);
 
-        // Fetch attendance with punch-in times for late check
+        // Fetch detailed attendance for the month
         const detailedAtts = await Attendance.findAll({
           where: { userId: u.id, date: { [Op.gte]: start, [Op.lte]: endKey } },
-          attributes: ['date', 'punchedInAt']
+          attributes: ['date', 'punchedInAt', 'status']
         });
 
-        for (const a of detailedAtts) {
-          if (!a.punchedInAt) continue;
+        // Get the active shift assignment
+        const shiftAsg = await StaffShiftAssignment.findOne({
+          where: { userId: u.id, active: true },
+          include: [{ model: ShiftTemplate, as: 'template' }],
+          order: [['id', 'DESC']]
+        });
 
-          // Get shift for this specific date
-          const dateStr = a.date;
-          const shiftAsg = await StaffShiftAssignment.findOne({
-            where: { userId: u.id, active: true },
-            include: [{
-              model: ShiftTemplate,
-              as: 'template',
-              where: { active: true }
-            }],
-            order: [['id', 'DESC']]
-          });
+        if (shiftAsg?.template?.startTime) {
+          const [sh, sm, ss] = shiftAsg.template.startTime.split(':').map(Number);
+          const shiftStartSeconds = sh * 3600 + sm * 60 + (ss || 0);
+          const lateThresholdSeconds = shiftStartSeconds + (graceMinutes * 60);
 
-          if (shiftAsg?.template?.startTime) {
+          for (const a of detailedAtts) {
+            if (!a.punchedInAt) continue;
+            
+            // Check if it's a work status (present/half_day)
+            const status = String(a.status || '').toLowerCase();
+            if (status !== 'present' && status !== 'half_day') continue;
+
             const punchIn = new Date(a.punchedInAt);
-            const punchInTime = punchIn.getHours() * 3600 + punchIn.getMinutes() * 60 + punchIn.getSeconds();
+            // Convert to IST (UTC+5:30) for comparison with shift time
+            const istDate = new Date(punchIn.getTime() + (5.5 * 3600 * 1000));
+            const punchInSeconds = istDate.getUTCHours() * 3600 + istDate.getUTCMinutes() * 60 + istDate.getUTCSeconds();
 
-            const [sh, sm, ss] = shiftAsg.template.startTime.split(':').map(Number);
-            const shiftStartTime = sh * 3600 + sm * 60 + (ss || 0);
-
-            // Use rule-specific lateMinutes (grace period)
-            const gracePeriodSeconds = (Number(config.lateMinutes || 15)) * 60;
-
-            if (punchInTime > (shiftStartTime + gracePeriodSeconds)) {
+            if (punchInSeconds > lateThresholdSeconds) {
               lateCount += 1;
             }
           }
         }
 
-        if (lateCount >= threshold) {
-          latePenaltyDays = Math.floor(lateCount / threshold) * deductionDays;
+        if (lateCount >= thresholdDays && thresholdDays > 0) {
+          latePenaltyDays = Math.floor(lateCount / thresholdDays) * deductionPerCycle;
         }
       }
     }
