@@ -453,9 +453,9 @@ router.get('/status', async (req, res) => {
       if (assignedShift.overtimeStartMinutes && totalWorkMinutes > assignedShift.overtimeStartMinutes) {
         dayStatus = 'OVERTIME';
       } else if (assignedShift.halfDayThresholdMinutes && totalWorkMinutes < assignedShift.halfDayThresholdMinutes) {
-        dayStatus = 'HALF_DAY';
+        dayStatus = (key === todayKey() && !record.punchedOutAt) ? 'PRESENT' : 'HALF_DAY';
       } else if (totalWorkMinutes < 60) {
-        dayStatus = 'ABSENT';
+        dayStatus = (key === todayKey() && !record.punchedOutAt) ? 'PRESENT' : 'ABSENT';
       } else {
         dayStatus = 'PRESENT';
       }
@@ -495,7 +495,7 @@ router.get('/status', async (req, res) => {
       const punchInSeconds = istDate.getUTCHours() * 3600 + istDate.getUTCMinutes() * 60 + istDate.getUTCSeconds();
       if (punchInSeconds > lateThresholdSeconds) isLate = true;
     }
-  } catch (_) {}
+  } catch (_) { }
 
   return res.json({
     success: true,
@@ -606,7 +606,7 @@ router.get('/history', async (req, res) => {
         lateGrace = Number(config.lateMinutes || 15);
         lateRuleActive = penaltyRule.active && config.active !== false;
       }
-    } catch (_) {}
+    } catch (_) { }
 
     const summary = { present: 0, absent: 0, halfDay: 0, leave: 0, overtime: 0, weeklyOff: 0, holiday: 0 };
     let lateRunningCount = 0;
@@ -663,9 +663,9 @@ router.get('/history', async (req, res) => {
             if (shiftTpl.overtimeStartMinutes && totalWorkMinutes > shiftTpl.overtimeStartMinutes) {
               dayStatus = 'OVERTIME';
             } else if (shiftTpl.halfDayThresholdMinutes && totalWorkMinutes < shiftTpl.halfDayThresholdMinutes) {
-              dayStatus = 'HALF_DAY';
+              dayStatus = (key === todayStr && !record.punchedOutAt) ? 'PRESENT' : 'HALF_DAY';
             } else if (totalWorkMinutes < 60) {
-              dayStatus = 'ABSENT';
+              dayStatus = (key === todayStr && !record.punchedOutAt) ? 'PRESENT' : 'ABSENT';
             } else {
               dayStatus = 'PRESENT';
             }
@@ -708,11 +708,11 @@ router.get('/history', async (req, res) => {
         if (shiftTpl?.startTime) {
           const [sh, sm, ss] = shiftTpl.startTime.split(':').map(Number);
           const shiftStartSec = sh * 3600 + sm * 60 + (ss || 0);
-          
+
           const punchIn = new Date(record.punchedInAt);
           const istDate = new Date(punchIn.getTime() + (5.5 * 3600 * 1000));
           const punchInSec = istDate.getUTCHours() * 3600 + istDate.getUTCMinutes() * 60 + istDate.getUTCSeconds();
-          
+
           if (punchInSec > (shiftStartSec + lateGrace * 60)) {
             isLateThisDay = true;
             lateRunningCount++;
@@ -735,12 +735,12 @@ router.get('/history', async (req, res) => {
       else if (dayStatus === 'HOLIDAY') summary.holiday += 1;
       else if (dayStatus === 'WEEKLY_OFF') summary.weeklyOff += 1;
 
-      days.push({ 
-        date: key, 
-        dayStatus, 
-        workingSeconds, 
-        breakSeconds, 
-        overtimeSeconds, 
+      days.push({
+        date: key,
+        dayStatus,
+        workingSeconds,
+        breakSeconds,
+        overtimeSeconds,
         leaveType,
         isLate: isLateThisDay,
         isPenaltyDay: isPenaltyDay,
