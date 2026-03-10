@@ -303,7 +303,7 @@ router.post('/signup-admin', async (req, res) => {
 
     const hash = await bcrypt.hash(String(password || '123456'), 10);
     const admin = await User.create({ role: 'admin', orgAccountId: org.id, phone: String(normalizedPhone), passwordHash: hash, active: true });
-    try { await StaffProfile.create({ userId: admin.id, name: String(name) }); } catch (_) { }
+    try { await StaffProfile.create({ userId: admin.id, orgAccountId: org.id, name: String(name) }); } catch (_) { }
 
     // Send admin signup review email to business email
     if (businessEmail) {

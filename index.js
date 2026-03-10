@@ -26,7 +26,7 @@ const salesIncentiveRoutes = require('./src/routes/salesIncentive');
 
 const { tenantEnforce } = require('./src/middleware/tenant');
 const { scheduleSubscriptionSweep } = require('./src/jobs/subscriptionSweep');
-const { scheduleSubscriptionExpiryReminders } = require('./src/jobs');
+const { scheduleSubscriptionExpiryReminders, scheduleZktecoSync } = require('./src/jobs');
 const { verifyEmailConfig } = require('./src/services/emailService');
 
 const app = express();
@@ -119,6 +119,9 @@ initDb()
 
     // Start subscription expiry reminder job
     try { scheduleSubscriptionExpiryReminders(); } catch (_) { }
+
+    // Start ZKTeco biometric sync job
+    try { scheduleZktecoSync(); } catch (_) { }
     // app.listen(port, () => {
     //   console.log(`Backend running on http://localhost:${port}`);
     // });

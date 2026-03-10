@@ -606,7 +606,7 @@ router.get('/payroll/:cycleId/export', async (req, res) => {
     const header = [
       'Staff ID', 'Name', 'Designation', 'Department',
       'Month',
-      'Working Days', 'Present', 'Half', 'Absent', 'Paid Leave', 'Unpaid Leave', 'Weekly Off', 'Holidays', 'Payable Days',
+      'Working Days', 'Present', 'Half', 'Absent', 'Paid Leave', 'Unpaid Leave', 'Weekly Off', 'Holidays', 'Late Count', 'Late Penalty', 'Payable Days',
       'Overtime Hours', 'Overtime Minutes', 'Overtime Rate/Hour', 'Overtime Pay',
       ...sortedEarnings,
       ...sortedIncentives,
@@ -652,6 +652,8 @@ router.get('/payroll/:cycleId/export', async (req, res) => {
         Number(s.unpaidLeave || 0),
         Number(s.weeklyOff || 0),
         Number(s.holidays || 0),
+        Number(s.lateCount || 0),
+        Number(s.latePenaltyDays || 0),
         pod.toFixed(2),
         overtimeHours,
         overtimeMinutes,
@@ -1362,6 +1364,27 @@ router.post('/payroll/:cycleId/compute', async (req, res) => {
 
 
 
+    // Fetch Late Penalty Rule for Org
+    let lateThreshold = 3, lateDeduction = 1, lateGrace = 15;
+    let lateRuleActive = false;
+    try {
+      const penaltyRule = await AttendanceAutomationRule.findOne({
+        where: { key: 'late_punchin_penalty', orgAccountId: orgId, active: true }
+      });
+      if (penaltyRule) {
+        let config = penaltyRule.config;
+        if (typeof config === 'string') {
+          try { config = JSON.parse(config); } catch (e) {
+            try { config = JSON.parse(JSON.parse(config)); } catch (__) { config = {}; }
+          }
+        }
+        lateThreshold = Number(config.threshold || 3);
+        lateDeduction = Number(config.deduction || 1);
+        lateGrace = Number(config.lateMinutes || 15);
+        lateRuleActive = penaltyRule.active && config.active !== false;
+      }
+    } catch (_) { }
+
     for (const u of staff) {
 
       let sv = parseMaybe(u.salaryValues || u.salary_values || null);
@@ -1561,7 +1584,7 @@ router.post('/payroll/:cycleId/compute', async (req, res) => {
       // Attendance summary and proration for the month
       const atts = await Attendance.findAll({
         where: { userId: u.id, date: { [Op.gte]: start, [Op.lte]: endKey } },
-        attributes: ['status', 'date', 'overtimeMinutes']
+        attributes: ['status', 'date', 'overtimeMinutes', 'punchedInAt']
       });
 
       const attMap = {};
@@ -1763,11 +1786,57 @@ router.post('/payroll/:cycleId/compute', async (req, res) => {
         else { absent += 1; }
       }
 
+      // Late Entry Penalty Logic
+      let lateCount = 0;
+      let latePenaltyDays = 0;
+
+      if (lateRuleActive) {
+        try {
+          const shiftAsg = await StaffShiftAssignment.findOne({
+            where: { userId: u.id },
+            include: [{ model: ShiftTemplate, as: 'template' }],
+            order: [['effectiveFrom', 'DESC'], ['id', 'DESC']]
+          });
+
+          let shiftTpl = shiftAsg?.template;
+          if (!shiftTpl && u.profile?.shiftSelection) {
+            shiftTpl = await ShiftTemplate.findOne({ where: { id: Number(u.profile.shiftSelection), active: true } });
+          }
+
+          if (shiftTpl?.startTime) {
+            const [sh, sm, ss] = shiftTpl.startTime.split(':').map(Number);
+            const shiftStartSeconds = sh * 3600 + sm * 60 + (ss || 0);
+            const lateThresholdSeconds = shiftStartSeconds + (lateGrace * 60);
+
+            for (const a of atts) {
+              if (!a.punchedInAt) continue;
+              const status = String(a.status || '').toLowerCase();
+              if (status !== 'present' && status !== 'half_day' && status !== 'overtime') continue;
+
+              const punchIn = new Date(a.punchedInAt);
+              const istDate = new Date(punchIn.getTime() + (5.5 * 3600 * 1000));
+              const punchInSeconds = istDate.getUTCHours() * 3600 + istDate.getUTCMinutes() * 60 + istDate.getUTCSeconds();
+
+              if (punchInSeconds > lateThresholdSeconds) {
+                lateCount += 1;
+              }
+            }
+
+            if (lateCount >= lateThreshold && lateThreshold > 0) {
+              latePenaltyDays = Math.floor(lateCount / lateThreshold) * lateDeduction;
+            }
+          }
+        } catch (err) {
+          console.error('Error calculating late penalty in compute route:', err);
+        }
+      }
+
 
 
       // Proration by payable units: present(1) + half(0.5) + weeklyOff(1) + holidays(1) + paidLeave(1)
 
-      const payableUnits = present + (half * 0.5) + weeklyOff + holidays + paidLeave;
+      const payableUnitsRaw = present + (half * 0.5) + weeklyOff + holidays + paidLeave;
+      const payableUnits = Math.max(0, payableUnitsRaw - latePenaltyDays);
       const daysForRatio = daysInMonth;
       const ratio = daysForRatio > 0 ? Math.max(0, Math.min(1, payableUnits / daysForRatio)) : 1;
 
@@ -1854,7 +1923,9 @@ router.post('/payroll/:cycleId/compute', async (req, res) => {
         overtimeMinutes,
         overtimeHours: Number(overtimeHours.toFixed(2)),
         overtimeHourlyRate: Number(hourlyRate.toFixed(2)),
-        overtimePay
+        overtimePay,
+        lateCount,
+        latePenaltyDays
       };
       const totals = { totalEarnings, totalIncentives, totalDeductions, grossSalary, netSalary, ratio };
 
@@ -5069,6 +5140,7 @@ router.post('/staff/import', uploadMemory.single('file'), async (req, res) => {
 
         await StaffProfile.create({
           userId: user.id,
+          orgAccountId: orgId,
           staffId: data.staffId ? String(data.staffId) : null,
           phone,
           name: data.name ? String(data.name) : `Staff ${user.id}`,
@@ -8150,7 +8222,7 @@ router.put('/settings/brand', async (req, res) => {
 router.get('/settings/automation-rules', async (req, res) => {
   try {
     const orgId = requireOrg(req, res); if (!orgId) return;
-    const rules = await AttendanceAutomationRule.findAll({ where: { orgAccountId: orgId, active: true } });
+    const rules = await AttendanceAutomationRule.findAll({ where: { orgAccountId: orgId } });
     return res.json({ success: true, rules });
   } catch (e) {
     return res.status(500).json({ success: false, message: 'Failed to load automation rules' });
@@ -8930,7 +9002,10 @@ router.get('/attendance', async (req, res) => {
 
         checkOut: toTime(r.punchedOutAt),
         note: r.note || '',
+        totalWorkHours: r.totalWorkHours || 0,
         overtimeMinutes: r.overtimeMinutes || 0,
+        breakTotalSeconds: r.breakTotalSeconds || 0,
+        breakMinutes: Math.round((r.breakTotalSeconds || 0) / 60),
 
         status,
 
@@ -10724,33 +10799,20 @@ router.post('/staff', requireRole(['admin', 'staff']), async (req, res) => {
 
 
     await StaffProfile.create({
-
       userId: staffUser.id,
-
+      orgAccountId: orgId,
       staffId: staffId ? String(staffId) : null,
-
       phone: String(phoneInput),
-
       name: name ? String(name) : null,
-
       email: email ? String(email) : null,
-
       department: department ? String(department) : null,
-
       designation: designation ? String(designation) : null,
-
       staffType: staffType ? String(staffType) : 'regular',
-
       attendanceSettingTemplate: attendanceSettingTemplate ? String(attendanceSettingTemplate) : null,
-
       salaryCycleDate: salaryCycleDate || null,
-
       shiftSelection: shiftSelection ? String(shiftSelection) : null,
-
       openingBalance: openingBalance || null,
-
       salaryDetailAccess: salaryDetailAccess !== undefined ? Boolean(salaryDetailAccess) : false,
-
       allowCurrentCycleSalaryAccess: allowCurrentCycleSalaryAccess !== undefined ? Boolean(allowCurrentCycleSalaryAccess) : false,
       dateOfJoining: dateOfJoining || null,
       photoUrl: photoUrl || null,
@@ -11011,6 +11073,9 @@ router.put('/staff/:id', requireRole(['admin', 'staff']), async (req, res) => {
     const profile = await StaffProfile.findOne({ where: { userId: staff.id } });
     if (profile) {
       const patchProfile = {};
+      if (profile.orgAccountId === null || profile.orgAccountId === undefined) {
+        patchProfile.orgAccountId = orgId;
+      }
       if (newStaffId) patchProfile.staffId = String(newStaffId);
       if (phone) patchProfile.phone = String(phone);
       if (name !== undefined) patchProfile.name = name;
@@ -11128,25 +11193,8 @@ router.get('/dashboard', async (req, res) => {
       ]
     });
 
-    const lateArrivals = todayAttendance.filter(att => {
-      if (!att.punchedInAt) return false;
-      const punchInTime = new Date(att.punchedInAt);
-      const punchInHour = punchInTime.getHours();
-      const punchInMinute = punchInTime.getMinutes();
-      const totalPunchInMinutes = punchInHour * 60 + punchInMinute;
-
-      // Check if user has assigned shift
-      if (att.user && att.user.shiftTemplate && att.user.shiftTemplate.startTime) {
-        const shiftStartTime = att.user.shiftTemplate.startTime; // Format: "HH:MM"
-        const [shiftHour, shiftMinute] = shiftStartTime.split(':').map(Number);
-        const shiftStartMinutes = shiftHour * 60 + shiftMinute;
-        // Late if punch-in after shift start time
-        return totalPunchInMinutes > shiftStartMinutes;
-      } else {
-        // No shift assigned - late if after 11:00 AM
-        return totalPunchInMinutes >= (11 * 60); // 11:00 AM = 660 minutes
-      }
-    }).length;
+    // Use lateArrival flag set by automation rule during check-in
+    const lateArrivals = todayAttendance.filter(att => !!att.lateArrival).length;
 
     // Get total salary for active staff
     const staffWithSalary = await User.findAll({
@@ -11516,43 +11564,9 @@ router.get('/dashboard/late-arrivals', async (req, res) => {
 
 
 
-    // Count late arrivals (based on shift start time or 11:00 AM default)
+    // Use lateArrival flag set by automation rule during check-in
+    const lateArrivals = todayAttendance.filter(att => !!att.lateArrival).length;
 
-    const lateArrivals = todayAttendance.filter(att => {
-
-      if (!att.punchedInAt) return false;
-
-      const punchInTime = new Date(att.punchedInAt);
-
-      const punchInHour = punchInTime.getHours();
-
-      const punchInMinute = punchInTime.getMinutes();
-
-      const totalPunchInMinutes = punchInHour * 60 + punchInMinute;
-
-      // Check if user has assigned shift
-
-      if (att.user && att.user.shiftTemplate && att.user.shiftTemplate.startTime) {
-
-        const shiftStartTime = att.user.shiftTemplate.startTime; // Format: "HH:MM"
-
-        const [shiftHour, shiftMinute] = shiftStartTime.split(':').map(Number);
-
-        const shiftStartMinutes = shiftHour * 60 + shiftMinute;
-
-        // Late if punch-in after shift start time
-
-        return totalPunchInMinutes > shiftStartMinutes;
-
-      } else {
-
-        // No shift assigned - late if after 11:00 AM
-
-        return totalPunchInMinutes >= (11 * 60); // 11:00 AM = 660 minutes
-
-      }
-
-    }).length;
 
 
 
@@ -15367,7 +15381,10 @@ router.get('/reports/org-attendance-matrix', async (req, res) => {
 
     const staffList = await User.findAll({
       where: staffWhereClause,
-      include: [{ model: StaffProfile, as: 'profile' }],
+      include: [
+        { model: StaffProfile, as: 'profile' },
+        { model: ShiftTemplate, as: 'shiftTemplate' }
+      ],
       order: [['id', 'ASC']]
     });
 
@@ -15441,7 +15458,7 @@ router.get('/reports/org-attendance-matrix', async (req, res) => {
         lateGrace = Number(config.lateMinutes || 15);
         lateRuleActive = penaltyRule.active && config.active !== false;
       }
-    } catch (_) {}
+    } catch (_) { }
 
     // Fetch Shift Assignments for all staff in range
     const shiftAssignments = await StaffShiftAssignment.findAll({
@@ -15456,6 +15473,10 @@ router.get('/reports/org-attendance-matrix', async (req, res) => {
       include: [{ model: ShiftTemplate, as: 'template' }],
       order: [['effectiveFrom', 'ASC']]
     });
+
+    const allShiftTemplates = await ShiftTemplate.findAll({ where: { orgAccountId: orgId, active: true } });
+    const shiftTemplateMap = {};
+    allShiftTemplates.forEach(t => { shiftTemplateMap[t.id] = t; });
 
     const matrix = {};
     const summary = {};
@@ -15506,21 +15527,24 @@ router.get('/reports/org-attendance-matrix', async (req, res) => {
           if (lateRuleActive) {
             const s = statusCode.toLowerCase();
             const isPresentLike = s === 'p' || s === 'hd' || s === 'overtime' || (!s && record.punchedInAt);
-            
+
             if (isPresentLike) {
               const dayShiftAsg = shiftAssignments
                 .filter(asg => asg.userId === staff.id && dateKey >= asg.effectiveFrom && (!asg.effectiveTo || dateKey <= asg.effectiveTo))
                 .sort((a, b) => b.effectiveFrom.localeCompare(a.effectiveFrom))[0];
-              
-              const shiftTpl = dayShiftAsg?.template;
+
+              let shiftTpl = dayShiftAsg?.template || staff.shiftTemplate;
+              if (!shiftTpl && staff.profile?.shiftSelection) {
+                shiftTpl = shiftTemplateMap[Number(staff.profile.shiftSelection)];
+              }
               if (shiftTpl?.startTime && record.punchedInAt) {
                 const punchIn = new Date(record.punchedInAt);
                 const istDate = new Date(punchIn.getTime() + (5.5 * 3600 * 1000));
                 const punchInSec = istDate.getUTCHours() * 3600 + istDate.getUTCMinutes() * 60 + istDate.getUTCSeconds();
-                
+
                 const [sh, sm, ss] = shiftTpl.startTime.split(':').map(Number);
                 const shiftStartSec = sh * 3600 + sm * 60 + (ss || 0);
-                
+
                 if (punchInSec > (shiftStartSec + lateGrace * 60)) {
                   staffLateCount++;
                   summary[staff.id].lateDays += 1;
@@ -15558,7 +15582,7 @@ router.get('/reports/org-attendance-matrix', async (req, res) => {
             if (dateKey >= asg.effectiveFrom && (!asg.effectiveTo || dateKey <= asg.effectiveTo)) {
               let config = asg.template?.config || [];
               if (typeof config === 'string') {
-                try { config = JSON.parse(config); } catch (_) { 
+                try { config = JSON.parse(config); } catch (_) {
                   try { config = JSON.parse(JSON.parse(config)); } catch (__) { config = []; }
                 }
               }
@@ -19114,6 +19138,172 @@ router.post('/payroll/generate-payslip', async (req, res) => {
   } catch (e) {
     console.error('Generate payslip error:', e);
     return res.status(500).json({ success: false, message: 'Failed to generate payslip' });
+  }
+});
+
+// GET /admin/staff/:id/attendance-overview - Consolidated monthly attendance breakdown
+router.get('/staff/:id/attendance-overview', async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res);
+    if (!orgId) return;
+
+    const { id } = req.params;
+    const { month } = req.query; // YYYY-MM
+    const userId = Number(id);
+
+    if (!month || !/^\d{4}-\d{2}$/.test(String(month))) {
+      return res.status(400).json({ success: false, message: 'month (YYYY-MM) required' });
+    }
+
+    const user = await User.findOne({
+      where: { id: userId, orgAccountId: orgId },
+      include: [{ model: StaffProfile, as: 'profile' }]
+    });
+    if (!user) return res.status(404).json({ success: false, message: 'Staff not found' });
+
+    const [yy, mm] = month.split('-').map(Number);
+    const startDateStr = `${month}-01`;
+    const lastDay = new Date(yy, mm, 0).getDate();
+    const endDateStr = `${month}-${String(lastDay).padStart(2, '0')}`;
+
+    // 1. Fetch data in parallel
+    const [atts, leaves, hAssignment, wAssignment, automationRule, shiftAsg] = await Promise.all([
+      Attendance.findAll({ where: { userId, date: { [Op.between]: [startDateStr, endDateStr] } }, order: [['date', 'ASC']] }),
+      LeaveRequest.findAll({ where: { userId, status: 'APPROVED', [Op.or]: [{ startDate: { [Op.between]: [startDateStr, endDateStr] } }, { endDate: { [Op.between]: [startDateStr, endDateStr] } }, { [Op.and]: [{ startDate: { [Op.lte]: startDateStr } }, { endDate: { [Op.gte]: endDateStr } }] }] } }),
+      StaffHolidayAssignment.findOne({ where: { userId, effectiveFrom: { [Op.lte]: endDateStr }, [Op.or]: [{ effectiveTo: null }, { effectiveTo: { [Op.gte]: startDateStr } }] }, order: [['effectiveFrom', 'DESC']], include: [{ model: HolidayTemplate, as: 'template', include: [{ model: HolidayDate, as: 'holidays' }] }] }),
+      StaffWeeklyOffAssignment.findOne({ where: { userId, effectiveFrom: { [Op.lte]: endDateStr }, [Op.or]: [{ effectiveTo: null }, { effectiveTo: { [Op.gte]: startDateStr } }] }, order: [['effectiveFrom', 'DESC']], include: [{ model: WeeklyOffTemplate, as: 'template' }] }),
+      AttendanceAutomationRule.findOne({ where: { key: 'late_punchin_penalty', orgAccountId: orgId, active: true } }),
+      StaffShiftAssignment.findOne({ where: { userId }, include: [{ model: ShiftTemplate, as: 'template' }], order: [['effectiveFrom', 'DESC'], ['id', 'DESC']] })
+    ]);
+
+    // 2. Map data for lookups
+    const attMap = {};
+    atts.forEach(a => { attMap[String(a.date)] = a; });
+
+    const holidayDates = new Set();
+    if (hAssignment?.template?.holidays) {
+      hAssignment.template.holidays.forEach(h => { if (h.active !== false) holidayDates.add(String(h.date)); });
+    }
+
+    const woConfig = wAssignment?.template?.config || [];
+
+    // Helper for shift week num
+    const getMonthWeekNum = (d) => Math.floor((d.getDate() - 1) / 7) + 1;
+    const normalizeWOWeeks = (input) => {
+      if (input === 'all') return 'all';
+      if (Array.isArray(input)) {
+        const lowered = input.map(v => String(v).toLowerCase());
+        if (lowered.includes('all') || lowered.includes('0')) return 'all';
+        return input.map(Number).filter(n => Number.isFinite(n) && n >= 1 && n <= 5);
+      }
+      return String(input).toLowerCase() === 'all' ? 'all' : (Number.isFinite(Number(input)) ? [Number(input)] : []);
+    };
+
+    // Late Penalty Logic
+    let lateThreshold = 3, lateGrace = 15, lateDeduction = 1;
+    let lateRuleActive = false;
+    if (automationRule) {
+      let cfg = automationRule.config;
+      if (typeof cfg === 'string') { try { cfg = JSON.parse(cfg); } catch (e) { try { cfg = JSON.parse(JSON.parse(cfg)); } catch (__) { cfg = {}; } } }
+      lateRuleActive = cfg.active !== false;
+      lateThreshold = Number(cfg.threshold || 3);
+      lateGrace = Number(cfg.lateMinutes || 15);
+      lateDeduction = Number(cfg.deduction || 1);
+    }
+
+    let lateCount = 0;
+    const shiftStart = shiftAsg?.template?.startTime;
+
+    // 3. Process each day
+    const dailyData = [];
+    const stats = { present: 0, absent: 0, late: 0, halfDay: 0, leave: 0, overtime: 0, weeklyOff: 0, holiday: 0, latePenaltyDays: 0 };
+    const todayStr = dayjs().format('YYYY-MM-DD');
+
+    for (let d = 1; d <= lastDay; d++) {
+      const dateStr = `${month}-${String(d).padStart(2, '0')}`;
+      const jsDate = new Date(yy, mm - 1, d);
+      const att = attMap[dateStr];
+      const isPast = dateStr <= todayStr;
+
+      let status = 'absent';
+      let info = null;
+
+      // Check Holiday
+      if (holidayDates.has(dateStr)) {
+        status = 'holiday';
+        stats.holiday++;
+      }
+      // Check Weekly Off
+      else if ((() => {
+        const dow = jsDate.getDay();
+        const wk = getMonthWeekNum(jsDate);
+        for (const cfg of (Array.isArray(woConfig) ? woConfig : [])) {
+          if (cfg && Number(cfg.day) === dow) {
+            const weeks = normalizeWOWeeks(cfg.weeks);
+            if (weeks === 'all' || (Array.isArray(weeks) && weeks.includes(wk))) return true;
+          }
+        }
+        return false;
+      })()) {
+        status = 'weekly_off';
+        stats.weeklyOff++;
+      }
+      // Check Leave
+      else if (leaves.some(l => dateStr >= String(l.startDate) && dateStr <= String(l.endDate))) {
+        status = 'leave';
+        stats.leave++;
+      }
+      // Check Attendance Record
+      else if (att) {
+        status = att.status ? att.status.toLowerCase() : 'present';
+        if (status === 'overtime') { stats.overtime++; stats.present++; }
+        else if (status === 'half_day') stats.halfDay++;
+        else { status = 'present'; stats.present++; }
+
+        // Late Check Logic
+        let isLate = !!att.lateArrival;
+        if (lateRuleActive && shiftStart && att.punchedInAt) {
+          const punchIn = new Date(att.punchedInAt);
+          const istDate = new Date(punchIn.getTime() + (5.5 * 3600 * 1000));
+          const punchInSec = istDate.getUTCHours() * 3600 + istDate.getUTCMinutes() * 60 + istDate.getUTCSeconds();
+          const [sh, sm, ss] = shiftStart.split(':').map(Number);
+          const thresholdSec = (sh * 3600 + sm * 60 + (ss || 0)) + (lateGrace * 60);
+          if (punchInSec > thresholdSec) {
+            isLate = true;
+            if (status === 'present' || status === 'half_day' || status === 'overtime') lateCount++;
+          }
+        }
+        if (isLate) stats.late++;
+
+        info = {
+          checkIn: att.punchedInAt ? dayjs(att.punchedInAt).format('HH:mm:ss') : null,
+          checkOut: att.punchedOutAt ? dayjs(att.punchedOutAt).format('HH:mm:ss') : null,
+          workDuration: att.totalWorkSeconds ? Math.floor(att.totalWorkSeconds / 60) : 0,
+          totalDurationMinutes: att.punchedInAt && att.punchedOutAt
+            ? Math.floor(Math.max(0, dayjs(att.punchedOutAt).diff(dayjs(att.punchedInAt), 'minute')))
+            : (att.totalWorkSeconds ? Math.floor(att.totalWorkSeconds / 60) : 0),
+          breakMinutes: Math.round((att.breakTotalSeconds || 0) / 60),
+          overtimeMinutes: att.overtimeMinutes || 0,
+          isLate,
+          source: att.source || 'mobile'
+        };
+      }
+      else {
+        if (isPast) stats.absent++;
+        else status = 'scheduled';
+      }
+
+      dailyData.push({ date: dateStr, day: dayjs(jsDate).format('ddd'), status, ...info });
+    }
+
+    if (lateRuleActive && lateThreshold > 0 && lateCount >= lateThreshold) {
+      stats.latePenaltyDays = Math.floor(lateCount / lateThreshold) * lateDeduction;
+    }
+
+    res.json({ success: true, month, stats, dailyData });
+  } catch (error) {
+    console.error('Attendance overview error:', error);
+    res.status(500).json({ success: false, message: 'Failed to generate attendance overview' });
   }
 });
 

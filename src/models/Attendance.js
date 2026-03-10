@@ -35,6 +35,7 @@ module.exports = (sequelize) => {
       punchOutAddress: { type: DataTypes.TEXT, allowNull: true, field: 'punch_out_address' },
 
       note: { type: DataTypes.TEXT, allowNull: true }, // Admin notes for attendance
+      source: { type: DataTypes.STRING(30), allowNull: true, defaultValue: 'mobile' }, // mobile | biometric | manual
       orgAccountId: { type: DataTypes.BIGINT.UNSIGNED, allowNull: true, field: 'org_account_id' },
     },
     {

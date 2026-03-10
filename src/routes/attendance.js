@@ -2,7 +2,7 @@ const express = require('express');
 const { Op } = require('sequelize');
 const puppeteer = require('puppeteer');
 
-const { Attendance, LeaveRequest, AppSetting, AttendanceTemplate, StaffAttendanceAssignment, StaffShiftAssignment, ShiftTemplate, StaffHolidayAssignment, HolidayTemplate, HolidayDate, StaffGeofenceAssignment, GeofenceTemplate, GeofenceSite, LocationPing, DeviceInfo, WeeklyOffTemplate, StaffWeeklyOffAssignment, AttendanceAutomationRule } = require('../models');
+const { User, StaffProfile, Attendance, LeaveRequest, AppSetting, AttendanceTemplate, StaffAttendanceAssignment, StaffShiftAssignment, ShiftTemplate, StaffHolidayAssignment, HolidayTemplate, HolidayDate, StaffGeofenceAssignment, GeofenceTemplate, GeofenceSite, LocationPing, DeviceInfo, WeeklyOffTemplate, StaffWeeklyOffAssignment, AttendanceAutomationRule } = require('../models');
 const { authRequired } = require('../middleware/auth');
 const { requireRole } = require('../middleware/roles');
 const { upload } = require('../upload');
@@ -192,10 +192,23 @@ async function getEffectiveShiftTemplate(userId, dateKey) {
       ];
     }
     const asg = await StaffShiftAssignment.findOne({ where, order: [['effectiveFrom', 'DESC']] });
-    if (!asg) return null;
-    const tpl = await ShiftTemplate.findByPk(asg.shiftTemplateId);
-    if (!tpl || tpl.active === false) return null;
-    return tpl;
+    if (asg) {
+      const tpl = await ShiftTemplate.findByPk(asg.shiftTemplateId);
+      if (tpl && tpl.active !== false) return tpl;
+    }
+
+    // Fallback to user's default shiftTemplateId or profile shiftSelection
+    const user = await User.findByPk(userId, { include: [{ model: StaffProfile, as: 'profile' }] });
+    if (user?.shiftTemplateId) {
+      const tpl = await ShiftTemplate.findByPk(user.shiftTemplateId);
+      if (tpl && tpl.active !== false) return tpl;
+    }
+    if (user?.profile?.shiftSelection) {
+      const tpl = await ShiftTemplate.findOne({ where: { id: Number(user.profile.shiftSelection), active: true } });
+      if (tpl) return tpl;
+    }
+
+    return null;
   } catch (_) { return null; }
 }
 
@@ -509,6 +522,7 @@ router.get('/status', async (req, res) => {
       breakStartedAt: breakStartedAt ? breakStartedAt.toISOString() : null,
       breakSeconds,
       workingSeconds: workSeconds,
+      totalDurationSeconds: totalWorkSeconds,
       overtimeSeconds,
       requiredWorkSeconds: REQUIRED_WORK_SECONDS,
       dayStatus,
@@ -608,7 +622,7 @@ router.get('/history', async (req, res) => {
       }
     } catch (_) { }
 
-    const summary = { present: 0, absent: 0, halfDay: 0, leave: 0, overtime: 0, weeklyOff: 0, holiday: 0 };
+    const summary = { present: 0, absent: 0, halfDay: 0, leave: 0, overtime: 0, weeklyOff: 0, holiday: 0, lateCount: 0, latePenaltyDays: 0 };
     let lateRunningCount = 0;
     const days = [];
 
@@ -630,6 +644,7 @@ router.get('/history', async (req, res) => {
 
       let dayStatus = 'ABSENT';
       let workingSeconds = 0;
+      let totalDurationSeconds = 0;
       let breakSeconds = 0;
       let overtimeSeconds = 0;
       let leaveType = null;
@@ -643,9 +658,9 @@ router.get('/history', async (req, res) => {
         const bBase = Number(record.breakTotalSeconds || 0);
         const bRun = record.isOnBreak && record.breakStartedAt ? diffSeconds(new Date(record.breakStartedAt), now) : 0;
         breakSeconds = bBase + bRun;
-        const totalWork = Math.max(0, diffSeconds(inAt, outAt));
+        totalDurationSeconds = Math.max(0, diffSeconds(inAt, outAt));
         workingSeconds = computeEffectiveWorkingSeconds({
-          totalWorkSeconds: totalWork,
+          totalWorkSeconds: totalDurationSeconds,
           actualBreakSeconds: breakSeconds,
           requiredWorkSeconds: REQUIRED_WORK_SECONDS,
           maxBreakMinutes,
@@ -678,6 +693,7 @@ router.get('/history', async (req, res) => {
       } else if (record?.status && !isAdminLeave && !isAdminHalf) {
         dayStatus = record.status.toUpperCase();
         workingSeconds = Math.round((Number(record.totalWorkHours) || 0) * 3600);
+        totalDurationSeconds = workingSeconds;
         breakSeconds = Number(record.breakTotalSeconds || 0);
         overtimeSeconds = (Number(record.overtimeMinutes) || 0) * 60;
       } else {
@@ -716,8 +732,10 @@ router.get('/history', async (req, res) => {
           if (punchInSec > (shiftStartSec + lateGrace * 60)) {
             isLateThisDay = true;
             lateRunningCount++;
+            summary.lateCount++;
             if (lateThreshold > 0 && lateRunningCount % lateThreshold === 0) {
               isPenaltyDay = true;
+              summary.latePenaltyDays++;
               lateReason = `Late Punch-In Penalty (${lateRunningCount}th late)`;
             } else {
               const diffMin = Math.floor((punchInSec - shiftStartSec) / 60);
@@ -727,11 +745,11 @@ router.get('/history', async (req, res) => {
         }
       }
 
-      if (dayStatus === 'PRESENT' || dayStatus === 'OVERTIME') summary.present += 1;
+      if (dayStatus === 'PRESENT') summary.present += 1;
+      else if (dayStatus === 'OVERTIME') { summary.present += 1; summary.overtime += 1; }
       else if (dayStatus === 'ABSENT') summary.absent += 1;
       else if (dayStatus === 'HALF_DAY') summary.halfDay += 1;
       else if (dayStatus === 'LEAVE') summary.leave += 1;
-      else if (dayStatus === 'OVERTIME') summary.overtime += 1;
       else if (dayStatus === 'HOLIDAY') summary.holiday += 1;
       else if (dayStatus === 'WEEKLY_OFF') summary.weeklyOff += 1;
 
@@ -739,6 +757,7 @@ router.get('/history', async (req, res) => {
         date: key,
         dayStatus,
         workingSeconds,
+        totalDurationSeconds,
         breakSeconds,
         overtimeSeconds,
         leaveType,

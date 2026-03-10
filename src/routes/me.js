@@ -355,7 +355,7 @@ router.put('/general', async (req, res) => {
     if (!user) return res.status(404).json({ success: false, message: 'User not found' });
 
     const profile = (await StaffProfile.findOne({ where: { userId: user.id } }))
-      || (await StaffProfile.create({ userId: user.id, phone: user.phone }));
+      || (await StaffProfile.create({ userId: user.id, orgAccountId: user.orgAccountId, phone: user.phone }));
 
     const prevExtra = profile.extra || {};
     const nextExtra = {
@@ -375,6 +375,7 @@ router.put('/general', async (req, res) => {
     };
 
     await profile.update({
+      orgAccountId: (profile.orgAccountId === null || profile.orgAccountId === undefined) ? user.orgAccountId : profile.orgAccountId,
       name: fullName !== undefined ? (fullName ? String(fullName) : null) : profile.name,
       dob: dob !== undefined ? (dob ? String(dob) : null) : profile.dob,
       gender: gender !== undefined ? (gender ? String(gender) : null) : profile.gender,
@@ -463,9 +464,10 @@ router.put('/bank', async (req, res) => {
     if (!user) return res.status(404).json({ success: false, message: 'User not found' });
 
     const profile = (await StaffProfile.findOne({ where: { userId: user.id } }))
-      || (await StaffProfile.create({ userId: user.id, phone: user.phone }));
+      || (await StaffProfile.create({ userId: user.id, orgAccountId: user.orgAccountId, phone: user.phone }));
 
     await profile.update({
+      orgAccountId: (profile.orgAccountId === null || profile.orgAccountId === undefined) ? user.orgAccountId : profile.orgAccountId,
       bankAccountHolderName:
         bankAccountHolderName !== undefined ? (bankAccountHolderName ? String(bankAccountHolderName) : null) : profile.bankAccountHolderName,
       bankAccountNumber:
@@ -500,9 +502,10 @@ router.put('/profile', async (req, res) => {
     if (!user) return res.status(404).json({ success: false, message: 'User not found' });
 
     const profile = (await StaffProfile.findOne({ where: { userId: user.id } }))
-      || (await StaffProfile.create({ userId: user.id, phone: user.phone }));
+      || (await StaffProfile.create({ userId: user.id, orgAccountId: user.orgAccountId, phone: user.phone }));
 
     await profile.update({
+      orgAccountId: (profile.orgAccountId === null || profile.orgAccountId === undefined) ? user.orgAccountId : profile.orgAccountId,
       name: name !== undefined ? (name ? String(name) : null) : profile.name,
       email: email !== undefined ? (email ? String(email) : null) : profile.email,
       designation: designation !== undefined ? (designation ? String(designation) : null) : profile.designation,
@@ -525,10 +528,13 @@ router.post('/profile/photo', upload.single('photo'), async (req, res) => {
     if (!user) return res.status(404).json({ success: false, message: 'User not found' });
 
     const profile = (await StaffProfile.findOne({ where: { userId: user.id } }))
-      || (await StaffProfile.create({ userId: user.id, phone: user.phone }));
+      || (await StaffProfile.create({ userId: user.id, orgAccountId: user.orgAccountId, phone: user.phone }));
 
     const photoUrl = `/uploads/${req.file.filename}`;
-    await profile.update({ photoUrl });
+    await profile.update({
+      orgAccountId: (profile.orgAccountId === null || profile.orgAccountId === undefined) ? user.orgAccountId : profile.orgAccountId,
+      photoUrl
+    });
 
     return res.json({ success: true, photoUrl });
   } catch (e) {

@@ -449,27 +449,40 @@ async function calculateSalary(userId, monthKey) {
           attributes: ['date', 'punchedInAt', 'status']
         });
 
-        // Get the active shift assignment
-        const shiftAsg = await StaffShiftAssignment.findOne({
-          where: { userId: u.id, active: true },
+        // Pre-fetch all shift templates and assignments for the month
+        const allShiftTemplates = await ShiftTemplate.findAll({ where: { orgAccountId: u.orgAccountId, active: true } });
+        const shiftTemplateMap = {};
+        allShiftTemplates.forEach(t => { shiftTemplateMap[t.id] = t; });
+
+        const shiftAssignments = await StaffShiftAssignment.findAll({
+          where: { userId: u.id },
           include: [{ model: ShiftTemplate, as: 'template' }],
-          order: [['id', 'DESC']]
+          order: [['effectiveFrom', 'ASC']]
         });
 
-        if (shiftAsg?.template?.startTime) {
-          const [sh, sm, ss] = shiftAsg.template.startTime.split(':').map(Number);
-          const shiftStartSeconds = sh * 3600 + sm * 60 + (ss || 0);
-          const lateThresholdSeconds = shiftStartSeconds + (graceMinutes * 60);
+        for (const a of detailedAtts) {
+          if (!a.punchedInAt) continue;
 
-          for (const a of detailedAtts) {
-            if (!a.punchedInAt) continue;
-            
-            // Check if it's a work status (present/half_day)
-            const status = String(a.status || '').toLowerCase();
-            if (status !== 'present' && status !== 'half_day') continue;
+          // Check if it's a work status (present/half_day/overtime)
+          const status = String(a.status || '').toLowerCase();
+          if (status !== 'present' && status !== 'half_day' && status !== 'overtime') continue;
+
+          const dateKey = a.date;
+          const dayShiftAsg = shiftAssignments
+            .filter(asg => dateKey >= asg.effectiveFrom && (!asg.effectiveTo || dateKey <= asg.effectiveTo))
+            .sort((a, b) => b.effectiveFrom.localeCompare(a.effectiveFrom))[0];
+
+          let shiftTpl = dayShiftAsg?.template || u.shiftTemplate;
+          if (!shiftTpl && u.profile?.shiftSelection) {
+            shiftTpl = shiftTemplateMap[Number(u.profile.shiftSelection)];
+          }
+
+          if (shiftTpl?.startTime) {
+            const [sh, sm, ss] = shiftTpl.startTime.split(':').map(Number);
+            const shiftStartSeconds = sh * 3600 + sm * 60 + (ss || 0);
+            const lateThresholdSeconds = shiftStartSeconds + (graceMinutes * 60);
 
             const punchIn = new Date(a.punchedInAt);
-            // Convert to IST (UTC+5:30) for comparison with shift time
             const istDate = new Date(punchIn.getTime() + (5.5 * 3600 * 1000));
             const punchInSeconds = istDate.getUTCHours() * 3600 + istDate.getUTCMinutes() * 60 + istDate.getUTCSeconds();
 

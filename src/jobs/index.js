@@ -1,5 +1,6 @@
 const cron = require('node-cron');
 const { checkSubscriptionExpiryReminders } = require('./subscriptionExpiryReminder');
+const { scheduleZktecoSync, runZktecoSyncAllOrgs } = require('./zktecoSync');
 
 // Schedule the subscription expiry reminder job to run daily at 9:00 AM
 const scheduleSubscriptionExpiryReminders = () => {
@@ -8,7 +9,7 @@ const scheduleSubscriptionExpiryReminders = () => {
     console.log('⏰ Running scheduled subscription expiry reminder check...');
     await checkSubscriptionExpiryReminders();
   });
-  
+
   console.log('📅 Subscription expiry reminder job scheduled to run daily at 9:00 AM');
 };
 
@@ -20,5 +21,7 @@ const runSubscriptionExpiryCheck = async () => {
 
 module.exports = {
   scheduleSubscriptionExpiryReminders,
-  runSubscriptionExpiryCheck
+  runSubscriptionExpiryCheck,
+  scheduleZktecoSync,
+  runZktecoSyncAllOrgs
 };
