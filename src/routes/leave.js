@@ -208,6 +208,7 @@ router.get('/', requireRole(['admin', 'superadmin']), async (req, res) => {
     const where = { orgAccountId: req.tenantOrgAccountId };
     if (status && ['PENDING', 'APPROVED', 'REJECTED'].includes(status)) where.status = status;
     const rows = await LeaveRequest.findAll({
+      where,
       include: [
         {
           model: User, as: 'user',
