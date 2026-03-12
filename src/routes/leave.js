@@ -3,10 +3,12 @@ const express = require('express');
 const { LeaveRequest, User, StaffProfile, StaffLeaveAssignment, LeaveTemplate, LeaveTemplateCategory, LeaveBalance, LeaveEncashment, OrgAccount } = require('../models');
 const { authRequired } = require('../middleware/auth');
 const { requireRole } = require('../middleware/roles');
+const { tenantEnforce } = require('../middleware/tenant');
 
 const router = express.Router();
 
 router.use(authRequired);
+router.use(tenantEnforce);
 
 function getCycleRange(cycle, forDate /* YYYY-MM-DD */) {
   const d = new Date(`${forDate}T00:00:00`);
@@ -136,6 +138,7 @@ router.post('/', requireRole(['staff']), async (req, res) => {
 
     const lr = await LeaveRequest.create({
       userId: req.user.id,
+      orgAccountId: req.tenantOrgAccountId,
       startDate,
       endDate,
       leaveType,
@@ -176,7 +179,7 @@ router.delete('/:id', requireRole(['staff']), async (req, res) => {
 router.get('/me', requireRole(['staff']), async (req, res) => {
   try {
     const status = typeof req.query.status === 'string' && req.query.status.trim() ? req.query.status.trim().toUpperCase() : null;
-    const where = { userId: req.user.id };
+    const where = { userId: req.user.id, orgAccountId: req.tenantOrgAccountId };
     if (status && ['PENDING', 'APPROVED', 'REJECTED'].includes(status)) where.status = status;
 
     const rows = await LeaveRequest.findAll({ where, order: [['createdAt', 'DESC']] });
@@ -202,7 +205,7 @@ router.get('/me', requireRole(['staff']), async (req, res) => {
 router.get('/', requireRole(['admin', 'superadmin']), async (req, res) => {
   try {
     const status = typeof req.query.status === 'string' && req.query.status.trim() ? req.query.status.trim().toUpperCase() : null;
-    const where = {};
+    const where = { orgAccountId: req.tenantOrgAccountId };
     if (status && ['PENDING', 'APPROVED', 'REJECTED'].includes(status)) where.status = status;
     const rows = await LeaveRequest.findAll({
       include: [
@@ -246,7 +249,7 @@ router.patch('/:id/status', requireRole(['admin', 'superadmin']), async (req, re
       return res.status(400).json({ success: false, message: 'status must be APPROVED or REJECTED' });
     }
 
-    const record = await LeaveRequest.findByPk(id);
+    const record = await LeaveRequest.findOne({ where: { id, orgAccountId: req.tenantOrgAccountId } });
     if (!record) {
       return res.status(404).json({ success: false, message: 'Leave request not found' });
     }
@@ -366,7 +369,7 @@ router.post('/encash/claim', requireRole(['staff']), async (req, res) => {
 
     const claim = await LeaveEncashment.create({
       userId: req.user.id,
-      orgAccountId: req.user.orgAccountId,
+      orgAccountId: req.tenantOrgAccountId,
       categoryKey: categoryKey.toLowerCase(),
       days,
       monthKey,
@@ -384,7 +387,7 @@ router.post('/encash/claim', requireRole(['staff']), async (req, res) => {
 router.get('/encash/claims/me', requireRole(['staff']), async (req, res) => {
   try {
     const claims = await LeaveEncashment.findAll({
-      where: { userId: req.user.id },
+      where: { userId: req.user.id, orgAccountId: req.tenantOrgAccountId },
       order: [['createdAt', 'DESC']]
     });
     return res.json({ success: true, claims });
@@ -396,8 +399,7 @@ router.get('/encash/claims/me', requireRole(['staff']), async (req, res) => {
 // ADMIN: list encashment claims
 router.get('/encash/claims', requireRole(['admin', 'superadmin']), async (req, res) => {
   try {
-    const where = {};
-    if (req.user.role !== 'superadmin') where.orgAccountId = req.user.orgAccountId;
+    const where = { orgAccountId: req.tenantOrgAccountId };
 
     const claims = await LeaveEncashment.findAll({
       where,
@@ -419,7 +421,7 @@ router.post('/encash/review', requireRole(['admin', 'superadmin']), async (req, 
       return res.status(400).json({ success: false, message: 'id and status (APPROVED/REJECTED) are required' });
     }
 
-    const claim = await LeaveEncashment.findByPk(id);
+    const claim = await LeaveEncashment.findOne({ where: { id, orgAccountId: req.tenantOrgAccountId } });
     if (!claim) return res.status(404).json({ success: false, message: 'Claim not found' });
 
     if (claim.status !== 'PENDING') return res.status(400).json({ success: false, message: 'Claim already processed' });
