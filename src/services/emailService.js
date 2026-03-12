@@ -989,6 +989,72 @@ const sendStaffLetterEmail = async (staffEmail, staffName, letterTitle, letterCo
   }
 };
 
+// Send meeting invite email
+const sendMeetingInviteEmail = async (staffEmail, staffName, meetingTitle, meetingTime, meetLink, organizerName) => {
+  try {
+    console.log(`📧 Sending meeting invite to: ${staffEmail}`);
+
+    const mailOptions = {
+      from: `"${emailFrom.name}" <${emailFrom.address}>`,
+      to: staffEmail,
+      subject: `Meeting Invite: ${meetingTitle}`,
+      html: `
+        <!DOCTYPE html>
+        <html>
+        <head>
+          <meta charset="utf-8">
+          <meta name="viewport" content="width=device-width, initial-scale=1.0">
+          <title>Meeting Invite from ThinkTech Solutions</title>
+          <style>
+            body { font-family: 'Arial', sans-serif; line-height: 1.6; color: #333; max-width: 600px; margin: 0 auto; padding: 20px; background-color: #f4f4f4; }
+            .container { background-color: #ffffff; padding: 30px; border-radius: 10px; box-shadow: 0 0 10px rgba(0,0,0,0.1); }
+            .header { text-align: center; padding-bottom: 20px; border-bottom: 2px solid #125EC9; }
+            .header h2 { color: #125EC9; margin: 0; }
+            .content { padding: 20px 0; }
+            .meeting-info { background-color: #f8f9fa; padding: 20px; border-radius: 5px; border-left: 4px solid #125EC9; margin: 20px 0; }
+            .info-item { margin: 10px 0; font-size: 15px; }
+            .info-label { font-weight: bold; color: #555; }
+            .action-button { display: inline-block; background-color: #125EC9; color: white; padding: 12px 30px; text-decoration: none; border-radius: 5px; margin: 20px 0; }
+          </style>
+        </head>
+        <body>
+          <div class="container">
+            <div class="header">
+              <h2>New Meeting Scheduled</h2>
+            </div>
+            <div class="content">
+              <p>Hi <strong>${staffName}</strong>,</p>
+              <p>You have been invited to a meeting by <strong>${organizerName}</strong>.</p>
+              
+              <div class="meeting-info">
+                <div class="info-item"><span class="info-label">Title:</span> ${meetingTitle}</div>
+                <div class="info-item"><span class="info-label">Time:</span> ${new Date(meetingTime).toLocaleString('en-IN')}</div>
+              </div>
+
+              ${meetLink ? `
+              <div style="text-align: center;">
+                <a href="${meetLink}" class="action-button">Join Meeting</a>
+              </div>
+              <p style="text-align: center; font-size: 12px; color: #666;">If the button doesn't work, copy this link: ${meetLink}</p>
+              ` : ''}
+
+              <p>Please make sure to be available on time.</p>
+              <p>Best regards,<br><strong>ThinkTech Solutions Team</strong></p>
+            </div>
+          </div>
+        </body>
+        </html>
+      `
+    };
+
+    const info = await transporter.sendMail(mailOptions);
+    return { success: true, messageId: info.messageId };
+  } catch (error) {
+    console.error('Error sending meeting invite email:', error);
+    return { success: false, error: error.message };
+  }
+};
+
 module.exports = {
   verifyEmailConfig,
   sendWelcomeEmail,
@@ -998,6 +1064,8 @@ module.exports = {
   sendSubscriptionExpiryReminderEmail,
   sendSubscriptionExpiredEmail,
   sendStaffLetterEmail,
+  sendMeetingInviteEmail,
   transporter,
   emailFrom
 };
+

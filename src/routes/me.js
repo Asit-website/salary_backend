@@ -612,4 +612,20 @@ router.post('/expenses', upload.single('attachment'), async (req, res) => {
   }
 });
 
+// List all staff in the same organization (for meetings etc)
+router.get('/staff-list', async (req, res) => {
+  try {
+    const staff = await StaffProfile.findAll({
+      where: { orgAccountId: req.user.orgAccountId },
+      attributes: ['userId', 'name', 'designation', 'staffId', 'email'],
+      include: [{ model: User, as: 'user', attributes: ['phone', 'active'], where: { active: true } }]
+    });
+
+    return res.json({ success: true, staff });
+  } catch (e) {
+    console.error('Staff list error:', e);
+    return res.status(500).json({ success: false, message: 'Failed to load staff list' });
+  }
+});
+
 module.exports = router;

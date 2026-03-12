@@ -1,4 +1,5 @@
 const express = require('express');
+const { Op } = require('sequelize');
 
 const { LeaveRequest, User, StaffProfile, StaffLeaveAssignment, LeaveTemplate, LeaveTemplateCategory, LeaveBalance, LeaveEncashment, OrgAccount } = require('../models');
 const { authRequired } = require('../middleware/auth');
@@ -29,6 +30,50 @@ function getCycleRange(cycle, forDate /* YYYY-MM-DD */) {
   return { start: start.toISOString().slice(0, 10), end: end.toISOString().slice(0, 10) };
 }
 
+/**
+ * Helper to get the effective leave balance for a user.
+ * If a row in LeaveBalance exists, it uses it.
+ * Otherwise, it calculates balance based on the Template Category.
+ */
+async function getEffectiveLeaveBalance(userId, categoryKey, onDate) {
+  const tpl = await getActiveLeaveTemplateForUser(userId, onDate);
+  if (!tpl) return null;
+
+  const cyc = tpl.cycle || 'monthly';
+  const { start, end } = getCycleRange(cyc, onDate);
+  const key = String(categoryKey).toLowerCase();
+
+  const lb = await LeaveBalance.findOne({ where: { userId, categoryKey: key, cycleStart: start, cycleEnd: end } });
+  
+  const catCfg = (tpl.categories || []).find(c => String(c.key).toLowerCase() === key);
+  if (!catCfg) return null;
+
+  const total = Number(catCfg.leaveCount || 0);
+
+  if (lb) {
+    const used = Number(lb.used || 0);
+    const remaining = Number(lb.remaining || Math.max(0, total - used));
+    return { lb, total, used, remaining, start, end, cycle: cyc };
+  }
+
+  // Fallback: derive used from approved requests within cycle when balance row is missing
+  const reqs = await LeaveRequest.findAll({
+    where: {
+      userId,
+      status: 'APPROVED',
+      categoryKey: key,
+      startDate: { [Op.gte]: start },
+      endDate: { [Op.lte]: end },
+    }
+  }).catch(() => []);
+
+  const usedDays = Array.isArray(reqs) ? reqs.reduce((s, r) => s + (Number(r.days || 0) || 0), 0) : 0;
+  const used = Math.min(total, Math.max(0, usedDays));
+  const remaining = Math.max(0, total - used);
+
+  return { lb: null, total, used, remaining, start, end, cycle: cyc };
+}
+
 // STAFF: get my leave categories and balances for current cycle
 router.get('/categories', requireRole(['staff']), async (req, res) => {
   try {
@@ -51,32 +96,18 @@ router.get('/categories', requireRole(['staff']), async (req, res) => {
     const cycle = tpl.cycle || 'monthly';
     const { start, end } = getCycleRange(cycle, forDate);
 
-    const balances = await LeaveBalance.findAll({ where: { userId: req.user.id, cycleStart: start, cycleEnd: end } });
-    const balMap = new Map(balances.map((b) => [String(b.categoryKey).toLowerCase(), b]));
-
     const categories = await Promise.all((tpl.categories || []).map(async (c) => {
-      const key = String(c.key).toLowerCase();
-      const b = balMap.get(key);
-      const total = Number(c.leaveCount || 0);
-      if (b) {
-        const used = Number(b.used || 0);
-        const remaining = Number(b.remaining || Math.max(0, total - used));
-        return { key, name: c.name, total, used, remaining };
+      const balanceInfo = await getEffectiveLeaveBalance(req.user.id, c.key, forDate);
+      if (!balanceInfo) {
+        return { key: c.key, name: c.name, total: Number(c.leaveCount || 0), used: 0, remaining: Number(c.leaveCount || 0) };
       }
-      // Fallback: derive used from approved requests within cycle when balance row is missing
-      const reqs = await LeaveRequest.findAll({
-        where: {
-          userId: req.user.id,
-          status: 'APPROVED',
-          categoryKey: key,
-          startDate: { $gte: start },
-          endDate: { $lte: end },
-        }
-      }).catch(() => []);
-      const usedDays = Array.isArray(reqs) ? reqs.reduce((s, r) => s + (Number(r.days || 0) || 0), 0) : 0;
-      const used = Math.min(total, Math.max(0, usedDays));
-      const remaining = Math.max(0, total - used);
-      return { key, name: c.name, total, used, remaining };
+      return { 
+        key: String(c.key).toLowerCase(), 
+        name: c.name, 
+        total: balanceInfo.total, 
+        used: balanceInfo.used, 
+        remaining: balanceInfo.remaining 
+      };
     }));
 
     // Always include a static unpaid option without remaining text
@@ -357,14 +388,10 @@ router.post('/encash/claim', requireRole(['staff']), async (req, res) => {
     }
 
     // Check if enough balance exists
-    const tpl = await getActiveLeaveTemplateForUser(req.user.id, new Date().toISOString().slice(0, 10));
-    if (!tpl) return res.status(400).json({ success: false, message: 'No active leave template found' });
+    const balanceInfo = await getEffectiveLeaveBalance(req.user.id, categoryKey, new Date().toISOString().slice(0, 10));
+    if (!balanceInfo) return res.status(400).json({ success: false, message: 'Invalid leave category or no active template' });
 
-    const cyc = tpl.cycle || 'monthly';
-    const { start, end } = getCycleRange(cyc, new Date().toISOString().slice(0, 10));
-
-    const lb = await LeaveBalance.findOne({ where: { userId: req.user.id, categoryKey: categoryKey.toLowerCase(), cycleStart: start, cycleEnd: end } });
-    if (!lb || Number(lb.remaining || 0) < Number(days)) {
+    if (balanceInfo.remaining < Number(days)) {
       return res.status(400).json({ success: false, message: 'Insufficient leave balance for encashment' });
     }
 
@@ -433,19 +460,33 @@ router.post('/encash/review', requireRole(['admin', 'superadmin']), async (req, 
     }
 
     // Process Approval: Deduct from LeaveBalance
-    const tpl = await getActiveLeaveTemplateForUser(claim.userId, new Date().toISOString().slice(0, 10));
-    const cyc = tpl ? tpl.cycle || 'monthly' : 'monthly';
-    const { start, end } = getCycleRange(cyc, new Date().toISOString().slice(0, 10));
-
-    const lb = await LeaveBalance.findOne({ where: { userId: claim.userId, categoryKey: String(claim.categoryKey || '').toLowerCase(), cycleStart: start, cycleEnd: end } });
-    if (!lb || Number(lb.remaining || 0) < Number(claim.days)) {
+    const balanceInfo = await getEffectiveLeaveBalance(claim.userId, claim.categoryKey, new Date().toISOString().slice(0, 10));
+    if (!balanceInfo || balanceInfo.remaining < Number(claim.days)) {
       return res.status(400).json({ success: false, message: 'Insufficient leave balance at time of approval' });
     }
 
     // Update balance
-    const encashed = Number(lb.encashed || 0) + Number(claim.days);
-    const remaining = Number(lb.remaining || 0) - Number(claim.days);
-    await lb.update({ encashed, remaining });
+    let lb = balanceInfo.lb;
+    const daysToEncash = Number(claim.days);
+
+    if (lb) {
+      const encashed = Number(lb.encashed || 0) + daysToEncash;
+      const remaining = Number(lb.remaining || 0) - daysToEncash;
+      await lb.update({ encashed, remaining });
+    } else {
+      // Create balance row if missing
+      lb = await LeaveBalance.create({
+        userId: claim.userId,
+        categoryKey: claim.categoryKey.toLowerCase(),
+        cycleStart: balanceInfo.start,
+        cycleEnd: balanceInfo.end,
+        allocated: balanceInfo.total,
+        used: balanceInfo.used,
+        encashed: daysToEncash,
+        remaining: balanceInfo.remaining - daysToEncash,
+        orgAccountId: req.tenantOrgAccountId
+      });
+    }
 
     await claim.update({
       status: 'APPROVED',

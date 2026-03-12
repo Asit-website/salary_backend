@@ -23,6 +23,9 @@ const rolesRoutes = require('./src/routes/roles');
 const userAccessRoutes = require('./src/routes/userAccess');
 const letterRoutes = require('./src/routes/letter');
 const salesIncentiveRoutes = require('./src/routes/salesIncentive');
+const todoRoutes = require('./src/routes/todo');
+const meetingRoutes = require('./src/routes/meeting');
+
 
 const { tenantEnforce } = require('./src/middleware/tenant');
 const { scheduleSubscriptionSweep } = require('./src/jobs/subscriptionSweep');
@@ -97,6 +100,9 @@ app.use('/salary-templates', salaryTemplateRoutes);
 app.use('/subscription', subscriptionRoutes);
 app.use('/admin/roles', rolesRoutes);
 app.use('/mobile/roles', rolesRoutes);
+app.use('/activities', todoRoutes);
+app.use('/meetings', meetingRoutes);
+
 
 const port = Number(process.env.PORT || 4000);
 

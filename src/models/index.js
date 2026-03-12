@@ -86,6 +86,9 @@ const defineStaffIncentiveRule = require('./StaffIncentiveRule');
 const defineStaffSalesIncentive = require('./StaffSalesIncentive');
 const defineLeaveEncashment = require('./LeaveEncashment');
 const defineAttendanceAutomationRule = require('./AttendanceAutomationRule');
+const defineActivity = require('./Activity');
+const defineMeeting = require('./Meeting');
+const defineMeetingAttendee = require('./MeetingAttendee');
 
 
 const User = defineUser(sequelize);
@@ -174,6 +177,9 @@ const StaffIncentiveRule = defineStaffIncentiveRule(sequelize);
 const StaffSalesIncentive = defineStaffSalesIncentive(sequelize);
 const AttendanceAutomationRule = defineAttendanceAutomationRule(sequelize);
 const LeaveEncashment = defineLeaveEncashment(sequelize);
+const Activity = defineActivity(sequelize);
+const Meeting = defineMeeting(sequelize);
+const MeetingAttendee = defineMeetingAttendee(sequelize);
 
 
 // Leave Template associations (after models are defined)
@@ -501,6 +507,26 @@ OrgAccount.hasMany(LeaveEncashment, { foreignKey: 'orgAccountId', as: 'leaveEnca
 LeaveEncashment.belongsTo(OrgAccount, { foreignKey: 'orgAccountId', as: 'orgAccount' });
 
 
+// Activity associations
+User.hasMany(Activity, { foreignKey: 'userId', as: 'activities' });
+Activity.belongsTo(User, { foreignKey: 'userId', as: 'user' });
+OrgAccount.hasMany(Activity, { foreignKey: 'orgAccountId', as: 'activities' });
+Activity.belongsTo(OrgAccount, { foreignKey: 'orgAccountId', as: 'orgAccount' });
+
+// Meeting associations
+User.hasMany(Meeting, { foreignKey: 'createdBy', as: 'createdMeetings' });
+Meeting.belongsTo(User, { foreignKey: 'createdBy', as: 'creator' });
+OrgAccount.hasMany(Meeting, { foreignKey: 'orgAccountId', as: 'meetings' });
+Meeting.belongsTo(OrgAccount, { foreignKey: 'orgAccountId', as: 'orgAccount' });
+
+Meeting.belongsToMany(User, { through: MeetingAttendee, as: 'attendees', foreignKey: 'meetingId', otherKey: 'userId' });
+User.belongsToMany(Meeting, { through: MeetingAttendee, as: 'attendingMeetings', foreignKey: 'userId', otherKey: 'meetingId' });
+
+Meeting.hasMany(MeetingAttendee, { foreignKey: 'meetingId', as: 'attendeeRecords' });
+MeetingAttendee.belongsTo(Meeting, { foreignKey: 'meetingId', as: 'meeting' });
+User.hasMany(MeetingAttendee, { foreignKey: 'userId', as: 'meetingParticipations' });
+MeetingAttendee.belongsTo(User, { foreignKey: 'userId', as: 'user' });
+
 module.exports = {
   sequelize,
   User,
@@ -585,5 +611,8 @@ module.exports = {
   AssetMaintenance,
   StaffLoan, LetterTemplate, StaffLetter, SalesIncentiveRule, StaffIncentiveRule, StaffSalesIncentive,
   AttendanceAutomationRule,
-  LeaveEncashment
+  LeaveEncashment,
+  Activity,
+  Meeting,
+  MeetingAttendee,
 };
