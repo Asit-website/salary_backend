@@ -9,7 +9,13 @@ async function tenantEnforce(req, res, next) {
       const user = await User.findByPk(req.user.id);
       const fallbackOrg = user?.orgAccountId || null;
       req.tenantClientId = null;
-      req.tenantOrgAccountId = headerOrg ? Number(headerOrg) : fallbackOrg;
+
+      let finalOrg = fallbackOrg;
+      if (headerOrg) {
+        const n = Number(headerOrg);
+        if (!isNaN(n)) finalOrg = n;
+      }
+      req.tenantOrgAccountId = finalOrg;
       return next();
     }
 

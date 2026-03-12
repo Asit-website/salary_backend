@@ -499,14 +499,29 @@ router.get('/status', async (req, res) => {
           try { config = JSON.parse(JSON.parse(config)); } catch (__) { config = {}; }
         }
       }
-      const graceMinutes = Number(config.lateMinutes || 15);
+      
+      let tiers = [];
+      if (Array.isArray(config.tiers) && config.tiers.length > 0) {
+        tiers = config.tiers;
+      } else {
+        tiers = [{ minMinutes: Number(config.lateMinutes || 15), maxMinutes: 9999, deduction: 1, frequency: 1 }];
+      }
+
       const [sh, sm, ss] = assignedShift.startTime.split(':').map(Number);
       const shiftStartSeconds = sh * 3600 + sm * 60 + (ss || 0);
-      const lateThresholdSeconds = shiftStartSeconds + (graceMinutes * 60);
 
       const istDate = new Date(punchedInAt.getTime() + (5.5 * 3600 * 1000));
       const punchInSeconds = istDate.getUTCHours() * 3600 + istDate.getUTCMinutes() * 60 + istDate.getUTCSeconds();
-      if (punchInSeconds > lateThresholdSeconds) isLate = true;
+      
+      if (punchInSeconds > shiftStartSeconds) {
+          const lateMins = Math.floor((punchInSeconds - shiftStartSeconds) / 60);
+          for(const t of tiers) {
+              if (lateMins >= Number(t.minMinutes) && lateMins <= Number(t.maxMinutes)) {
+                  isLate = true;
+                  break;
+              }
+          }
+      }
     }
   } catch (_) { }
 
@@ -603,7 +618,7 @@ router.get('/history', async (req, res) => {
     }
 
     // Late Penalty Rule Fetch
-    let lateThreshold = 3, lateGrace = 15;
+    let lateTiers = [];
     let lateRuleActive = false;
     try {
       const penaltyRule = await AttendanceAutomationRule.findOne({
@@ -616,14 +631,22 @@ router.get('/history', async (req, res) => {
             try { config = JSON.parse(JSON.parse(config)); } catch (__) { config = {}; }
           }
         }
-        lateThreshold = Number(config.threshold || 3);
-        lateGrace = Number(config.lateMinutes || 15);
+        if (Array.isArray(config.tiers) && config.tiers.length > 0) {
+          lateTiers = config.tiers;
+        } else {
+          lateTiers = [{
+            minMinutes: Number(config.lateMinutes || 15),
+            maxMinutes: 9999,
+            deduction: Number(config.deduction || 1),
+            frequency: Number(config.threshold || 3)
+          }];
+        }
         lateRuleActive = penaltyRule.active && config.active !== false;
       }
     } catch (_) { }
 
     const summary = { present: 0, absent: 0, halfDay: 0, leave: 0, overtime: 0, weeklyOff: 0, holiday: 0, lateCount: 0, latePenaltyDays: 0 };
-    let lateRunningCount = 0;
+    let lateRunningCounts = new Array(lateTiers.length).fill(0);
     const days = [];
 
     const totalDaysRemainingInMonth = end.getDate();
@@ -729,17 +752,26 @@ router.get('/history', async (req, res) => {
           const istDate = new Date(punchIn.getTime() + (5.5 * 3600 * 1000));
           const punchInSec = istDate.getUTCHours() * 3600 + istDate.getUTCMinutes() * 60 + istDate.getUTCSeconds();
 
-          if (punchInSec > (shiftStartSec + lateGrace * 60)) {
-            isLateThisDay = true;
-            lateRunningCount++;
-            summary.lateCount++;
-            if (lateThreshold > 0 && lateRunningCount % lateThreshold === 0) {
-              isPenaltyDay = true;
-              summary.latePenaltyDays++;
-              lateReason = `Late Punch-In Penalty (${lateRunningCount}th late)`;
-            } else {
-              const diffMin = Math.floor((punchInSec - shiftStartSec) / 60);
-              lateReason = `Late arrival (${diffMin} min)`;
+          if (punchInSec > shiftStartSec) {
+            const diffMin = Math.floor((punchInSec - shiftStartSec) / 60);
+            
+            for (let i = 0; i < lateTiers.length; i++) {
+              const t = lateTiers[i];
+              if (diffMin >= Number(t.minMinutes) && diffMin <= Number(t.maxMinutes)) {
+                isLateThisDay = true;
+                lateRunningCounts[i]++;
+                summary.lateCount++;
+                const freq = Number(t.frequency);
+                
+                if (freq > 0 && lateRunningCounts[i] % freq === 0) {
+                  isPenaltyDay = true;
+                  summary.latePenaltyDays += Number(t.deduction);
+                  lateReason = `Late Punch-In Penalty (occurence #${lateRunningCounts[i]} in ${t.minMinutes}-${t.maxMinutes}m tier)`;
+                } else {
+                  lateReason = `Late arrival (${diffMin} min)`;
+                }
+                break;
+              }
             }
           }
         }
@@ -786,6 +818,10 @@ router.post('/start-break', async (req, res) => {
     const key = todayKey();
     const record = await Attendance.findOne({ where: { userId: req.user.id, date: key } });
 
+    if (record?.source === 'biometric') {
+      return res.status(409).json({ success: false, message: 'You have already punched in using biometric device. Mobile punch is disabled for today.' });
+    }
+
     if (!record?.punchedInAt) {
       return res.status(409).json({ success: false, message: 'Please punch-in first' });
     }
@@ -810,6 +846,10 @@ router.post('/end-break', async (req, res) => {
   try {
     const key = todayKey();
     const record = await Attendance.findOne({ where: { userId: req.user.id, date: key } });
+
+    if (record?.source === 'biometric') {
+      return res.status(409).json({ success: false, message: 'You have already punched in using biometric device. Mobile punch is disabled for today.' });
+    }
 
     if (!record?.punchedInAt) {
       return res.status(409).json({ success: false, message: 'Please punch-in first' });
@@ -873,6 +913,9 @@ router.post('/punch-in', upload.single('photo'), async (req, res) => {
     const key = todayKey();
 
     const existing = await Attendance.findOne({ where: { userId: req.user.id, date: key } });
+    if (existing?.source === 'biometric') {
+      return res.status(409).json({ success: false, message: 'You have already punched in using biometric device. Mobile punch is disabled for today.' });
+    }
     if (existing?.punchedInAt) {
       return res.status(409).json({ success: false, message: 'Already punched in today' });
     }
@@ -967,6 +1010,10 @@ router.post('/punch-out', upload.single('photo'), async (req, res) => {
       });
     }
     const record = await Attendance.findOne({ where: { userId: req.user.id, date: key } });
+
+    if (record?.source === 'biometric') {
+      return res.status(409).json({ success: false, message: 'You have already punched in using biometric device. Mobile punch is disabled for today.' });
+    }
 
     if (!record?.punchedInAt) {
       return res.status(409).json({ success: false, message: 'Please punch-in first' });

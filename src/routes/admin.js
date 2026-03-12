@@ -49,19 +49,12 @@ const router = express.Router();
 // One-liner org guard
 
 function requireOrg(req, res) {
-
   const orgId = req.tenantOrgAccountId || null;
-
-  if (!orgId) {
-
+  if (!orgId || isNaN(orgId)) {
     res.status(403).json({ success: false, message: 'No organization in context' });
-
     return null;
-
   }
-
-  return orgId;
-
+  return Number(orgId);
 }
 
 
@@ -592,7 +585,22 @@ router.get('/payroll/:cycleId/export', async (req, res) => {
       const s = parseJSON(l.attendanceSummary);
       const t = parseJSON(l.totals);
 
-      Object.keys(e).forEach(k => earningsKeys.add(k));
+      // Unify Leave Encashment keys for existing data
+      Object.keys(e).forEach(k => {
+        let label = k;
+        if (k.startsWith('LEAVE_ENCASHMENT:')) {
+          const key = k.split(': ')[1]?.toLowerCase();
+          if (key && categoryNames[key]) {
+            const newK = `LEAVE_ENCASHMENT: ${categoryNames[key]}`;
+            if (newK !== k) {
+              e[newK] = (e[newK] || 0) + Number(e[k] || 0);
+              delete e[k];
+              label = newK;
+            }
+          }
+        }
+        earningsKeys.add(label);
+      });
       Object.keys(i).forEach(k => incentivesKeys.add(k));
       Object.keys(d).forEach(k => deductionsKeys.add(k));
 
@@ -1182,7 +1190,14 @@ router.post('/upload-profile-photo', requireRole(['admin', 'staff']), uploadProf
   }
 });
 
-
+const categoryNames = {
+  'cl': 'Casual Leave',
+  'sl': 'Sick Leave',
+  'el': 'Earned Leave',
+  'ml': 'Maternity Leave',
+  'pt': 'Paternity Leave',
+  'unpaid': 'Unpaid Leave'
+};
 
 // --- Payroll (admin) --- (org-scoped)
 
@@ -1316,7 +1331,7 @@ router.post('/payroll/:cycleId/compute', async (req, res) => {
 
     const orgId = requireOrg(req, res); if (!orgId) return;
 
-    const { PayrollCycle, PayrollLine, User, Attendance, LeaveRequest, StaffLoan, ExpenseClaim } = require('../models');
+    const { PayrollCycle, PayrollLine, User, Attendance, LeaveRequest, StaffLoan, ExpenseClaim, LeaveEncashment, SalaryTemplate } = require('../models');
 
     const cycleId = Number(req.params.cycleId);
 
@@ -1339,9 +1354,15 @@ router.post('/payroll/:cycleId/compute', async (req, res) => {
     const staffId = req.body.staffId ? Number(req.body.staffId) : null;
     let staff;
     if (staffId) {
-      staff = await User.findAll({ where: { id: staffId, role: 'staff', active: true, orgAccountId: orgId } });
+      staff = await User.findAll({
+        where: { id: staffId, role: 'staff', active: true, orgAccountId: orgId },
+        include: [{ model: SalaryTemplate, as: 'salaryTemplate' }]
+      });
     } else {
-      staff = await User.findAll({ where: { role: 'staff', active: true, orgAccountId: orgId } });
+      staff = await User.findAll({
+        where: { role: 'staff', active: true, orgAccountId: orgId },
+        include: [{ model: SalaryTemplate, as: 'salaryTemplate' }]
+      });
     }
 
 
@@ -1365,7 +1386,7 @@ router.post('/payroll/:cycleId/compute', async (req, res) => {
 
 
     // Fetch Late Penalty Rule for Org
-    let lateThreshold = 3, lateDeduction = 1, lateGrace = 15;
+    let lateTiers = [];
     let lateRuleActive = false;
     try {
       const penaltyRule = await AttendanceAutomationRule.findOne({
@@ -1378,9 +1399,16 @@ router.post('/payroll/:cycleId/compute', async (req, res) => {
             try { config = JSON.parse(JSON.parse(config)); } catch (__) { config = {}; }
           }
         }
-        lateThreshold = Number(config.threshold || 3);
-        lateDeduction = Number(config.deduction || 1);
-        lateGrace = Number(config.lateMinutes || 15);
+        if (Array.isArray(config.tiers) && config.tiers.length > 0) {
+          lateTiers = config.tiers;
+        } else {
+          lateTiers = [{
+            minMinutes: Number(config.lateMinutes || 15),
+            maxMinutes: 9999,
+            deduction: Number(config.deduction || 1),
+            frequency: Number(config.threshold || 3)
+          }];
+        }
         lateRuleActive = penaltyRule.active && config.active !== false;
       }
     } catch (_) { }
@@ -1476,6 +1504,26 @@ router.post('/payroll/:cycleId/compute', async (req, res) => {
       const i = monthStore?.incentives && typeof monthStore.incentives === 'object' ? monthStore.incentives : baseI;
 
       const d = monthStore?.deductions && typeof monthStore.deductions === 'object' ? monthStore.deductions : baseD;
+
+      // Rule-based fallback if template exists and values are 0
+      if (u.salaryTemplate) {
+        const tD = u.salaryTemplate.deductions ? (typeof u.salaryTemplate.deductions === 'string' ? JSON.parse(u.salaryTemplate.deductions) : u.salaryTemplate.deductions) : [];
+        const getRule = (key) => (Array.isArray(tD) ? tD : []).find(it => it.key === key);
+
+        if (Number(d.provident_fund || 0) === 0) {
+          const pfRule = getRule('PROVIDENT_FUND_EMPLOYEE');
+          if (pfRule && pfRule.type === 'percent' && (pfRule.meta?.basedOn === 'BASIC SALARY' || pfRule.meta?.basedOn === 'BASIC_SALARY')) {
+            d.provident_fund = Math.round(Number(e.basic_salary || 0) * (Number(pfRule.valueNumber || 0) / 100));
+          }
+        }
+        if (Number(d.esi || 0) === 0) {
+          const esiRule = getRule('ESI_EMPLOYEE');
+          if (esiRule && esiRule.type === 'percent' && (esiRule.meta?.basedOn === 'TOTAL EARNINGS' || esiRule.meta?.basedOn === 'TOTAL_EARNINGS')) {
+            const currentGross = Object.values(e).reduce((s, v) => s + (Number(v) || 0), 0);
+            d.esi = Math.round(currentGross * (Number(esiRule.valueNumber || 0) / 100));
+          }
+        }
+      }
 
       const totalsFromMonth = monthStore?.totals && typeof monthStore.totals === 'object' ? monthStore.totals : null;
 
@@ -1792,6 +1840,8 @@ router.post('/payroll/:cycleId/compute', async (req, res) => {
 
       if (lateRuleActive) {
         try {
+          let tierCounts = new Array(lateTiers.length).fill(0);
+
           const shiftAsg = await StaffShiftAssignment.findOne({
             where: { userId: u.id },
             include: [{ model: ShiftTemplate, as: 'template' }],
@@ -1806,7 +1856,6 @@ router.post('/payroll/:cycleId/compute', async (req, res) => {
           if (shiftTpl?.startTime) {
             const [sh, sm, ss] = shiftTpl.startTime.split(':').map(Number);
             const shiftStartSeconds = sh * 3600 + sm * 60 + (ss || 0);
-            const lateThresholdSeconds = shiftStartSeconds + (lateGrace * 60);
 
             for (const a of atts) {
               if (!a.punchedInAt) continue;
@@ -1817,13 +1866,24 @@ router.post('/payroll/:cycleId/compute', async (req, res) => {
               const istDate = new Date(punchIn.getTime() + (5.5 * 3600 * 1000));
               const punchInSeconds = istDate.getUTCHours() * 3600 + istDate.getUTCMinutes() * 60 + istDate.getUTCSeconds();
 
-              if (punchInSeconds > lateThresholdSeconds) {
-                lateCount += 1;
+              if (punchInSeconds > shiftStartSeconds) {
+                const lateMins = Math.floor((punchInSeconds - shiftStartSeconds) / 60);
+                for (let i = 0; i < lateTiers.length; i++) {
+                  const t = lateTiers[i];
+                  if (lateMins >= Number(t.minMinutes) && lateMins <= Number(t.maxMinutes)) {
+                    tierCounts[i] += 1;
+                    lateCount += 1;
+                    break;
+                  }
+                }
               }
             }
 
-            if (lateCount >= lateThreshold && lateThreshold > 0) {
-              latePenaltyDays = Math.floor(lateCount / lateThreshold) * lateDeduction;
+            for (let i = 0; i < lateTiers.length; i++) {
+              const t = lateTiers[i];
+              if (t.frequency > 0 && tierCounts[i] > 0) {
+                latePenaltyDays += Math.floor(tierCounts[i] / t.frequency) * Number(t.deduction);
+              }
             }
           }
         } catch (err) {
@@ -1897,6 +1957,32 @@ router.post('/payroll/:cycleId/compute', async (req, res) => {
         }
       } catch (e) { }
       const finalD = prorate(finalDeductions, ratio, ['loan_emi']);
+
+      // FETCH APPROVED LEAVE ENCASHMENTS (Not pro-rated)
+      try {
+        const encashments = await LeaveEncashment.findAll({
+          where: {
+            userId: u.id,
+            status: 'APPROVED',
+            monthKey: cycle.monthKey
+          }
+        });
+
+        for (const enc of encashments) {
+          // Calculate amount if not already stored: (Basic + DA) / 30 * days
+          let amount = Number(enc.amount || 0);
+          if (amount <= 0) {
+            const base = Number(e?.basic_salary || sd.basicSalary || 0) + Number(e?.da || sd.da || 0);
+            const dailyRate = base / 30;
+            amount = Math.round(dailyRate * Number(enc.days || 0));
+          }
+          const catName = categoryNames[enc.categoryKey.toLowerCase()] || enc.categoryKey.toUpperCase();
+          const label = `LEAVE_ENCASHMENT: ${catName}`;
+          finalE[label] = (finalE[label] || 0) + amount;
+        }
+      } catch (err) {
+        console.error('Error fetching leave encashment for compute route:', err);
+      }
 
       // Overtime computation: shift-rule/no-shift logic is already persisted in attendance.overtimeMinutes
       const overtimeMinutes = atts.reduce((s, a) => s + (Number(a.overtimeMinutes || 0) || 0), 0);
@@ -4054,7 +4140,7 @@ router.get('/leave/templates', async (req, res) => {
 
         active: t.active !== false,
 
-        categories: (t.categories || []).map(c => ({ id: c.id, key: c.key, name: c.name, leaveCount: String(c.leaveCount), unusedRule: c.unusedRule, carryLimitDays: c.carryLimitDays, encashLimitDays: c.encashLimitDays })),
+        categories: (t.categories || []).map(c => ({ id: c.id, key: c.key, name: c.name, leaveCount: String(c.leaveCount), unusedRule: c.unusedRule, carryLimitDays: c.carryLimitDays, encashLimitDays: c.encashLimitDays, carryForward: !!c.carryForward })),
 
         assignedCount: (t.assignments || []).length,
 
@@ -4117,6 +4203,8 @@ router.post('/leave/templates', async (req, res) => {
         carryLimitDays: c.carryLimitDays == null ? null : Number(c.carryLimitDays),
 
         encashLimitDays: c.encashLimitDays == null ? null : Number(c.encashLimitDays),
+
+        carryForward: !!(c.carryForward ?? c.carry_forward),
 
       }));
 
@@ -4193,6 +4281,8 @@ router.put('/leave/templates/:id', async (req, res) => {
         carryLimitDays: c.carryLimitDays == null ? null : Number(c.carryLimitDays),
 
         encashLimitDays: c.encashLimitDays == null ? null : Number(c.encashLimitDays),
+
+        carryForward: !!(c.carryForward ?? c.carry_forward),
 
       }));
 
@@ -7229,13 +7319,15 @@ router.post('/leave/allocate', async (req, res) => {
         const existing = await LeaveBalance.findOne({ where: { userId: a.userId, categoryKey: key, cycleStart: start, cycleEnd: end } });
         if (existing) continue;
 
-        // Carry forward from previous cycle based on rule
+        // Carry forward from previous cycle based on rule or carryForward toggle
         let carry = 0; let encash = 0;
         const prevBal = await LeaveBalance.findOne({ where: { userId: a.userId, categoryKey: key, cycleStart: prev.start, cycleEnd: prev.end } });
         if (prevBal) {
           const rem = Number(prevBal.remaining || 0);
           const rule = String(c.unusedRule || 'lapse');
-          if (rule === 'carry_forward') {
+          const isCarryForward = !!c.carryForward;
+
+          if (isCarryForward || rule === 'carry_forward') {
             const cap = c.carryLimitDays === null || c.carryLimitDays === undefined ? rem : Math.min(rem, Number(c.carryLimitDays));
             carry = cap;
           } else if (rule === 'encash') {
@@ -7256,6 +7348,7 @@ router.post('/leave/allocate', async (req, res) => {
           used: 0,
           encashed: encash,
           remaining,
+          orgAccountId: a.template?.orgAccountId || null
         });
         allocatedCount += 1;
       }
@@ -7296,6 +7389,7 @@ router.post('/leave/templates', async (req, res) => {
           unusedRule: ['lapse', 'carry_forward', 'encash'].includes(String(c.unusedRule)) ? String(c.unusedRule) : 'lapse',
           carryLimitDays: c.carryLimitDays === undefined || c.carryLimitDays === null || c.carryLimitDays === '' ? null : Number(c.carryLimitDays),
           encashLimitDays: c.encashLimitDays === undefined || c.encashLimitDays === null || c.encashLimitDays === '' ? null : Number(c.encashLimitDays),
+          carryForward: !!(c.carryForward ?? c.carry_forward),
         });
       }
     }
@@ -7344,6 +7438,7 @@ router.post('/leave/templates/:id/categories-bulk', async (req, res) => {
         unusedRule: ['lapse', 'carry_forward', 'encash'].includes(String(c.unusedRule)) ? String(c.unusedRule) : 'lapse',
         carryLimitDays: c.carryLimitDays === undefined || c.carryLimitDays === null || c.carryLimitDays === '' ? null : Number(c.carryLimitDays),
         encashLimitDays: c.encashLimitDays === undefined || c.encashLimitDays === null || c.encashLimitDays === '' ? null : Number(c.encashLimitDays),
+        carryForward: !!(c.carryForward ?? c.carry_forward),
       });
     }
     const out = await LeaveTemplate.findByPk(id, { include: [{ model: LeaveTemplateCategory, as: 'categories' }] });
@@ -8701,9 +8796,12 @@ router.get('/staff-salary-list', async (req, res) => {
 
     const staff = await User.findAll({
       where: { role: 'staff', orgAccountId: orgId },
-      include: [{ model: StaffProfile, as: 'profile' }],
+      include: [
+        { model: StaffProfile, as: 'profile' },
+        { model: SalaryTemplate, as: 'salaryTemplate' }
+      ],
       attributes: [
-        'id', 'phone', 'grossSalary', 'netSalary', 'salaryValues',
+        'id', 'phone', 'grossSalary', 'netSalary', 'salaryValues', 'salaryTemplateId',
         'basicSalary', 'hra', 'da', 'specialAllowance', 'conveyanceAllowance',
         'medicalAllowance', 'telephoneAllowance', 'otherAllowances',
         'pfDeduction', 'esiDeduction', 'professionalTax', 'tdsDeduction', 'otherDeductions'
@@ -8734,33 +8832,68 @@ router.get('/staff-salary-list', async (req, res) => {
           }
         };
 
-        if (Number(u.basicSalary) > 0) addIfNew(earnings, 'basic_salary', u.basicSalary, ['basic', 'basicpay']);
-        if (Number(u.hra) > 0) addIfNew(earnings, 'hra', u.hra);
-        if (Number(u.da) > 0) addIfNew(earnings, 'da', u.da);
-        if (Number(u.specialAllowance) > 0) addIfNew(earnings, 'special_allowance', u.specialAllowance, ['special']);
-        if (Number(u.conveyanceAllowance) > 0) addIfNew(earnings, 'conveyance', u.conveyanceAllowance);
-        if (Number(u.medicalAllowance) > 0) addIfNew(earnings, 'medical', u.medicalAllowance);
-        if (Number(u.telephoneAllowance) > 0) addIfNew(earnings, 'telephone', u.telephoneAllowance);
-        if (Number(u.otherAllowances) > 0) addIfNew(earnings, 'other_earnings', u.otherAllowances, ['other']);
+        const getVal = (v1, v2, fallback) => {
+          const n = Number(v1 ?? v2);
+          return Number.isFinite(n) && n !== 0 ? n : Number(fallback || 0);
+        };
 
-        if (Number(u.pfDeduction) > 0) addIfNew(deductions, 'pf', u.pfDeduction, ['provident fund', 'epf']);
-        if (Number(u.esiDeduction) > 0) addIfNew(deductions, 'esi', u.esiDeduction, ['esic']);
-        if (Number(u.professionalTax) > 0) addIfNew(deductions, 'professional_tax', u.professionalTax, ['pt']);
-        if (Number(u.tdsDeduction) > 0) addIfNew(deductions, 'tds', u.tdsDeduction);
-        if (Number(u.otherDeductions) > 0) addIfNew(deductions, 'other_deductions', u.otherDeductions, ['other']);
+        const finalEarnings = {
+          ...vals.earnings,
+          basic_salary: getVal(vals.earnings?.BASIC_SALARY, vals.earnings?.basic_salary, u.basicSalary),
+          hra: getVal(vals.earnings?.HRA, vals.earnings?.hra, u.hra),
+          da: getVal(vals.earnings?.DA, vals.earnings?.da, u.da),
+          special_allowance: getVal(vals.earnings?.SPECIAL_ALLOWANCE, vals.earnings?.special_allowance, u.specialAllowance),
+        };
+
+        const finalDeductions = {
+          ...vals.deductions,
+          provident_fund: getVal(vals.deductions?.PROVIDENT_FUND_EMPLOYEE, vals.deductions?.provident_fund, u.pfDeduction),
+          esi: getVal(vals.deductions?.ESI_EMPLOYEE, vals.deductions?.esi, u.esiDeduction),
+          professional_tax: getVal(vals.deductions?.['PROFESSIONAL TAX'], vals.deductions?.professional_tax, u.professionalTax),
+        };
+
+        // Rule-based fallback if template exists and values are 0
+        if (u.salaryTemplate) {
+          const tE = u.salaryTemplate.earnings ? (typeof u.salaryTemplate.earnings === 'string' ? JSON.parse(u.salaryTemplate.earnings) : u.salaryTemplate.earnings) : [];
+          const tD = u.salaryTemplate.deductions ? (typeof u.salaryTemplate.deductions === 'string' ? JSON.parse(u.salaryTemplate.deductions) : u.salaryTemplate.deductions) : [];
+
+          const getRule = (key) => (Array.isArray(tD) ? tD : []).find(d => d.key === key);
+
+          if (finalDeductions.provident_fund === 0) {
+            const pfRule = getRule('PROVIDENT_FUND_EMPLOYEE');
+            if (pfRule && pfRule.type === 'percent' && (pfRule.meta?.basedOn === 'BASIC SALARY' || pfRule.meta?.basedOn === 'BASIC_SALARY')) {
+              finalDeductions.provident_fund = Math.round(finalEarnings.basic_salary * (Number(pfRule.valueNumber || 0) / 100));
+            }
+          }
+          if (finalDeductions.esi === 0) {
+            const esiRule = getRule('ESI_EMPLOYEE');
+            if (esiRule && esiRule.type === 'percent' && (esiRule.meta?.basedOn === 'TOTAL EARNINGS' || esiRule.meta?.basedOn === 'TOTAL_EARNINGS')) {
+              const currentGross = Object.values(finalEarnings).reduce((s, v) => s + (Number(v) || 0), 0);
+              finalDeductions.esi = Math.round(currentGross * (Number(esiRule.valueNumber || 0) / 100));
+            }
+          }
+        }
+
+        const grossSalary = Object.values(finalEarnings).reduce((s, v) => s + (Number(v) || 0), 0) +
+          Object.values(vals.incentives || {}).reduce((s, v) => s + (Number(v) || 0), 0);
+        const totalDeductions = Object.values(finalDeductions).reduce((s, v) => s + (Number(v) || 0), 0);
+        const netSalary = grossSalary - totalDeductions;
 
         return {
           id: u.id,
-          name: u.profile?.name || `Staff ${u.id}`,
-          staffId: u.profile?.staffId || null,
+          name: u.profile?.name || u.name || '-',
+          staffId: u.profile?.staffId || u.id,
           phone: u.phone,
-          department: u.profile?.department || null,
-          grossSalary: u.grossSalary,
-          netSalary: u.netSalary,
+          department: u.profile?.department || '-',
+          designation: u.profile?.designation || '-',
+          grossSalary: grossSalary,
+          totalEarnings: grossSalary, // Fallback for some UI parts
+          totalDeductions: totalDeductions,
+          netSalary: netSalary,
           components: {
-            earnings,
+            earnings: finalEarnings,
             incentives: vals.incentives || {},
-            deductions
+            deductions: finalDeductions
           }
         };
       }),
@@ -8952,9 +9085,9 @@ router.get('/attendance', async (req, res) => {
         {
           model: User,
           as: 'user',
-          attributes: ['id'],
+          attributes: ['id', 'shiftTemplateId'],
           include: [
-            { model: StaffProfile, as: 'profile', attributes: ['name', 'staffId', 'department', 'phone'] },
+            { model: StaffProfile, as: 'profile', attributes: ['name', 'staffId', 'department', 'phone', 'shiftSelection'] },
             {
               model: Role,
               as: 'roles',
@@ -8968,6 +9101,39 @@ router.get('/attendance', async (req, res) => {
         }
       ]
     });
+
+    let lateTiers = [];
+    let lateRuleActive = false;
+    try {
+      const penaltyRule = await AttendanceAutomationRule.findOne({
+        where: { key: 'late_punchin_penalty', orgAccountId: orgId, active: true }
+      });
+      if (penaltyRule) {
+        let config = penaltyRule.config;
+        if (typeof config === 'string') {
+          try { config = JSON.parse(config); } catch (e) {
+            try { config = JSON.parse(JSON.parse(config)); } catch (__) { config = {}; }
+          }
+        }
+        if (Array.isArray(config.tiers) && config.tiers.length > 0) {
+          lateTiers = config.tiers;
+        } else {
+          lateTiers = [{ minMinutes: Number(config.lateMinutes || 15), maxMinutes: 9999, deduction: Number(config.deduction || 1), frequency: Number(config.threshold || 3) }];
+        }
+        lateRuleActive = penaltyRule.active && config.active !== false;
+      }
+    } catch (_) { }
+
+    const userIds = [...new Set(rows.map(r => r.userId))];
+    const shiftAssignments = await StaffShiftAssignment.findAll({
+      where: { userId: userIds },
+      include: [{ model: ShiftTemplate, as: 'template' }],
+      order: [['effectiveFrom', 'DESC']]
+    });
+
+    const allShiftTemplates = await ShiftTemplate.findAll({ where: { orgAccountId: orgId, active: true } });
+    const shiftTemplateMap = {};
+    allShiftTemplates.forEach(t => { shiftTemplateMap[t.id] = t; });
 
     const toTime = (iso) => {
       if (!iso) return null;
@@ -8983,6 +9149,38 @@ router.get('/attendance', async (req, res) => {
         if (r.punchedInAt) {
           if (r.punchedInAt && r.punchedOutAt) status = 'present';
           else if (r.punchedInAt || r.punchedOutAt) status = r.punchedOutAt ? 'half_day' : 'present';
+        }
+      }
+
+      let isLate = false;
+      let latePenaltyText = null;
+
+      if (lateRuleActive && r.punchedInAt && (status === 'present' || status === 'half_day' || status === 'overtime')) {
+        const dayShiftAsg = shiftAssignments.find(asg => asg.userId === r.userId && r.date >= asg.effectiveFrom && (!asg.effectiveTo || r.date <= asg.effectiveTo));
+        let shiftTpl = dayShiftAsg?.template || (r.user?.shiftTemplateId ? shiftTemplateMap[r.user.shiftTemplateId] : null);
+        if (!shiftTpl && r.user?.profile?.shiftSelection) {
+          shiftTpl = shiftTemplateMap[Number(r.user.profile.shiftSelection)];
+        }
+
+        if (shiftTpl?.startTime) {
+          const punchIn = new Date(r.punchedInAt);
+          const istDate = new Date(punchIn.getTime() + (5.5 * 3600 * 1000));
+          const punchInSec = istDate.getUTCHours() * 3600 + istDate.getUTCMinutes() * 60 + istDate.getUTCSeconds();
+          const [sh, sm, ss] = shiftTpl.startTime.split(':').map(Number);
+          const shiftStartSec = sh * 3600 + sm * 60 + (ss || 0);
+
+          if (punchInSec > shiftStartSec) {
+            const diffMin = Math.floor((punchInSec - shiftStartSec) / 60);
+            for (let i = 0; i < lateTiers.length; i++) {
+              const t = lateTiers[i];
+              if (diffMin >= Number(t.minMinutes) && diffMin <= Number(t.maxMinutes)) {
+                isLate = true;
+                const freq = Number(t.frequency);
+                latePenaltyText = freq === 1 ? `-${t.deduction} Day (${diffMin} min late)` : `Counts towards ${t.deduction} Day penalty (${diffMin} min late)`;
+                break;
+              }
+            }
+          }
         }
       }
 
@@ -9008,6 +9206,8 @@ router.get('/attendance', async (req, res) => {
         breakMinutes: Math.round((r.breakTotalSeconds || 0) / 60),
 
         status,
+        isLate,
+        latePenaltyText,
 
         user: {
           name: r.user?.profile?.name || null,
@@ -9997,15 +10197,22 @@ router.post('/attendance', async (req, res) => {
         if (Number.isFinite(startAfter) && startAfter > 0 && payload.punchedInAt && payload.punchedOutAt) {
           const diffMin = Math.floor((payload.punchedOutAt - payload.punchedInAt) / 60000);
           if (diffMin > startAfter) otMin = diffMin - startAfter;
+          else otMin = 0;
         }
       }
       if (otMin != null) {
         payload.overtimeMinutes = otMin;
-        if (otMin > 0 && status !== 'half_day' && status !== 'leave' && status !== 'absent') payload.status = 'overtime';
+        if (otMin > 0 && status !== 'half_day' && status !== 'leave' && status !== 'absent') {
+          payload.status = 'overtime';
+        } else {
+          payload.overtimeMinutes = 0;
+        }
       } else {
         const provided = req.body?.overtimeMinutes;
         if (status === 'overtime' && Number.isFinite(Number(provided)) && Number(provided) >= 0) {
           payload.overtimeMinutes = Number(provided);
+        } else {
+          payload.overtimeMinutes = 0;
         }
       }
     } catch (_) { /* ignore */ }
@@ -10085,15 +10292,22 @@ router.post('/attendance/bulk', async (req, res) => {
           if (Number.isFinite(startAfter) && startAfter > 0 && payload.punchedInAt && payload.punchedOutAt) {
             const diffMin = Math.floor((payload.punchedOutAt - payload.punchedInAt) / 60000);
             if (diffMin > startAfter) otMin = diffMin - startAfter;
+            else otMin = 0;
           }
         }
         if (otMin != null) {
           payload.overtimeMinutes = otMin;
-          if (otMin > 0 && payload.status !== 'half_day' && payload.status !== 'leave' && payload.status !== 'absent') payload.status = 'overtime';
+          if (otMin > 0 && payload.status !== 'half_day' && payload.status !== 'leave' && payload.status !== 'absent') {
+            payload.status = 'overtime';
+          } else {
+            payload.overtimeMinutes = 0;
+          }
         } else {
           const provided = Array.isArray(body.rows) ? (body.rows.find(r => (r.userId === uid || r.userId === Number(uid)))?.overtimeMinutes) : body.overtimeMinutes;
           if (payload.status === 'overtime' && Number.isFinite(Number(provided)) && Number(provided) >= 0) {
             payload.overtimeMinutes = Number(provided);
+          } else {
+            payload.overtimeMinutes = 0;
           }
         }
       } catch (_) { /* ignore */ }
@@ -10460,41 +10674,56 @@ router.post('/staff', requireRole(['admin', 'staff']), async (req, res) => {
 
     // Helper to map request keys to User model attributes
 
-    const toUserAttr = (key) => ({
+    const toUserAttr = (key) => {
+      const cleanKey = String(key || '').trim().toUpperCase();
+      const map = {
+        // earnings
+        BASIC_SALARY: 'basicSalary',
+        HRA: 'hra',
+        DA: 'da',
+        SPECIAL_ALLOWANCE: 'specialAllowance',
+        CONVEYANCE_ALLOWANCE: 'conveyanceAllowance',
+        MEDICAL_ALLOWANCE: 'medicalAllowance',
+        TELEPHONE_ALLOWANCE: 'telephoneAllowance',
+        OTHER_ALLOWANCES: 'otherAllowances',
+        TRAVEL_ALLOWANCE: 'otherAllowances',
+        BONUS: 'bonus',
+        OVERTIME: 'overtime',
 
-      // earnings
+        // deductions
+        PROVIDENT_FUND: 'pfDeduction',
+        PROVIDENT_FUND_EMPLOYEE: 'pfDeduction',
+        ESI: 'esiDeduction',
+        ESI_EMPLOYEE: 'esiDeduction',
+        PROFESSIONAL_TAX: 'professionalTax',
+        'PROFESSIONAL TAX': 'professionalTax',
+        INCOME_TAX: 'tdsDeduction',
+        'INCOME TAX': 'tdsDeduction',
+        TDS: 'tdsDeduction',
+        LOAN_DEDUCTION: 'otherDeductions',
+        OTHER_DEDUCTIONS: 'otherDeductions',
+      };
 
-      basic_salary: 'basicSalary',
+      if (map[cleanKey]) return map[cleanKey];
 
-      hra: 'hra',
-
-      da: 'da',
-
-      special_allowance: 'specialAllowance',
-
-      conveyance_allowance: 'conveyanceAllowance',
-
-      medical_allowance: 'medicalAllowance',
-
-      telephone_allowance: 'telephoneAllowance',
-
-      other_allowances: 'otherAllowances',
-
-      // deductions
-
-      provident_fund: 'pfDeduction',
-
-      esi: 'esiDeduction',
-
-      professional_tax: 'professionalTax',
-
-      income_tax: 'tdsDeduction',
-
-      loan_deduction: 'otherDeductions',
-
-      other_deductions: 'otherDeductions',
-
-    })[key];
+      // Fallback to snake_case mapping for backward compatibility
+      return {
+        basic_salary: 'basicSalary',
+        hra: 'hra',
+        da: 'da',
+        special_allowance: 'specialAllowance',
+        conveyance_allowance: 'conveyanceAllowance',
+        medical_allowance: 'medicalAllowance',
+        telephone_allowance: 'telephoneAllowance',
+        other_allowances: 'otherAllowances',
+        provident_fund: 'pfDeduction',
+        esi: 'esiDeduction',
+        professional_tax: 'professionalTax',
+        income_tax: 'tdsDeduction',
+        loan_deduction: 'otherDeductions',
+        other_deductions: 'otherDeductions',
+      }[key];
+    };
 
 
 
@@ -10954,10 +11183,135 @@ router.post('/staff', requireRole(['admin', 'staff']), async (req, res) => {
 
 });
 
+// / Bulk refresh all staff salary and profile context
+router.put('/staff/bulk-refresh', requireRole(['admin']), async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
+
+    const staffList = await User.findAll({
+      where: { orgAccountId: orgId, role: 'staff' },
+      include: [{ model: StaffProfile, as: 'profile' }]
+    });
+
+    let updatedCount = 0;
+    const errors = [];
+
+    const toUserAttr = (key) => {
+      const cleanKey = String(key || '').trim().toUpperCase();
+      const map = {
+        BASIC_SALARY: 'basicSalary',
+        HRA: 'hra',
+        DA: 'da',
+        SPECIAL_ALLOWANCE: 'specialAllowance',
+        CONVEYANCE_ALLOWANCE: 'conveyanceAllowance',
+        MEDICAL_ALLOWANCE: 'medicalAllowance',
+        TELEPHONE_ALLOWANCE: 'telephoneAllowance',
+        OTHER_ALLOWANCES: 'otherAllowances',
+        TRAVEL_ALLOWANCE: 'otherAllowances',
+        PROVIDENT_FUND: 'pfDeduction',
+        PROVIDENT_FUND_EMPLOYEE: 'pfDeduction',
+        ESI: 'esiDeduction',
+        ESI_EMPLOYEE: 'esiDeduction',
+        PROFESSIONAL_TAX: 'professionalTax',
+        'PROFESSIONAL TAX': 'professionalTax',
+        INCOME_TAX: 'tdsDeduction',
+        'INCOME TAX': 'tdsDeduction',
+        TDS: 'tdsDeduction',
+        LOAN_DEDUCTION: 'otherDeductions',
+        OTHER_DEDUCTIONS: 'otherDeductions',
+      };
+      if (map[cleanKey]) return map[cleanKey];
+      const directMap = {
+        basic_salary: 'basicSalary',
+        hra: 'hra',
+        da: 'da',
+        special_allowance: 'specialAllowance',
+        conveyance_allowance: 'conveyanceAllowance',
+        medical_allowance: 'medicalAllowance',
+        telephone_allowance: 'telephoneAllowance',
+        other_allowances: 'otherAllowances',
+        provident_fund: 'pfDeduction',
+        esi: 'esiDeduction',
+        professional_tax: 'professionalTax',
+        income_tax: 'tdsDeduction',
+        loan_deduction: 'otherDeductions',
+        other_deductions: 'otherDeductions',
+      };
+      return directMap[key];
+    };
+
+    const toNum = (v) => {
+      if (v === undefined || v === null || v === '') return 0;
+      const n = parseFloat(v);
+      return isNaN(n) ? 0 : n;
+    };
+
+    for (const staff of staffList) {
+      try {
+        const patchUser = {};
+
+        // 1. Sync org_account_id in profile if missing (User request)
+        if (staff.profile && (staff.profile.orgAccountId === null || staff.profile.orgAccountId === undefined || staff.profile.orgAccountId === 0)) {
+          await staff.profile.update({ orgAccountId: orgId });
+        }
+
+        // 2. Refresh salary columns
+        if (staff.salaryValues && (staff.salaryValues.earnings || staff.salaryValues.deductions)) {
+          const ev = staff.salaryValues.earnings || {};
+          const dv = staff.salaryValues.deductions || {};
+
+          let totalE = 0;
+          ['basic_salary', 'hra', 'da', 'special_allowance', 'conveyance_allowance', 'medical_allowance', 'telephone_allowance', 'other_allowances'].forEach(k => {
+            const attr = toUserAttr(k);
+            if (ev[k] !== undefined && attr) patchUser[attr] = toNum(ev[k]);
+            if (attr && patchUser[attr] !== undefined) totalE += toNum(patchUser[attr]);
+            else if (attr && staff[attr] !== undefined) totalE += toNum(staff[attr]);
+          });
+
+          let totalD = 0;
+          ['provident_fund', 'esi', 'professional_tax', 'income_tax', 'loan_deduction', 'other_deductions'].forEach(k => {
+            const attr = toUserAttr(k);
+            if (dv[k] !== undefined && attr) patchUser[attr] = toNum(dv[k]);
+            if (attr && patchUser[attr] !== undefined) totalD += toNum(patchUser[attr]);
+            else if (attr && staff[attr] !== undefined) totalD += toNum(staff[attr]);
+          });
+
+          patchUser.totalEarnings = totalE;
+          patchUser.totalDeductions = totalD;
+          patchUser.grossSalary = totalE + (toNum(staff.totalIncentives));
+          patchUser.netSalary = patchUser.grossSalary - totalD;
+          patchUser.salaryLastCalculated = new Date();
+          if (ev.basic_salary !== undefined) patchUser.basicSalary = toNum(ev.basic_salary);
+
+          await staff.update(patchUser);
+        } else if (staff.salaryTemplateId) {
+          // Fallback to template calculation if JSON is missing but template exists
+          await staff.calculateSalaryFromTemplate({ workingDays: 26, presentDays: 26 });
+        }
+
+        updatedCount++;
+      } catch (err) {
+        errors.push({ id: staff.id, error: err.message });
+      }
+    }
+
+    return res.json({
+      success: true,
+      message: `Successfully synchronized ${updatedCount} staff records.`,
+      updatedCount,
+      errorCount: errors.length,
+      errors: errors.length > 0 ? errors : undefined
+    });
+
+  } catch (error) {
+    console.error('Bulk refresh error:', error);
+    return res.status(500).json({ success: false, message: 'Internal server error' });
+  }
+});
+
 
 
 // Update staff (org-scoped)
-
 router.put('/staff/:id', requireRole(['admin', 'staff']), async (req, res) => {
   try {
     const orgId = requireOrg(req, res); if (!orgId) return;
@@ -11022,22 +11376,48 @@ router.put('/staff/:id', requireRole(['admin', 'staff']), async (req, res) => {
 
     // Handle salary recalculation if values are provided
     if (salaryValues && (salaryValues.earnings || salaryValues.deductions)) {
-      const toUserAttr = (key) => ({
-        basic_salary: 'basicSalary',
-        hra: 'hra',
-        da: 'da',
-        special_allowance: 'specialAllowance',
-        conveyance_allowance: 'conveyanceAllowance',
-        medical_allowance: 'medicalAllowance',
-        telephone_allowance: 'telephoneAllowance',
-        other_allowances: 'otherAllowances',
-        provident_fund: 'pfDeduction',
-        esi: 'esiDeduction',
-        professional_tax: 'professionalTax',
-        income_tax: 'tdsDeduction',
-        loan_deduction: 'otherDeductions',
-        other_deductions: 'otherDeductions',
-      })[key];
+      const toUserAttr = (key) => {
+        const cleanKey = String(key || '').trim().toUpperCase();
+        const map = {
+          BASIC_SALARY: 'basicSalary',
+          HRA: 'hra',
+          DA: 'da',
+          SPECIAL_ALLOWANCE: 'specialAllowance',
+          CONVEYANCE_ALLOWANCE: 'conveyanceAllowance',
+          MEDICAL_ALLOWANCE: 'medicalAllowance',
+          TELEPHONE_ALLOWANCE: 'telephoneAllowance',
+          OTHER_ALLOWANCES: 'otherAllowances',
+          TRAVEL_ALLOWANCE: 'otherAllowances',
+          PROVIDENT_FUND: 'pfDeduction',
+          PROVIDENT_FUND_EMPLOYEE: 'pfDeduction',
+          ESI: 'esiDeduction',
+          ESI_EMPLOYEE: 'esiDeduction',
+          PROFESSIONAL_TAX: 'professionalTax',
+          'PROFESSIONAL TAX': 'professionalTax',
+          INCOME_TAX: 'tdsDeduction',
+          'INCOME TAX': 'tdsDeduction',
+          TDS: 'tdsDeduction',
+          LOAN_DEDUCTION: 'otherDeductions',
+          OTHER_DEDUCTIONS: 'otherDeductions',
+        };
+        if (map[cleanKey]) return map[cleanKey];
+        return {
+          basic_salary: 'basicSalary',
+          hra: 'hra',
+          da: 'da',
+          special_allowance: 'specialAllowance',
+          conveyance_allowance: 'conveyanceAllowance',
+          medical_allowance: 'medicalAllowance',
+          telephone_allowance: 'telephoneAllowance',
+          other_allowances: 'otherAllowances',
+          provident_fund: 'pfDeduction',
+          esi: 'esiDeduction',
+          professional_tax: 'professionalTax',
+          income_tax: 'tdsDeduction',
+          loan_deduction: 'otherDeductions',
+          other_deductions: 'otherDeductions',
+        }[key];
+      };
 
       const ev = salaryValues.earnings || {};
       const dv = salaryValues.deductions || {};
@@ -13556,6 +13936,8 @@ router.delete('/geofence/assign/:id', async (req, res) => {
 
 });
 
+
+
 // Delete all staff (org-scoped)
 router.delete('/staff', requireRole(['admin']), async (req, res) => {
   try {
@@ -15136,7 +15518,27 @@ router.get('/reports/org-leave-balance', async (req, res) => {
 
 
 
-    res.json({ success: true, data: balanceData });
+    console.log(`[Report] Found ${balanceData.length} balances for ${staffList.length} staff members in Org ${orgId}`);
+
+    const formatted = balanceData.map(bal => {
+      const name = bal.user?.profile?.name || bal.user?.staffProfile?.name || bal.user?.phone || 'N/A';
+      console.log(`[Report] Mapping bal ID ${bal.id} to Employee: ${name}`);
+      return {
+        id: bal.id,
+        userId: bal.userId,
+        employeeName: name,
+        employeeId: bal.user?.phone || 'N/A',
+        department: bal.user?.profile?.department || 'N/A',
+        categoryKey: bal.categoryKey,
+        allocated: bal.allocated,
+        used: bal.used,
+        encashed: bal.encashed,
+        remaining: bal.remaining,
+        user: bal.user
+      };
+    });
+
+    res.json({ success: true, data: formatted });
 
   } catch (error) {
 
@@ -15441,7 +15843,7 @@ router.get('/reports/org-attendance-matrix', async (req, res) => {
     });
 
     // Fetch Late Penalty Rule
-    let lateThreshold = 3, lateGrace = 15;
+    let lateTiers = [];
     let lateRuleActive = false;
     try {
       const penaltyRule = await AttendanceAutomationRule.findOne({
@@ -15454,8 +15856,11 @@ router.get('/reports/org-attendance-matrix', async (req, res) => {
             try { config = JSON.parse(JSON.parse(config)); } catch (__) { config = {}; }
           }
         }
-        lateThreshold = Number(config.threshold || 3);
-        lateGrace = Number(config.lateMinutes || 15);
+        if (Array.isArray(config.tiers) && config.tiers.length > 0) {
+          lateTiers = config.tiers;
+        } else {
+          lateTiers = [{ minMinutes: Number(config.lateMinutes || 15), maxMinutes: 9999, deduction: Number(config.deduction || 1), frequency: Number(config.threshold || 3) }];
+        }
         lateRuleActive = penaltyRule.active && config.active !== false;
       }
     } catch (_) { }
@@ -15510,7 +15915,7 @@ router.get('/reports/org-attendance-matrix', async (req, res) => {
     staffList.forEach(staff => {
       const userWoAsg = woAssignments.filter(a => a.userId === staff.id);
       const userHolAsg = holidayAssignments.filter(a => a.userId === staff.id);
-      let staffLateCount = 0; // Local counter for threshold calculation
+      let staffTierCounts = new Array(lateTiers.length).fill(0);
 
       for (let i = 1; i <= daysInMonth; i++) {
         const d = new Date(startDate.getFullYear(), startDate.getMonth(), i);
@@ -15545,14 +15950,22 @@ router.get('/reports/org-attendance-matrix', async (req, res) => {
                 const [sh, sm, ss] = shiftTpl.startTime.split(':').map(Number);
                 const shiftStartSec = sh * 3600 + sm * 60 + (ss || 0);
 
-                if (punchInSec > (shiftStartSec + lateGrace * 60)) {
-                  staffLateCount++;
-                  summary[staff.id].lateDays += 1;
-                  if (lateThreshold > 0 && staffLateCount % lateThreshold === 0) {
-                    summary[staff.id].penaltyDays += 1;
-                    lateIndicator = ' (Penalty)';
-                  } else {
-                    lateIndicator = ' (L)';
+                if (punchInSec > shiftStartSec) {
+                  const lateMins = Math.floor((punchInSec - shiftStartSec) / 60);
+                  for (let tIdx = 0; tIdx < lateTiers.length; tIdx++) {
+                    const tier = lateTiers[tIdx];
+                    if (lateMins >= Number(tier.minMinutes) && lateMins <= Number(tier.maxMinutes)) {
+                      staffTierCounts[tIdx]++;
+                      summary[staff.id].lateDays += 1;
+                      const freq = Number(tier.frequency);
+                      if (freq > 0 && staffTierCounts[tIdx] % freq === 0) {
+                        summary[staff.id].penaltyDays += Number(tier.deduction);
+                        lateIndicator = ' (Penalty)';
+                      } else {
+                        lateIndicator = ' (L)';
+                      }
+                      break;
+                    }
                   }
                 }
               }
@@ -19200,18 +19613,20 @@ router.get('/staff/:id/attendance-overview', async (req, res) => {
     };
 
     // Late Penalty Logic
-    let lateThreshold = 3, lateGrace = 15, lateDeduction = 1;
+    let lateTiers = [];
     let lateRuleActive = false;
     if (automationRule) {
       let cfg = automationRule.config;
       if (typeof cfg === 'string') { try { cfg = JSON.parse(cfg); } catch (e) { try { cfg = JSON.parse(JSON.parse(cfg)); } catch (__) { cfg = {}; } } }
       lateRuleActive = cfg.active !== false;
-      lateThreshold = Number(cfg.threshold || 3);
-      lateGrace = Number(cfg.lateMinutes || 15);
-      lateDeduction = Number(cfg.deduction || 1);
+      if (Array.isArray(cfg.tiers) && cfg.tiers.length > 0) {
+        lateTiers = cfg.tiers;
+      } else {
+        lateTiers = [{ minMinutes: Number(cfg.lateMinutes || 15), maxMinutes: 9999, deduction: Number(cfg.deduction || 1), frequency: Number(cfg.threshold || 3) }];
+      }
     }
 
-    let lateCount = 0;
+    let tierCounts = new Array(lateTiers.length).fill(0);
     const shiftStart = shiftAsg?.template?.startTime;
 
     // 3. Process each day
@@ -19267,10 +19682,20 @@ router.get('/staff/:id/attendance-overview', async (req, res) => {
           const istDate = new Date(punchIn.getTime() + (5.5 * 3600 * 1000));
           const punchInSec = istDate.getUTCHours() * 3600 + istDate.getUTCMinutes() * 60 + istDate.getUTCSeconds();
           const [sh, sm, ss] = shiftStart.split(':').map(Number);
-          const thresholdSec = (sh * 3600 + sm * 60 + (ss || 0)) + (lateGrace * 60);
-          if (punchInSec > thresholdSec) {
-            isLate = true;
-            if (status === 'present' || status === 'half_day' || status === 'overtime') lateCount++;
+          const shiftStartSec = (sh * 3600 + sm * 60 + (ss || 0));
+
+          if (punchInSec > shiftStartSec) {
+            const lateMins = Math.floor((punchInSec - shiftStartSec) / 60);
+            for (let tIdx = 0; tIdx < lateTiers.length; tIdx++) {
+              const t = lateTiers[tIdx];
+              if (lateMins >= Number(t.minMinutes) && lateMins <= Number(t.maxMinutes)) {
+                isLate = true;
+                if (status === 'present' || status === 'half_day' || status === 'overtime') {
+                  tierCounts[tIdx]++;
+                }
+                break;
+              }
+            }
           }
         }
         if (isLate) stats.late++;
@@ -19296,8 +19721,13 @@ router.get('/staff/:id/attendance-overview', async (req, res) => {
       dailyData.push({ date: dateStr, day: dayjs(jsDate).format('ddd'), status, ...info });
     }
 
-    if (lateRuleActive && lateThreshold > 0 && lateCount >= lateThreshold) {
-      stats.latePenaltyDays = Math.floor(lateCount / lateThreshold) * lateDeduction;
+    if (lateRuleActive) {
+      for (let i = 0; i < lateTiers.length; i++) {
+        const t = lateTiers[i];
+        if (t.frequency > 0 && tierCounts[i] > 0) {
+          stats.latePenaltyDays += Math.floor(tierCounts[i] / t.frequency) * Number(t.deduction);
+        }
+      }
     }
 
     res.json({ success: true, month, stats, dailyData });

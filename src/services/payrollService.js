@@ -8,8 +8,17 @@ const {
   Attendance, LeaveRequest, WeeklyOffTemplate, StaffWeeklyOffAssignment,
   HolidayTemplate, HolidayDate, StaffHolidayAssignment, PayrollCycle, PayrollLine,
   AppSetting, StaffLoan, OrgAccount, StaffSalesIncentive, SalesIncentiveRule,
-  AttendanceAutomationRule
+  AttendanceAutomationRule, LeaveEncashment
 } = require('../models');
+
+const categoryNames = {
+  'cl': 'Casual Leave',
+  'sl': 'Sick Leave',
+  'el': 'Earned Leave',
+  'ml': 'Maternity Leave',
+  'pt': 'Paternity Leave',
+  'unpaid': 'Unpaid Leave'
+};
 
 function getMonthRange(monthKey) {
   const [yy, mm] = String(monthKey || '').split('-').map(Number);
@@ -42,7 +51,8 @@ async function calculateSalary(userId, monthKey) {
   const u = await User.findByPk(userId, {
     include: [
       { association: 'profile' },
-      { association: 'orgAccount', required: false }
+      { association: 'orgAccount', required: false },
+      { model: SalaryTemplate, as: 'salaryTemplate' }
     ]
   });
   // If association not defined in User.js, fetch separately
@@ -212,9 +222,25 @@ async function calculateSalary(userId, monthKey) {
   let earnings = {}, incentives = {}, deductions = {};
 
   if (sv && typeof sv === 'object' && (sv.earnings || sv.deductions)) {
-    earnings = (sv.earnings && typeof sv.earnings === 'object') ? sv.earnings : {};
+    const getVal = (v1, v2, fallback) => {
+      const n = Number(v1 ?? v2);
+      return Number.isFinite(n) && n !== 0 ? n : Number(fallback || 0);
+    };
+
+    earnings = {
+      ...(sv.earnings || {}),
+      basic_salary: getVal(sv.earnings?.BASIC_SALARY, sv.earnings?.basic_salary, sd.basicSalary),
+      hra: getVal(sv.earnings?.HRA, sv.earnings?.hra, sd.hra),
+      da: getVal(sv.earnings?.DA, sv.earnings?.da, sd.da),
+      special_allowance: getVal(sv.earnings?.SPECIAL_ALLOWANCE, sv.earnings?.special_allowance, sd.specialAllowance),
+    };
     incentives = (sv.incentives && typeof sv.incentives === 'object') ? sv.incentives : {};
-    deductions = (sv.deductions && typeof sv.deductions === 'object') ? sv.deductions : {};
+    deductions = {
+      ...(sv.deductions || {}),
+      provident_fund: getVal(sv.deductions?.PROVIDENT_FUND_EMPLOYEE, sv.deductions?.provident_fund, sd.pfDeduction),
+      esi: getVal(sv.deductions?.ESI_EMPLOYEE, sv.deductions?.esi, sd.esiDeduction),
+      professional_tax: getVal(sv.deductions?.['PROFESSIONAL TAX'], sv.deductions?.professional_tax, sd.professionalTax),
+    };
   } else {
     // Construct from flat fields
     earnings = {
@@ -234,6 +260,26 @@ async function calculateSalary(userId, monthKey) {
       tds: sd.tdsDeduction,
       other_deductions: sd.otherDeductions,
     };
+  }
+
+  // Smart Deduction Fallback (Rule-based) if stored values are 0
+  if (u.salaryTemplate) {
+    const tD = u.salaryTemplate.deductions ? (typeof u.salaryTemplate.deductions === 'string' ? JSON.parse(u.salaryTemplate.deductions) : u.salaryTemplate.deductions) : [];
+    const getRule = (key) => (Array.isArray(tD) ? tD : []).find(d => d.key === key);
+
+    if (Number(deductions.provident_fund || 0) === 0) {
+      const pfRule = getRule('PROVIDENT_FUND_EMPLOYEE');
+      if (pfRule && pfRule.type === 'percent' && (pfRule.meta?.basedOn === 'BASIC SALARY' || pfRule.meta?.basedOn === 'BASIC_SALARY')) {
+        deductions.provident_fund = Math.round(Number(earnings.basic_salary || 0) * (Number(pfRule.valueNumber || 0) / 100));
+      }
+    }
+    if (Number(deductions.esi || 0) === 0) {
+      const esiRule = getRule('ESI_EMPLOYEE');
+      if (esiRule && esiRule.type === 'percent' && (esiRule.meta?.basedOn === 'TOTAL EARNINGS' || esiRule.meta?.basedOn === 'TOTAL_EARNINGS')) {
+        const currentGross = Object.values(earnings).reduce((s, v) => s + (Number(v) || 0), 0);
+        deductions.esi = Math.round(currentGross * (Number(esiRule.valueNumber || 0) / 100));
+      }
+    }
   }
 
   // Calculate REAL attendance from database
@@ -439,9 +485,19 @@ async function calculateSalary(userId, monthKey) {
 
       const isRuleActive = config.active !== false && penaltyRule.active;
       if (isRuleActive) {
-        const thresholdDays = Number(config.threshold || 3);
-        const deductionPerCycle = Number(config.deduction || 1);
-        const graceMinutes = Number(config.lateMinutes || 15);
+        let tiers = [];
+        if (Array.isArray(config.tiers) && config.tiers.length > 0) {
+          tiers = config.tiers;
+        } else {
+          tiers = [{
+            minMinutes: Number(config.lateMinutes || 15),
+            maxMinutes: 9999,
+            deduction: Number(config.deduction || 1),
+            frequency: Number(config.threshold || 3)
+          }];
+        }
+
+        let tierCounts = new Array(tiers.length).fill(0);
 
         // Fetch detailed attendance for the month
         const detailedAtts = await Attendance.findAll({
@@ -480,20 +536,31 @@ async function calculateSalary(userId, monthKey) {
           if (shiftTpl?.startTime) {
             const [sh, sm, ss] = shiftTpl.startTime.split(':').map(Number);
             const shiftStartSeconds = sh * 3600 + sm * 60 + (ss || 0);
-            const lateThresholdSeconds = shiftStartSeconds + (graceMinutes * 60);
 
             const punchIn = new Date(a.punchedInAt);
             const istDate = new Date(punchIn.getTime() + (5.5 * 3600 * 1000));
             const punchInSeconds = istDate.getUTCHours() * 3600 + istDate.getUTCMinutes() * 60 + istDate.getUTCSeconds();
 
-            if (punchInSeconds > lateThresholdSeconds) {
-              lateCount += 1;
+            if (punchInSeconds > shiftStartSeconds) {
+              const lateMins = Math.floor((punchInSeconds - shiftStartSeconds) / 60);
+
+              for (let i = 0; i < tiers.length; i++) {
+                const t = tiers[i];
+                if (lateMins >= Number(t.minMinutes) && lateMins <= Number(t.maxMinutes)) {
+                  tierCounts[i] += 1;
+                  lateCount += 1;
+                  break;
+                }
+              }
             }
           }
         }
 
-        if (lateCount >= thresholdDays && thresholdDays > 0) {
-          latePenaltyDays = Math.floor(lateCount / thresholdDays) * deductionPerCycle;
+        for (let i = 0; i < tiers.length; i++) {
+          const t = tiers[i];
+          if (t.frequency > 0 && tierCounts[i] > 0) {
+            latePenaltyDays += Math.floor(tierCounts[i] / t.frequency) * Number(t.deduction);
+          }
         }
       }
     }
@@ -508,13 +575,16 @@ async function calculateSalary(userId, monthKey) {
   const loanDeduction = await calculateLoanDeduction();
 
   // Re-construct deductions for live compute to include loan
-  let liveDeductions = {
-    provident_fund: sd.pfDeduction,
-    esi: sd.esiDeduction,
-    professional_tax: sd.professionalTax,
-    income_tax: sd.tdsDeduction,
-    other_deductions: sd.otherDeductions,
-  };
+  // Re-construct deductions for live compute
+  // Use the deductions object which already has merged values from sv and flat columns
+  let liveDeductions = { ...deductions };
+
+  // Ensure basic keys are present and mapped from any aliases
+  if (!liveDeductions.provident_fund && sd.pfDeduction) liveDeductions.provident_fund = sd.pfDeduction;
+  if (!liveDeductions.esi && sd.esiDeduction) liveDeductions.esi = sd.esiDeduction;
+  if (!liveDeductions.professional_tax && sd.professionalTax) liveDeductions.professional_tax = sd.professionalTax;
+  if (!liveDeductions.income_tax && sd.tdsDeduction) liveDeductions.income_tax = sd.tdsDeduction;
+  if (!liveDeductions.other_deductions && sd.otherDeductions) liveDeductions.other_deductions = sd.otherDeductions;
 
   if (loanDeduction > 0) {
     liveDeductions['loan_emi'] = loanDeduction;
@@ -584,6 +654,33 @@ async function calculateSalary(userId, monthKey) {
       finalEarnings[k] = Math.round(Number(finalEarnings[k] || 0) * ratio);
     }
   });
+
+  // FETCH APPROVED LEAVE ENCASHMENTS (Not pro-rated)
+  try {
+    const encashments = await LeaveEncashment.findAll({
+      where: {
+        userId: u.id,
+        status: 'APPROVED',
+        monthKey: monthKey
+      }
+    });
+
+    for (const enc of encashments) {
+      // Calculate amount if not already stored: (Basic + DA) / 30 * days
+      // Or if staff has a specific Rate, use that. For now, we take from flat fields.
+      let amount = Number(enc.amount || 0);
+      if (amount <= 0) {
+        const base = Number(earnings?.basic_salary || sd.basicSalary || 0) + Number(earnings?.da || sd.da || 0);
+        const dailyRate = base / 30; // Standard 30 days month for encashment calculation
+        amount = Math.round(dailyRate * Number(enc.days || 0));
+      }
+      const catName = categoryNames[enc.categoryKey.toLowerCase()] || enc.categoryKey.toUpperCase();
+      const label = `LEAVE_ENCASHMENT: ${catName}`;
+      finalEarnings[label] = (finalEarnings[label] || 0) + amount;
+    }
+  } catch (e) {
+    console.error('Error fetching leave encashment for payroll:', e);
+  }
 
   // Overtime pay
   const overtimeBaseSalary = Number(earnings?.basic_salary || sd.basicSalary || 0) + Number(earnings?.da || sd.da || 0);

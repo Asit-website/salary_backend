@@ -84,6 +84,7 @@ const defineStaffLetter = require('./StaffLetter');
 const defineSalesIncentiveRule = require('./SalesIncentiveRule');
 const defineStaffIncentiveRule = require('./StaffIncentiveRule');
 const defineStaffSalesIncentive = require('./StaffSalesIncentive');
+const defineLeaveEncashment = require('./LeaveEncashment');
 const defineAttendanceAutomationRule = require('./AttendanceAutomationRule');
 
 
@@ -172,6 +173,7 @@ const SalesIncentiveRule = defineSalesIncentiveRule(sequelize);
 const StaffIncentiveRule = defineStaffIncentiveRule(sequelize);
 const StaffSalesIncentive = defineStaffSalesIncentive(sequelize);
 const AttendanceAutomationRule = defineAttendanceAutomationRule(sequelize);
+const LeaveEncashment = defineLeaveEncashment(sequelize);
 
 
 // Leave Template associations (after models are defined)
@@ -490,6 +492,15 @@ PayrollLine.belongsTo(PayrollCycle, { foreignKey: 'cycleId', as: 'cycle' });
 User.hasMany(PayrollLine, { foreignKey: 'userId', as: 'payrollLines' });
 PayrollLine.belongsTo(User, { foreignKey: 'userId', as: 'user' });
 
+// Leave Encashment associations
+User.hasMany(LeaveEncashment, { foreignKey: 'userId', as: 'leaveEncashments' });
+LeaveEncashment.belongsTo(User, { foreignKey: 'userId', as: 'user' });
+User.hasMany(LeaveEncashment, { foreignKey: 'reviewedBy', as: 'reviewedEncashments' });
+LeaveEncashment.belongsTo(User, { foreignKey: 'reviewedBy', as: 'reviewer' });
+OrgAccount.hasMany(LeaveEncashment, { foreignKey: 'orgAccountId', as: 'leaveEncashments' });
+LeaveEncashment.belongsTo(OrgAccount, { foreignKey: 'orgAccountId', as: 'orgAccount' });
+
+
 module.exports = {
   sequelize,
   User,
@@ -573,5 +584,6 @@ module.exports = {
   AssetAssignment,
   AssetMaintenance,
   StaffLoan, LetterTemplate, StaffLetter, SalesIncentiveRule, StaffIncentiveRule, StaffSalesIncentive,
-  AttendanceAutomationRule
+  AttendanceAutomationRule,
+  LeaveEncashment
 };

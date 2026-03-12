@@ -12,6 +12,7 @@ module.exports = (sequelize) => {
       unusedRule: { type: DataTypes.STRING(20), allowNull: false, defaultValue: 'lapse' },
       carryLimitDays: { type: DataTypes.DECIMAL(10, 2), allowNull: true },
       encashLimitDays: { type: DataTypes.DECIMAL(10, 2), allowNull: true },
+      carryForward: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: false },
     },
     { tableName: 'leave_template_categories', underscored: true }
   );
