@@ -19,43 +19,10 @@ const {
   OtpVerify,
   OrderProduct,
   StaffOrderProduct,
+  OrgAccount,
 } = require('../models');
 
 const router = express.Router();
-
-// Minimal SMS sender using the provided HTTP API (same as staff login)
-async function sendSmsViaGateway({ phoneE164, code }) {
-  try {
-    const API_URL = process.env.SMS_API_URL || 'http://182.18.162.128/api/mt/SendSMS';
-    const APIKEY = process.env.SMS_APIKEY || '';
-    const SENDERID = process.env.SMS_SENDERID || 'INDPGS';
-    const ROUTE = process.env.SMS_ROUTE || '08';
-    const CHANNEL = 'Trans';
-    const DCS = '0';
-    const FLASH = '0';
-
-    if (!APIKEY) return { ok: false, reason: 'missing_apikey' };
-
-    // Compose message: keep OTP clearly visible; SMS Autofill works on iOS by oneTimeCode
-    // For Android SMS Retriever API, a hash is needed – not added here to avoid extra deps.
-    const text = `Dear customer, the one time password to reset your password is ${code}. This OTP will expire in 5 minutes. Thinktech Software company`;
-
-    const url = new URL(API_URL);
-    url.searchParams.set('APIKEY', APIKEY);
-    url.searchParams.set('senderid', SENDERID);
-    url.searchParams.set('channel', CHANNEL);
-    url.searchParams.set('DCS', DCS);
-    url.searchParams.set('flashsms', FLASH);
-    url.searchParams.set('number', phoneE164);
-    url.searchParams.set('text', text);
-    url.searchParams.set('route', ROUTE);
-
-    const resp = await fetch(url.toString());
-    return { ok: resp.ok };
-  } catch (e) {
-    return { ok: false, error: String(e) };
-  }
-}
 
 function normalizePhone(phone) {
   const digits = String(phone || '').replace(/[^0-9]/g, '');
@@ -136,7 +103,8 @@ router.post('/send-client-otp', async (req, res) => {
 
     // Send OTP via SMS API using the same function as staff login
     try {
-      const smsResult = await sendSmsViaGateway({ phoneE164: normalizedPhone, code: otp });
+      const smsText = `Dear customer, the one time password to reset your password is ${otp}. This OTP will expire in 5 minutes. Thinktech Software company`;
+      const smsResult = await sendSmsViaGateway({ phoneE164: normalizedPhone, text: smsText });
       console.log('SMS result:', smsResult);
     } catch (smsError) {
       console.error('Failed to send SMS:', smsError);
@@ -314,6 +282,7 @@ router.post('/visit', upload.single('clientSignature'), async (req, res) => {
 router.post('/orders', upload.single('proof'), async (req, res) => {
   try {
     const body = req.body || {};
+    console.log('Create order body:', body); // debug: ensure phone field is present
     const assignedJobId = body.assignedJobId ? Number(body.assignedJobId) : null;
     let clientId = body.clientId ? Number(body.clientId) : null;
 
@@ -343,6 +312,8 @@ router.post('/orders', upload.single('proof'), async (req, res) => {
     const gstAmount = Math.round(netAmount * 0.18);
     const totalAmount = netAmount + gstAmount;
 
+    const phoneNumber = normalizePhone(body.phone);
+
     const order = await Order.create({
       orgAccountId: req.tenantOrgAccountId,
       userId: req.user.id,
@@ -351,6 +322,7 @@ router.post('/orders', upload.single('proof'), async (req, res) => {
       orderDate,
       paymentMethod,
       remarks,
+      phone: phoneNumber || null,
       checkInLat: Number.isFinite(checkInLat) ? checkInLat : null,
       checkInLng: Number.isFinite(checkInLng) ? checkInLng : null,
       checkInAltitude: Number.isFinite(checkInAltitude) ? checkInAltitude : null,
@@ -400,6 +372,41 @@ router.post('/orders', upload.single('proof'), async (req, res) => {
     // Trigger incentive processing
     const salesIncentiveService = require('../services/salesIncentiveService');
     salesIncentiveService.processOrder(order.id).catch(err => console.error('Incentive processing failed:', err));
+
+    // Send SMS to client (use phone entered in order form if available)
+    const requestedPhone = String(body.phone || '').trim();
+    console.log('Order created, checking SMS: client exists?', !!out.client, 'clientPhone?', out.client?.phone, 'formPhone?', requestedPhone, 'orderPhone?', out.phone);
+    try {
+      const phoneToUse = out.phone || requestedPhone || (out.client && out.client.phone ? String(out.client.phone) : '');
+      if (phoneToUse) {
+        const orgAccount = await OrgAccount.findByPk(req.tenantOrgAccountId);
+        if (orgAccount) {
+          const bizName = orgAccount.name || 'Business';
+
+          const d = new Date(out.orderDate || Date.now());
+          const months = ["january", "february", "march", "april", "may", "june", "july", "august", "september", "october", "november", "december"];
+          const day = d.getDate();
+          const m = months[d.getMonth()];
+          const suffix = (day % 10 === 1 && day !== 11) ? 'st' : (day % 10 === 2 && day !== 12) ? 'nd' : (day % 10 === 3 && day !== 13) ? 'rd' : 'th';
+          const dateStr = `${day}${suffix} ${m}`;
+          const cPhone = normalizePhone(phoneToUse);
+
+          // prefer local 10-digit format, but allow 10-12 digits (e.g. 91 prefix)
+          let fullPhone = cPhone;
+          if (fullPhone.length === 10) fullPhone = '91' + fullPhone;
+
+          if (fullPhone.length >= 10) {
+            const smsText = `New Sales Order ${bizName} confirmed for ${dateStr} vetansutra.com ( Powered by Thinktech Software company)`;
+            const smsUrl = `http://182.18.162.128/api/mt/SendSMS?APIKEY=85I1g6L9hEeIntNZgQRrzA&senderid=VETANS&channel=Trans&DCS=0&flashsms=0&number=${fullPhone}&text=${encodeURIComponent(smsText)}&route=08`;
+            console.log(`Sending Order SMS to ${fullPhone}: ${smsText}`);
+            const resp = await fetch(smsUrl);
+            console.log('Order SMS Result:', { ok: resp.ok });
+          }
+        }
+      }
+    } catch (err) {
+      console.error('Failed to send Order SMS:', err);
+    }
 
     return res.json({ success: true, order: out });
   } catch (e) {

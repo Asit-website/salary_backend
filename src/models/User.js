@@ -13,8 +13,8 @@ module.exports = (sequelize) => {
         references: { model: 'org_accounts', key: 'id' },
       },
       phone: { type: DataTypes.STRING(20), allowNull: false, unique: true },
-      passwordHash: { 
-        type: DataTypes.STRING(255), 
+      passwordHash: {
+        type: DataTypes.STRING(255),
         allowNull: false,
         field: 'password_hash'
       },
@@ -42,104 +42,110 @@ module.exports = (sequelize) => {
         field: 'salary_values'
       },
       // Salary calculation fields
-      basicSalary: { 
-        type: DataTypes.DECIMAL(10, 2), 
-        allowNull: true, 
+      basicSalary: {
+        type: DataTypes.DECIMAL(10, 2),
+        allowNull: true,
         defaultValue: 0,
         field: 'basic_salary'
       },
       hra: { type: DataTypes.DECIMAL(10, 2), allowNull: true, defaultValue: 0 },
       da: { type: DataTypes.DECIMAL(10, 2), allowNull: true, defaultValue: 0 },
-      specialAllowance: { 
-        type: DataTypes.DECIMAL(10, 2), 
-        allowNull: true, 
+      specialAllowance: {
+        type: DataTypes.DECIMAL(10, 2),
+        allowNull: true,
         defaultValue: 0,
         field: 'special_allowance'
       },
-      conveyanceAllowance: { 
-        type: DataTypes.DECIMAL(10, 2), 
-        allowNull: true, 
+      conveyanceAllowance: {
+        type: DataTypes.DECIMAL(10, 2),
+        allowNull: true,
         defaultValue: 0,
         field: 'conveyance_allowance'
       },
-      medicalAllowance: { 
-        type: DataTypes.DECIMAL(10, 2), 
-        allowNull: true, 
+      medicalAllowance: {
+        type: DataTypes.DECIMAL(10, 2),
+        allowNull: true,
         defaultValue: 0,
         field: 'medical_allowance'
       },
-      telephoneAllowance: { 
-        type: DataTypes.DECIMAL(10, 2), 
-        allowNull: true, 
+      telephoneAllowance: {
+        type: DataTypes.DECIMAL(10, 2),
+        allowNull: true,
         defaultValue: 0,
         field: 'telephone_allowance'
       },
-      otherAllowances: { 
-        type: DataTypes.DECIMAL(10, 2), 
-        allowNull: true, 
+      otherAllowances: {
+        type: DataTypes.DECIMAL(10, 2),
+        allowNull: true,
         defaultValue: 0,
         field: 'other_allowances'
       },
-      totalEarnings: { 
-        type: DataTypes.DECIMAL(10, 2), 
-        allowNull: true, 
+      totalEarnings: {
+        type: DataTypes.DECIMAL(10, 2),
+        allowNull: true,
         defaultValue: 0,
         field: 'total_earnings'
       },
-      pfDeduction: { 
-        type: DataTypes.DECIMAL(10, 2), 
-        allowNull: true, 
+      pfDeduction: {
+        type: DataTypes.DECIMAL(10, 2),
+        allowNull: true,
         defaultValue: 0,
         field: 'pf_deduction'
       },
-      esiDeduction: { 
-        type: DataTypes.DECIMAL(10, 2), 
-        allowNull: true, 
+      esiDeduction: {
+        type: DataTypes.DECIMAL(10, 2),
+        allowNull: true,
         defaultValue: 0,
         field: 'esi_deduction'
       },
-      professionalTax: { 
-        type: DataTypes.DECIMAL(10, 2), 
-        allowNull: true, 
+      professionalTax: {
+        type: DataTypes.DECIMAL(10, 2),
+        allowNull: true,
         defaultValue: 0,
         field: 'professional_tax'
       },
-      tdsDeduction: { 
-        type: DataTypes.DECIMAL(10, 2), 
-        allowNull: true, 
+      tdsDeduction: {
+        type: DataTypes.DECIMAL(10, 2),
+        allowNull: true,
         defaultValue: 0,
         field: 'tds_deduction'
       },
-      otherDeductions: { 
-        type: DataTypes.DECIMAL(10, 2), 
-        allowNull: true, 
+      otherDeductions: {
+        type: DataTypes.DECIMAL(10, 2),
+        allowNull: true,
         defaultValue: 0,
         field: 'other_deductions'
       },
-      totalDeductions: { 
-        type: DataTypes.DECIMAL(10, 2), 
-        allowNull: true, 
+      totalDeductions: {
+        type: DataTypes.DECIMAL(10, 2),
+        allowNull: true,
         defaultValue: 0,
         field: 'total_deductions'
       },
-      grossSalary: { 
-        type: DataTypes.DECIMAL(10, 2), 
-        allowNull: true, 
+      grossSalary: {
+        type: DataTypes.DECIMAL(10, 2),
+        allowNull: true,
         defaultValue: 0,
         field: 'gross_salary'
       },
-      netSalary: { 
-        type: DataTypes.DECIMAL(10, 2), 
-        allowNull: true, 
+      netSalary: {
+        type: DataTypes.DECIMAL(10, 2),
+        allowNull: true,
         defaultValue: 0,
         field: 'net_salary'
       },
-      salaryLastCalculated: { 
-        type: DataTypes.DATE, 
+      salaryLastCalculated: {
+        type: DataTypes.DATE,
         allowNull: true,
         field: 'salary_last_calculated'
       },
       active: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: true },
+      isTaskObserver: {
+        type: DataTypes.BOOLEAN,
+        allowNull: false,
+        defaultValue: false,
+        field: 'is_task_observer'
+      },
     },
     {
       tableName: 'users',
@@ -147,30 +153,30 @@ module.exports = (sequelize) => {
     }
   );
 
-  User.associate = function(models) {
+  User.associate = function (models) {
     User.belongsTo(models.SalaryTemplate, { foreignKey: 'salaryTemplateId', as: 'salaryTemplate' });
     User.belongsTo(models.ShiftTemplate, { foreignKey: 'shiftTemplateId', as: 'shiftTemplate' });
   };
 
   // Instance method to calculate salary based on template
-  User.prototype.calculateSalaryFromTemplate = async function(attendanceData = {}) {
+  User.prototype.calculateSalaryFromTemplate = async function (attendanceData = {}) {
     if (!this.salaryTemplateId) {
       throw new Error('No salary template assigned');
     }
 
     const { SalaryTemplate } = require('./index');
     const template = await SalaryTemplate.findByPk(this.salaryTemplateId);
-    
+
     if (!template) {
       throw new Error('Salary template not found');
     }
 
     const { workingDays = 26, presentDays = 26 } = attendanceData;
-    
+
     // Calculate earnings
     let earnings = {};
     let totalEarnings = 0;
-    
+
     const earningsData = typeof template.earnings === 'string' ? JSON.parse(template.earnings) : template.earnings;
     earningsData.forEach(item => {
       let value = 0;
@@ -187,7 +193,7 @@ module.exports = (sequelize) => {
     // Calculate incentives
     let incentives = {};
     let totalIncentives = 0;
-    
+
     const incentivesData = typeof template.incentives === 'string' ? JSON.parse(template.incentives) : template.incentives;
     incentivesData.forEach(item => {
       let value = 0;
@@ -204,15 +210,15 @@ module.exports = (sequelize) => {
     // Calculate deductions
     let deductions = {};
     let totalDeductions = 0;
-    
+
     const deductionsData = typeof template.deductions === 'string' ? JSON.parse(template.deductions) : template.deductions;
     deductionsData.forEach(item => {
       let value = 0;
       if (item.type === 'fixed') {
         value = item.valueNumber;
       } else if (item.type === 'percent') {
-        const baseValue = item.meta?.basedOn === 'gross_salary' ? 
-          totalEarnings + totalIncentives : 
+        const baseValue = item.meta?.basedOn === 'gross_salary' ?
+          totalEarnings + totalIncentives :
           earnings[item.meta?.basedOn] || 0;
         value = (baseValue * item.valueNumber) / 100;
       }

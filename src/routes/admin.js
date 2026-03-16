@@ -19,7 +19,7 @@ function getCellValue(cell) {
 
 
 
-const { sequelize, User, StaffProfile, Role, Permission, AppSetting, DocumentType, ShiftTemplate, ShiftBreak, ShiftRotationalSlot, StaffShiftAssignment, SalaryAccess, AttendanceTemplate, StaffAttendanceAssignment, SalaryTemplate, StaffSalaryAssignment, Site, WorkUnit, Route, RouteStop, StaffRouteAssignment, SiteCheckpoint, PatrolLog, LeaveTemplate, LeaveTemplateCategory, StaffLeaveAssignment, LeaveBalance, LeaveRequest, AIAnomaly, ReliabilityScore, SalaryForecast, Attendance, Client, AssignedJob, SalesTarget, HolidayTemplate, HolidayDate, StaffHolidayAssignment, WeeklyOffTemplate, StaffWeeklyOffAssignment, Subscription, Plan, SalesVisit, Asset, AssetAssignment, AssetMaintenance, StaffLoan, OrderProduct, StaffOrderProduct, AttendanceAutomationRule, StaffGeofenceAssignment, GeofenceTemplate, GeofenceSite, DeviceInfo, Appraisal, Rating } = require('../models');
+const { sequelize, User, StaffProfile, Role, Permission, AppSetting, DocumentType, ShiftTemplate, ShiftBreak, ShiftRotationalSlot, StaffShiftAssignment, SalaryAccess, AttendanceTemplate, StaffAttendanceAssignment, SalaryTemplate, StaffSalaryAssignment, Site, WorkUnit, Route, RouteStop, StaffRouteAssignment, SiteCheckpoint, PatrolLog, LeaveTemplate, LeaveTemplateCategory, StaffLeaveAssignment, LeaveBalance, LeaveRequest, AIAnomaly, ReliabilityScore, SalaryForecast, Attendance, Client, AssignedJob, SalesTarget, HolidayTemplate, HolidayDate, StaffHolidayAssignment, WeeklyOffTemplate, StaffWeeklyOffAssignment, Subscription, Plan, SalesVisit, Asset, AssetAssignment, AssetMaintenance, StaffLoan, OrderProduct, StaffOrderProduct, AttendanceAutomationRule, StaffGeofenceAssignment, GeofenceTemplate, GeofenceSite, DeviceInfo, Appraisal, Rating, OrgAccount } = require('../models');
 
 const multer = require('multer');
 
@@ -39,8 +39,7 @@ const ai = require('../services/aiProvider');
 
 const { Op } = require('sequelize');
 const { calculateSalary, generatePayslipPDF } = require('../services/payrollService');
-
-
+const { runAttendanceReminderManual } = require('../jobs');
 
 const router = express.Router();
 
@@ -10233,6 +10232,40 @@ router.post('/attendance', async (req, res) => {
 
     }
 
+    // Send SMS Notification (non-fatal)
+    try {
+      const staffPhone = user.phone;
+      if (orgId && staffPhone) {
+        const orgAccount = await OrgAccount.findByPk(orgId);
+        if (orgAccount) {
+          const bizName = orgAccount.name || 'Business';
+          const d = new Date(dateIso);
+          const months = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+          const day = d.getDate();
+          const m = months[d.getMonth()];
+          const suffix = (day % 10 === 1 && day !== 11) ? 'st' : (day % 10 === 2 && day !== 12) ? 'nd' : (day % 10 === 3 && day !== 13) ? 'rd' : 'th';
+          const dateStr = `${day}${suffix} ${m}`;
+          const digits = String(staffPhone).replace(/[^0-9]/g, '');
+          let fullPhone = digits.length > 10 ? digits.slice(-10) : digits;
+          if (fullPhone.length === 10) fullPhone = '91' + fullPhone;
+          if (fullPhone.length >= 10) {
+            const smsStatus = (status || 'present').replace('_', ' ').toLowerCase();
+            const smsText = `${bizName} marked you absent on ${dateStr}. Check attendance details on vetansutra.com ( Powered by Thinktech Software company)`;
+            const smsUrl = `http://182.18.162.128/api/mt/SendSMS?APIKEY=85I1g6L9hEeIntNZgQRrzA&senderid=VETANS&channel=Trans&DCS=0&flashsms=0&number=${fullPhone}&text=${encodeURIComponent(smsText)}&route=08`;
+            console.log(`[ATTENDANCE SMS] URL: ${smsUrl}`);
+            fetch(smsUrl)
+              .then(async (r) => {
+                const b = await r.text();
+                console.log(`[ATTENDANCE SMS] API Response (${r.status}): ${b}`);
+              })
+              .catch(err => console.error('[ATTENDANCE SMS] Fetch failed:', err));
+          }
+        }
+      }
+    } catch (smsErr) {
+      console.error('[ATTENDANCE SMS] SMS trigger failed:', smsErr);
+    }
+
     return res.json({ success: true, attendance: row });
 
   } catch (e) {
@@ -10317,6 +10350,43 @@ router.post('/attendance/bulk', async (req, res) => {
         defaults: payload
       });
       if (!created) await row.update(payload);
+
+      // Send SMS Notification (non-fatal, per staff)
+      try {
+        const staffPhone = user.phone;
+        if (orgId && staffPhone) {
+          const orgAccount = await OrgAccount.findByPk(orgId);
+          if (orgAccount) {
+            const bizName = orgAccount.name || 'Business';
+            const d = new Date(dateIso);
+            const months = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+            const day = d.getDate();
+            const m = months[d.getMonth()];
+            const suffix = (day % 10 === 1 && day !== 11) ? 'st' : (day % 10 === 2 && day !== 12) ? 'nd' : (day % 10 === 3 && day !== 13) ? 'rd' : 'th';
+            const dateStr = `${day}${suffix} ${m}`;
+
+            const digits = String(staffPhone).replace(/[^0-9]/g, '');
+            let fullPhone = digits.length > 10 ? digits.slice(-10) : digits;
+            if (fullPhone.length === 10) fullPhone = '91' + fullPhone;
+
+            if (fullPhone.length >= 10) {
+              const smsStatus = (status || 'present').replace('_', ' ').toLowerCase();
+              const smsText = `${bizName} marked you ${smsStatus} on ${dateStr}. Check attendance details on vetansutra.com ( Powered by Thinktech Software company)`;
+              const smsUrl = `http://182.18.162.128/api/mt/SendSMS?APIKEY=85I1g6L9hEeIntNZgQRrzA&senderid=VETANS&channel=Trans&DCS=0&flashsms=0&number=${fullPhone}&text=${encodeURIComponent(smsText)}&route=08`;
+              console.log(`[ATTENDANCE BULK SMS] URL: ${smsUrl}`);
+              fetch(smsUrl)
+                .then(async (r) => {
+                  const b = await r.text();
+                  console.log(`[ATTENDANCE BULK SMS] API Response (${r.status}): ${b}`);
+                })
+                .catch(err => console.error('[ATTENDANCE BULK SMS] Fetch failed:', err));
+            }
+          }
+        }
+      } catch (smsErr) {
+        console.error('[ATTENDANCE BULK SMS] Multi-staff SMS failed for userId ' + uid, smsErr);
+      }
+
       results.push({ userId: uid, created });
     }
 
@@ -19533,6 +19603,9 @@ router.post('/payroll/generate-payslip', async (req, res) => {
       where: { monthKey },
       order: [['id', 'DESC']]
     });
+
+    let smsResult = null;
+
     if (cycle) {
       console.log(`Cycle found: ${cycle.id}`);
       const line = await sequelize.models.PayrollLine.findOne({ where: { cycleId: cycle.id, userId } });
@@ -19540,6 +19613,31 @@ router.post('/payroll/generate-payslip', async (req, res) => {
         console.log(`Line found: ${line.id}. Updating path to ${relativePath}`);
         await line.update({ payslipPath: relativePath });
         console.log('Line updated');
+
+        // Send SMS to staff
+        const user = await sequelize.models.User.findByPk(userId, { include: [{ model: sequelize.models.StaffProfile, as: 'profile' }] });
+        const phone = user?.profile?.phone || user?.phone;
+        if (phone) {
+          const name = user?.profile?.name || user?.name || 'Staff';
+          const baseUrl = `https://${req.get('host')}`;
+          const pdfUrl = `${baseUrl}${relativePath}`;
+          const d = dayjs(monthKey, 'YYYY-MM');
+          const monthName = d.isValid() ? d.format('MMMM').toLowerCase() : monthKey;
+          const smsText = `Hi ${name}, your payslip for ${monthName} is now available. View it here: https://vetansutra.com ( Powered by Thinktech Software company)`;
+
+          const normalized = String(phone || '').replace(/[^0-9]/g, '');
+          let fullPhone = normalized;
+          if (fullPhone.length === 10) fullPhone = '91' + fullPhone;
+
+          const smsUrl = `http://182.18.162.128/api/mt/SendSMS?APIKEY=85I1g6L9hEeIntNZgQRrzA&senderid=VETANS&channel=Trans&DCS=0&flashsms=0&number=${fullPhone}&text=${encodeURIComponent(smsText)}&route=08`;
+          console.log(`[PAISLIP SMS] Sending to ${fullPhone}: ${smsText}`);
+          console.log(`[PAISLIP SMS] URL: ${smsUrl}`);
+
+          const resp = await fetch(smsUrl);
+          const respText = await resp.text();
+          smsResult = { ok: resp.ok, status: resp.status, body: respText };
+          console.log('[PAISLIP SMS] Result:', smsResult);
+        }
       } else {
         console.log('PayrollLine not found');
       }
@@ -19547,10 +19645,21 @@ router.post('/payroll/generate-payslip', async (req, res) => {
       console.log('PayrollCycle not found');
     }
 
-    return res.json({ success: true, message: 'Payslip generated and saved', path: relativePath });
+    return res.json({ success: true, message: 'Payslip generated and saved', path: relativePath, sms: smsResult });
   } catch (e) {
     console.error('Generate payslip error:', e);
     return res.status(500).json({ success: false, message: 'Failed to generate payslip' });
+  }
+});
+
+// Manual trigger for missing attendance reminder
+router.post('/payroll/test-attendance-reminder', async (req, res) => {
+  try {
+    await runAttendanceReminderManual();
+    res.json({ success: true, message: 'Missing attendance reminder triggered manually. Check server logs.' });
+  } catch (error) {
+    console.error('Test attendance reminder error:', error);
+    res.status(500).json({ success: false, message: 'Failed to trigger reminder' });
   }
 });
 

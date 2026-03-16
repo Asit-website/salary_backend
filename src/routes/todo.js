@@ -71,6 +71,10 @@ router.patch('/:id/status', async (req, res) => {
       return res.status(404).json({ success: false, message: 'Activity not found' });
     }
 
+    if (activity.isClosed) {
+      return res.status(403).json({ success: false, message: 'Activity is closed by admin and cannot be modified' });
+    }
+
     await activity.update({ status });
     return res.json({ success: true, activity });
   } catch (e) {

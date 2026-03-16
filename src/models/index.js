@@ -89,6 +89,8 @@ const defineAttendanceAutomationRule = require('./AttendanceAutomationRule');
 const defineActivity = require('./Activity');
 const defineMeeting = require('./Meeting');
 const defineMeetingAttendee = require('./MeetingAttendee');
+const defineTicket = require('./Ticket');
+const defineTaskObserverMapping = require('./TaskObserverMapping');
 
 
 const User = defineUser(sequelize);
@@ -133,6 +135,7 @@ const Badge = defineBadge(sequelize);
 const BadgePermission = defineBadgePermission(sequelize);
 const StaffBadge = defineStaffBadge(sequelize);
 const AssignedJob = defineAssignedJob(sequelize);
+const TicketHistory = require('./TicketHistory')(sequelize);
 const SalesTarget = defineSalesTarget(sequelize);
 const Order = defineOrder(sequelize);
 const OrderItem = defineOrderItem(sequelize);
@@ -180,6 +183,8 @@ const LeaveEncashment = defineLeaveEncashment(sequelize);
 const Activity = defineActivity(sequelize);
 const Meeting = defineMeeting(sequelize);
 const MeetingAttendee = defineMeetingAttendee(sequelize);
+const Ticket = defineTicket(sequelize);
+const TaskObserverMapping = defineTaskObserverMapping(sequelize);
 
 
 // Leave Template associations (after models are defined)
@@ -527,6 +532,32 @@ MeetingAttendee.belongsTo(Meeting, { foreignKey: 'meetingId', as: 'meeting' });
 User.hasMany(MeetingAttendee, { foreignKey: 'userId', as: 'meetingParticipations' });
 MeetingAttendee.belongsTo(User, { foreignKey: 'userId', as: 'user' });
 
+// Ticket associations
+User.hasMany(Ticket, { foreignKey: 'allocatedBy', as: 'createdTickets' });
+Ticket.belongsTo(User, { foreignKey: 'allocatedBy', as: 'creator' });
+User.hasMany(Ticket, { foreignKey: 'allocatedTo', as: 'assignedTickets' });
+Ticket.belongsTo(User, { foreignKey: 'allocatedTo', as: 'assignee' });
+OrgAccount.hasMany(Ticket, { foreignKey: 'orgAccountId', as: 'tickets' });
+Ticket.belongsTo(OrgAccount, { foreignKey: 'orgAccountId', as: 'orgAccount' });
+User.hasMany(Ticket, { foreignKey: 'updatedBy', as: 'updatedTickets' });
+Ticket.belongsTo(User, { foreignKey: 'updatedBy', as: 'updater' });
+
+Activity.belongsTo(User, { foreignKey: 'closedById', as: 'closedBy' });
+Ticket.belongsTo(User, { foreignKey: 'closedById', as: 'closedBy' });
+
+// Ticket History associations
+Ticket.hasMany(TicketHistory, { foreignKey: 'ticketId', as: 'history' });
+TicketHistory.belongsTo(Ticket, { foreignKey: 'ticketId', as: 'ticket' });
+TicketHistory.belongsTo(User, { foreignKey: 'updatedById', as: 'updater' });
+
+// Task Observer associations
+User.hasMany(TaskObserverMapping, { foreignKey: 'observerId', as: 'observerStaffMappings' });
+TaskObserverMapping.belongsTo(User, { foreignKey: 'observerId', as: 'observer' });
+User.hasMany(TaskObserverMapping, { foreignKey: 'staffId', as: 'staffObserverMappings' });
+TaskObserverMapping.belongsTo(User, { foreignKey: 'staffId', as: 'staffMember' });
+OrgAccount.hasMany(TaskObserverMapping, { foreignKey: 'orgAccountId', as: 'observerMappings' });
+TaskObserverMapping.belongsTo(OrgAccount, { foreignKey: 'orgAccountId', as: 'orgAccount' });
+
 module.exports = {
   sequelize,
   User,
@@ -576,6 +607,9 @@ module.exports = {
   SalesTarget,
   Order,
   OrderItem,
+  Ticket,
+  TicketHistory,
+  Asset,
   OrderProduct,
   StaffOrderProduct,
   IncentiveTarget,
@@ -615,4 +649,6 @@ module.exports = {
   Activity,
   Meeting,
   MeetingAttendee,
+  Ticket,
+  TaskObserverMapping,
 };

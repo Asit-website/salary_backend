@@ -2,7 +2,7 @@ const express = require('express');
 const { Op } = require('sequelize');
 const puppeteer = require('puppeteer');
 
-const { User, StaffProfile, Attendance, LeaveRequest, AppSetting, AttendanceTemplate, StaffAttendanceAssignment, StaffShiftAssignment, ShiftTemplate, StaffHolidayAssignment, HolidayTemplate, HolidayDate, StaffGeofenceAssignment, GeofenceTemplate, GeofenceSite, LocationPing, DeviceInfo, WeeklyOffTemplate, StaffWeeklyOffAssignment, AttendanceAutomationRule } = require('../models');
+const { User, StaffProfile, Attendance, LeaveRequest, AppSetting, AttendanceTemplate, StaffAttendanceAssignment, StaffShiftAssignment, ShiftTemplate, StaffHolidayAssignment, HolidayTemplate, HolidayDate, StaffGeofenceAssignment, GeofenceTemplate, GeofenceSite, LocationPing, DeviceInfo, WeeklyOffTemplate, StaffWeeklyOffAssignment, AttendanceAutomationRule, OrgAccount } = require('../models');
 const { authRequired } = require('../middleware/auth');
 const { requireRole } = require('../middleware/roles');
 const { upload } = require('../upload');
@@ -499,7 +499,7 @@ router.get('/status', async (req, res) => {
           try { config = JSON.parse(JSON.parse(config)); } catch (__) { config = {}; }
         }
       }
-      
+
       let tiers = [];
       if (Array.isArray(config.tiers) && config.tiers.length > 0) {
         tiers = config.tiers;
@@ -512,15 +512,15 @@ router.get('/status', async (req, res) => {
 
       const istDate = new Date(punchedInAt.getTime() + (5.5 * 3600 * 1000));
       const punchInSeconds = istDate.getUTCHours() * 3600 + istDate.getUTCMinutes() * 60 + istDate.getUTCSeconds();
-      
+
       if (punchInSeconds > shiftStartSeconds) {
-          const lateMins = Math.floor((punchInSeconds - shiftStartSeconds) / 60);
-          for(const t of tiers) {
-              if (lateMins >= Number(t.minMinutes) && lateMins <= Number(t.maxMinutes)) {
-                  isLate = true;
-                  break;
-              }
+        const lateMins = Math.floor((punchInSeconds - shiftStartSeconds) / 60);
+        for (const t of tiers) {
+          if (lateMins >= Number(t.minMinutes) && lateMins <= Number(t.maxMinutes)) {
+            isLate = true;
+            break;
           }
+        }
       }
     }
   } catch (_) { }
@@ -754,7 +754,7 @@ router.get('/history', async (req, res) => {
 
           if (punchInSec > shiftStartSec) {
             const diffMin = Math.floor((punchInSec - shiftStartSec) / 60);
-            
+
             for (let i = 0; i < lateTiers.length; i++) {
               const t = lateTiers[i];
               if (diffMin >= Number(t.minMinutes) && diffMin <= Number(t.maxMinutes)) {
@@ -762,7 +762,7 @@ router.get('/history', async (req, res) => {
                 lateRunningCounts[i]++;
                 summary.lateCount++;
                 const freq = Number(t.frequency);
-                
+
                 if (freq > 0 && lateRunningCounts[i] % freq === 0) {
                   isPenaltyDay = true;
                   summary.latePenaltyDays += Number(t.deduction);

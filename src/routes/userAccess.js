@@ -19,6 +19,7 @@ const SIDEBAR_PERMISSION_OPTIONS = [
   { key: 'geolocation_tab', label: 'Geolocation' },
   { key: 'letters_tab', label: 'Letters' },
   { key: 'settings_tab', label: 'Settings' },
+  { key: 'task_management_tab', label: 'Task Management' },
 ];
 
 const permissionMap = new Map(SIDEBAR_PERMISSION_OPTIONS.map((x) => [x.key, x.label]));

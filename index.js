@@ -25,11 +25,13 @@ const letterRoutes = require('./src/routes/letter');
 const salesIncentiveRoutes = require('./src/routes/salesIncentive');
 const todoRoutes = require('./src/routes/todo');
 const meetingRoutes = require('./src/routes/meeting');
+const ticketRoutes = require('./src/routes/ticket');
+const taskManagementRoutes = require('./src/routes/taskManagement');
 
 
 const { tenantEnforce } = require('./src/middleware/tenant');
 const { scheduleSubscriptionSweep } = require('./src/jobs/subscriptionSweep');
-const { scheduleSubscriptionExpiryReminders, scheduleZktecoSync } = require('./src/jobs');
+const { scheduleSubscriptionExpiryReminders, scheduleZktecoSync, scheduleAttendanceReminders } = require('./src/jobs');
 const { verifyEmailConfig } = require('./src/services/emailService');
 
 const app = express();
@@ -87,6 +89,7 @@ app.use('/admin/sales-incentives', salesIncentiveRoutes);
 
 app.use('/auth', authRoutes);
 app.use('/admin/user-access', userAccessRoutes);
+app.use('/admin/task-management', taskManagementRoutes);
 app.use('/admin', adminRoutes);
 app.use('/superadmin', superadminRoutes);
 app.use('/attendance', attendanceRoutes);
@@ -102,6 +105,7 @@ app.use('/admin/roles', rolesRoutes);
 app.use('/mobile/roles', rolesRoutes);
 app.use('/activities', todoRoutes);
 app.use('/meetings', meetingRoutes);
+app.use('/tickets', ticketRoutes);
 
 
 const port = Number(process.env.PORT || 4000);
@@ -128,6 +132,9 @@ initDb()
 
     // Start ZKTeco biometric sync job
     try { scheduleZktecoSync(); } catch (_) { }
+
+    // Start Attendance Missing Reminder job
+    try { scheduleAttendanceReminders(); } catch (_) { }
     // app.listen(port, () => {
     //   console.log(`Backend running on http://localhost:${port}`);
     // });
