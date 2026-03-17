@@ -454,7 +454,13 @@ router.get('/status', async (req, res) => {
     effectiveHoursRule,
   });
 
-  const overtimeSeconds = workSeconds > REQUIRED_WORK_SECONDS ? workSeconds - REQUIRED_WORK_SECONDS : 0;
+  let overtimeSeconds = 0;
+  if (assignedShift && Number.isFinite(Number(assignedShift.overtimeStartMinutes))) {
+    const totalWorkMinutes = Math.floor(workSeconds / 60);
+    if (totalWorkMinutes > assignedShift.overtimeStartMinutes) {
+      overtimeSeconds = (totalWorkMinutes - assignedShift.overtimeStartMinutes) * 60;
+    }
+  }
 
   // Use the stored status from database if available, otherwise calculate
   let dayStatus = record?.status?.toUpperCase() || (isWO ? 'WEEKLY_OFF' : (isHoliday ? 'HOLIDAY' : 'ABSENT'));
@@ -463,21 +469,16 @@ router.get('/status', async (req, res) => {
   if (!record?.status && record?.punchedInAt) {
     const totalWorkMinutes = Math.floor(workSeconds / 60);
     if (assignedShift) {
-      if (assignedShift.overtimeStartMinutes && totalWorkMinutes > assignedShift.overtimeStartMinutes) {
+      if (Number.isFinite(Number(assignedShift.overtimeStartMinutes)) && totalWorkMinutes > assignedShift.overtimeStartMinutes) {
         dayStatus = 'OVERTIME';
-      } else if (assignedShift.halfDayThresholdMinutes && totalWorkMinutes < assignedShift.halfDayThresholdMinutes) {
+      } else if (Number.isFinite(Number(assignedShift.halfDayThresholdMinutes)) && totalWorkMinutes < assignedShift.halfDayThresholdMinutes) {
         dayStatus = (key === todayKey() && !record.punchedOutAt) ? 'PRESENT' : 'HALF_DAY';
-      } else if (totalWorkMinutes < 60) {
-        dayStatus = (key === todayKey() && !record.punchedOutAt) ? 'PRESENT' : 'ABSENT';
       } else {
         dayStatus = 'PRESENT';
       }
     } else {
-      // Fallback if no shift assigned
-      if (workSeconds > REQUIRED_WORK_SECONDS) dayStatus = 'OVERTIME';
-      else if (workSeconds >= REQUIRED_WORK_SECONDS) dayStatus = 'PRESENT';
-      else if (record?.punchedOutAt || totalWorkMinutes > 30) dayStatus = 'HALF_DAY';
-      else dayStatus = 'PRESENT';
+      // Fallback if no shift assigned: Any work counts as PRESENT
+      dayStatus = 'PRESENT';
     }
   }
 
@@ -689,28 +690,30 @@ router.get('/history', async (req, res) => {
           maxBreakMinutes,
           effectiveHoursRule
         });
-        overtimeSeconds = workingSeconds > REQUIRED_WORK_SECONDS ? workingSeconds - REQUIRED_WORK_SECONDS : 0;
+        const shiftTpl = await getEffectiveShiftTemplate(userId, key);
+        const totalWorkMinutes = Math.floor(workingSeconds / 60);
+
+        if (shiftTpl && Number.isFinite(Number(shiftTpl.overtimeStartMinutes))) {
+          if (totalWorkMinutes > shiftTpl.overtimeStartMinutes) {
+            overtimeSeconds = (totalWorkMinutes - shiftTpl.overtimeStartMinutes) * 60;
+          }
+        }
 
         if (record.status) {
           dayStatus = record.status.toUpperCase();
         } else {
           // Calculate status based on shift rules for history consistency
-          const shiftTpl = await getEffectiveShiftTemplate(userId, key);
-          const totalWorkMinutes = Math.floor(workingSeconds / 60);
           if (shiftTpl) {
-            if (shiftTpl.overtimeStartMinutes && totalWorkMinutes > shiftTpl.overtimeStartMinutes) {
+            if (Number.isFinite(Number(shiftTpl.overtimeStartMinutes)) && totalWorkMinutes > shiftTpl.overtimeStartMinutes) {
               dayStatus = 'OVERTIME';
-            } else if (shiftTpl.halfDayThresholdMinutes && totalWorkMinutes < shiftTpl.halfDayThresholdMinutes) {
+            } else if (Number.isFinite(Number(shiftTpl.halfDayThresholdMinutes)) && totalWorkMinutes < shiftTpl.halfDayThresholdMinutes) {
               dayStatus = (key === todayStr && !record.punchedOutAt) ? 'PRESENT' : 'HALF_DAY';
-            } else if (totalWorkMinutes < 60) {
-              dayStatus = (key === todayStr && !record.punchedOutAt) ? 'PRESENT' : 'ABSENT';
             } else {
               dayStatus = 'PRESENT';
             }
           } else {
-            if (workingSeconds > REQUIRED_WORK_SECONDS) dayStatus = 'OVERTIME';
-            else if (workingSeconds >= REQUIRED_WORK_SECONDS) dayStatus = 'PRESENT';
-            else dayStatus = key === todayStr ? 'PRESENT' : 'HALF_DAY';
+            // Case 1: No shift assigned -> always PRESENT for any work
+            dayStatus = 'PRESENT';
           }
         }
       } else if (record?.status && !isAdminLeave && !isAdminHalf) {
@@ -1074,39 +1077,18 @@ router.post('/punch-out', upload.single('photo'), async (req, res) => {
     // Use shift template rules if available, otherwise fall back to defaults
     if (shiftTpl) {
       // Calculate overtime minutes
-      if (shiftTpl.overtimeStartMinutes && totalWorkMinutes > shiftTpl.overtimeStartMinutes) {
+      if (Number.isFinite(Number(shiftTpl.overtimeStartMinutes)) && totalWorkMinutes > shiftTpl.overtimeStartMinutes) {
         overtimeMinutes = totalWorkMinutes - shiftTpl.overtimeStartMinutes;
-      }
-
-      // Calculate status based on half-day threshold
-      if (shiftTpl.halfDayThresholdMinutes && totalWorkMinutes < shiftTpl.halfDayThresholdMinutes) {
+        status = 'overtime';
+      } else if (Number.isFinite(Number(shiftTpl.halfDayThresholdMinutes)) && totalWorkMinutes < shiftTpl.halfDayThresholdMinutes) {
         status = 'half_day';
-      } else if (totalWorkMinutes < 60) { // Less than 1 hour
-        status = 'absent';
-      } else if (shiftTpl.overtimeStartMinutes && totalWorkMinutes > shiftTpl.overtimeStartMinutes) {
-        status = 'overtime'; // Status includes overtime
       } else {
         status = 'present';
       }
     } else {
-      // Fallback logic for when no shift template is assigned
-      const standardWorkMinutes = 8 * 60; // 8 hours in minutes
-
-      // Calculate overtime
-      if (totalWorkMinutes > standardWorkMinutes) {
-        overtimeMinutes = totalWorkMinutes - standardWorkMinutes;
-      }
-
-      // Calculate status
-      if (totalWorkMinutes < 60) {
-        status = 'absent';
-      } else if (totalWorkMinutes < (standardWorkMinutes / 2)) {
-        status = 'half_day';
-      } else if (totalWorkMinutes > standardWorkMinutes) {
-        status = 'overtime'; // Status includes overtime
-      } else {
-        status = 'present';
-      }
+      // Case 1: No shift assigned -> always PRESENT (as long as they worked any time)
+      status = 'present';
+      overtimeMinutes = 0;
     }
 
     const address = req.body?.address ? String(req.body.address) : null;

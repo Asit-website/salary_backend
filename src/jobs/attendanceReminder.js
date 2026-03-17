@@ -4,40 +4,8 @@ const {
     User, StaffProfile, Attendance, OrgAccount,
     WeeklyOffTemplate, StaffWeeklyOffAssignment,
     HolidayDate, StaffHolidayAssignment,
-    LeaveRequest, sequelize
+    LeaveRequest, AppSetting, sequelize
 } = require('../models');
-
-// Helper to send SMS (simplified version of auth.js logic)
-async function sendSms({ phone, text }) {
-    try {
-        const API_URL = process.env.SMS_API_URL || 'http://182.18.162.128/api/mt/SendSMS';
-        const APIKEY = process.env.SMS_APIKEY || '85I1g6L9hEeIntNZgQRrzA';
-        const SENDERID = process.env.SMS_SENDERID || 'VETANS';
-        const ROUTE = process.env.SMS_ROUTE || '08';
-
-        const normalized = String(phone || '').replace(/[^0-9]/g, '');
-        let fullPhone = normalized;
-        if (fullPhone.length === 10) fullPhone = '91' + fullPhone;
-
-        const url = new URL(API_URL);
-        url.searchParams.set('APIKEY', APIKEY);
-        url.searchParams.set('senderid', SENDERID);
-        url.searchParams.set('channel', 'Trans');
-        url.searchParams.set('DCS', '0');
-        url.searchParams.set('flashsms', '0');
-        url.searchParams.set('number', fullPhone);
-        url.searchParams.set('text', text);
-        url.searchParams.set('route', ROUTE);
-
-        console.log(`[ATTENDANCE REMINDER] Sending SMS to ${fullPhone}`);
-        const resp = await fetch(url.toString());
-        const body = await resp.text();
-        return { ok: resp.ok, body };
-    } catch (error) {
-        console.error('[ATTENDANCE REMINDER] SMS send failed:', error.message);
-        return { ok: false, error: error.message };
-    }
-}
 
 async function checkMissingAttendanceAndNotify() {
     console.log('[ATTENDANCE REMINDER] Starting missing attendance check...');
@@ -52,8 +20,22 @@ async function checkMissingAttendanceAndNotify() {
         for (const org of activeOrgs) {
             console.log(`[ATTENDANCE REMINDER] Processing Org: ${org.name} (ID: ${org.id})`);
 
+            const rowSet = await AppSetting.findOne({ where: { key: 'org_config', orgAccountId: org.id } });
+            let canSend = true;
+            if (rowSet?.value) {
+                try {
+                    const cfg = JSON.parse(rowSet.value);
+                    if (cfg?.smsNotificationSettings?.missingAttendance === false) canSend = false;
+                } catch (_) { }
+            }
+
+            if (!canSend) {
+                console.log(`[ATTENDANCE REMINDER] Skipping ${org.name} - SMS notification disabled in settings`);
+                continue;
+            }
+
             const staffMembers = await User.findAll({
-                where: { orgAccountId: org.id, status: 'active', role: 'staff' },
+                where: { orgAccountId: org.id, active: true, role: 'staff' },
                 include: [{ model: StaffProfile, as: 'profile' }]
             });
 
@@ -101,9 +83,31 @@ async function checkMissingAttendanceAndNotify() {
                 // If we reach here, attendance is missing on a workday
                 console.log(`[ATTENDANCE REMINDER] Missing attendance detected for ${name} (${phone}) on ${yesterday}`);
 
-                const smsText = `Hi ${name}, attendance for ${dayjs(yesterday).format('Do MMMM')} is missing for ${org.name} - vetansutra.com ( Powered by Thinktech Software company)`;
-                const result = await sendSms({ phone, text: smsText });
-                console.log(`[ATTENDANCE REMINDER] SMS Result for ${name}:`, result);
+                const bizName = org.name || 'Business';
+                const d = new Date(yesterday);
+                const months = ["january", "february", "march", "april", "may", "june", "july", "august", "september", "october", "november", "december"];
+                const day = d.getDate();
+                const m = months[d.getMonth()];
+                const suffix = (day % 10 === 1 && day !== 11) ? 'st' : (day % 10 === 2 && day !== 12) ? 'nd' : (day % 10 === 3 && day !== 13) ? 'rd' : 'th';
+                const dateStr = `${day}${suffix} ${m}`;
+
+                const normalized = String(phone || '').replace(/[^0-9]/g, '');
+                let fullPhone = normalized;
+                if (fullPhone.length === 10) fullPhone = '91' + fullPhone;
+
+                if (fullPhone.length >= 10) {
+                    const smsText = `Hi ${name}, attendance for ${dateStr} is missing for ${bizName} - {org.name} - vetansutra.com ( Powered by Thinktech Software company)`;
+                    const smsUrl = `http://182.18.162.128/api/mt/SendSMS?APIKEY=85I1g6L9hEeIntNZgQRrzA&senderid=VETANS&channel=Trans&DCS=0&flashsms=0&number=${fullPhone}&text=${encodeURIComponent(smsText)}&route=08`;
+
+                    console.log(`[ATTENDANCE REMINDER] Sending SMS to ${fullPhone}: ${smsText}`);
+                    try {
+                        const resp = await fetch(smsUrl);
+                        const body = await resp.text();
+                        console.log(`[ATTENDANCE REMINDER] SMS Result for ${name}:`, { ok: resp.ok, body });
+                    } catch (smsErr) {
+                        console.error(`[ATTENDANCE REMINDER] SMS Fetch failed for ${name}:`, smsErr.message);
+                    }
+                }
             }
         }
         console.log('[ATTENDANCE REMINDER] Missing attendance check completed.');

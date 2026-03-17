@@ -611,10 +611,10 @@ const sendSubscriptionExpiryReminderEmail = async (adminEmail, adminName, organi
             .header {
               text-align: center;
               padding-bottom: 20px;
-              border-bottom: 2px solid #ffc107;
+              border-bottom: 2px solid #125EC9;
             }
             .header h1 {
-              color: #ffc107;
+              color: #125EC9;
               margin: 0;
               font-size: 28px;
             }
@@ -622,14 +622,14 @@ const sendSubscriptionExpiryReminderEmail = async (adminEmail, adminName, organi
               padding: 20px 0;
             }
             .reminder-box {
-              background-color: #fff3cd;
+              background-color: #e8f4fd;
               padding: 20px;
               border-radius: 8px;
               margin: 20px 0;
-              border-left: 4px solid #ffc107;
+              border-left: 4px solid #125EC9;
             }
             .reminder-box h3 {
-              color: #856404;
+              color: #125EC9;
               margin-top: 0;
             }
             .subscription-details {
@@ -637,10 +637,10 @@ const sendSubscriptionExpiryReminderEmail = async (adminEmail, adminName, organi
               padding: 20px;
               border-radius: 8px;
               margin: 20px 0;
-              border-left: 4px solid #ffc107;
+              border-left: 4px solid #125EC9;
             }
             .subscription-details h3 {
-              color: #495057;
+              color: #125EC9;
               margin-top: 0;
             }
             .detail-item {
@@ -657,8 +657,8 @@ const sendSubscriptionExpiryReminderEmail = async (adminEmail, adminName, organi
             }
             .renew-button {
               display: inline-block;
-              background-color: #ffc107;
-              color: #212529;
+              background-color: #125EC9;
+              color: #ffffff;
               padding: 12px 30px;
               text-decoration: none;
               border-radius: 5px;
@@ -705,7 +705,7 @@ const sendSubscriptionExpiryReminderEmail = async (adminEmail, adminName, organi
               <p>To avoid service interruption, please renew your subscription before the expiry date.</p>
               
               <div style="text-align: center;">
-                <a href="${subscriptionDetails.renewalLink || '#'}" class="renew-button">Renew Now</a>
+                <a href="${subscriptionDetails.renewalLink || 'https://web.vetansutra.com'}" class="renew-button">Renew Now</a>
               </div>
               
               <p>If you have any questions regarding renewal or plan upgrades, feel free to contact us.</p>
@@ -860,7 +860,7 @@ const sendSubscriptionExpiredEmail = async (adminEmail, adminName, organizationN
               <p>No data has been deleted—you can regain full access by renewing your subscription anytime.</p>
               
               <div style="text-align: center;">
-                <a href="${subscriptionDetails.renewalLink || '#'}" class="reactivate-button">👉 Reactivate Account</a>
+                <a href="${subscriptionDetails.renewalLink || 'https://web.vetansutra.com'}" class="reactivate-button">👉 Reactivate Account</a>
               </div>
               
               <p>If you need assistance or wish to discuss plans, just reply to this email.</p>
@@ -1068,4 +1068,3 @@ module.exports = {
   transporter,
   emailFrom
 };
-

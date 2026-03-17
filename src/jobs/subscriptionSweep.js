@@ -43,7 +43,7 @@ async function runSweepOnce(now = new Date()) {
 
           const subscriptionDetails = {
             expiryDate: new Date(sub.endAt).toLocaleDateString(),
-            renewalLink: 'http://localhost:3000/renew', // Update with actual renewal URL
+            renewalLink: 'https://web.vetansutra.com', // Renewal URL for production
             productName: 'Vetansutra'
           };
 

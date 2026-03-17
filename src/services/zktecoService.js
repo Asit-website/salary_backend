@@ -117,27 +117,19 @@ class ZktecoService {
         let overtimeMinutes = 0;
 
         if (shift) {
-            if (shift.overtimeStartMinutes && workMinutes > shift.overtimeStartMinutes) {
+            if (Number.isFinite(Number(shift.overtimeStartMinutes)) && workMinutes > shift.overtimeStartMinutes) {
                 overtimeMinutes = workMinutes - shift.overtimeStartMinutes;
                 status = 'overtime';
-            } else if (shift.halfDayThresholdMinutes && workMinutes < shift.halfDayThresholdMinutes) {
+            } else if (Number.isFinite(Number(shift.halfDayThresholdMinutes)) && workMinutes < shift.halfDayThresholdMinutes) {
                 status = 'half_day';
-            } else if (workMinutes < 60) {
-                status = 'absent';
+            } else {
+                status = 'present';
             }
         } else {
-            // Standard fallback (8 hours)
-            const standard = 8 * 60;
-            if (workMinutes > standard) {
-                overtimeMinutes = workMinutes - standard;
-                status = 'overtime';
-            } else if (workMinutes < 1) { // Totally empty
-                return null;
-            } else if (workMinutes < 60) {
-                status = 'absent';
-            } else if (workMinutes < (standard / 2)) {
-                status = 'half_day';
-            }
+            // Case 1: No shift assigned -> always present
+            if (workMinutes < 1) return null; // Still handle empty data
+            status = 'present';
+            overtimeMinutes = 0;
         }
 
         return {

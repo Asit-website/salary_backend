@@ -1,5 +1,5 @@
 const express = require('express');
-const { Meeting, MeetingAttendee, User, StaffProfile } = require('../models');
+const { Meeting, MeetingAttendee, User, StaffProfile, MeetingHistory } = require('../models');
 const { authRequired } = require('../middleware/auth');
 const { tenantEnforce } = require('../middleware/tenant');
 const { sendMeetingInviteEmail } = require('../services/emailService');
@@ -44,26 +44,26 @@ router.post('/', async (req, res) => {
           });
 
           if (attendee && attendee.profile && attendee.profile.email) {
-             const email = attendee.profile.email;
-             sendMeetingInviteEmail(
-               email,
-               attendee.profile.name || 'Staff',
-               title,
-               scheduledAt,
-               meetLink,
-               (organizer && organizer.profile && organizer.profile.name) || 'Organizer'
-             );
+            const email = attendee.profile.email;
+            sendMeetingInviteEmail(
+              email,
+              attendee.profile.name || 'Staff',
+              title,
+              scheduledAt,
+              meetLink,
+              (organizer && organizer.profile && organizer.profile.name) || 'Organizer'
+            );
           } else if (attendee && attendee.phone) {
-             // Fallback to phone-based email if profile email missing
-             const email = attendee.phone + "@thinktech.com";
-             sendMeetingInviteEmail(
-               email,
-               (attendee.profile && attendee.profile.name) || 'Staff',
-               title,
-               scheduledAt,
-               meetLink,
-               (organizer && organizer.profile && organizer.profile.name) || 'Organizer'
-             );
+            // Fallback to phone-based email if profile email missing
+            const email = attendee.phone + "@thinktech.com";
+            sendMeetingInviteEmail(
+              email,
+              (attendee.profile && attendee.profile.name) || 'Staff',
+              title,
+              scheduledAt,
+              meetLink,
+              (organizer && organizer.profile && organizer.profile.name) || 'Organizer'
+            );
           }
         } catch (err) {
 
@@ -103,6 +103,12 @@ router.get('/me', async (req, res) => {
           as: 'creator',
           attributes: ['id'],
           include: [{ model: StaffProfile, as: 'profile', attributes: ['name'] }]
+        },
+        {
+          model: User,
+          as: 'closedBy',
+          attributes: ['id'],
+          include: [{ model: StaffProfile, as: 'profile', attributes: ['name'] }]
         }
       ],
       order: [['scheduledAt', 'ASC']],
@@ -119,6 +125,57 @@ router.get('/me', async (req, res) => {
   } catch (e) {
     console.error(e);
     return res.status(500).json({ success: false, message: 'Failed to load meetings' });
+  }
+});
+
+// Update meeting status
+router.patch('/:id/status', async (req, res) => {
+  try {
+    const { status, remarks } = req.body || {};
+    const meetingId = req.params.id;
+
+    if (!status) {
+      return res.status(400).json({ success: false, message: 'Status is required' });
+    }
+
+    const meeting = await Meeting.findByPk(meetingId, {
+      include: [{ model: MeetingAttendee, as: 'attendeeRecords' }]
+    });
+
+    if (!meeting) {
+      return res.status(404).json({ success: false, message: 'Meeting not found' });
+    }
+
+    const isCreator = meeting.createdBy == req.user.id;
+    const isAttendee = meeting.attendeeRecords?.some(a => a.userId == req.user.id);
+
+    if (!isCreator && !isAttendee) {
+      return res.status(403).json({ success: false, message: 'Unauthorized to update this meeting' });
+    }
+
+    if (meeting.isClosed) {
+      return res.status(403).json({ success: false, message: 'Meeting is closed and cannot be updated' });
+    }
+
+    const oldStatus = meeting.status;
+    meeting.status = status;
+    if (remarks !== undefined) {
+      meeting.remarks = remarks;
+    }
+    await meeting.save();
+
+    await MeetingHistory.create({
+      meetingId: meeting.id,
+      updatedById: req.user.id,
+      oldStatus,
+      newStatus: status,
+      remarks: remarks || 'Status updated via app'
+    });
+
+    return res.json({ success: true, message: 'Meeting status updated' });
+  } catch (e) {
+    console.error(e);
+    return res.status(500).json({ success: false, message: 'Failed to update meeting status' });
   }
 });
 

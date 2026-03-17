@@ -1,5 +1,6 @@
 const express = require('express');
-const { Activity } = require('../models');
+const { Activity, User, StaffProfile, ActivityHistory } = require('../models');
+const { Op } = require('sequelize');
 const { authRequired } = require('../middleware/auth');
 const { tenantEnforce } = require('../middleware/tenant');
 
@@ -39,9 +40,20 @@ router.get('/me', async (req, res) => {
   try {
     const activities = await Activity.findAll({
       where: {
-        userId: req.user.id,
         orgAccountId: req.tenantOrgAccountId,
+        [Op.or]: [
+          { userId: req.user.id },
+          { transferredToId: req.user.id }
+        ]
       },
+      include: [
+        {
+          model: User,
+          as: 'transferredTo',
+          attributes: ['id'],
+          include: [{ model: StaffProfile, as: 'profile', attributes: ['name'] }]
+        }
+      ],
       order: [['date', 'DESC'], ['createdAt', 'DESC']],
     });
     return res.json({ success: true, activities });
@@ -54,16 +66,14 @@ router.get('/me', async (req, res) => {
 // Update activity status
 router.patch('/:id/status', async (req, res) => {
   try {
-    const { status } = req.body || {};
-    if (!status || !['SCHEDULE', 'IN_PROGRESS', 'REVIEW', 'DONE'].includes(status)) {
-      return res.status(400).json({ success: false, message: 'Invalid status' });
-    }
-
     const activity = await Activity.findOne({
       where: {
         id: req.params.id,
-        userId: req.user.id,
         orgAccountId: req.tenantOrgAccountId,
+        [Op.or]: [
+          { userId: req.user.id },
+          { transferredToId: req.user.id }
+        ]
       }
     });
 
@@ -75,11 +85,54 @@ router.patch('/:id/status', async (req, res) => {
       return res.status(403).json({ success: false, message: 'Activity is closed by admin and cannot be modified' });
     }
 
-    await activity.update({ status });
+    const { status, remarks } = req.body || {};
+    const oldStatus = activity.status;
+    const updateData = { status };
+    if (remarks !== undefined) {
+      updateData.remarks = remarks;
+    }
+
+    await activity.update(updateData);
+
+    await ActivityHistory.create({
+      activityId: activity.id,
+      updatedById: req.user.id,
+      oldStatus,
+      newStatus: status,
+      remarks: remarks || 'Status updated via app'
+    });
     return res.json({ success: true, activity });
   } catch (e) {
     console.error(e);
     return res.status(500).json({ success: false, message: 'Failed to update activity' });
+  }
+});
+
+// Transfer/Share activity
+router.patch('/:id/transfer', async (req, res) => {
+  try {
+    const { targetUserId } = req.body || {};
+    if (!targetUserId) {
+      return res.status(400).json({ success: false, message: 'Target user ID is required' });
+    }
+
+    const activity = await Activity.findOne({
+      where: {
+        id: req.params.id,
+        userId: req.user.id, // Only creator can transfer/share
+        orgAccountId: req.tenantOrgAccountId,
+      }
+    });
+
+    if (!activity) {
+      return res.status(404).json({ success: false, message: 'Activity not found or unauthorized' });
+    }
+
+    await activity.update({ transferredToId: targetUserId });
+    return res.json({ success: true, message: 'Activity shared successfully' });
+  } catch (e) {
+    console.error(e);
+    return res.status(500).json({ success: false, message: 'Failed to share activity' });
   }
 });
 

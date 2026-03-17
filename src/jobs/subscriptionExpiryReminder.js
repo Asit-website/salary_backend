@@ -63,7 +63,7 @@ const checkSubscriptionExpiryReminders = async () => {
         planType: plan ? plan.name : 'Basic',
         expiryDate: new Date(subscription.endAt).toLocaleDateString(),
         userLimit: subscription.staffLimit || 'N/A',
-        renewalLink: 'http://localhost:3000/renew', // Update with actual renewal URL
+        renewalLink: 'https://web.vetansutra.com', // Renewal URL for production
         productName: 'Vetansutra'
       };
       

@@ -1,5 +1,5 @@
 const express = require('express');
-const { Activity, Meeting, MeetingAttendee, Ticket, TicketHistory, User, StaffProfile, sequelize, TaskObserverMapping } = require('../models');
+const { Activity, Meeting, MeetingAttendee, Ticket, TicketHistory, ActivityHistory, MeetingHistory, User, StaffProfile, sequelize, TaskObserverMapping } = require('../models');
 const { authRequired } = require('../middleware/auth');
 const { tenantEnforce } = require('../middleware/tenant');
 const { Op } = require('sequelize');
@@ -46,6 +46,11 @@ router.get('/activities', async (req, res) => {
                 as: 'closedBy',
                 attributes: ['id'],
                 include: [{ model: StaffProfile, as: 'profile', attributes: ['name'] }]
+            }, {
+                model: User,
+                as: 'transferredTo',
+                attributes: ['id'],
+                include: [{ model: StaffProfile, as: 'profile', attributes: ['name'] }]
             }],
             order: [['createdAt', 'DESC']]
         });
@@ -65,12 +70,26 @@ router.get('/meetings', async (req, res) => {
 
         const meetings = await Meeting.findAll({
             where,
-            include: [{
-                model: User,
-                as: 'creator',
-                attributes: ['id'],
-                include: [{ model: StaffProfile, as: 'profile', attributes: ['name'] }]
-            }],
+            include: [
+                {
+                    model: User,
+                    as: 'creator',
+                    attributes: ['id'],
+                    include: [{ model: StaffProfile, as: 'profile', attributes: ['name'] }]
+                },
+                {
+                    model: User,
+                    as: 'attendees',
+                    attributes: ['id'],
+                    include: [{ model: StaffProfile, as: 'profile', attributes: ['name'] }]
+                },
+                {
+                    model: User,
+                    as: 'closedBy',
+                    attributes: ['id'],
+                    include: [{ model: StaffProfile, as: 'profile', attributes: ['name'] }]
+                }
+            ],
             order: [['scheduledAt', 'DESC']]
         });
         res.json({ success: true, meetings });
@@ -105,6 +124,67 @@ router.get('/meeting-attendance', async (req, res) => {
             order: [[{ model: Meeting, as: 'meeting' }, 'scheduledAt', 'DESC']]
         });
         res.json({ success: true, attendance });
+    } catch (error) {
+        res.status(500).json({ success: false, message: error.message });
+    }
+});
+
+// Close Meeting (Irreversible)
+router.patch('/meetings/:id/close', async (req, res) => {
+    try {
+        const meeting = await Meeting.findOne({
+            where: { id: req.params.id, orgAccountId: req.tenantOrgAccountId }
+        });
+        if (!meeting) return res.status(404).json({ success: false, message: 'Meeting not found' });
+        const oldStatus = meeting.status;
+        const updateData = { isClosed: true, closedById: req.user.id };
+
+        // If closing, ensure status is DONE
+        let newStatus = meeting.status;
+        if (meeting.status !== 'DONE') {
+            updateData.status = 'DONE';
+            newStatus = 'DONE';
+        }
+
+        await meeting.update(updateData);
+
+        await MeetingHistory.create({
+            meetingId: meeting.id,
+            updatedById: req.user.id,
+            oldStatus,
+            newStatus,
+            remarks: 'Closed by admin/observer'
+        });
+
+        res.json({ success: true, meeting });
+    } catch (error) {
+        res.status(500).json({ success: false, message: error.message });
+    }
+});
+
+// Admin: Get Meeting History
+router.get('/meetings/:id/history', async (req, res) => {
+    try {
+        const user = await User.findByPk(req.user.id);
+        if (req.user.role !== 'admin' && req.user.role !== 'superadmin' && (!user || !user.isTaskObserver)) {
+            return res.status(403).json({ success: false, message: 'Not authorized' });
+        }
+
+        const meetingId = req.params.id;
+        const history = await MeetingHistory.findAll({
+            where: { meetingId },
+            include: [
+                {
+                    model: User,
+                    as: 'updater',
+                    attributes: ['id'],
+                    include: [{ model: StaffProfile, as: 'profile', attributes: ['name'] }]
+                }
+            ],
+            order: [['createdAt', 'DESC']]
+        });
+
+        res.json({ success: true, history });
     } catch (error) {
         res.status(500).json({ success: false, message: error.message });
     }
@@ -168,14 +248,26 @@ router.patch('/activities/:id/close', async (req, res) => {
         if (!activity) return res.status(404).json({ success: false, message: 'Activity not found' });
         if (activity.isClosed) return res.status(400).json({ success: false, message: 'Activity already closed' });
 
+        const oldStatus = activity.status;
         const updateData = { isClosed: true, closedById: req.user.id };
 
         // If closing, ensure status is DONE
+        let newStatus = activity.status;
         if (activity.status !== 'DONE') {
             updateData.status = 'DONE';
+            newStatus = 'DONE';
         }
 
         await activity.update(updateData);
+
+        await ActivityHistory.create({
+            activityId: activity.id,
+            updatedById: req.user.id,
+            oldStatus,
+            newStatus,
+            remarks: 'Closed by admin/observer'
+        });
+
         res.json({ success: true, activity });
     } catch (error) {
         res.status(500).json({ success: false, message: error.message });
@@ -229,6 +321,34 @@ router.get('/tickets/:id/history', async (req, res) => {
         const ticketId = req.params.id;
         const history = await TicketHistory.findAll({
             where: { ticketId },
+            include: [
+                {
+                    model: User,
+                    as: 'updater',
+                    attributes: ['id'],
+                    include: [{ model: StaffProfile, as: 'profile', attributes: ['name'] }]
+                }
+            ],
+            order: [['createdAt', 'DESC']]
+        });
+
+        res.json({ success: true, history });
+    } catch (error) {
+        res.status(500).json({ success: false, message: error.message });
+    }
+});
+
+// Admin: Get Activity History
+router.get('/activities/:id/history', async (req, res) => {
+    try {
+        const user = await User.findByPk(req.user.id);
+        if (req.user.role !== 'admin' && req.user.role !== 'superadmin' && (!user || !user.isTaskObserver)) {
+            return res.status(403).json({ success: false, message: 'Not authorized' });
+        }
+
+        const activityId = req.params.id;
+        const history = await ActivityHistory.findAll({
+            where: { activityId },
             include: [
                 {
                     model: User,

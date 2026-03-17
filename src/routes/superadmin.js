@@ -108,7 +108,12 @@ router.post('/channel-partners', async (req, res) => {
       state,
       city,
       roleDescription,
-      employeeCount
+      employeeCount,
+      contactPersonName,
+      address,
+      birthDate,
+      anniversaryDate,
+      gstNumber
     } = req.body || {};
     if (!name) return res.status(400).json({ success: false, message: 'name required' });
     if (!channelPartnerId) return res.status(400).json({ success: false, message: 'channelPartnerId required' });
@@ -139,6 +144,11 @@ router.post('/channel-partners', async (req, res) => {
       city: city || null,
       roleDescription: roleDescription || null,
       employeeCount: employeeCount || null,
+      contactPersonName: contactPersonName || null,
+      address: address || null,
+      birthDate: birthDate || null,
+      anniversaryDate: anniversaryDate || null,
+      gstNumber: gstNumber || null,
       extra: extra || null,
     });
 
@@ -165,7 +175,12 @@ router.put('/channel-partners/:id', async (req, res) => {
       state,
       city,
       roleDescription,
-      employeeCount
+      employeeCount,
+      contactPersonName,
+      address,
+      birthDate,
+      anniversaryDate,
+      gstNumber
     } = req.body || {};
 
     if (phone !== undefined) {
@@ -205,6 +220,11 @@ router.put('/channel-partners/:id', async (req, res) => {
       ...(city !== undefined ? { city } : {}),
       ...(roleDescription !== undefined ? { roleDescription } : {}),
       ...(employeeCount !== undefined ? { employeeCount } : {}),
+      ...(contactPersonName !== undefined ? { contactPersonName } : {}),
+      ...(address !== undefined ? { address } : {}),
+      ...(birthDate !== undefined ? { birthDate } : {}),
+      ...(anniversaryDate !== undefined ? { anniversaryDate } : {}),
+      ...(gstNumber !== undefined ? { gstNumber } : {}),
       ...(extra !== undefined ? { extra } : {}),
     });
 

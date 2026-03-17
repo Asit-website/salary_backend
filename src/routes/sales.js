@@ -381,26 +381,37 @@ router.post('/orders', upload.single('proof'), async (req, res) => {
       if (phoneToUse) {
         const orgAccount = await OrgAccount.findByPk(req.tenantOrgAccountId);
         if (orgAccount) {
-          const bizName = orgAccount.name || 'Business';
+          const rowSet = await AppSetting.findOne({ where: { key: 'org_config', orgAccountId: req.tenantOrgAccountId } });
+          let canSend = true;
+          if (rowSet?.value) {
+            try {
+              const cfg = JSON.parse(rowSet.value);
+              if (cfg?.smsNotificationSettings?.orderCreation === false) canSend = false;
+            } catch (_) { }
+          }
 
-          const d = new Date(out.orderDate || Date.now());
-          const months = ["january", "february", "march", "april", "may", "june", "july", "august", "september", "october", "november", "december"];
-          const day = d.getDate();
-          const m = months[d.getMonth()];
-          const suffix = (day % 10 === 1 && day !== 11) ? 'st' : (day % 10 === 2 && day !== 12) ? 'nd' : (day % 10 === 3 && day !== 13) ? 'rd' : 'th';
-          const dateStr = `${day}${suffix} ${m}`;
-          const cPhone = normalizePhone(phoneToUse);
+          if (canSend) {
+            const bizName = orgAccount.name || 'Business';
 
-          // prefer local 10-digit format, but allow 10-12 digits (e.g. 91 prefix)
-          let fullPhone = cPhone;
-          if (fullPhone.length === 10) fullPhone = '91' + fullPhone;
+            const d = new Date(out.orderDate || Date.now());
+            const months = ["january", "february", "march", "april", "may", "june", "july", "august", "september", "october", "november", "december"];
+            const day = d.getDate();
+            const m = months[d.getMonth()];
+            const suffix = (day % 10 === 1 && day !== 11) ? 'st' : (day % 10 === 2 && day !== 12) ? 'nd' : (day % 10 === 3 && day !== 13) ? 'rd' : 'th';
+            const dateStr = `${day}${suffix} ${m}`;
+            const cPhone = normalizePhone(phoneToUse);
 
-          if (fullPhone.length >= 10) {
-            const smsText = `New Sales Order ${bizName} confirmed for ${dateStr} vetansutra.com ( Powered by Thinktech Software company)`;
-            const smsUrl = `http://182.18.162.128/api/mt/SendSMS?APIKEY=85I1g6L9hEeIntNZgQRrzA&senderid=VETANS&channel=Trans&DCS=0&flashsms=0&number=${fullPhone}&text=${encodeURIComponent(smsText)}&route=08`;
-            console.log(`Sending Order SMS to ${fullPhone}: ${smsText}`);
-            const resp = await fetch(smsUrl);
-            console.log('Order SMS Result:', { ok: resp.ok });
+            // prefer local 10-digit format, but allow 10-12 digits (e.g. 91 prefix)
+            let fullPhone = cPhone;
+            if (fullPhone.length === 10) fullPhone = '91' + fullPhone;
+
+            if (fullPhone.length >= 10) {
+              const smsText = `New Sales Order ${bizName} confirmed for ${dateStr} vetansutra.com ( Powered by Thinktech Software company)`;
+              const smsUrl = `http://182.18.162.128/api/mt/SendSMS?APIKEY=85I1g6L9hEeIntNZgQRrzA&senderid=VETANS&channel=Trans&DCS=0&flashsms=0&number=${fullPhone}&text=${encodeURIComponent(smsText)}&route=08`;
+              console.log(`Sending Order SMS to ${fullPhone}: ${smsText}`);
+              const resp = await fetch(smsUrl);
+              console.log('Order SMS Result:', { ok: resp.ok });
+            }
           }
         }
       }

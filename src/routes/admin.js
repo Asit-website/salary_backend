@@ -7865,11 +7865,12 @@ router.put('/settings/org', async (req, res) => {
     const body = req.body || {};
     const industryType = allowedIndustries.includes(String(body.industryType)) ? String(body.industryType) : 'field_sales';
     const features = body.features && typeof body.features === 'object' ? body.features : {};
-    const payload = JSON.stringify({ industryType, features });
+    const smsSettings = body.smsNotificationSettings && typeof body.smsNotificationSettings === 'object' ? body.smsNotificationSettings : {};
+    const payload = JSON.stringify({ industryType, features, smsNotificationSettings: smsSettings });
 
     const [row] = await AppSetting.findOrCreate({ where: { key: 'org_config', orgAccountId: orgId }, defaults: { value: payload, orgAccountId: orgId } });
     if (row.value !== payload) await row.update({ value: payload });
-    return res.json({ success: true, config: { industryType, features } });
+    return res.json({ success: true, config: { industryType, features, smsNotificationSettings: smsSettings } });
   } catch (e) {
     return res.status(500).json({ success: false, message: 'Failed to save org config' });
   }
@@ -10236,29 +10237,40 @@ router.post('/attendance', async (req, res) => {
     try {
       const staffPhone = user.phone;
       if (orgId && staffPhone) {
-        const orgAccount = await OrgAccount.findByPk(orgId);
-        if (orgAccount) {
-          const bizName = orgAccount.name || 'Business';
-          const d = new Date(dateIso);
-          const months = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
-          const day = d.getDate();
-          const m = months[d.getMonth()];
-          const suffix = (day % 10 === 1 && day !== 11) ? 'st' : (day % 10 === 2 && day !== 12) ? 'nd' : (day % 10 === 3 && day !== 13) ? 'rd' : 'th';
-          const dateStr = `${day}${suffix} ${m}`;
-          const digits = String(staffPhone).replace(/[^0-9]/g, '');
-          let fullPhone = digits.length > 10 ? digits.slice(-10) : digits;
-          if (fullPhone.length === 10) fullPhone = '91' + fullPhone;
-          if (fullPhone.length >= 10) {
-            const smsStatus = (status || 'present').replace('_', ' ').toLowerCase();
-            const smsText = `${bizName} marked you absent on ${dateStr}. Check attendance details on vetansutra.com ( Powered by Thinktech Software company)`;
-            const smsUrl = `http://182.18.162.128/api/mt/SendSMS?APIKEY=85I1g6L9hEeIntNZgQRrzA&senderid=VETANS&channel=Trans&DCS=0&flashsms=0&number=${fullPhone}&text=${encodeURIComponent(smsText)}&route=08`;
-            console.log(`[ATTENDANCE SMS] URL: ${smsUrl}`);
-            fetch(smsUrl)
-              .then(async (r) => {
-                const b = await r.text();
-                console.log(`[ATTENDANCE SMS] API Response (${r.status}): ${b}`);
-              })
-              .catch(err => console.error('[ATTENDANCE SMS] Fetch failed:', err));
+        const rowSet = await AppSetting.findOne({ where: { key: 'org_config', orgAccountId: orgId } });
+        let canSend = true;
+        if (rowSet?.value) {
+          try {
+            const cfg = JSON.parse(rowSet.value);
+            if (cfg?.smsNotificationSettings?.attendanceMarking === false) canSend = false;
+          } catch (_) { }
+        }
+
+        if (canSend) {
+          const orgAccount = await OrgAccount.findByPk(orgId);
+          if (orgAccount) {
+            const bizName = orgAccount.name || 'Business';
+            const d = new Date(dateIso);
+            const months = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+            const day = d.getDate();
+            const m = months[d.getMonth()];
+            const suffix = (day % 10 === 1 && day !== 11) ? 'st' : (day % 10 === 2 && day !== 12) ? 'nd' : (day % 10 === 3 && day !== 13) ? 'rd' : 'th';
+            const dateStr = `${day}${suffix} ${m}`;
+            const digits = String(staffPhone).replace(/[^0-9]/g, '');
+            let fullPhone = digits.length > 10 ? digits.slice(-10) : digits;
+            if (fullPhone.length === 10) fullPhone = '91' + fullPhone;
+            if (fullPhone.length >= 10) {
+              const smsStatus = (status || 'present').replace('_', ' ').toLowerCase();
+              const smsText = `${bizName} marked you absent on ${dateStr}. Check attendance details on vetansutra.com ( Powered by Thinktech Software company)`;
+              const smsUrl = `http://182.18.162.128/api/mt/SendSMS?APIKEY=85I1g6L9hEeIntNZgQRrzA&senderid=VETANS&channel=Trans&DCS=0&flashsms=0&number=${fullPhone}&text=${encodeURIComponent(smsText)}&route=08`;
+              console.log(`[ATTENDANCE SMS] URL: ${smsUrl}`);
+              fetch(smsUrl)
+                .then(async (r) => {
+                  const b = await r.text();
+                  console.log(`[ATTENDANCE SMS] API Response (${r.status}): ${b}`);
+                })
+                .catch(err => console.error('[ATTENDANCE SMS] Fetch failed:', err));
+            }
           }
         }
       }
@@ -10355,31 +10367,42 @@ router.post('/attendance/bulk', async (req, res) => {
       try {
         const staffPhone = user.phone;
         if (orgId && staffPhone) {
-          const orgAccount = await OrgAccount.findByPk(orgId);
-          if (orgAccount) {
-            const bizName = orgAccount.name || 'Business';
-            const d = new Date(dateIso);
-            const months = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
-            const day = d.getDate();
-            const m = months[d.getMonth()];
-            const suffix = (day % 10 === 1 && day !== 11) ? 'st' : (day % 10 === 2 && day !== 12) ? 'nd' : (day % 10 === 3 && day !== 13) ? 'rd' : 'th';
-            const dateStr = `${day}${suffix} ${m}`;
+          const rowSet = await AppSetting.findOne({ where: { key: 'org_config', orgAccountId: orgId } });
+          let canSend = true;
+          if (rowSet?.value) {
+            try {
+              const cfg = JSON.parse(rowSet.value);
+              if (cfg?.smsNotificationSettings?.attendanceMarking === false) canSend = false;
+            } catch (_) { }
+          }
 
-            const digits = String(staffPhone).replace(/[^0-9]/g, '');
-            let fullPhone = digits.length > 10 ? digits.slice(-10) : digits;
-            if (fullPhone.length === 10) fullPhone = '91' + fullPhone;
+          if (canSend) {
+            const orgAccount = await OrgAccount.findByPk(orgId);
+            if (orgAccount) {
+              const bizName = orgAccount.name || 'Business';
+              const d = new Date(dateIso);
+              const months = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+              const day = d.getDate();
+              const m = months[d.getMonth()];
+              const suffix = (day % 10 === 1 && day !== 11) ? 'st' : (day % 10 === 2 && day !== 12) ? 'nd' : (day % 10 === 3 && day !== 13) ? 'rd' : 'th';
+              const dateStr = `${day}${suffix} ${m}`;
 
-            if (fullPhone.length >= 10) {
-              const smsStatus = (status || 'present').replace('_', ' ').toLowerCase();
-              const smsText = `${bizName} marked you ${smsStatus} on ${dateStr}. Check attendance details on vetansutra.com ( Powered by Thinktech Software company)`;
-              const smsUrl = `http://182.18.162.128/api/mt/SendSMS?APIKEY=85I1g6L9hEeIntNZgQRrzA&senderid=VETANS&channel=Trans&DCS=0&flashsms=0&number=${fullPhone}&text=${encodeURIComponent(smsText)}&route=08`;
-              console.log(`[ATTENDANCE BULK SMS] URL: ${smsUrl}`);
-              fetch(smsUrl)
-                .then(async (r) => {
-                  const b = await r.text();
-                  console.log(`[ATTENDANCE BULK SMS] API Response (${r.status}): ${b}`);
-                })
-                .catch(err => console.error('[ATTENDANCE BULK SMS] Fetch failed:', err));
+              const digits = String(staffPhone).replace(/[^0-9]/g, '');
+              let fullPhone = digits.length > 10 ? digits.slice(-10) : digits;
+              if (fullPhone.length === 10) fullPhone = '91' + fullPhone;
+
+              if (fullPhone.length >= 10) {
+                const smsStatus = (status || 'present').replace('_', ' ').toLowerCase();
+                const smsText = `${bizName} marked you ${smsStatus} on ${dateStr}. Check attendance details on vetansutra.com ( Powered by Thinktech Software company)`;
+                const smsUrl = `http://182.18.162.128/api/mt/SendSMS?APIKEY=85I1g6L9hEeIntNZgQRrzA&senderid=VETANS&channel=Trans&DCS=0&flashsms=0&number=${fullPhone}&text=${encodeURIComponent(smsText)}&route=08`;
+                console.log(`[ATTENDANCE BULK SMS] URL: ${smsUrl}`);
+                fetch(smsUrl)
+                  .then(async (r) => {
+                    const b = await r.text();
+                    console.log(`[ATTENDANCE BULK SMS] API Response (${r.status}): ${b}`);
+                  })
+                  .catch(err => console.error('[ATTENDANCE BULK SMS] Fetch failed:', err));
+              }
             }
           }
         }
@@ -11616,7 +11639,14 @@ router.get('/dashboard', async (req, res) => {
     const orgStaffIds = (await User.findAll({ where: { orgAccountId: orgId, role: 'staff' }, attributes: ['id'] })).map(u => u.id);
 
     const presentToday = await Attendance.count({
-      where: { date: today, punchedInAt: { [Op.ne]: null }, userId: orgStaffIds }
+      where: {
+        date: today,
+        userId: orgStaffIds,
+        [Op.or]: [
+          { punchedInAt: { [Op.ne]: null } },
+          { status: { [Op.in]: ['present', 'overtime', 'half_day', 'late', 'early'] } }
+        ]
+      }
     });
 
     const leaveToday = await Attendance.count({
@@ -11687,7 +11717,14 @@ router.get('/dashboard/stats', async (req, res) => {
     const orgStaffIds = (await User.findAll({ where: { orgAccountId: orgId, role: 'staff' }, attributes: ['id'] })).map(u => u.id);
 
     const presentToday = await Attendance.count({
-      where: { date: today, punchedInAt: { [Op.ne]: null }, userId: orgStaffIds }
+      where: {
+        date: today,
+        userId: orgStaffIds,
+        [Op.or]: [
+          { punchedInAt: { [Op.ne]: null } },
+          { status: { [Op.in]: ['present', 'overtime', 'half_day', 'late', 'early'] } }
+        ]
+      }
     });
 
     const leaveToday = await Attendance.count({
@@ -11845,9 +11882,14 @@ router.get('/dashboard/attendance-chart', async (req, res) => {
 
 
       const present = await Attendance.count({
-
-        where: { date: dateStr, punchedInAt: { [Op.ne]: null }, userId: orgStaffIds }
-
+        where: {
+          date: dateStr,
+          userId: orgStaffIds,
+          [Op.or]: [
+            { punchedInAt: { [Op.ne]: null } },
+            { status: { [Op.in]: ['present', 'overtime', 'half_day', 'late', 'early'] } }
+          ]
+        }
       });
 
       const absent = orgStaffIds.length - present;
@@ -15622,6 +15664,570 @@ router.get('/reports/org-leave-balance', async (req, res) => {
 
 
 
+// Detailed Monthly Attendance Report (Excel)
+router.get('/reports/monthly-attendance', async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
+    const { month, year } = req.query;
+    if (!month || !year) return res.status(400).json({ success: false, message: 'Month and Year required' });
+
+    const startDate = dayjs(`${year}-${month}-01`).startOf('month');
+    const endDate = startDate.endOf('month');
+    const daysInMonth = startDate.daysInMonth();
+
+    const org = await OrgAccount.findByPk(orgId);
+    if (!org) return res.status(404).json({ success: false, message: 'Organization not found' });
+
+    const staffMembers = await User.findAll({
+      where: { orgAccountId: orgId, role: 'staff', active: true },
+      include: [{ model: StaffProfile, as: 'profile' }],
+      order: [['id', 'ASC']]
+    });
+
+    const attendanceData = await Attendance.findAll({
+      where: {
+        userId: staffMembers.map(s => s.id),
+        date: {
+          [Op.gte]: startDate.format('YYYY-MM-DD'),
+          [Op.lte]: endDate.format('YYYY-MM-DD')
+        }
+      }
+    });
+
+    // Aggregations
+    const holidays = await HolidayDate.findAll({
+      where: { date: { [Op.between]: [startDate.format('YYYY-MM-DD'), endDate.format('YYYY-MM-DD')] } },
+      include: [{ model: HolidayTemplate, as: 'template' }]
+    });
+
+    const leaves = await LeaveRequest.findAll({
+      where: {
+        orgAccountId: orgId,
+        status: 'APPROVED',
+        [Op.or]: [
+          { startDate: { [Op.between]: [startDate.format('YYYY-MM-DD'), endDate.format('YYYY-MM-DD')] } },
+          { endDate: { [Op.between]: [startDate.format('YYYY-MM-DD'), endDate.format('YYYY-MM-DD')] } }
+        ]
+      }
+    });
+
+
+
+    // Fetch Weekly Off Assignments
+
+    const woAssignments = await StaffWeeklyOffAssignment.findAll({
+
+      where: {
+
+        userId: staffMembers.map(s => s.id),
+
+        [Op.or]: [
+
+          { effectiveTo: null },
+
+          { effectiveTo: { [Op.gte]: startDate.format('YYYY-MM-DD') } }
+
+        ],
+
+        effectiveFrom: { [Op.lte]: endDate.format('YYYY-MM-DD') }
+
+      },
+
+      include: [{ model: WeeklyOffTemplate, as: 'template' }]
+
+    });
+
+
+
+    // Fetch Holiday Assignments
+
+    const holidayAssignments = await StaffHolidayAssignment.findAll({
+
+      where: {
+
+        userId: staffMembers.map(s => s.id),
+
+        [Op.or]: [
+
+          { effectiveTo: null },
+
+          { effectiveTo: { [Op.gte]: startDate.format('YYYY-MM-DD') } }
+
+        ],
+
+        effectiveFrom: { [Op.lte]: endDate.format('YYYY-MM-DD') }
+
+      },
+
+      include: [{
+
+        model: HolidayTemplate,
+
+        as: 'template',
+
+        include: [{
+
+          model: HolidayDate,
+
+          as: 'holidays',
+
+          where: {
+
+            date: {
+
+              [Op.gte]: startDate.format('YYYY-MM-DD'),
+
+              [Op.lte]: endDate.format('YYYY-MM-DD')
+
+            }
+
+          }
+
+        }]
+
+      }]
+
+    });
+
+
+
+    // Fetch Late Penalty Rule
+
+    let lateTiers = [];
+
+    let lateRuleActive = false;
+
+    try {
+
+      const penaltyRule = await AttendanceAutomationRule.findOne({
+
+        where: { key: 'late_punchin_penalty', orgAccountId: orgId, active: true }
+
+      });
+
+      if (penaltyRule) {
+
+        let config = penaltyRule.config;
+
+        if (typeof config === 'string') {
+
+          try { config = JSON.parse(config); } catch (e) {
+
+            try { config = JSON.parse(JSON.parse(config)); } catch (__) { config = {}; }
+
+          }
+
+        }
+
+        lateRuleActive = config.active !== false && penaltyRule.active;
+
+        if (lateRuleActive) lateTiers = Array.isArray(config.tiers) ? config.tiers : [];
+
+      }
+
+    } catch (_) { }
+
+
+
+    const shiftAssignments = await StaffShiftAssignment.findAll({
+
+      where: {
+
+        userId: staffMembers.map(s => s.id),
+
+        [Op.or]: [
+
+          { effectiveTo: null },
+
+          { effectiveTo: { [Op.gte]: startDate.format('YYYY-MM-DD') } }
+
+        ],
+
+        effectiveFrom: { [Op.lte]: endDate.format('YYYY-MM-DD') }
+
+      },
+
+      include: [{ model: ShiftTemplate, as: 'template' }]
+
+    });
+
+
+
+    const shiftTemplateMap = {};
+
+    const allShiftTemplates = await ShiftTemplate.findAll({ where: { orgAccountId: orgId, active: true } });
+
+    allShiftTemplates.forEach(t => { shiftTemplateMap[t.id] = t; });
+
+
+
+    // Helper functions for WO/Holiday/Leave (Re-implement or reuse)
+
+    // For performance, we'll build lookups
+
+    const attendanceMap = {};
+
+    attendanceData.forEach(a => {
+
+      const dKey = dayjs(a.date).format('YYYY-MM-DD');
+
+      if (!attendanceMap[a.userId]) attendanceMap[a.userId] = {};
+
+      attendanceMap[a.userId][dKey] = a;
+
+    });
+
+
+
+    const leaveMap = {};
+
+    leaves.forEach(l => {
+
+      if (!leaveMap[l.userId]) leaveMap[l.userId] = [];
+
+      leaveMap[l.userId].push(l);
+
+    });
+
+
+
+    const toStatusCode = (att) => {
+
+      const s = String(att?.status || '').toLowerCase();
+
+      if (s === 'present') return 'P';
+
+      if (s === 'absent') return 'A';
+
+      if (s === 'leave') return 'L';
+
+      if (s === 'half_day' || s === 'half-day' || s === 'halfday') return 'HD';
+
+      if (s === 'weekly_off' || s === 'weekly-off' || s === 'weeklyoff') return 'WO';
+
+      if (s === 'holiday') return 'H';
+
+      if (att?.punchedInAt || att?.punchedOutAt) return 'P';
+
+      return null;
+
+    };
+
+
+
+    const woMap = {};
+
+    woAssignments.forEach(asg => {
+
+      if (!woMap[asg.userId]) woMap[asg.userId] = asg;
+
+    });
+
+
+
+    const shiftMap = {};
+    shiftAssignments.forEach(asg => {
+      if (!shiftMap[asg.userId]) shiftMap[asg.userId] = [];
+      shiftMap[asg.userId].push(asg);
+    });
+
+    // Excel Generation Start
+    const workbook = new exceljs.Workbook();
+    const worksheet = workbook.addWorksheet('Monthly Attendance Report');
+
+    // Overall Config
+    worksheet.views = [{ showGridLines: false }];
+
+    // Columns: [S.N., Employee Info] + [Days 1..N]
+    const columns = [
+      { width: 5 },  // A
+      { width: 25 }, // B
+    ];
+    for (let i = 1; i <= daysInMonth; i++) {
+      columns.push({ width: 8.5 });
+    }
+    worksheet.columns = columns;
+
+    // 1. HEADER SECTION
+    // Row 1: Title
+    const titleRow = worksheet.getRow(1);
+    worksheet.mergeCells(1, 1, 1, daysInMonth + 2);
+    titleRow.getCell(1).value = 'Monthly Status Report (Detailed Work Duration)';
+    titleRow.getCell(1).font = { size: 14, bold: true };
+    titleRow.getCell(1).alignment = { horizontal: 'center' };
+
+    // Row 3: Date Range
+    worksheet.mergeCells(3, 1, 3, daysInMonth + 2);
+    const dateRangeRow = worksheet.getRow(3);
+    dateRangeRow.getCell(1).value = `${startDate.format('MMM DD YYYY')} To ${endDate.format('MMM DD YYYY')}`;
+    dateRangeRow.getCell(1).alignment = { horizontal: 'center' };
+    dateRangeRow.getCell(1).font = { bold: true };
+
+    // Row 4: Company and Printed On
+    const infoRow = worksheet.getRow(4);
+    infoRow.getCell(1).value = `Company: ${org.name}`;
+    infoRow.getCell(1).font = { bold: true };
+    worksheet.mergeCells(4, daysInMonth - 2, 4, daysInMonth + 2);
+    infoRow.getCell(daysInMonth - 2).value = `Printed On : ${dayjs().format('MMM DD YYYY HH:mm')}`;
+    infoRow.getCell(daysInMonth - 2).alignment = { horizontal: 'right' };
+
+    // Row 6: Day Initials
+    const dayRow = worksheet.getRow(6);
+    dayRow.getCell(1).value = 'Days';
+    dayRow.getCell(1).font = { bold: true };
+    for (let i = 1; i <= daysInMonth; i++) {
+      const d = startDate.date(i);
+      dayRow.getCell(i + 2).value = `${i} ${d.format('dd').charAt(0)}`;
+      dayRow.getCell(i + 2).alignment = { horizontal: 'center' };
+      dayRow.getCell(i + 2).border = { top: { style: 'thin' }, left: { style: 'thin' }, bottom: { style: 'thin' }, right: { style: 'thin' } };
+    }
+
+    let currentRow = 8;
+
+    // HELPER: Check if a date is a Weekly Off for a staff
+    const checkIsWeeklyOff = (userId, dateStr) => {
+      const asg = woMap[userId];
+      if (!asg || !asg.template) return false;
+      const d = new Date(dateStr);
+      const dow = d.getDay();
+      const wk = Math.floor((d.getDate() - 1) / 7) + 1;
+      let config = asg.template.config;
+      if (typeof config === 'string') { try { config = JSON.parse(config); } catch (e) { return false; } }
+      if (!Array.isArray(config)) return false;
+      for (const cfg of config) {
+        if (Number(cfg.day) === dow) {
+          if (cfg.weeks === 'all') return true;
+          if (Array.isArray(cfg.weeks) && (cfg.weeks.includes(wk) || cfg.weeks.includes(String(wk)))) return true;
+        }
+      }
+      return false;
+    };
+
+    // HELPER: Calculate statistics for a staff member
+    const getStaffStats = (staffId) => {
+      let present = 0, absent = 0, wo = 0, holiday = 0, leave = 0;
+      let totalDurationMin = 0, totalOtMin = 0;
+      let lateDays = 0, earlyDays = 0;
+      const userHolAsg = holidayAssignments.filter(a => a.userId === staffId);
+
+      for (let i = 1; i <= daysInMonth; i++) {
+        const dateObj = startDate.date(i);
+        const dStr = dateObj.format('YYYY-MM-DD');
+        const att = attendanceMap[staffId]?.[dStr];
+
+        if (att) {
+          const statusCode = toStatusCode(att);
+          const s = (statusCode || '').toLowerCase();
+          if (['p', 'hd'].includes(s)) present++;
+          else if (s === 'a') absent++;
+          else if (s === 'l') leave++;
+
+          if (att.punchedInAt && att.punchedOutAt) {
+            const diff = dayjs(att.punchedOutAt).diff(dayjs(att.punchedInAt), 'minute');
+            totalDurationMin += diff;
+          }
+          totalOtMin += (att.overtimeMinutes || 0);
+
+          // Late/Early Counts logic
+          const dayShiftAsg = shiftMap[staffId]?.filter(asg => dStr >= dayjs(asg.effectiveFrom).format('YYYY-MM-DD') && (!asg.effectiveTo || dStr <= dayjs(asg.effectiveTo).format('YYYY-MM-DD')))
+            .sort((a, b) => dayjs(b.effectiveFrom).diff(dayjs(a.effectiveFrom)))[0];
+          const staff = staffMembers.find(s => s.id === staffId);
+          let shiftTpl = dayShiftAsg?.template || staff?.shiftTemplate;
+          if (!shiftTpl && staff?.profile?.shiftSelection) shiftTpl = shiftTemplateMap[Number(staff.profile.shiftSelection)];
+
+          if (shiftTpl) {
+            if (att.punchedInAt && shiftTpl.startTime) {
+              const punchIn = new Date(att.punchedInAt);
+              const istDate = new Date(punchIn.getTime() + (5.5 * 3600 * 1000));
+              const punchInSec = istDate.getUTCHours() * 3600 + istDate.getUTCMinutes() * 60 + istDate.getUTCSeconds();
+              const [sh, sm] = shiftTpl.startTime.split(':').map(Number);
+              const shiftStartSec = sh * 3600 + sm * 60;
+              if (punchInSec > shiftStartSec) lateDays++;
+            }
+            if (att.punchedOutAt && shiftTpl.endTime) {
+              const punchOut = new Date(att.punchedOutAt);
+              const istDate = new Date(punchOut.getTime() + (5.5 * 3600 * 1000));
+              const punchOutSec = istDate.getUTCHours() * 3600 + istDate.getUTCMinutes() * 60 + istDate.getUTCSeconds();
+              const [eh, em] = shiftTpl.endTime.split(':').map(Number);
+              const shiftEndSec = eh * 3600 + em * 60;
+              if (punchOutSec < shiftEndSec) earlyDays++;
+            }
+          }
+        } else {
+          // Check Holiday/WO/Leave
+          const isL = leaveMap[staffId]?.find(l => {
+            const s = dayjs(l.startDate).format('YYYY-MM-DD');
+            const e = dayjs(l.endDate).format('YYYY-MM-DD');
+            return (dStr >= s && dStr <= e);
+          });
+          let isH = false;
+          for (const asg of userHolAsg) {
+            if (dStr >= dayjs(asg.effectiveFrom).format('YYYY-MM-DD') && (!asg.effectiveTo || dStr <= dayjs(asg.effectiveTo).format('YYYY-MM-DD'))) {
+              if (asg.template?.holidays?.some(hd => hd.date === dStr)) { isH = true; break; }
+            }
+          }
+
+          if (isL) leave++;
+          else if (isH) holiday++;
+          else if (checkIsWeeklyOff(staffId, dStr)) wo++;
+          else absent++;
+        }
+      }
+      return { present, absent, wo, holiday, leave, totalDurationMin, totalOtMin, lateDays, earlyDays };
+    };
+
+    // Row Generation per Staff
+    staffMembers.forEach((staff) => {
+      const stats = getStaffStats(staff.id);
+      const staffTierCounts = new Array(lateTiers.length).fill(0);
+
+      // Department Row
+      const deptRow = worksheet.getRow(currentRow);
+      deptRow.getCell(1).value = 'Department:';
+      deptRow.getCell(1).font = { bold: true };
+      deptRow.getCell(2).value = staff.profile?.department || 'N/A';
+      currentRow++;
+
+      // Employee Info Row (Merged Summary)
+      const empInfoRow = worksheet.getRow(currentRow);
+      empInfoRow.getCell(1).value = 'Employee:';
+      empInfoRow.getCell(1).font = { bold: true };
+      empInfoRow.getCell(2).value = `${staff.id} : ${staff.profile?.name || staff.name}`;
+
+      const summaryText = `Total Work Duration: ${Math.floor(stats.totalDurationMin / 60)}:${String(stats.totalDurationMin % 60).padStart(2, '0')} Hrs.  Total OT: ${Math.floor(stats.totalOtMin / 60)}:${String(stats.totalOtMin % 60).padStart(2, '0')} Hrs.  Present: ${stats.present}  Absent: ${stats.absent}  WeeklyOff: ${stats.wo}  Holidays: ${stats.holiday}  Leaves Taken: ${stats.leave}`;
+      worksheet.mergeCells(currentRow, 3, currentRow, daysInMonth + 2);
+      empInfoRow.getCell(3).value = summaryText;
+      empInfoRow.getCell(3).font = { size: 9 };
+      empInfoRow.getCell(3).alignment = { wrapText: true };
+      currentRow += 2; // Space
+
+      // The 8-row Detail Grid
+      const detailHeaders = ['Status', 'InTime', 'OutTime', 'Duration', 'Late By', 'Early By', 'OT', 'Shift'];
+      detailHeaders.forEach((h, hIdx) => {
+        const r = worksheet.getRow(currentRow + hIdx);
+        r.getCell(1).value = h;
+        r.getCell(1).font = { bold: true, size: 9 };
+        r.getCell(1).border = { left: { style: 'thin' }, top: { style: 'thin' }, bottom: { style: 'thin' } };
+
+        for (let i = 1; i <= daysInMonth; i++) {
+          const dStr = startDate.date(i).format('YYYY-MM-DD');
+          const att = attendanceMap[staff.id]?.[dStr];
+          const cell = r.getCell(i + 2);
+          cell.border = { top: { style: 'thin' }, left: { style: 'thin' }, bottom: { style: 'thin' }, right: { style: 'thin' } };
+          cell.font = { size: 8 };
+          cell.alignment = { horizontal: 'center' };
+
+          if (h === 'Status') {
+            if (att) {
+              const statusCode = toStatusCode(att) || 'P';
+              let lateIndicator = '';
+              const otMin = Math.max(0, Number(att.overtimeMinutes || 0) || 0);
+
+              if (lateRuleActive && ['p', 'hd'].includes(statusCode.toLowerCase())) {
+                const dayShiftAsg = shiftMap[staff.id]?.filter(asg => dStr >= dayjs(asg.effectiveFrom).format('YYYY-MM-DD') && (!asg.effectiveTo || dStr <= dayjs(asg.effectiveTo).format('YYYY-MM-DD')))
+                  .sort((a, b) => dayjs(b.effectiveFrom).diff(dayjs(a.effectiveFrom)))[0];
+                let shiftTpl = dayShiftAsg?.template || staff.shiftTemplate;
+                if (!shiftTpl && staff.profile?.shiftSelection) shiftTpl = shiftTemplateMap[Number(staff.profile.shiftSelection)];
+
+                if (shiftTpl?.startTime && att.punchedInAt) {
+                  const punchIn = new Date(att.punchedInAt);
+                  const istDate = new Date(punchIn.getTime() + (5.5 * 3600 * 1000));
+                  const punchInSec = istDate.getUTCHours() * 3600 + istDate.getUTCMinutes() * 60 + istDate.getUTCSeconds();
+                  const [sh, sm] = shiftTpl.startTime.split(':').map(Number);
+                  const shiftStartSec = sh * 3600 + sm * 60;
+
+                  if (punchInSec > shiftStartSec) {
+                    const lateMins = Math.floor((punchInSec - shiftStartSec) / 60);
+                    for (let tIdx = 0; tIdx < lateTiers.length; tIdx++) {
+                      const tier = lateTiers[tIdx];
+                      if (lateMins >= Number(tier.minMinutes) && lateMins <= Number(tier.maxMinutes)) {
+                        staffTierCounts[tIdx]++;
+                        const freq = Number(tier.frequency);
+                        if (freq > 0 && staffTierCounts[tIdx] % freq === 0) {
+                          lateIndicator = ' (Penalty)';
+                        } else {
+                          lateIndicator = ' (L)';
+                        }
+                        break;
+                      }
+                    }
+                  }
+                }
+              }
+              cell.value = otMin > 0 ? `${statusCode}${lateIndicator} OT${otMin}m` : `${statusCode}${lateIndicator}`;
+            } else {
+              // Check Holiday/WO/Leave
+              const userHolAsg = holidayAssignments.filter(a => a.userId === staff.id);
+              let isH = false;
+              for (const asg of userHolAsg) {
+                if (dStr >= dayjs(asg.effectiveFrom).format('YYYY-MM-DD') && (!asg.effectiveTo || dStr <= dayjs(asg.effectiveTo).format('YYYY-MM-DD'))) {
+                  if (asg.template?.holidays?.some(hd => hd.date === dStr)) { isH = true; break; }
+                }
+              }
+              const isL = leaveMap[staff.id]?.find(l => {
+                const s = dayjs(l.startDate).format('YYYY-MM-DD');
+                const e = dayjs(l.endDate).format('YYYY-MM-DD');
+                return (dStr >= s && dStr <= e);
+              });
+              if (isL) cell.value = 'L';
+              else if (isH) cell.value = 'H';
+              else if (checkIsWeeklyOff(staff.id, dStr)) cell.value = 'WO';
+              else cell.value = '-';
+            }
+          } else if (h === 'InTime') {
+            cell.value = att?.punchedInAt ? dayjs(att.punchedInAt).format('HH:mm') : '';
+          } else if (h === 'OutTime') {
+            cell.value = att?.punchedOutAt ? dayjs(att.punchedOutAt).format('HH:mm') : '';
+          } else if (h === 'Duration' && att?.punchedInAt && att?.punchedOutAt) {
+            const diff = dayjs(att.punchedOutAt).diff(dayjs(att.punchedInAt), 'minute');
+            cell.value = `${Math.floor(diff / 60)}:${String(diff % 60).padStart(2, '0')}`;
+          } else if (h === 'Late By' || h === 'Early By') {
+            // Calculate Late/Early if shift info available
+            const dateObj = startDate.date(i);
+            const dStr = dateObj.format('YYYY-MM-DD');
+            const dayShiftAsg = shiftMap[staff.id]?.filter(asg => dStr >= dayjs(asg.effectiveFrom).format('YYYY-MM-DD') && (!asg.effectiveTo || dStr <= dayjs(asg.effectiveTo).format('YYYY-MM-DD')))
+              .sort((a, b) => dayjs(b.effectiveFrom).diff(dayjs(a.effectiveFrom)))[0];
+            const shiftTpl = dayShiftAsg?.template || staff.shiftTemplate;
+
+            if (shiftTpl) {
+              if (h === 'Late By' && att?.punchedInAt && shiftTpl.startTime) {
+                const [sh, sm] = shiftTpl.startTime.split(':').map(Number);
+                const shiftStartTime = dayjs(att.punchedInAt).hour(sh).minute(sm).second(0);
+                const diff = dayjs(att.punchedInAt).diff(shiftStartTime, 'minute');
+                if (diff > 0) cell.value = `${diff}m`;
+              } else if (h === 'Early By' && att?.punchedOutAt && shiftTpl.endTime) {
+                const [eh, em] = shiftTpl.endTime.split(':').map(Number);
+                const shiftEndTime = dayjs(att.punchedOutAt).hour(eh).minute(em).second(0);
+                const diff = shiftEndTime.diff(dayjs(att.punchedOutAt), 'minute');
+                if (diff > 0) cell.value = `${diff}m`;
+              }
+            }
+          } else if (h === 'OT') {
+            cell.value = att?.overtimeMinutes ? `${Math.floor(att.overtimeMinutes / 60)}:${String(att.overtimeMinutes % 60).padStart(2, '0')}` : '';
+          } else if (h === 'Shift') {
+            const dateObj = startDate.date(i);
+            const dStr = dateObj.format('YYYY-MM-DD');
+            const dayShiftAsg = shiftMap[staff.id]?.filter(asg => dStr >= dayjs(asg.effectiveFrom).format('YYYY-MM-DD') && (!asg.effectiveTo || dStr <= dayjs(asg.effectiveTo).format('YYYY-MM-DD')))
+              .sort((a, b) => dayjs(b.effectiveFrom).diff(dayjs(a.effectiveFrom)))[0];
+            const shiftTpl = dayShiftAsg?.template || staff.shiftTemplate;
+            cell.value = shiftTpl?.name || 'GS';
+          }
+        }
+      });
+
+      currentRow += 10; // Next employee block
+    });
+
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', `attachment; filename=monthly-attendance-${year}-${month}.xlsx`);
+    await workbook.xlsx.write(res);
+    res.end();
+  } catch (error) {
+    console.error('Monthly attendance report error:', error);
+    res.status(500).json({ success: false, message: 'Failed to generate report' });
+  }
+});
+
 // Organization-based Punch Matrix Reports
 
 router.get('/reports/org-punch-matrix', async (req, res) => {
@@ -15688,7 +16294,7 @@ router.get('/reports/org-punch-matrix', async (req, res) => {
 
 
 
-    // Map attendance to matrix: { userId: { date: [times] } }
+    // Map attendance to matrix: { userId: { date: [in,out pairs] } }
 
     const matrix = {};
 
@@ -15698,10 +16304,13 @@ router.get('/reports/org-punch-matrix', async (req, res) => {
 
       if (!matrix[att.userId][att.date]) matrix[att.userId][att.date] = [];
 
-      if (att.punchedInAt) {
+      const formatTime = (value) => new Date(value).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false });
+      const inTime = att.punchedInAt ? formatTime(att.punchedInAt) : '';
+      const outTime = att.punchedOutAt ? formatTime(att.punchedOutAt) : '';
 
-        matrix[att.userId][att.date].push(new Date(att.punchedInAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false }));
-
+      const pair = inTime && outTime ? `${inTime}, ${outTime}` : (inTime || outTime || '');
+      if (pair) {
+        matrix[att.userId][att.date].push(pair);
       }
 
     });
@@ -19618,25 +20227,37 @@ router.post('/payroll/generate-payslip', async (req, res) => {
         const user = await sequelize.models.User.findByPk(userId, { include: [{ model: sequelize.models.StaffProfile, as: 'profile' }] });
         const phone = user?.profile?.phone || user?.phone;
         if (phone) {
-          const name = user?.profile?.name || user?.name || 'Staff';
-          const baseUrl = `https://${req.get('host')}`;
-          const pdfUrl = `${baseUrl}${relativePath}`;
-          const d = dayjs(monthKey, 'YYYY-MM');
-          const monthName = d.isValid() ? d.format('MMMM').toLowerCase() : monthKey;
-          const smsText = `Hi ${name}, your payslip for ${monthName} is now available. View it here: https://vetansutra.com ( Powered by Thinktech Software company)`;
+          const orgId = user.orgAccountId;
+          const rowSet = await AppSetting.findOne({ where: { key: 'org_config', orgAccountId: orgId } });
+          let canSend = true;
+          if (rowSet?.value) {
+            try {
+              const cfg = JSON.parse(rowSet.value);
+              if (cfg?.smsNotificationSettings?.payslipGeneration === false) canSend = false;
+            } catch (_) { }
+          }
 
-          const normalized = String(phone || '').replace(/[^0-9]/g, '');
-          let fullPhone = normalized;
-          if (fullPhone.length === 10) fullPhone = '91' + fullPhone;
+          if (canSend) {
+            const name = user?.profile?.name || user?.name || 'Staff';
+            const baseUrl = `https://${req.get('host')}`;
+            const pdfUrl = `${baseUrl}${relativePath}`;
+            const d = dayjs(monthKey, 'YYYY-MM');
+            const monthName = d.isValid() ? d.format('MMMM').toLowerCase() : monthKey;
+            const smsText = `Hi ${name}, your payslip for ${monthName} is now available. View it here: https://vetansutra.com ( Powered by Thinktech Software company)`;
 
-          const smsUrl = `http://182.18.162.128/api/mt/SendSMS?APIKEY=85I1g6L9hEeIntNZgQRrzA&senderid=VETANS&channel=Trans&DCS=0&flashsms=0&number=${fullPhone}&text=${encodeURIComponent(smsText)}&route=08`;
-          console.log(`[PAISLIP SMS] Sending to ${fullPhone}: ${smsText}`);
-          console.log(`[PAISLIP SMS] URL: ${smsUrl}`);
+            const normalized = String(phone || '').replace(/[^0-9]/g, '');
+            let fullPhone = normalized;
+            if (fullPhone.length === 10) fullPhone = '91' + fullPhone;
 
-          const resp = await fetch(smsUrl);
-          const respText = await resp.text();
-          smsResult = { ok: resp.ok, status: resp.status, body: respText };
-          console.log('[PAISLIP SMS] Result:', smsResult);
+            const smsUrl = `http://182.18.162.128/api/mt/SendSMS?APIKEY=85I1g6L9hEeIntNZgQRrzA&senderid=VETANS&channel=Trans&DCS=0&flashsms=0&number=${fullPhone}&text=${encodeURIComponent(smsText)}&route=08`;
+            console.log(`[PAISLIP SMS] Sending to ${fullPhone}: ${smsText}`);
+            console.log(`[PAISLIP SMS] URL: ${smsUrl}`);
+
+            const resp = await fetch(smsUrl);
+            const respText = await resp.text();
+            smsResult = { ok: resp.ok, status: resp.status, body: respText };
+            console.log('[PAISLIP SMS] Result:', smsResult);
+          }
         }
       } else {
         console.log('PayrollLine not found');

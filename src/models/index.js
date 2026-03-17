@@ -91,6 +91,8 @@ const defineMeeting = require('./Meeting');
 const defineMeetingAttendee = require('./MeetingAttendee');
 const defineTicket = require('./Ticket');
 const defineTaskObserverMapping = require('./TaskObserverMapping');
+const defineActivityHistory = require('./ActivityHistory');
+const defineMeetingHistory = require('./MeetingHistory');
 
 
 const User = defineUser(sequelize);
@@ -185,6 +187,8 @@ const Meeting = defineMeeting(sequelize);
 const MeetingAttendee = defineMeetingAttendee(sequelize);
 const Ticket = defineTicket(sequelize);
 const TaskObserverMapping = defineTaskObserverMapping(sequelize);
+const ActivityHistory = defineActivityHistory(sequelize);
+const MeetingHistory = defineMeetingHistory(sequelize);
 
 
 // Leave Template associations (after models are defined)
@@ -544,11 +548,23 @@ Ticket.belongsTo(User, { foreignKey: 'updatedBy', as: 'updater' });
 
 Activity.belongsTo(User, { foreignKey: 'closedById', as: 'closedBy' });
 Ticket.belongsTo(User, { foreignKey: 'closedById', as: 'closedBy' });
+Meeting.belongsTo(User, { foreignKey: 'closedById', as: 'closedBy' });
+Activity.belongsTo(User, { as: 'transferredTo', foreignKey: 'transferredToId' });
 
 // Ticket History associations
 Ticket.hasMany(TicketHistory, { foreignKey: 'ticketId', as: 'history' });
 TicketHistory.belongsTo(Ticket, { foreignKey: 'ticketId', as: 'ticket' });
 TicketHistory.belongsTo(User, { foreignKey: 'updatedById', as: 'updater' });
+
+// Activity History associations
+Activity.hasMany(ActivityHistory, { foreignKey: 'activityId', as: 'history' });
+ActivityHistory.belongsTo(Activity, { foreignKey: 'activityId', as: 'activity' });
+ActivityHistory.belongsTo(User, { foreignKey: 'updatedById', as: 'updater' });
+
+// Meeting History associations
+Meeting.hasMany(MeetingHistory, { foreignKey: 'meetingId', as: 'history' });
+MeetingHistory.belongsTo(Meeting, { foreignKey: 'meetingId', as: 'meeting' });
+MeetingHistory.belongsTo(User, { foreignKey: 'updatedById', as: 'updater' });
 
 // Task Observer associations
 User.hasMany(TaskObserverMapping, { foreignKey: 'observerId', as: 'observerStaffMappings' });
@@ -651,4 +667,6 @@ module.exports = {
   MeetingAttendee,
   Ticket,
   TaskObserverMapping,
+  ActivityHistory,
+  MeetingHistory,
 };

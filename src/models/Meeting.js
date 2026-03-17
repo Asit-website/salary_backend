@@ -9,6 +9,24 @@ module.exports = (sequelize) => {
     description: { type: DataTypes.TEXT, allowNull: true },
     meetLink: { type: DataTypes.STRING(512), allowNull: true },
     scheduledAt: { type: DataTypes.DATE, allowNull: false },
+    status: {
+      type: DataTypes.ENUM('SCHEDULE', 'IN_PROGRESS', 'DONE'),
+      allowNull: false,
+      defaultValue: 'SCHEDULE'
+    },
+    remarks: {
+      type: DataTypes.TEXT,
+      allowNull: true
+    },
+    isClosed: {
+      type: DataTypes.BOOLEAN,
+      allowNull: false,
+      defaultValue: false
+    },
+    closedById: {
+      type: DataTypes.BIGINT.UNSIGNED,
+      allowNull: true
+    },
   }, {
     tableName: 'meetings',
     underscored: true,
