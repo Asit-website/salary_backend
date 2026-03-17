@@ -7,6 +7,8 @@ const {
     LeaveRequest, AppSetting, sequelize
 } = require('../models');
 
+//this is job function for resdule missing attendanc
+
 async function checkMissingAttendanceAndNotify() {
     console.log('[ATTENDANCE REMINDER] Starting missing attendance check...');
 
