@@ -27,6 +27,8 @@ const todoRoutes = require('./src/routes/todo');
 const meetingRoutes = require('./src/routes/meeting');
 const ticketRoutes = require('./src/routes/ticket');
 const taskManagementRoutes = require('./src/routes/taskManagement');
+const rosterRoutes = require('./src/routes/roster');
+const aiRoutes = require('./src/routes/ai');
 
 
 const { tenantEnforce } = require('./src/middleware/tenant');
@@ -90,6 +92,8 @@ app.use('/admin/sales-incentives', salesIncentiveRoutes);
 app.use('/auth', authRoutes);
 app.use('/admin/user-access', userAccessRoutes);
 app.use('/admin/task-management', taskManagementRoutes);
+app.use(rosterRoutes);
+app.use('/admin/ai', aiRoutes);
 app.use('/admin', adminRoutes);
 app.use('/superadmin', superadminRoutes);
 app.use('/attendance', attendanceRoutes);

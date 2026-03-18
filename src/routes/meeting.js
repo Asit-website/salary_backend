@@ -9,6 +9,12 @@ const router = express.Router();
 router.use(authRequired);
 router.use(tenantEnforce);
 
+function normalizeMeetLink(value) {
+  const link = String(value || '').trim();
+  if (!link) return '';
+  return link.includes('://') ? link : `https://${link}`;
+}
+
 // Create meeting
 router.post('/', async (req, res) => {
   try {
@@ -125,6 +131,71 @@ router.get('/me', async (req, res) => {
   } catch (e) {
     console.error(e);
     return res.status(500).json({ success: false, message: 'Failed to load meetings' });
+  }
+});
+
+// Update meeting details (creator only)
+router.put('/:id', async (req, res) => {
+  try {
+    const meetingId = req.params.id;
+    const { title, description, meetLink, scheduledAt, attendeeIds } = req.body || {};
+
+    const meeting = await Meeting.findByPk(meetingId, {
+      include: [{ model: MeetingAttendee, as: 'attendeeRecords' }]
+    });
+
+    if (!meeting || Number(meeting.orgAccountId) !== Number(req.tenantOrgAccountId)) {
+      return res.status(404).json({ success: false, message: 'Meeting not found' });
+    }
+
+    if (Number(meeting.createdBy) !== Number(req.user.id)) {
+      return res.status(403).json({ success: false, message: 'Only organizer can edit this meeting' });
+    }
+
+    if (meeting.isClosed) {
+      return res.status(403).json({ success: false, message: 'Meeting is closed and cannot be edited' });
+    }
+
+    if (!title || !String(title).trim()) {
+      return res.status(400).json({ success: false, message: 'Title is required' });
+    }
+    if (!scheduledAt) {
+      return res.status(400).json({ success: false, message: 'Schedule time is required' });
+    }
+
+    meeting.title = String(title).trim();
+    meeting.description = description == null ? null : String(description);
+    meeting.meetLink = normalizeMeetLink(meetLink) || null;
+    meeting.scheduledAt = scheduledAt;
+    await meeting.save();
+
+    if (Array.isArray(attendeeIds)) {
+      const uniqueIds = [...new Set(attendeeIds.map(Number).filter(Boolean))]
+        .filter(uid => uid !== req.user.id);
+
+      await MeetingAttendee.destroy({ where: { meetingId: meeting.id } });
+
+      for (const userId of uniqueIds) {
+        await MeetingAttendee.create({
+          meetingId: meeting.id,
+          userId,
+          status: 'PENDING',
+        });
+      }
+    }
+
+    await MeetingHistory.create({
+      meetingId: meeting.id,
+      updatedById: req.user.id,
+      oldStatus: meeting.status,
+      newStatus: meeting.status,
+      remarks: 'Meeting details updated via app'
+    });
+
+    return res.json({ success: true, message: 'Meeting updated successfully' });
+  } catch (e) {
+    console.error(e);
+    return res.status(500).json({ success: false, message: 'Failed to update meeting' });
   }
 });
 

@@ -68,12 +68,40 @@ async function scoreReliability({ month, year, users }) {
 // Forecast salary for a month; inputs minimal
 async function forecastSalary({ month, year, users }) {
   if (!isAIEnabled()) return null;
-  const simplified = users.map(u => ({ id: u.id }));
-  const prompt = `For each user id, forecast net pay for ${month}-${year} with basic assumptions. Base around 20000 with reasonable variance. Return items = [{ userId, forecastNetPay, assumptions }]`;
-  const schemaNote = 'Schema: { items: Array<{ userId:number, forecastNetPay:number, assumptions:object }>] }';
+
+  // Extract today's date from the first user's monthContext if available
+  const todayDate = users[0]?.monthContext?.todayDate || `${year}-${String(month).padStart(2,'0')}-01`;
+  const dayOfMonth = users[0]?.monthContext?.dayOfMonth || 1;
+  const totalDaysInMonth = users[0]?.monthContext?.totalDaysInMonth || 31;
+
+  const prompt = `You are a Senior HR Payroll Expert. Today is ${todayDate}. The month is ${month}-${year} with ${totalDaysInMonth} total days. ${dayOfMonth - 1} days have fully elapsed (up to yesterday).
+
+  For each staff member, forecast their FINAL net pay for the FULL month.
+
+  CALCULATION METHOD (MUST follow exactly):
+  1. "payableUnits" = attendance.present + (attendance.halfDay × 0.5) + attendance.weeklyOffs + attendance.holidays + attendance.paidLeave
+  2. Subtract late penalty: payableUnits = payableUnits - attendance.latePenaltyDays
+  3. For remaining future days (monthContext.daysRemaining), add projected WOs (monthContext.futureWeeklyOffs) + holidays (monthContext.futureHolidays) + assume remaining working days as present.
+  4. totalProjectedPayable = payableUnits + futureWeeklyOffs + futureHolidays + (daysRemaining - futureWeeklyOffs - futureHolidays)
+  5. ratio = totalProjectedPayable / ${totalDaysInMonth}  (clamp between 0 and 1)
+  6. forecastNetPay = Math.round(baseSalary × ratio) + overtimePay + leaveEncashmentAmount
+
+  IMPORTANT:
+  - attendance.absent shows days the staff was ABSENT. These REDUCE pay.
+  - attendance.latePenaltyDays: days deducted due to late arrivals (lateCount shows how many times late).
+  - leaveEncashmentAmount: approved leave encashment amount to ADD to salary (not pro-rated).
+  - overtimePay: calculated overtime amount to ADD to salary (not pro-rated).
+  - Do NOT give full baseSalary if absents > 0 or latePenaltyDays > 0.
+
+  Users Data: ${JSON.stringify(users).slice(0, 120000)}
+  
+  Return items = [{ userId, forecastNetPay, assumptions }]
+  The assumptions object needs keys: "attendanceTrend", "rosterImpact", "summary" (will be overridden server-side, but compute forecastNetPay accurately).`;
+
+  const schemaNote = 'Schema: { items: Array<{ userId:number, forecastNetPay:number, assumptions: { attendanceTrend: string, rosterImpact: string, summary: string } }> }';
   const out = await callOpenAIJSON(prompt, schemaNote);
   if (!out || !Array.isArray(out.items)) return null;
   return out.items;
 }
 
-module.exports = { isAIEnabled, analyzeAnomalies, scoreReliability, forecastSalary };
+module.exports = { isAIEnabled, analyzeAnomalies, scoreReliability, forecastSalary, callOpenAIJSON };

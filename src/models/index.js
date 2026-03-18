@@ -93,6 +93,8 @@ const defineTicket = require('./Ticket');
 const defineTaskObserverMapping = require('./TaskObserverMapping');
 const defineActivityHistory = require('./ActivityHistory');
 const defineMeetingHistory = require('./MeetingHistory');
+const defineStaffRoster = require('./StaffRoster');
+
 
 
 const User = defineUser(sequelize);
@@ -189,6 +191,8 @@ const Ticket = defineTicket(sequelize);
 const TaskObserverMapping = defineTaskObserverMapping(sequelize);
 const ActivityHistory = defineActivityHistory(sequelize);
 const MeetingHistory = defineMeetingHistory(sequelize);
+const StaffRoster = defineStaffRoster(sequelize);
+
 
 
 // Leave Template associations (after models are defined)
@@ -574,6 +578,14 @@ TaskObserverMapping.belongsTo(User, { foreignKey: 'staffId', as: 'staffMember' }
 OrgAccount.hasMany(TaskObserverMapping, { foreignKey: 'orgAccountId', as: 'observerMappings' });
 TaskObserverMapping.belongsTo(OrgAccount, { foreignKey: 'orgAccountId', as: 'orgAccount' });
 
+// Staff Roster associations
+User.hasMany(StaffRoster, { foreignKey: 'userId', as: 'rosterEntries' });
+StaffRoster.belongsTo(User, { foreignKey: 'userId', as: 'user' });
+ShiftTemplate.hasMany(StaffRoster, { foreignKey: 'shiftTemplateId', as: 'rosterEntries' });
+StaffRoster.belongsTo(ShiftTemplate, { foreignKey: 'shiftTemplateId', as: 'shiftTemplate' });
+OrgAccount.hasMany(StaffRoster, { foreignKey: 'orgAccountId', as: 'rosterEntries' });
+StaffRoster.belongsTo(OrgAccount, { foreignKey: 'orgAccountId', as: 'orgAccount' });
+
 module.exports = {
   sequelize,
   User,
@@ -669,4 +681,5 @@ module.exports = {
   TaskObserverMapping,
   ActivityHistory,
   MeetingHistory,
+  StaffRoster,
 };

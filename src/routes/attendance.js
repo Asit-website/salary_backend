@@ -2,7 +2,7 @@ const express = require('express');
 const { Op } = require('sequelize');
 const puppeteer = require('puppeteer');
 
-const { User, StaffProfile, Attendance, LeaveRequest, AppSetting, AttendanceTemplate, StaffAttendanceAssignment, StaffShiftAssignment, ShiftTemplate, StaffHolidayAssignment, HolidayTemplate, HolidayDate, StaffGeofenceAssignment, GeofenceTemplate, GeofenceSite, LocationPing, DeviceInfo, WeeklyOffTemplate, StaffWeeklyOffAssignment, AttendanceAutomationRule, OrgAccount } = require('../models');
+const { User, StaffProfile, Attendance, LeaveRequest, AppSetting, AttendanceTemplate, StaffAttendanceAssignment, StaffShiftAssignment, ShiftTemplate, StaffHolidayAssignment, HolidayTemplate, HolidayDate, StaffGeofenceAssignment, GeofenceTemplate, GeofenceSite, LocationPing, DeviceInfo, WeeklyOffTemplate, StaffWeeklyOffAssignment, AttendanceAutomationRule, OrgAccount, StaffRoster } = require('../models');
 const { authRequired } = require('../middleware/auth');
 const { requireRole } = require('../middleware/roles');
 const { upload } = require('../upload');
@@ -191,6 +191,20 @@ async function getEffectiveShiftTemplate(userId, dateKey) {
         { effectiveTo: { [Op.gte]: dateKey } },
       ];
     }
+    // 1. Check for specific Roster assignment for this date
+    if (userId && dateKey) {
+      const roster = await StaffRoster.findOne({ where: { userId, date: dateKey } });
+      if (roster) {
+        if (roster.status === 'SHIFT' && roster.shiftTemplateId) {
+          const tpl = await ShiftTemplate.findByPk(roster.shiftTemplateId);
+          if (tpl && tpl.active !== false) return tpl;
+        }
+        // If status is WEEKLY_OFF or HOLIDAY, we return null so the status logic handles it
+        if (roster.status === 'WEEKLY_OFF' || roster.status === 'HOLIDAY') return null;
+      }
+    }
+
+    // 2. Check for StaffShiftAssignment
     const asg = await StaffShiftAssignment.findOne({ where, order: [['effectiveFrom', 'DESC']] });
     if (asg) {
       const tpl = await ShiftTemplate.findByPk(asg.shiftTemplateId);
@@ -368,31 +382,16 @@ router.get('/status', async (req, res) => {
 
   const now = new Date();
 
-  // 1. Holiday check
-  const isHoliday = await isPaidHoliday(userId, key);
-
-  // 2. Weekly Off check
-  const woAsg = await StaffWeeklyOffAssignment.findOne({
-    where: { userId, effectiveFrom: { [Op.lte]: key } },
-    order: [['effectiveFrom', 'DESC']]
-  });
-  let isWO = false;
-  if (woAsg) {
-    const wTpl = await WeeklyOffTemplate.findByPk(woAsg.weeklyOffTemplateId || woAsg.weekly_off_template_id);
-    let raw = wTpl?.config;
-    while (typeof raw === 'string' && raw.trim().startsWith('[')) {
-      try { raw = JSON.parse(raw); } catch (_) { break; }
-    }
-    const woConfig = Array.isArray(raw) ? raw : [];
-    const dateObj = new Date(`${key}T00:00:00`);
-    isWO = isWeeklyOffForDate(woConfig, dateObj);
-  }
-
   const isApprovedLeave = await hasApprovedLeave(userId, key);
+
+  // 0. Roster override check
+  const rosterEntry = await StaffRoster.findOne({ where: { userId, date: key } });
+  const isRosterWO = rosterEntry?.status === 'WEEKLY_OFF';
+  const isRosterHoliday = rosterEntry?.status === 'HOLIDAY';
 
   // Default behaviors when no record exists
   if (!record) {
-    if (isHoliday) {
+    if (isRosterHoliday || isHoliday) {
       return res.json({
         success: true,
         status: {
@@ -402,7 +401,7 @@ router.get('/status', async (req, res) => {
         },
       });
     }
-    if (isWO) {
+    if (isRosterWO || isWO) {
       return res.json({
         success: true,
         status: {
@@ -676,6 +675,11 @@ router.get('/history', async (req, res) => {
       const isAdminLeave = record && (Number(record.breakTotalSeconds) === -1 || String(record.status || '').toLowerCase() === 'leave');
       const isAdminHalf = record && (Number(record.breakTotalSeconds) === -2 || String(record.status || '').toLowerCase() === 'half_day');
 
+      // Fetch roster entry for this specific day
+      const rosterEntry = await StaffRoster.findOne({ where: { userId, date: key } });
+      const isRosterWO = rosterEntry?.status === 'WEEKLY_OFF';
+      const isRosterHoliday = rosterEntry?.status === 'HOLIDAY';
+
       if (record?.punchedInAt && !isAdminLeave && !isAdminHalf) {
         const inAt = new Date(record.punchedInAt);
         const outAt = record.punchedOutAt ? new Date(record.punchedOutAt) : (key === todayStr ? now : inAt);
@@ -729,9 +733,9 @@ router.get('/history', async (req, res) => {
           leaveType = leaveReq?.leaveType || 'ADMIN';
         } else if (isAdminHalf) {
           dayStatus = 'HALF_DAY';
-        } else if (isH) {
+        } else if (isRosterHoliday || isH) {
           dayStatus = 'HOLIDAY';
-        } else if (isWO) {
+        } else if (isRosterWO || isWO) {
           dayStatus = 'WEEKLY_OFF';
         } else {
           const todayObj = new Date(now.getFullYear(), now.getMonth(), now.getDate());

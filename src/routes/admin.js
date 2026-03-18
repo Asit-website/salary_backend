@@ -14610,6 +14610,128 @@ router.put('/staff/:id/salary', async (req, res) => {
 
 
 
+// Organization-based Activity Reports
+router.get('/reports/org-activities', async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
+    const { month, year, format, employeeIds } = req.query;
+    const { Activity, User, StaffProfile, ActivityHistory, TicketHistory } = require('../models'); // Added TicketHistory
+
+    const startDate = month && year ? new Date(year, month - 1, 1) : new Date(new Date().getFullYear(), new Date().getMonth(), 1);
+    const endDate = new Date(startDate.getFullYear(), startDate.getMonth() + 1, 0);
+
+    let staffWhereClause = { orgAccountId: orgId, role: 'staff' };
+    if (employeeIds) {
+      const empIds = employeeIds.split(',').map(id => parseInt(id.trim())).filter(id => !isNaN(id));
+      if (empIds.length > 0) staffWhereClause.id = { [Op.in]: empIds };
+    }
+
+    const staffData = await User.findAll({
+      where: staffWhereClause,
+      attributes: ['id', 'phone'],
+      include: [{ model: StaffProfile, as: 'profile', attributes: ['name', 'department'] }]
+    });
+
+    const activities = await Activity.findAll({
+      where: {
+        orgAccountId: orgId,
+        userId: staffData.map(s => s.id),
+        date: {
+          [Op.between]: [startDate.toISOString().split('T')[0], endDate.toISOString().split('T')[0]]
+        }
+      },
+      include: [
+        {
+          model: User,
+          as: 'user',
+          attributes: ['id', 'phone'],
+          include: [{ model: StaffProfile, as: 'profile', attributes: ['name', 'department'] }]
+        },
+        {
+          model: User,
+          as: 'transferredTo',
+          attributes: ['id', 'phone'],
+          include: [{ model: StaffProfile, as: 'profile', attributes: ['name'] }]
+        },
+        {
+          model: User,
+          as: 'closedBy',
+          attributes: ['id', 'phone'],
+          include: [{ model: StaffProfile, as: 'profile', attributes: ['name'] }]
+        },
+        {
+          model: ActivityHistory,
+          as: 'history', // Corrected to ActivityHistory
+          include: [{
+            model: User,
+            as: 'updater',
+            attributes: ['id', 'phone'],
+            include: [{ model: StaffProfile, as: 'profile', attributes: ['name'] }]
+          }]
+        }
+      ],
+      order: [['createdAt', 'DESC']]
+    });
+
+    if (format === 'excel') {
+      const workbook = new exceljs.Workbook();
+      const worksheet = workbook.addWorksheet('Activities Report'); // Changed sheet name
+
+      worksheet.columns = [
+        { header: 'Created At', key: 'createdAt', width: 20 },
+        { header: 'User', key: 'user', width: 25 },
+        { header: 'Department', key: 'department', width: 20 },
+        { header: 'Activity Type', key: 'activityType', width: 20 }, // New column
+        { header: 'Description', key: 'description', width: 30 }, // New column
+        { header: 'Status', key: 'status', width: 15 },
+        { header: 'Transferred To', key: 'transferredTo', width: 25 }, // New column
+        { header: 'Closed By', key: 'closedBy', width: 25 },
+        { header: 'Activity History', key: 'history', width: 60 } // Changed header
+      ];
+
+      activities.forEach(a => { // Changed from tickets to activities
+        const historyText = a.history?.map(h =>
+          `[${dayjs(h.createdAt).format('DD/MM HH:mm')}] ${h.updater?.profile?.name || h.updater?.phone || 'System'}: ${h.newStatus}${h.remarks ? ` (${h.remarks})` : ''}`
+        ).join('\n') || '-';
+
+        worksheet.addRow({
+          createdAt: dayjs(a.createdAt).format('DD MMM YYYY HH:mm'),
+          user: a.user?.profile?.name || a.user?.phone || 'N/A',
+          department: a.user?.profile?.department || 'N/A',
+          activityType: a.type || 'N/A', // New field
+          description: a.description || 'N/A', // New field
+          status: a.status,
+          transferredTo: a.transferredTo?.profile?.name || a.transferredTo?.phone || '-', // New field
+          closedBy: a.closedBy?.profile?.name || a.closedBy?.phone || '-',
+          history: historyText
+        });
+      });
+
+      worksheet.getRow(1).font = { bold: true };
+      worksheet.getRow(1).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE6F7FF' } };
+      worksheet.getColumn('history').alignment = { wrapText: true, vertical: 'top' };
+
+      res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+      res.setHeader('Content-Disposition', `attachment; filename=org-activities-report-${startDate.getFullYear()}-${startDate.getMonth() + 1}.xlsx`); // New filename
+
+      await workbook.xlsx.write(res); // Added this line to send the file
+      return; // Added return to prevent sending JSON response after excel
+    }
+
+    res.json({
+      success: true,
+      data: activities,
+      month: startDate.getMonth() + 1,
+      year: startDate.getFullYear()
+    });
+
+  } catch (error) {
+    console.error('Org activities report error:', error);
+    res.status(500).json({ success: false, message: 'Failed to generate activities report' });
+  }
+});
+
+
 // Organization-based Leave Reports
 
 router.get('/reports/org-leave', async (req, res) => {
@@ -16774,6 +16896,345 @@ router.get('/reports/org-attendance-matrix', async (req, res) => {
     return res.status(500).json({ success: false, message: 'Failed to generate attendance matrix report' });
   }
 
+});
+
+router.get('/reports/org-tickets', async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
+    const { month, year, format, employeeIds } = req.query;
+    const { Ticket, User, StaffProfile, TicketHistory } = require('../models');
+
+    const startDate = month && year ? new Date(year, month - 1, 1) : new Date(new Date().getFullYear(), new Date().getMonth(), 1);
+    const endDate = new Date(startDate.getFullYear(), startDate.getMonth() + 1, 0);
+
+    let staffWhereClause = { orgAccountId: orgId, role: 'staff' };
+    if (employeeIds) {
+      const empIds = employeeIds.split(',').map(id => parseInt(id.trim())).filter(id => !isNaN(id));
+      if (empIds.length > 0) staffWhereClause.id = { [Op.in]: empIds };
+    }
+
+    const staffData = await User.findAll({
+      where: staffWhereClause,
+      attributes: ['id', 'phone'],
+      include: [{ model: StaffProfile, as: 'profile', attributes: ['name', 'department'] }]
+    });
+
+    const tickets = await Ticket.findAll({
+      where: {
+        orgAccountId: orgId,
+        allocatedTo: staffData.map(s => s.id),
+        createdAt: {
+          [Op.gte]: startDate,
+          [Op.lte]: endDate
+        }
+      },
+      include: [
+        {
+          model: User,
+          as: 'assignee',
+          attributes: ['id', 'phone'],
+          include: [{ model: StaffProfile, as: 'profile', attributes: ['name', 'department'] }]
+        },
+        {
+          model: User,
+          as: 'creator',
+          attributes: ['id', 'phone'],
+          include: [{ model: StaffProfile, as: 'profile', attributes: ['name'] }]
+        },
+        {
+          model: User,
+          as: 'closedBy',
+          attributes: ['id', 'phone'],
+          include: [{ model: StaffProfile, as: 'profile', attributes: ['name'] }]
+        },
+        {
+          model: TicketHistory,
+          as: 'history',
+          include: [{
+            model: User,
+            as: 'updater',
+            attributes: ['id', 'phone'],
+            include: [{ model: StaffProfile, as: 'profile', attributes: ['name'] }]
+          }]
+        }
+      ],
+      order: [['createdAt', 'DESC']]
+    });
+
+    if (format === 'excel') {
+      const workbook = new exceljs.Workbook();
+      const worksheet = workbook.addWorksheet('Tickets Report');
+
+      worksheet.columns = [
+        { header: 'Created At', key: 'createdAt', width: 20 },
+        { header: 'Allocated To', key: 'allocatedTo', width: 25 },
+        { header: 'Department', key: 'department', width: 20 },
+        { header: 'Ticket Title', key: 'title', width: 30 },
+        { header: 'Priority', key: 'priority', width: 12 },
+        { header: 'Status', key: 'status', width: 15 },
+        { header: 'Allocated By', key: 'allocatedBy', width: 25 },
+        { header: 'Closed By', key: 'closedBy', width: 25 },
+        { header: 'Ticket History', key: 'history', width: 60 }
+      ];
+
+      tickets.forEach(t => {
+        const historyText = t.history?.map(h =>
+          `[${dayjs(h.createdAt).format('DD/MM HH:mm')}] ${h.updater?.profile?.name || h.updater?.phone || 'System'}: ${h.newStatus}${h.remarks ? ` (${h.remarks})` : ''}`
+        ).join('\n') || '-';
+
+        worksheet.addRow({
+          createdAt: dayjs(t.createdAt).format('DD MMM YYYY HH:mm'),
+          allocatedTo: t.assignee?.profile?.name || t.assignee?.phone || 'N/A',
+          department: t.assignee?.profile?.department || 'N/A',
+          title: t.title,
+          priority: t.priority,
+          status: t.status,
+          allocatedBy: t.creator?.profile?.name || t.creator?.phone || 'N/A',
+          closedBy: t.closedBy?.profile?.name || t.closedBy?.phone || '-',
+          history: historyText
+        });
+      });
+
+      worksheet.getRow(1).font = { bold: true };
+      worksheet.getRow(1).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE6F7FF' } };
+      worksheet.getColumn('history').alignment = { wrapText: true, vertical: 'top' };
+
+      res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+      res.setHeader('Content-Disposition', `attachment; filename=org-tickets-report-${month}-${year}.xlsx`);
+      await workbook.xlsx.write(res);
+      return res.end();
+    }
+
+    return res.json({ success: true, data: tickets });
+  } catch (error) {
+    console.error('Org tickets report error:', error);
+    return res.status(500).json({ success: false, message: 'Failed to generate tickets report' });
+  }
+});
+
+
+router.get('/reports/org-activities', async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
+    const { month, year, format, employeeIds } = req.query;
+    const { Activity, User, StaffProfile } = require('../models');
+
+    const startDate = month && year ? new Date(year, month - 1, 1) : new Date(new Date().getFullYear(), new Date().getMonth(), 1);
+    const endDate = new Date(startDate.getFullYear(), startDate.getMonth() + 1, 0);
+
+    let staffWhereClause = { orgAccountId: orgId, role: 'staff' };
+    if (employeeIds) {
+      const empIds = employeeIds.split(',').map(id => parseInt(id.trim())).filter(id => !isNaN(id));
+      if (empIds.length > 0) staffWhereClause.id = { [Op.in]: empIds };
+    }
+
+    const staffData = await User.findAll({
+      where: staffWhereClause,
+      attributes: ['id', 'phone'],
+      include: [{ model: StaffProfile, as: 'profile', attributes: ['name', 'department'] }]
+    });
+
+    const activities = await Activity.findAll({
+      where: {
+        orgAccountId: orgId,
+        userId: staffData.map(s => s.id),
+        date: {
+          [Op.between]: [startDate.toISOString().split('T')[0], endDate.toISOString().split('T')[0]]
+        }
+      },
+      include: [{
+        model: User,
+        as: 'user',
+        attributes: ['id', 'phone'],
+        include: [{ model: StaffProfile, as: 'profile', attributes: ['name', 'department'] }]
+      }],
+      order: [['date', 'DESC']]
+    });
+
+    if (format === 'excel') {
+      const workbook = new exceljs.Workbook();
+      const worksheet = workbook.addWorksheet('Activities Report');
+
+      worksheet.columns = [
+        { header: 'Date', key: 'date', width: 15 },
+        { header: 'Staff Name', key: 'staffName', width: 25 },
+        { header: 'Department', key: 'department', width: 20 },
+        { header: 'Activity Title', key: 'title', width: 30 },
+        { header: 'Status', key: 'status', width: 15 },
+        { header: 'Remarks', key: 'remarks', width: 40 }
+      ];
+
+      activities.forEach(a => {
+        worksheet.addRow({
+          date: dayjs(a.date).format('DD MMM YYYY'),
+          staffName: a.user?.profile?.name || a.user?.phone || 'N/A',
+          department: a.user?.profile?.department || 'N/A',
+          title: a.title,
+          status: a.status,
+          remarks: a.remarks || '-'
+        });
+      });
+
+      worksheet.getRow(1).font = { bold: true };
+      worksheet.getRow(1).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE6F7FF' } };
+
+      res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+      res.setHeader('Content-Disposition', `attachment; filename=org-activities-report-${month}-${year}.xlsx`);
+      await workbook.xlsx.write(res);
+      return res.end();
+    }
+
+    return res.json({ success: true, data: activities });
+  } catch (error) {
+    console.error('Org activities report error:', error);
+    return res.status(500).json({ success: false, message: 'Failed to generate activities report' });
+  }
+});
+
+router.get('/reports/org-meetings', async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
+    const { month, year, format, employeeIds } = req.query;
+    const { Meeting, User, StaffProfile, MeetingAttendee, MeetingHistory } = require('../models');
+
+    const startDate = month && year ? new Date(year, month - 1, 1) : new Date(new Date().getFullYear(), new Date().getMonth(), 1);
+    const endDate = new Date(startDate.getFullYear(), startDate.getMonth() + 1, 0);
+
+    let staffWhereClause = { orgAccountId: orgId, role: 'staff' };
+    if (employeeIds) {
+      const empIds = employeeIds.split(',').map(id => parseInt(id.trim())).filter(id => !isNaN(id));
+      if (empIds.length > 0) staffWhereClause.id = { [Op.in]: empIds };
+    }
+
+    const staffData = await User.findAll({
+      where: staffWhereClause,
+      attributes: ['id', 'phone'],
+      include: [{ model: StaffProfile, as: 'profile', attributes: ['name', 'department'] }]
+    });
+
+    const meetings = await Meeting.findAll({
+      where: {
+        orgAccountId: orgId,
+        createdBy: staffData.map(s => s.id),
+        scheduledAt: {
+          [Op.gte]: startDate,
+          [Op.lte]: endDate
+        }
+      },
+      include: [
+        {
+          model: User,
+          as: 'creator',
+          attributes: ['id', 'phone'],
+          include: [{ model: StaffProfile, as: 'profile', attributes: ['name', 'department'] }]
+        },
+        {
+          model: User,
+          as: 'closedBy',
+          attributes: ['id', 'phone'],
+          include: [{ model: StaffProfile, as: 'profile', attributes: ['name'] }]
+        },
+        {
+          model: MeetingAttendee,
+          as: 'attendeeRecords',
+          include: [
+            {
+              model: User,
+              as: 'user',
+              attributes: ['id', 'phone'],
+              include: [{ model: StaffProfile, as: 'profile', attributes: ['name'] }]
+            }
+          ]
+        },
+        {
+          model: MeetingHistory,
+          as: 'history',
+          include: [
+            {
+              model: User,
+              as: 'updater',
+              attributes: ['id', 'phone'],
+              include: [{ model: StaffProfile, as: 'profile', attributes: ['name'] }]
+            }
+          ]
+        }
+      ],
+      order: [['scheduledAt', 'DESC']]
+    });
+
+    const decorateMeeting = (m) => {
+      const allocatedTo = (m.attendeeRecords || [])
+        .map(a => a?.user?.profile?.name || a?.user?.phone)
+        .filter(Boolean)
+        .join(', ') || '-';
+
+      const closedByName = m.closedBy?.profile?.name || m.closedBy?.phone || '-';
+
+      const historyText = (m.history || [])
+        .sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt))
+        .map(h => {
+          const updater = h.updater?.profile?.name || h.updater?.phone || 'System';
+          const oldS = h.oldStatus || '-';
+          const nextS = h.newStatus || '-';
+          const note = h.remarks ? ` (${h.remarks})` : '';
+          return `${dayjs(h.createdAt).format('DD MMM HH:mm')} ${oldS}→${nextS} by ${updater}${note}`;
+        })
+        .join(' | ') || '-';
+
+      return {
+        ...m.toJSON(),
+        allocatedTo,
+        closedByName,
+        historyText,
+      };
+    };
+
+    const preparedMeetings = meetings.map(decorateMeeting);
+
+    if (format === 'excel') {
+      const workbook = new exceljs.Workbook();
+      const worksheet = workbook.addWorksheet('Meetings Report');
+
+      worksheet.columns = [
+        { header: 'Scheduled At', key: 'scheduledAt', width: 25 },
+        { header: 'Meeting Title', key: 'title', width: 30 },
+        { header: 'Status', key: 'status', width: 15 },
+        { header: 'Created By', key: 'staffName', width: 25 },
+        { header: 'Allocated Person', key: 'allocatedTo', width: 35 },
+        { header: 'Closed By', key: 'closedByName', width: 25 },
+        { header: 'Meeting History', key: 'historyText', width: 80 },
+        { header: 'Department', key: 'department', width: 20 },
+        { header: 'Description', key: 'description', width: 40 }
+      ];
+
+      preparedMeetings.forEach(m => {
+        worksheet.addRow({
+          scheduledAt: dayjs(m.scheduledAt).format('DD MMM YYYY HH:mm'),
+          title: m.title,
+          status: m.status,
+          staffName: m.creator?.profile?.name || m.creator?.phone || 'N/A',
+          allocatedTo: m.allocatedTo,
+          closedByName: m.closedByName,
+          historyText: m.historyText,
+          department: m.creator?.profile?.department || 'N/A',
+          description: m.description || '-'
+        });
+      });
+
+      worksheet.getRow(1).font = { bold: true };
+      worksheet.getRow(1).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE6F7FF' } };
+
+      res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+      res.setHeader('Content-Disposition', `attachment; filename=org-meetings-report-${month}-${year}.xlsx`);
+      await workbook.xlsx.write(res);
+      return res.end();
+    }
+
+    return res.json({ success: true, data: preparedMeetings });
+  } catch (error) {
+    console.error('Org meetings report error:', error);
+    return res.status(500).json({ success: false, message: 'Failed to generate meetings report' });
+  }
 });
 
 router.get('/reports/org-sales', async (req, res) => {
