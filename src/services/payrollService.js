@@ -707,7 +707,7 @@ async function calculateSalary(userId, monthKey) {
     },
     attendanceSummary: {
       present, half, leave, paidLeave: paidLeaveCount, unpaidLeave,
-      absent: absent + unpaidLeave + latePenaltyDays, weeklyOff: weeklyOffCount, holidays: holidaysCount, ratio,
+      absent, weeklyOff: weeklyOffCount, holidays: holidaysCount, ratio,
       lateCount, latePenaltyDays,
       overtimeMinutes: overtimeMeta.overtimeMinutes,
       overtimeHours: overtimeMeta.overtimeHours,

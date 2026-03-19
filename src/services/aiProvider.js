@@ -131,4 +131,32 @@ async function getTopPerformersInsight({ month, year, topPerformers, stats }) {
   return await callOpenAIJSON(prompt, schemaNote);
 }
 
-module.exports = { isAIEnabled, analyzeAnomalies, scoreReliability, forecastSalary, getTopPerformersInsight, callOpenAIJSON };
+// Detect staff at-risk signals using attendance and task context.
+async function detectRiskSignals({ month, year, users }) {
+  if (!isAIEnabled()) return null;
+
+  const prompt = `You are an HR risk analyst. For month ${month}-${year}, identify employees at risk.
+
+Must detect using given user data:
+- low performer
+- high absentee
+- task delay employee
+
+Return concise and practical output. Each risk item MUST include:
+- userId (number)
+- categories (array of: low_performer, high_absentee, task_delay)
+- severity (low|medium|high)
+- reasons (array of short strings)
+- message (plain english like: "Ankit is at risk (low attendance + no tasks)")
+
+Users Data: ${JSON.stringify(users).slice(0, 120000)}
+
+Only include users who are actually at risk.`;
+
+  const schemaNote = 'Schema: { items: Array<{ userId:number, categories:string[], severity:string, reasons:string[], message:string }> }';
+  const out = await callOpenAIJSON(prompt, schemaNote);
+  if (!out || !Array.isArray(out.items)) return null;
+  return out.items;
+}
+
+module.exports = { isAIEnabled, analyzeAnomalies, scoreReliability, forecastSalary, getTopPerformersInsight, detectRiskSignals, callOpenAIJSON };

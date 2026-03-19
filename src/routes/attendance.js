@@ -598,7 +598,7 @@ router.get('/history', async (req, res) => {
       where: { userId, date: { [Op.between]: [startKey, endKey] } },
       order: [['date', 'ASC']],
     });
-    const attMap = new Map(attendanceRows.map((r) => [String(r.date), r]));
+    const attMap = new Map(attendanceRows.map((r) => [isoDate(new Date(r.date)), r]));
 
     const leaveRows = await LeaveRequest.findAll({
       where: { userId, status: 'APPROVED', startDate: { [Op.lte]: endKey }, endDate: { [Op.gte]: startKey } },
@@ -750,6 +750,33 @@ router.get('/history', async (req, res) => {
           leaveType = leaveReq?.leaveType || 'ADMIN';
         } else if (isAdminHalf) {
           dayStatus = 'HALF_DAY';
+          if (record) {
+            const inAt = record.punchedInAt ? new Date(record.punchedInAt) : null;
+            const outAt = record.punchedOutAt ? new Date(record.punchedOutAt) : null;
+            const baseBreak = Math.max(0, Number(record.breakTotalSeconds || 0));
+
+            if (inAt && outAt) {
+              totalDurationSeconds = Math.max(0, diffSeconds(inAt, outAt));
+            } else if (inAt && key === todayStr) {
+              totalDurationSeconds = Math.max(0, diffSeconds(inAt, now));
+            }
+
+            breakSeconds = baseBreak;
+
+            if (Number.isFinite(Number(record.totalWorkHours)) && Number(record.totalWorkHours) > 0) {
+              workingSeconds = Math.round(Number(record.totalWorkHours) * 3600);
+            } else if (totalDurationSeconds > 0) {
+              workingSeconds = computeEffectiveWorkingSeconds({
+                totalWorkSeconds: totalDurationSeconds,
+                actualBreakSeconds: breakSeconds,
+                requiredWorkSeconds: REQUIRED_WORK_SECONDS,
+                maxBreakMinutes,
+                effectiveHoursRule
+              });
+            }
+
+            overtimeSeconds = Math.max(0, Number(record.overtimeMinutes || 0)) * 60;
+          }
         } else if (isRosterHoliday || isH) {
           dayStatus = 'HOLIDAY';
         } else if (isRosterWO || isWO) {
@@ -816,6 +843,7 @@ router.get('/history', async (req, res) => {
         totalDurationSeconds,
         breakSeconds,
         overtimeSeconds,
+        totalWorkHours: record?.totalWorkHours || null,
         leaveType,
         isLate: isLateThisDay,
         isPenaltyDay: isPenaltyDay,

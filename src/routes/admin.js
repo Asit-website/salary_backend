@@ -573,6 +573,39 @@ router.get('/payroll/:cycleId/export', async (req, res) => {
       try { return JSON.parse(val); } catch (e) { return {}; }
     };
 
+    const normalizeAttendanceSummary = (summary, daysInMonth) => {
+      const s = (summary && typeof summary === 'object') ? summary : {};
+      const present = Number(s.present || 0);
+      const half = Number(s.half || 0);
+      const paidLeave = Number(s.paidLeave || 0);
+      const unpaidLeave = Number(s.unpaidLeave || 0);
+      const leave = Number(s.leave != null ? s.leave : (paidLeave + unpaidLeave));
+      const weeklyOff = Number(s.weeklyOff || 0);
+      const holidays = Number(s.holidays || 0);
+      const existingAbsent = Number(s.absent || 0);
+      const classifiedDays = present + half + leave + weeklyOff + holidays + existingAbsent;
+      const now = new Date();
+      const isCurrentMonth = Number(year) === now.getFullYear() && Number(month) === (now.getMonth() + 1);
+      const referenceDays = (isCurrentMonth && classifiedDays > 0 && classifiedDays < daysInMonth)
+        ? classifiedDays
+        : daysInMonth;
+      const absent = referenceDays > 0
+        ? Math.max(0, referenceDays - (present + half + leave + weeklyOff + holidays))
+        : existingAbsent;
+
+      return {
+        ...s,
+        present,
+        half,
+        paidLeave,
+        unpaidLeave,
+        leave,
+        weeklyOff,
+        holidays,
+        absent,
+      };
+    };
+
     const earningsKeys = new Set();
     const incentivesKeys = new Set();
     const deductionsKeys = new Set();
@@ -581,7 +614,7 @@ router.get('/payroll/:cycleId/export', async (req, res) => {
       const e = parseJSON(l.earnings);
       const i = parseJSON(l.incentives);
       const d = parseJSON(l.deductions);
-      const s = parseJSON(l.attendanceSummary);
+      const s = normalizeAttendanceSummary(parseJSON(l.attendanceSummary), daysInMonth);
       const t = parseJSON(l.totals);
 
       // Unify Leave Encashment keys for existing data
@@ -726,6 +759,44 @@ router.put('/payroll/:cycleId/line/:lineId', async (req, res) => {
 
     const next = {};
 
+    const normalizeAttendanceSummary = (summary, monthKey) => {
+      const s = (summary && typeof summary === 'object') ? summary : {};
+      const [y, m] = String(monthKey || '').split('-').map(Number);
+      const daysInMonth = Number.isFinite(y) && Number.isFinite(m) && m >= 1 && m <= 12
+        ? new Date(y, m, 0).getDate()
+        : 0;
+      const present = Number(s.present || 0);
+      const half = Number(s.half || 0);
+      const paidLeave = Number(s.paidLeave || 0);
+      const unpaidLeave = Number(s.unpaidLeave || 0);
+      const leave = Number(s.leave != null ? s.leave : (paidLeave + unpaidLeave));
+      const weeklyOff = Number(s.weeklyOff || 0);
+      const holidays = Number(s.holidays || 0);
+      const existingAbsent = Number(s.absent || 0);
+      const classifiedDays = present + half + leave + weeklyOff + holidays + existingAbsent;
+      const now = new Date();
+      const isCurrentMonth = Number.isFinite(y) && Number.isFinite(m)
+        && y === now.getFullYear() && m === (now.getMonth() + 1);
+      const referenceDays = (isCurrentMonth && classifiedDays > 0 && classifiedDays < daysInMonth)
+        ? classifiedDays
+        : daysInMonth;
+      const absent = referenceDays > 0
+        ? Math.max(0, referenceDays - (present + half + leave + weeklyOff + holidays))
+        : existingAbsent;
+
+      return {
+        ...s,
+        present,
+        half,
+        paidLeave,
+        unpaidLeave,
+        leave,
+        weeklyOff,
+        holidays,
+        absent,
+      };
+    };
+
     if (payload.earnings && typeof payload.earnings === 'object') next.earnings = payload.earnings;
 
     if (payload.incentives && typeof payload.incentives === 'object') next.incentives = payload.incentives;
@@ -736,7 +807,9 @@ router.put('/payroll/:cycleId/line/:lineId', async (req, res) => {
 
     if (payload.totals && typeof payload.totals === 'object') next.totals = payload.totals;
 
-    if (payload.attendanceSummary && typeof payload.attendanceSummary === 'object') next.attendanceSummary = payload.attendanceSummary;
+    if (payload.attendanceSummary && typeof payload.attendanceSummary === 'object') {
+      next.attendanceSummary = normalizeAttendanceSummary(payload.attendanceSummary, cycle.monthKey);
+    }
 
     if (typeof payload.remarks === 'string') next.remarks = payload.remarks;
 
@@ -995,7 +1068,7 @@ router.get('/staff/:id/salary-compute', async (req, res) => {
       if (isH) { holidays += 1; continue; }
       if (isWO) { weeklyOff += 1; continue; }
 
-      if (isCurrentMonth && dt > todayStart) { absent += 1; continue; }
+      if (isCurrentMonth && dt > todayStart) { continue; }
       if (s === 'absent') { absent += 1; continue; }
 
       if (paidLeaveSet.has(key)) { leave += 1; paidLeave += 1; }
@@ -1028,7 +1101,7 @@ router.get('/staff/:id/salary-compute', async (req, res) => {
     totals.netSalary = totals.grossSalary - totals.totalDeductions;
 
     const attendanceSummary = {
-      present, half, leave, paidLeave, unpaidLeave, absent: absent + unpaidLeave, weeklyOff, holidays, ratio,
+      present, half, leave, paidLeave, unpaidLeave, absent, weeklyOff, holidays, ratio,
       overtimeMinutes,
       overtimeHours: Number(overtimeHours.toFixed(2)),
       overtimeHourlyRate: Number(overtimeHourlyRate.toFixed(2)),
@@ -1825,7 +1898,7 @@ router.post('/payroll/:cycleId/compute', async (req, res) => {
         if (isH) { holidays += 1; continue; }
         if (isWO) { weeklyOff += 1; continue; }
 
-        if (isCurrentMonth && dt > todayStart) { absent += 1; continue; }
+        if (isCurrentMonth && dt > todayStart) { continue; }
         if (s === 'absent') { absent += 1; continue; }
 
         if (paidLeaveSet.has(key)) { leave += 1; paidLeave += 1; }
@@ -2002,7 +2075,7 @@ router.post('/payroll/:cycleId/compute', async (req, res) => {
       const grossSalary = totalEarnings + totalIncentives;
       const netSalary = grossSalary - totalDeductions;
 
-      const totalAbsent = absent + unpaidLeave;
+      const totalAbsent = absent;
       const attendanceSummary = {
         present, half, leave, paidLeave, unpaidLeave, absent: totalAbsent, weeklyOff, holidays, ratio,
         overtimeMinutes,
@@ -8644,14 +8717,28 @@ router.post('/shifts/assign', async (req, res) => {
     const template = await ShiftTemplate.findOne({ where: { id: tid, orgAccountId: orgId, active: true } });
     if (!template) return res.status(404).json({ success: false, message: 'Shift template not found' });
 
-    const created = await StaffShiftAssignment.create({
-      userId: uid,
-      shiftTemplateId: tid,
-      effectiveFrom: ef,
-      effectiveTo: et,
+    // Check if assignment for same date already exists
+    const existing = await StaffShiftAssignment.findOne({
+      where: { userId: uid, effectiveFrom: ef }
     });
 
-    return res.json({ success: true, assignment: created });
+    let result;
+    if (existing) {
+      await existing.update({
+        shiftTemplateId: tid,
+        effectiveTo: et,
+      });
+      result = existing;
+    } else {
+      result = await StaffShiftAssignment.create({
+        userId: uid,
+        shiftTemplateId: tid,
+        effectiveFrom: ef,
+        effectiveTo: et,
+      });
+    }
+
+    return res.json({ success: true, assignment: result });
   } catch (e) {
     const msg = String(e?.original?.sqlMessage || e?.message || e);
     const dup = /duplicate/i.test(msg);
@@ -10177,8 +10264,8 @@ router.post('/attendance', async (req, res) => {
     } else if (status === 'absent') {
       payload = { punchedInAt: null, punchedOutAt: null, breakTotalSeconds: 0, status };
     } else if (status === 'half_day') {
-      // keep provided times, but mark half-day explicitly via sentinel
-      payload.breakTotalSeconds = -2;
+      // Keep provided times and persist half-day via status only.
+      payload.breakTotalSeconds = 0;
     } else {
       // For present or overtime, ensure any existing sentinel is cleared if status is explicitly provided
       payload.breakTotalSeconds = 0;
@@ -10315,7 +10402,7 @@ router.post('/attendance/bulk', async (req, res) => {
     let basePayload = { punchedInAt: joinDateTime(checkIn), punchedOutAt: joinDateTime(checkOut), status };
     if (status === 'leave') basePayload = { punchedInAt: null, punchedOutAt: null, breakTotalSeconds: -1, status };
     else if (status === 'absent') basePayload = { punchedInAt: null, punchedOutAt: null, breakTotalSeconds: 0, status };
-    else if (status === 'half_day') basePayload.breakTotalSeconds = -2;
+    else if (status === 'half_day') basePayload.breakTotalSeconds = 0;
     else basePayload.breakTotalSeconds = 0; // Clear sentinel for present/overtime
 
     const results = [];
@@ -20782,14 +20869,22 @@ router.get('/staff/:id/attendance-overview', async (req, res) => {
 
     // 2. Map data for lookups
     const attMap = {};
-    atts.forEach(a => { attMap[String(a.date)] = a; });
+    atts.forEach(a => {
+      const key = dayjs(a.date).format('YYYY-MM-DD');
+      attMap[key] = a;
+    });
 
     const holidayDates = new Set();
     if (hAssignment?.template?.holidays) {
       hAssignment.template.holidays.forEach(h => { if (h.active !== false) holidayDates.add(String(h.date)); });
     }
 
-    const woConfig = wAssignment?.template?.config || [];
+    let woConfig = wAssignment?.template?.config || [];
+    if (typeof woConfig === 'string') {
+      try { woConfig = JSON.parse(woConfig); } catch (e) {
+        try { woConfig = JSON.parse(JSON.parse(woConfig)); } catch (__) { woConfig = []; }
+      }
+    }
 
     // Helper for shift week num
     const getMonthWeekNum = (d) => Math.floor((d.getDate() - 1) / 7) + 1;
@@ -20861,10 +20956,31 @@ router.get('/staff/:id/attendance-overview', async (req, res) => {
       }
       // Check Attendance Record
       else if (att) {
-        status = att.status ? att.status.toLowerCase() : 'present';
-        if (status === 'overtime') { stats.overtime++; stats.present++; }
-        else if (status === 'half_day') stats.halfDay++;
-        else { status = 'present'; stats.present++; }
+        const rawStatus = att.status ? String(att.status).toLowerCase() : 'present';
+
+        if (rawStatus === 'overtime') {
+          status = 'overtime';
+          stats.overtime++;
+          stats.present++;
+        } else if (rawStatus === 'half_day') {
+          status = 'half_day';
+          stats.halfDay++;
+        } else if (rawStatus === 'absent') {
+          status = 'absent';
+          stats.absent++;
+        } else if (rawStatus === 'leave') {
+          status = 'leave';
+          stats.leave++;
+        } else if (rawStatus === 'weekly_off') {
+          status = 'weekly_off';
+          stats.weeklyOff++;
+        } else if (rawStatus === 'holiday') {
+          status = 'holiday';
+          stats.holiday++;
+        } else {
+          status = 'present';
+          stats.present++;
+        }
 
         // Late Check Logic
         let isLate = !!att.lateArrival;

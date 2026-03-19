@@ -5,7 +5,7 @@ const {
   SalaryForecast, StaffWeeklyOffAssignment, WeeklyOffTemplate, 
   StaffHolidayAssignment, HolidayTemplate, HolidayDate, LeaveRequest,
   ShiftTemplate, StaffShiftAssignment, AttendanceAutomationRule, LeaveEncashment,
-  Appraisal, Subscription, Plan, ReliabilityScore
+  Appraisal, Subscription, Plan, ReliabilityScore, AssignedJob
 } = require('../models');
 const { authRequired } = require('../middleware/auth');
 const { requireRole } = require('../middleware/roles');
@@ -244,6 +244,48 @@ router.get('/salary-forecast', async (req, res) => {
         }
       ]
     });
+
+    const staffIds = users.map((u) => u.id);
+
+    // Pull monthly task execution snapshot for risk detection.
+    const taskStatsByUser = new Map(staffIds.map((id) => [id, {
+      totalTasks: 0,
+      completedTasks: 0,
+      delayedTasks: 0,
+      inProgressTasks: 0,
+      pendingTasks: 0,
+    }]));
+
+    if (staffIds.length > 0) {
+      const taskRows = await AssignedJob.findAll({
+        where: {
+          orgAccountId: orgId,
+          staffUserId: staffIds,
+          [Op.or]: [
+            { assignedOn: { [Op.between]: [startDate, endDate] } },
+            { dueDate: { [Op.between]: [startDate, endDate] } },
+            { createdAt: { [Op.between]: [startDate, endDate] } },
+          ]
+        },
+        attributes: ['staffUserId', 'status', 'dueDate']
+      });
+
+      for (const t of taskRows) {
+        const uid = Number(t.staffUserId);
+        if (!taskStatsByUser.has(uid)) continue;
+        const st = taskStatsByUser.get(uid);
+        st.totalTasks += 1;
+
+        const s = String(t.status || '').toLowerCase();
+        if (s === 'complete') st.completedTasks += 1;
+        else if (s === 'inprogress') st.inProgressTasks += 1;
+        else st.pendingTasks += 1;
+
+        if (t.dueDate && s !== 'complete' && dayjs(t.dueDate).isBefore(now, 'day')) {
+          st.delayedTasks += 1;
+        }
+      }
+    }
 
     // Fetch approved leaves separately for the month
     const leaves = await LeaveRequest.findAll({
@@ -735,6 +777,159 @@ router.get('/salary-forecast', async (req, res) => {
       });
     }
 
+    // 7. Risk detection (OpenAI first, heuristic fallback).
+    const heuristicRiskDetections = results
+      .map((r) => {
+        const att = r.attendance || {};
+        const tasks = taskStatsByUser.get(r.userId) || {
+          totalTasks: 0,
+          completedTasks: 0,
+          delayedTasks: 0,
+          inProgressTasks: 0,
+          pendingTasks: 0,
+        };
+
+        const payableUnits =
+          Number(att.present || 0)
+          + (Number(att.halfDay || 0) * 0.5)
+          + Number(att.weeklyOffs || 0)
+          + Number(att.holidays || 0)
+          + Number(att.paidLeave || 0);
+
+        const attendanceRate = dayOfMonth > 0 ? (payableUnits / dayOfMonth) : 0;
+        const absentDays = Number(att.absent || 0);
+        const completionRate = tasks.totalTasks > 0 ? (tasks.completedTasks / tasks.totalTasks) : 0;
+
+        const isHighAbsentee = absentDays >= Math.max(3, Math.ceil(dayOfMonth * 0.2));
+        const hasTaskDelay = tasks.delayedTasks > 0;
+        const hasNoTasks = tasks.totalTasks === 0;
+        const isLowPerformer = attendanceRate < 0.6 || (tasks.totalTasks > 0 && completionRate < 0.4);
+
+        const reasons = [];
+        const categories = [];
+
+        if (isLowPerformer) {
+          categories.push('low_performer');
+          reasons.push('low attendance/performance');
+        }
+        if (isHighAbsentee) {
+          categories.push('high_absentee');
+          reasons.push('high absenteeism');
+        }
+        if (hasTaskDelay || hasNoTasks) {
+          categories.push('task_delay');
+          reasons.push(hasNoTasks ? 'no tasks' : 'task delays');
+        }
+
+        if (categories.length === 0) return null;
+
+        const severityScore =
+          (isHighAbsentee ? 3 : 0)
+          + (hasTaskDelay ? 2 : 0)
+          + (hasNoTasks ? 1 : 0)
+          + (isLowPerformer ? 2 : 0);
+
+        return {
+          userId: r.userId,
+          userName: r.userName,
+          categories,
+          reasons,
+          severity: severityScore >= 5 ? 'high' : (severityScore >= 3 ? 'medium' : 'low'),
+          attendanceRate: Number((attendanceRate * 100).toFixed(1)),
+          absentDays,
+          taskStats: tasks,
+          message: `${r.userName} is at risk (${reasons.join(' + ')})`
+        };
+      })
+      .filter(Boolean)
+      .sort((a, b) => {
+        const rank = { high: 3, medium: 2, low: 1 };
+        return (rank[b.severity] - rank[a.severity]) || (b.absentDays - a.absentDays);
+      });
+
+    let riskDetections = heuristicRiskDetections;
+    try {
+      const aiRiskInput = results.map((r) => {
+        const att = r.attendance || {};
+        const tasks = taskStatsByUser.get(r.userId) || {
+          totalTasks: 0,
+          completedTasks: 0,
+          delayedTasks: 0,
+          inProgressTasks: 0,
+          pendingTasks: 0,
+        };
+        const payableUnits =
+          Number(att.present || 0)
+          + (Number(att.halfDay || 0) * 0.5)
+          + Number(att.weeklyOffs || 0)
+          + Number(att.holidays || 0)
+          + Number(att.paidLeave || 0);
+        const attendanceRate = dayOfMonth > 0 ? (payableUnits / dayOfMonth) : 0;
+
+        return {
+          userId: r.userId,
+          userName: r.userName,
+          designation: r.designation,
+          attendance: {
+            present: Number(att.present || 0),
+            absent: Number(att.absent || 0),
+            halfDay: Number(att.halfDay || 0),
+            lateCount: Number(att.lateCount || 0),
+            latePenaltyDays: Number(att.latePenaltyDays || 0),
+            attendanceRate: Number((attendanceRate * 100).toFixed(1)),
+            elapsedDays: dayOfMonth,
+          },
+          tasks,
+        };
+      });
+
+      const aiRiskItems = await aiProvider.detectRiskSignals({ month, year, users: aiRiskInput });
+      if (Array.isArray(aiRiskItems) && aiRiskItems.length > 0) {
+        const byUser = new Map(heuristicRiskDetections.map((x) => [Number(x.userId), x]));
+        const normalized = aiRiskItems
+          .map((it) => {
+            const uid = Number(it.userId);
+            if (!Number.isFinite(uid)) return null;
+            const base = byUser.get(uid) || {};
+            const categories = Array.isArray(it.categories) ? it.categories.filter(Boolean) : (Array.isArray(base.categories) ? base.categories : []);
+            if (!categories.length) return null;
+            const reasons = Array.isArray(it.reasons) ? it.reasons.filter(Boolean) : (Array.isArray(base.reasons) ? base.reasons : []);
+            const severity = ['low', 'medium', 'high'].includes(String(it.severity || '').toLowerCase())
+              ? String(it.severity).toLowerCase()
+              : (base.severity || 'medium');
+
+            return {
+              userId: uid,
+              userName: base.userName || aiRiskInput.find((u) => u.userId === uid)?.userName || `User ${uid}`,
+              categories,
+              reasons,
+              severity,
+              attendanceRate: Number(base.attendanceRate || aiRiskInput.find((u) => u.userId === uid)?.attendance?.attendanceRate || 0),
+              absentDays: Number(base.absentDays || aiRiskInput.find((u) => u.userId === uid)?.attendance?.absent || 0),
+              taskStats: base.taskStats || aiRiskInput.find((u) => u.userId === uid)?.tasks || {
+                totalTasks: 0,
+                completedTasks: 0,
+                delayedTasks: 0,
+                inProgressTasks: 0,
+                pendingTasks: 0,
+              },
+              message: String(it.message || base.message || '').trim() || `${base.userName || `User ${uid}`} is at risk (${reasons.join(' + ')})`
+            };
+          })
+          .filter(Boolean)
+          .sort((a, b) => {
+            const rank = { high: 3, medium: 2, low: 1 };
+            return (rank[b.severity] - rank[a.severity]) || (b.absentDays - a.absentDays);
+          });
+
+        if (normalized.length > 0) {
+          riskDetections = normalized;
+        }
+      }
+    } catch (_) {
+      // Keep heuristic detections if AI risk detection fails.
+    }
+
     return res.json({ 
       success: true, 
       month, 
@@ -755,9 +950,17 @@ router.get('/salary-forecast', async (req, res) => {
           breakdown: nextMonthData.breakdown || null,
           monthLabel: `${nextMonth}/${nextYear}`
         },
+        riskDetections,
         // AI Insights: top risks and highlights
         insights: (() => {
           const ins = [];
+          if (riskDetections.length > 0) {
+            ins.push({
+              type: 'warning',
+              title: 'Risk Detection',
+              desc: riskDetections.slice(0, 3).map((r) => r.message).join(' | ')
+            });
+          }
           const highAbsent = results.filter(r => (r.attendance?.absent || 0) >= 3).sort((a, b) => (b.attendance?.absent || 0) - (a.attendance?.absent || 0));
           if (highAbsent.length > 0) {
             ins.push({ type: 'warning', title: 'High Absenteeism Alert', desc: `${highAbsent.length} staff with 3+ absents: ${highAbsent.slice(0, 3).map(r => r.userName).join(', ')}${highAbsent.length > 3 ? '...' : ''}` });
