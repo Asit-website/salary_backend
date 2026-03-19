@@ -611,10 +611,10 @@ module.exports = {
   StaffHolidayAssignment,
   SalarySetting,
   SalaryAccess,
-  AttendanceTemplate,
-  StaffAttendanceAssignment,
   SalaryTemplate,
   StaffSalaryAssignment,
+  AttendanceTemplate,
+  StaffAttendanceAssignment,
   SalesVisit,
   SalesVisitAttachment,
 

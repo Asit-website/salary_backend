@@ -5,12 +5,14 @@ const {
   SalaryForecast, StaffWeeklyOffAssignment, WeeklyOffTemplate, 
   StaffHolidayAssignment, HolidayTemplate, HolidayDate, LeaveRequest,
   ShiftTemplate, StaffShiftAssignment, AttendanceAutomationRule, LeaveEncashment,
-  Appraisal, Subscription, Plan
+  Appraisal, Subscription, Plan, ReliabilityScore
 } = require('../models');
 const { authRequired } = require('../middleware/auth');
 const { requireRole } = require('../middleware/roles');
 const { tenantEnforce } = require('../middleware/tenant');
 const aiProvider = require('../services/aiProvider');
+const reliabilityService = require('../services/reliabilityService');
+const aiChatService = require('../services/aiChatService');
 const dayjs = require('dayjs');
 
 const router = express.Router();
@@ -122,6 +124,75 @@ function calculateLocalForecastNetPay(userData) {
 
   return Math.max(0, Math.round(baseSalary * ratio) + overtimePay + leaveEncashmentAmount);
 }
+
+router.get('/attendance-productivity', async (req, res) => {
+  try {
+    const orgAccountId = req.tenantOrgAccountId;
+    const now = dayjs();
+    const month = now.month() + 1;
+    const year = now.year();
+
+    const scores = await reliabilityService.calculateScores(orgAccountId, month, year);
+
+    // Save/Update reliability scores in DB (Top 10)
+    for (const s of scores.slice(0, 10)) {
+      await ReliabilityScore.upsert({
+        userId: s.userId,
+        month,
+        year,
+        score: s.score,
+        breakdown: s.breakdown
+      });
+    }
+
+    // Calculate Stats for AI Context
+    const currentAvg = scores.length > 0 ? scores.reduce((a, b) => a + b.score, 0) / scores.length : 0;
+    const needyEmployees = scores.filter(s => s.score < 50);
+    const topPerformer = scores[0];
+
+    // Get Last Month Avg for Growth calculation
+    const lastMonthNow = now.subtract(1, 'month');
+    const lm = lastMonthNow.month() + 1;
+    const ly = lastMonthNow.year();
+    
+    const lastMonthScores = await ReliabilityScore.findAll({
+      where: { month: lm, year: ly },
+      include: [{ model: User, as: 'user', where: { orgAccountId }, required: true }]
+    });
+    const lastMonthAvg = lastMonthScores.length > 0 
+      ? lastMonthScores.reduce((a, b) => a + Number(b.score), 0) / lastMonthScores.length 
+      : currentAvg; // Fallback if no last month data
+
+    // Get AI Insight with Context
+    const aiInsight = await aiProvider.getTopPerformersInsight({
+      month,
+      year,
+      topPerformers: scores.slice(0, 10),
+      stats: {
+        currentAvg: Math.round(currentAvg),
+        lastMonthAvg: Math.round(lastMonthAvg),
+        needyCount: needyEmployees.length,
+        topPerformer: {
+          name: topPerformer?.userName,
+          score: topPerformer?.score
+        }
+      }
+    });
+
+    return res.json({
+      success: true,
+      month,
+      year,
+      scores,
+      top10: scores.slice(0, 10),
+      aiSummary: aiInsight?.summary || "Team performance is being analyzed.",
+      bullets: aiInsight?.bullets || []
+    });
+  } catch (error) {
+    console.error('Error in AI Attendance Productivity:', error);
+    return res.status(500).json({ success: false, message: 'Failed to generate productivity report' });
+  }
+});
 
 router.get('/salary-forecast', async (req, res) => {
   try {
@@ -721,6 +792,27 @@ router.get('/salary-forecast', async (req, res) => {
   } catch (error) {
     console.error('Error in AI Salary Forecast:', error);
     return res.status(500).json({ success: false, message: 'Failed to generate AI forecast' });
+  }
+});
+
+router.post('/chat', async (req, res) => {
+  try {
+    const orgAccountId = req.tenantOrgAccountId;
+    const { message, history } = req.body;
+
+    if (!message) {
+      return res.status(400).json({ success: false, message: 'Message is required' });
+    }
+
+    const aiResponse = await aiChatService.handleChat(orgAccountId, message, history || []);
+    
+    return res.json({
+      success: true,
+      response: aiResponse
+    });
+  } catch (error) {
+    console.error('Error in AI Chat:', error);
+    return res.status(500).json({ success: false, message: 'Failed to process AI chat' });
   }
 });
 

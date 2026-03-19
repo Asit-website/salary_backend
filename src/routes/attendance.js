@@ -383,6 +383,23 @@ router.get('/status', async (req, res) => {
   const now = new Date();
 
   const isApprovedLeave = await hasApprovedLeave(userId, key);
+  const isHoliday = await isPaidHoliday(userId, key);
+
+  // Weekly Off Check
+  const woAsg = await StaffWeeklyOffAssignment.findOne({
+    where: { userId, effectiveFrom: { [Op.lte]: key } },
+    order: [['effectiveFrom', 'DESC']]
+  });
+  let isWO = false;
+  if (woAsg) {
+    const wTpl = await WeeklyOffTemplate.findByPk(woAsg.weeklyOffTemplateId || woAsg.weekly_off_template_id);
+    let raw = wTpl?.config;
+    while (typeof raw === 'string' && raw.trim().startsWith('[')) {
+      try { raw = JSON.parse(raw); } catch (_) { break; }
+    }
+    const woConfig = Array.isArray(raw) ? raw : [];
+    isWO = isWeeklyOffForDate(woConfig, new Date(key));
+  }
 
   // 0. Roster override check
   const rosterEntry = await StaffRoster.findOne({ where: { userId, date: key } });

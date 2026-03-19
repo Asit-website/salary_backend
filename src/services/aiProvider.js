@@ -104,4 +104,31 @@ async function forecastSalary({ month, year, users }) {
   return out.items;
 }
 
-module.exports = { isAIEnabled, analyzeAnomalies, scoreReliability, forecastSalary, callOpenAIJSON };
+// Generate insights for top performers with dynamic stats
+async function getTopPerformersInsight({ month, year, topPerformers, stats }) {
+  if (!isAIEnabled()) return null;
+  const prompt = `You are an HR Analytics Expert. Based on the following data for ${month}-${year}, provide a professional summary and 3 key bullet points.
+  
+  CURRENT TEAM STATS:
+  - Team Average Score: ${stats.currentAvg}%
+  - Last Month Average: ${stats.lastMonthAvg}%
+  - Employees needing attention (score < 50%): ${stats.needyCount}
+  - Top Performer: ${stats.topPerformer?.name} (${stats.topPerformer?.score}%)
+  
+  TOP 10 PERFORMERS DATA:
+  ${JSON.stringify(topPerformers)}
+  
+  REQUIRED OUTPUT:
+  1. A "summary" (1-2 sentences) about the team's overall reliability trend.
+  2. A "bullets" array (exactly 3-4 items) that MUST include:
+     - An insight about the team's strongest or weakest area (Attendance vs Tasks).
+     - "X employees need attention (score < 50%)"
+     - "[Name] is top performer this month ([percentage] score)"
+     - A brief actionable tip for improvement (e.g. focusing on punctuality).
+  
+  Return a JSON object with keys "summary" and "bullets".`;
+  const schemaNote = 'Schema: { summary: string, bullets: string[] }';
+  return await callOpenAIJSON(prompt, schemaNote);
+}
+
+module.exports = { isAIEnabled, analyzeAnomalies, scoreReliability, forecastSalary, getTopPerformersInsight, callOpenAIJSON };
