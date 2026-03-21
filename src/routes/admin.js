@@ -19,7 +19,7 @@ function getCellValue(cell) {
 
 
 
-const { sequelize, User, StaffProfile, Role, Permission, AppSetting, DocumentType, ShiftTemplate, ShiftBreak, ShiftRotationalSlot, StaffShiftAssignment, SalaryAccess, AttendanceTemplate, StaffAttendanceAssignment, SalaryTemplate, StaffSalaryAssignment, Site, WorkUnit, Route, RouteStop, StaffRouteAssignment, SiteCheckpoint, PatrolLog, LeaveTemplate, LeaveTemplateCategory, StaffLeaveAssignment, LeaveBalance, LeaveRequest, AIAnomaly, ReliabilityScore, SalaryForecast, Attendance, Client, AssignedJob, SalesTarget, HolidayTemplate, HolidayDate, StaffHolidayAssignment, WeeklyOffTemplate, StaffWeeklyOffAssignment, Subscription, Plan, SalesVisit, Asset, AssetAssignment, AssetMaintenance, StaffLoan, OrderProduct, StaffOrderProduct, AttendanceAutomationRule, StaffGeofenceAssignment, GeofenceTemplate, GeofenceSite, DeviceInfo, Appraisal, Rating, OrgAccount } = require('../models');
+const { sequelize, User, StaffProfile, Role, Permission, AppSetting, DocumentType, ShiftTemplate, ShiftBreak, ShiftRotationalSlot, StaffShiftAssignment, SalaryAccess, AttendanceTemplate, StaffAttendanceAssignment, SalaryTemplate, StaffSalaryAssignment, Site, WorkUnit, Route, RouteStop, StaffRouteAssignment, SiteCheckpoint, PatrolLog, LeaveTemplate, LeaveTemplateCategory, StaffLeaveAssignment, LeaveBalance, LeaveRequest, AIAnomaly, ReliabilityScore, SalaryForecast, Attendance, Client, AssignedJob, SalesTarget, HolidayTemplate, HolidayDate, StaffHolidayAssignment, WeeklyOffTemplate, StaffWeeklyOffAssignment, Subscription, Plan, SalesVisit, Asset, AssetAssignment, AssetMaintenance, StaffLoan, StaffAdvance, OrderProduct, StaffOrderProduct, AttendanceAutomationRule, StaffGeofenceAssignment, GeofenceTemplate, GeofenceSite, DeviceInfo, Appraisal, Rating, OrgAccount } = require('../models');
 
 const multer = require('multer');
 
@@ -1138,6 +1138,31 @@ router.post('/payroll/:cycleId/lock', async (req, res) => {
 
     await cycle.update({ status: 'LOCKED' });
 
+    // Mark associated advances as deducted
+    try {
+      const { PayrollLine, StaffAdvance } = require('../models');
+      const staffIds = (await PayrollLine.findAll({ 
+        where: { cycleId: id }, 
+        attributes: ['userId'] 
+      })).map(l => l.userId);
+
+      if (staffIds.length > 0) {
+        await StaffAdvance.update(
+          { status: 'deducted' },
+          { 
+            where: { 
+              orgAccountId: orgId,
+              deductionMonth: cycle.monthKey,
+              status: 'pending',
+              staffId: { [Op.in]: staffIds }
+            } 
+          }
+        );
+      }
+    } catch (advErr) {
+      console.error('Error updating advance status on lock:', advErr);
+    }
+
     return res.json({ success: true, cycle });
 
   } catch (e) {
@@ -1167,6 +1192,23 @@ router.post('/payroll/:cycleId/unlock', async (req, res) => {
     if (!cycle) return res.status(404).json({ success: false, message: 'Cycle not found' });
 
     await cycle.update({ status: 'DRAFT' });
+
+    // Mark associated advances back to pending
+    try {
+      const { StaffAdvance } = require('../models');
+      await StaffAdvance.update(
+        { status: 'pending' },
+        { 
+          where: { 
+            orgAccountId: orgId,
+            deductionMonth: cycle.monthKey,
+            status: 'deducted'
+          } 
+        }
+      );
+    } catch (advErr) {
+      console.error('Error reverting advance status on unlock:', advErr);
+    }
 
     return res.json({ success: true, cycle });
 
@@ -1403,7 +1445,7 @@ router.post('/payroll/:cycleId/compute', async (req, res) => {
 
     const orgId = requireOrg(req, res); if (!orgId) return;
 
-    const { PayrollCycle, PayrollLine, User, Attendance, LeaveRequest, StaffLoan, ExpenseClaim, LeaveEncashment, SalaryTemplate } = require('../models');
+    const { PayrollCycle, PayrollLine, User, Attendance, LeaveRequest, StaffLoan, StaffAdvance, ExpenseClaim, LeaveEncashment, SalaryTemplate } = require('../models');
 
     const cycleId = Number(req.params.cycleId);
 
@@ -1679,20 +1721,33 @@ router.post('/payroll/:cycleId/compute', async (req, res) => {
 
 
 
-      // Add loan EMI to deductions
+      // Calculate staff advance deductions
+      let advanceDeductions = 0;
+      try {
+        const pendingAdvances = await StaffAdvance.findAll({
+          where: {
+            staffId: u.id,
+            orgAccountId: orgId,
+            deductionMonth: monthKey,
+            status: 'pending'
+          }
+        });
+        for (const adv of pendingAdvances) {
+          advanceDeductions += parseFloat(adv.amount || 0);
+        }
+      } catch (err) {
+        console.error('Error calculating advances for staff', u.id, ':', err);
+      }
 
+      // Add loan EMI and advances to deductions
       const finalDeductions = { ...d };
-
       if (loanEmiDeductions > 0) {
-
         finalDeductions.loan_emi = loanEmiDeductions;
-
         console.log(`Adding loan_emi: ${loanEmiDeductions} to deductions for staff ${u.id}`);
-
-      } else {
-
-        console.log(`No EMI deductions to add for staff ${u.id}`);
-
+      }
+      if (advanceDeductions > 0) {
+        finalDeductions.advance_deduction = advanceDeductions;
+        console.log(`Adding advance_deduction: ${advanceDeductions} to deductions for staff ${u.id}`);
       }
 
 
@@ -2028,7 +2083,7 @@ router.post('/payroll/:cycleId/compute', async (req, res) => {
           finalI[label] = (finalI[label] || 0) + Number(inc.incentiveAmount || 0);
         }
       } catch (e) { }
-      const finalD = prorate(finalDeductions, ratio, ['loan_emi']);
+      const finalD = prorate(finalDeductions, ratio, ['loan_emi', 'advance_deduction']);
 
       // FETCH APPROVED LEAVE ENCASHMENTS (Not pro-rated)
       try {
@@ -5549,6 +5604,129 @@ router.get('/staff/:id/loans', async (req, res) => {
 
 
 
+// --- Staff Advance routes ---
+router.get('/advances', async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
+    const { page = 1, limit = 10, staffId } = req.query;
+    const where = { orgAccountId: orgId };
+    if (staffId) where.staffId = staffId;
+
+    const { count, rows } = await StaffAdvance.findAndCountAll({
+      where,
+      include: [
+        { 
+          model: User, 
+          as: 'staffMember', 
+          attributes: ['id', 'phone'],
+          include: [{ model: StaffProfile, as: 'profile', attributes: ['name'] }]
+        }
+      ],
+      order: [['advanceDate', 'DESC'], ['createdAt', 'DESC']],
+      limit: parseInt(limit),
+      offset: (parseInt(page) - 1) * parseInt(limit)
+    });
+
+    return res.json({ 
+      success: true, 
+      data: rows,
+      pagination: {
+        total: count,
+        current: parseInt(page),
+        pageSize: parseInt(limit)
+      }
+    });
+  } catch (e) {
+    return res.status(500).json({ success: false, message: 'Failed to load advances' });
+  }
+});
+
+router.post('/advances', async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
+    const { staffId, amount, advanceDate, notes, deductionMonth, status } = req.body;
+    
+    if (!staffId || !amount || !advanceDate) {
+      return res.status(400).json({ success: false, message: 'Missing required fields' });
+    }
+
+    // deductionMonth derived from payload or from advanceDate
+    let finalDeductionMonth = deductionMonth;
+    if (!finalDeductionMonth) {
+      const date = new Date(advanceDate);
+      finalDeductionMonth = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
+    }
+
+    const row = await StaffAdvance.create({
+      staffId,
+      orgAccountId: orgId,
+      amount,
+      advanceDate,
+      deductionMonth: finalDeductionMonth,
+      status: status || 'pending',
+      notes,
+      createdBy: req.user.id,
+      updatedBy: req.user.id
+    });
+
+    return res.json({ success: true, data: row });
+  } catch (e) {
+    return res.status(500).json({ success: false, message: 'Failed to create advance' });
+  }
+});
+
+router.put('/advances/:id', async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
+    const { id } = req.params;
+    const { staffId, amount, advanceDate, notes, deductionMonth, status } = req.body;
+
+    const row = await StaffAdvance.findOne({ where: { id, orgAccountId: orgId } });
+    if (!row) return res.status(404).json({ success: false, message: 'Advance not found' });
+
+    const patch = {
+      staffId: staffId ?? row.staffId,
+      amount: amount ?? row.amount,
+      advanceDate: advanceDate ?? row.advanceDate,
+      notes: notes ?? row.notes,
+      status: status ?? row.status,
+      updatedBy: req.user.id
+    };
+
+    if (deductionMonth) {
+      patch.deductionMonth = deductionMonth;
+    } else if (advanceDate && advanceDate !== row.advanceDate) {
+      const date = new Date(advanceDate);
+      patch.deductionMonth = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
+    }
+
+    await row.update(patch);
+    return res.json({ success: true, data: row });
+  } catch (e) {
+    return res.status(500).json({ success: false, message: 'Failed to update advance' });
+  }
+});
+
+router.delete('/advances/:id', async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
+    const { id } = req.params;
+
+    const row = await StaffAdvance.findOne({ where: { id, orgAccountId: orgId } });
+    if (!row) return res.status(404).json({ success: false, message: 'Advance not found' });
+
+    if (row.status === 'deducted') {
+      return res.status(400).json({ success: false, message: 'Cannot delete a deducted advance' });
+    }
+
+    await row.destroy();
+    return res.json({ success: true, message: 'Advance deleted successfully' });
+  } catch (e) {
+    return res.status(500).json({ success: false, message: 'Failed to delete advance' });
+  }
+});
+
+
 // --- Expense Claims (table: expense_claims) ---
 const { ExpenseClaim } = require('../models');
 if (false) {
@@ -7307,60 +7485,7 @@ router.post('/ai/reliability/compute', async (req, res) => {
 });
 
 // Salary Forecast: list and compute stub
-router.get('/ai/salary-forecast', async (req, res) => {
-  try {
-    const month = Number(req.query.month);
-    const year = Number(req.query.year);
-    const where = Number.isFinite(month) && Number.isFinite(year) ? { month, year } : {};
-    const rows = await SalaryForecast.findAll({ where, order: [['updatedAt', 'DESC']], limit: 200 });
-    return res.json({ success: true, items: rows });
-  } catch (e) {
-    return res.status(500).json({ success: false, message: 'Failed to load salary forecasts' });
-  }
-});
-
-router.post('/ai/salary-forecast/compute', async (req, res) => {
-  try {
-    const month = Number(req.body?.month ?? new Date().getMonth() + 1);
-    const year = Number(req.body?.year ?? new Date().getFullYear());
-    const users = await User.findAll({ where: { role: 'staff' }, limit: 1000 });
-    let computed = 0;
-    // Try AI provider
-    try {
-      const aiItems = await ai.forecastSalary({ month, year, users });
-      if (Array.isArray(aiItems) && aiItems.length) {
-        for (const it of aiItems) {
-          const uid = Number(it.userId);
-          if (!Number.isFinite(uid)) continue;
-          const forecastNetPay = Number(it.forecastNetPay);
-          const assumptions = it.assumptions || {};
-          const [row] = await SalaryForecast.findOrCreate({ where: { userId: uid, month, year }, defaults: { forecastNetPay, assumptions } });
-          if (Number(row.forecastNetPay) !== forecastNetPay) await row.update({ forecastNetPay, assumptions });
-          computed += 1;
-        }
-        return res.json({ success: true, month, year, computed, source: 'ai' });
-      }
-    } catch (_) {
-      // ignore and fallback
-    }
-
-    // Fallback quick baseline
-    for (const u of users) {
-      const base = 20000; // placeholder
-      const variance = Math.round((Math.random() * 5000));
-      const forecastNetPay = base + variance;
-      const assumptions = { payableDays: 26, expectedIncentives: 1500 };
-      const [row] = await SalaryForecast.findOrCreate({ where: { userId: u.id, month, year }, defaults: { forecastNetPay, assumptions } });
-      if (Number(row.forecastNetPay) !== forecastNetPay) await row.update({ forecastNetPay, assumptions });
-      computed += 1;
-    }
-    return res.json({ success: true, month, year, computed, source: 'heuristic' });
-  } catch (e) {
-    return res.status(500).json({ success: false, message: 'Failed to compute salary forecast' });
-  }
-});
-
-// Allocate leave balances for a given date's cycle (idempotent)
+// Allocated leave balances for a given date's cycle (idempotent)
 router.post('/leave/allocate', async (req, res) => {
   try {
     const dateIso = String(req.body?.date || req.query?.date || new Date().toISOString().slice(0, 10));

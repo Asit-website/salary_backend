@@ -1,0 +1,17 @@
+﻿Checking attendance between 2026-03-01 and 2026-03-31
+User: mukesh (ID: 28) - Attendance Count: 2
+Sample dates: [ '2026-03-05', '2026-03-06' ]
+User: mukta (ID: 29) - Attendance Count: 9
+Sample dates: [ '2026-03-02', '2026-03-03', '2026-03-05' ]
+User: ravani (ID: 34) - Attendance Count: 0
+User: fff (ID: 35) - Attendance Count: 0
+User: cvv (ID: 36) - Attendance Count: 0
+User: John Doe (ID: 38) - Attendance Count: 1
+Sample dates: [ '2026-03-07' ]
+User: ankit (ID: 40) - Attendance Count: 2
+Sample dates: [ '2026-03-09', '2026-03-11' ]
+User: rakesh (ID: 42) - Attendance Count: 1
+Sample dates: [ '2026-03-11' ]
+User: naresh (ID: 43) - Attendance Count: 2
+Sample dates: [ '2026-03-10', '2026-03-11' ]
+User: asit mandal (ID: 50) - Attendance Count: 0

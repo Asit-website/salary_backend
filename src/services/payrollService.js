@@ -8,7 +8,7 @@ const {
   Attendance, LeaveRequest, WeeklyOffTemplate, StaffWeeklyOffAssignment,
   HolidayTemplate, HolidayDate, StaffHolidayAssignment, PayrollCycle, PayrollLine,
   AppSetting, StaffLoan, OrgAccount, StaffSalesIncentive, SalesIncentiveRule,
-  AttendanceAutomationRule, LeaveEncashment
+  AttendanceAutomationRule, LeaveEncashment, StaffAdvance
 } = require('../models');
 
 const categoryNames = {
@@ -113,6 +113,13 @@ async function calculateSalary(userId, monthKey) {
       }
     }
     return totalLoanEmi;
+  };
+
+  const calculateAdvanceDeduction = async () => {
+    const advances = await StaffAdvance.findAll({
+      where: { staffId: u.id, deductionMonth: monthKey, status: 'pending' }
+    });
+    return advances.reduce((sum, adv) => sum + parseFloat(adv.amount || 0), 0);
   };
 
   // 1. If PayrollLine exists, use it (recomputing totals to be safe)
@@ -573,8 +580,8 @@ async function calculateSalary(userId, monthKey) {
   const ratio = daysForRatio > 0 ? Math.max(0, Math.min(1, payableUnits / daysForRatio)) : 1;
 
   const loanDeduction = await calculateLoanDeduction();
+  const advanceDeduction = await calculateAdvanceDeduction();
 
-  // Re-construct deductions for live compute to include loan
   // Re-construct deductions for live compute
   // Use the deductions object which already has merged values from sv and flat columns
   let liveDeductions = { ...deductions };
@@ -588,6 +595,9 @@ async function calculateSalary(userId, monthKey) {
 
   if (loanDeduction > 0) {
     liveDeductions['loan_emi'] = loanDeduction;
+  }
+  if (advanceDeduction > 0) {
+    liveDeductions['advance_deduction'] = advanceDeduction;
   }
 
   const finalEarnings = { ...earnings };
@@ -615,9 +625,9 @@ async function calculateSalary(userId, monthKey) {
 
   const sumObj = (o) => Object.values(o || {}).reduce((s, v) => s + (Number(v) || 0), 0);
 
-  // Pro-rate deductions (Except LOAN_EMI)
+  // Pro-rate deductions (Except LOAN_EMI and ADVANCE_DEDUCTION)
   Object.keys(finalDeductions).forEach(k => {
-    if (k !== 'loan_emi') {
+    if (k !== 'loan_emi' && k !== 'advance_deduction') {
       finalDeductions[k] = Math.round(Number(finalDeductions[k] || 0) * ratio);
     }
   });

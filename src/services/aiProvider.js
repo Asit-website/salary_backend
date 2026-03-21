@@ -57,7 +57,12 @@ async function analyzeAnomalies({ date, attendance }) {
 // Score reliability for a month; inputs minimal
 async function scoreReliability({ month, year, users }) {
   if (!isAIEnabled()) return null;
-  const simplified = users.map(u => ({ id: u.id, phone: u.phone }));
+  const simplified = users.map(u => ({ 
+    id: u.id, 
+    name: u.name || u.phone, 
+    presentDays: u.presentDays, 
+    tasks: u.totalTasks ? `${u.completedTasks}/${u.totalTasks}` : 'N/A'
+  }));
   const prompt = `Assign a reliability score (60-100) to each user id with a breakdown weights of attendanceConsistency, punctuality, tasks, locationAccuracy. Return items = [{ userId, score, breakdown }] for month ${month}-${year}. Users: ${JSON.stringify(simplified).slice(0, 120000)}`;
   const schemaNote = 'Schema: { items: Array<{ userId:number, score:number, breakdown:{attendanceConsistency:number,punctuality:number,tasks:number,locationAccuracy:number}}>}';
   const out = await callOpenAIJSON(prompt, schemaNote);

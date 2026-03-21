@@ -94,6 +94,7 @@ const defineTaskObserverMapping = require('./TaskObserverMapping');
 const defineActivityHistory = require('./ActivityHistory');
 const defineMeetingHistory = require('./MeetingHistory');
 const defineStaffRoster = require('./StaffRoster');
+const defineStaffAdvance = require('./StaffAdvance');
 
 
 
@@ -192,6 +193,7 @@ const TaskObserverMapping = defineTaskObserverMapping(sequelize);
 const ActivityHistory = defineActivityHistory(sequelize);
 const MeetingHistory = defineMeetingHistory(sequelize);
 const StaffRoster = defineStaffRoster(sequelize);
+const StaffAdvance = defineStaffAdvance(sequelize);
 
 
 
@@ -587,6 +589,11 @@ StaffRoster.belongsTo(ShiftTemplate, { foreignKey: 'shiftTemplateId', as: 'shift
 OrgAccount.hasMany(StaffRoster, { foreignKey: 'orgAccountId', as: 'rosterEntries' });
 StaffRoster.belongsTo(OrgAccount, { foreignKey: 'orgAccountId', as: 'orgAccount' });
 
+// Staff Advance associations
+User.hasMany(StaffAdvance, { foreignKey: 'staffId', as: 'advances' });
+StaffAdvance.belongsTo(User, { foreignKey: 'staffId', as: 'staffMember' });
+StaffAdvance.belongsTo(OrgAccount, { foreignKey: 'orgAccountId', as: 'orgAccount' });
+
 module.exports = {
   sequelize,
   User,
@@ -683,4 +690,5 @@ module.exports = {
   ActivityHistory,
   MeetingHistory,
   StaffRoster,
+  StaffAdvance,
 };
