@@ -2,6 +2,7 @@ const express = require('express');
 const { Activity, Meeting, MeetingAttendee, Ticket, TicketHistory, ActivityHistory, MeetingHistory, User, StaffProfile, sequelize, TaskObserverMapping } = require('../models');
 const { authRequired } = require('../middleware/auth');
 const { tenantEnforce } = require('../middleware/tenant');
+const { upload } = require('../upload');
 const { Op } = require('sequelize');
 
 const router = express.Router();
@@ -51,10 +52,73 @@ router.get('/activities', async (req, res) => {
                 as: 'transferredTo',
                 attributes: ['id'],
                 include: [{ model: StaffProfile, as: 'profile', attributes: ['name'] }]
+            }, {
+                model: User,
+                as: 'allocatedBy',
+                attributes: ['id'],
+                include: [{ model: StaffProfile, as: 'profile', attributes: ['name'] }]
             }],
             order: [['createdAt', 'DESC']]
         });
         res.json({ success: true, activities });
+    } catch (error) {
+        res.status(500).json({ success: false, message: error.message });
+    }
+});
+
+// Admin: Create Activity
+router.post('/activities', async (req, res) => {
+    try {
+        const { userId, title, description, date, turnAroundTime } = req.body;
+        
+        if (!userId || !title || !date) {
+            return res.status(400).json({ success: false, message: 'Staff, Title and Date are required' });
+        }
+
+        const activity = await Activity.create({
+            orgAccountId: req.tenantOrgAccountId,
+            userId,
+            title,
+            description,
+            date,
+            turnAroundTime,
+            status: 'SCHEDULE',
+            allocatedById: req.user.id
+        });
+
+        await ActivityHistory.create({
+            activityId: activity.id,
+            updatedById: req.user.id,
+            oldStatus: 'NONE',
+            newStatus: 'SCHEDULE',
+            remarks: 'Activity assigned by admin/observer'
+        });
+
+        res.status(201).json({ success: true, activity });
+    } catch (error) {
+        res.status(500).json({ success: false, message: error.message });
+    }
+});
+
+// Admin: Update Activity
+router.patch('/activities/:id', async (req, res) => {
+    try {
+        const { userId, title, description, date, turnAroundTime } = req.body;
+        const activity = await Activity.findOne({ where: { id: req.params.id, orgAccountId: req.tenantOrgAccountId } });
+        if (!activity) return res.status(404).json({ success: false, message: 'Activity not found' });
+
+        const oldStatus = activity.status;
+        await activity.update({ userId, title, description, date, turnAroundTime });
+
+        await ActivityHistory.create({
+            activityId: activity.id,
+            updatedById: req.user.id,
+            oldStatus,
+            newStatus: oldStatus,
+            remarks: 'Activity details updated by admin/observer'
+        });
+
+        res.json({ success: true, activity });
     } catch (error) {
         res.status(500).json({ success: false, message: error.message });
     }
@@ -94,6 +158,87 @@ router.get('/meetings', async (req, res) => {
         });
         res.json({ success: true, meetings });
     } catch (error) {
+        res.status(500).json({ success: false, message: error.message });
+    }
+});
+
+// Admin: Create Meeting
+router.post('/meetings', async (req, res) => {
+    const t = await sequelize.transaction();
+    try {
+        const { title, description, scheduledAt, attendees, meetLink } = req.body;
+        
+        if (!title || !scheduledAt || !meetLink) {
+            return res.status(400).json({ success: false, message: 'Title, Scheduled Time and Meet Link are required' });
+        }
+
+        const meeting = await Meeting.create({
+            orgAccountId: req.tenantOrgAccountId,
+            createdBy: req.user.id,
+            title,
+            description,
+            meetLink,
+            scheduledAt,
+            status: 'SCHEDULE'
+        }, { transaction: t });
+
+        if (attendees && Array.isArray(attendees)) {
+            await MeetingAttendee.bulkCreate(attendees.map(userId => ({
+                meetingId: meeting.id,
+                userId,
+                status: 'PENDING'
+            })), { transaction: t });
+        }
+
+        await MeetingHistory.create({
+            meetingId: meeting.id,
+            updatedById: req.user.id,
+            oldStatus: 'NONE',
+            newStatus: 'SCHEDULE',
+            remarks: 'Meeting scheduled by admin/observer'
+        }, { transaction: t });
+
+        await t.commit();
+        res.status(201).json({ success: true, meeting });
+    } catch (error) {
+        if (t) await t.rollback();
+        res.status(500).json({ success: false, message: error.message });
+    }
+});
+
+// Admin: Update Meeting
+router.patch('/meetings/:id', async (req, res) => {
+    const t = await sequelize.transaction();
+    try {
+        const { title, description, scheduledAt, attendees, meetLink } = req.body;
+        const meeting = await Meeting.findOne({ where: { id: req.params.id, orgAccountId: req.tenantOrgAccountId } });
+        if (!meeting) return res.status(404).json({ success: false, message: 'Meeting not found' });
+
+        const oldStatus = meeting.status;
+        await meeting.update({ title, description, scheduledAt, meetLink }, { transaction: t });
+
+        if (attendees && Array.isArray(attendees)) {
+            // Simple sync: delete existing and recreat (or we could be more surgical)
+            await MeetingAttendee.destroy({ where: { meetingId: meeting.id }, transaction: t });
+            await MeetingAttendee.bulkCreate(attendees.map(userId => ({
+                meetingId: meeting.id,
+                userId,
+                status: 'PENDING'
+            })), { transaction: t });
+        }
+
+        await MeetingHistory.create({
+            meetingId: meeting.id,
+            updatedById: req.user.id,
+            oldStatus,
+            newStatus: oldStatus,
+            remarks: 'Meeting details updated by admin/observer'
+        }, { transaction: t });
+
+        await t.commit();
+        res.json({ success: true, meeting });
+    } catch (error) {
+        if (t) await t.rollback();
         res.status(500).json({ success: false, message: error.message });
     }
 });
@@ -234,6 +379,105 @@ router.get('/tickets', async (req, res) => {
             order: [['createdAt', 'DESC']]
         });
         res.json({ success: true, tickets });
+    } catch (error) {
+        res.status(500).json({ success: false, message: error.message });
+    }
+});
+
+// Admin: Create Ticket
+router.post('/tickets', upload.single('attachment'), async (req, res) => {
+    try {
+        const { allocatedTo, title, description, priority, dueDate, ticketId } = req.body;
+        
+        if (!allocatedTo || !title || !ticketId) {
+            return res.status(400).json({ success: false, message: 'Assignee, Title and Ticket ID are required' });
+        }
+
+        const existing = await Ticket.findOne({ where: { ticketId, orgAccountId: req.tenantOrgAccountId } });
+        if (existing) {
+            return res.status(400).json({ success: false, message: 'Ticket ID must be unique' });
+        }
+
+        const ticketData = {
+            orgAccountId: req.tenantOrgAccountId,
+            allocatedBy: req.user.id,
+            allocatedTo,
+            title,
+            ticketId,
+            description,
+            priority: priority || 'MEDIUM',
+            dueDate,
+            status: 'SCHEDULE',
+            updatedBy: req.user.id
+        };
+
+        if (req.file) {
+            ticketData.attachment = `/uploads/${req.file.filename}`;
+        }
+
+        const ticket = await Ticket.create(ticketData);
+
+        await TicketHistory.create({
+            ticketId: ticket.id,
+            updatedById: req.user.id,
+            oldStatus: 'NONE',
+            newStatus: 'SCHEDULE',
+            remarks: 'Ticket created by admin/observer'
+        });
+
+        res.status(201).json({ success: true, ticket });
+    } catch (error) {
+        res.status(500).json({ success: false, message: error.message });
+    }
+});
+
+// Admin: Search Ticket by Ticket ID string
+router.get('/tickets/search/:ticketId', async (req, res) => {
+    try {
+        const ticket = await Ticket.findOne({
+            where: {
+                ticketId: req.params.ticketId,
+                orgAccountId: req.tenantOrgAccountId
+            }
+        });
+        if (!ticket) return res.status(404).json({ success: false, message: 'Ticket not found' });
+        res.json({ success: true, ticket });
+    } catch (error) {
+        res.status(500).json({ success: false, message: error.message });
+    }
+});
+
+// Admin: Update Ticket
+router.patch('/tickets/:id', upload.single('attachment'), async (req, res) => {
+    try {
+        const { allocatedTo, title, description, priority, dueDate, ticketId } = req.body;
+        const ticket = await Ticket.findOne({ where: { id: req.params.id, orgAccountId: req.tenantOrgAccountId } });
+        if (!ticket) return res.status(404).json({ success: false, message: 'Ticket not found' });
+
+        if (ticketId && ticketId !== ticket.ticketId) {
+            const existing = await Ticket.findOne({ where: { ticketId, orgAccountId: req.tenantOrgAccountId } });
+            if (existing) {
+                return res.status(400).json({ success: false, message: 'Ticket ID must be unique' });
+            }
+        }
+
+        const updateData = { allocatedTo, title, description, priority, dueDate, ticketId, updatedBy: req.user.id };
+        if (req.file) {
+            updateData.attachment = `/uploads/${req.file.filename}`;
+        }
+
+        const oldStatus = ticket.status;
+        await ticket.update(updateData);
+
+        await TicketHistory.create({
+            ticketId: ticket.id,
+            updatedById: req.user.id,
+            oldStatus,
+            newStatus: oldStatus,
+            remarks: 'Ticket details updated by admin/observer'
+        });
+
+        res.json({ success: true, ticket });
     } catch (error) {
         res.status(500).json({ success: false, message: error.message });
     }

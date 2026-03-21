@@ -525,6 +525,7 @@ User.hasMany(Activity, { foreignKey: 'userId', as: 'activities' });
 Activity.belongsTo(User, { foreignKey: 'userId', as: 'user' });
 OrgAccount.hasMany(Activity, { foreignKey: 'orgAccountId', as: 'activities' });
 Activity.belongsTo(OrgAccount, { foreignKey: 'orgAccountId', as: 'orgAccount' });
+Activity.belongsTo(User, { foreignKey: 'allocatedById', as: 'allocatedBy' });
 
 // Meeting associations
 User.hasMany(Meeting, { foreignKey: 'createdBy', as: 'createdMeetings' });

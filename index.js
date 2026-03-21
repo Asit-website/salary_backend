@@ -110,6 +110,7 @@ app.use('/mobile/roles', rolesRoutes);
 app.use('/activities', todoRoutes);
 app.use('/meetings', meetingRoutes);
 app.use('/tickets', ticketRoutes);
+app.use('/ai', aiRoutes);
 
 
 const port = Number(process.env.PORT || 4000);

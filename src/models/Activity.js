@@ -18,6 +18,7 @@ module.exports = (sequelize) => {
     isClosed: { type: DataTypes.BOOLEAN, defaultValue: false, field: 'is_closed' },
     closedById: { type: DataTypes.BIGINT.UNSIGNED, allowNull: true, field: 'closed_by_id' },
     transferredToId: { type: DataTypes.BIGINT.UNSIGNED, allowNull: true, field: 'transferred_to_id' },
+    allocatedById: { type: DataTypes.BIGINT.UNSIGNED, allowNull: true, field: 'allocated_by_id' },
   }, {
     tableName: 'activities',
     underscored: true,

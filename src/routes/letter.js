@@ -3,6 +3,7 @@ const { LetterTemplate, StaffLetter, StaffProfile, User, sequelize } = require('
 const { authRequired } = require('../middleware/auth');
 const { tenantEnforce } = require('../middleware/tenant');
 const { sendStaffLetterEmail } = require('../services/emailService');
+const { upload } = require('../upload');
 const router = express.Router();
 
 // One-liner org guard
@@ -113,7 +114,7 @@ router.delete('/templates/:id', async (req, res) => {
 });
 
 // Issuance
-router.post('/issue', async (req, res) => {
+router.post('/issue', upload.array('attachments', 10), async (req, res) => {
     const orgId = requireOrg(req, res);
     if (!orgId) return;
 
@@ -162,21 +163,26 @@ router.post('/issue', async (req, res) => {
                 letterTemplateId: templateId || null,
                 title: finalTitle || 'Untitled Letter',
                 content: finalContent,
+                attachments: req.files && req.files.length > 0 ? JSON.stringify(req.files.map(f => `/uploads/${f.filename}`)) : null,
                 issuedBy: req.user.id,
                 orgAccountId: orgId
             });
             created.push(issuedLetter);
 
             // Send email notification to staff
-            if (staff.email) {
+            console.log(`Checking email for staff ${id}: "${staff.email}"`);
+            if (staff.email && staff.email.trim() !== '') {
+                console.log(`Initiating email send to ${staff.email}`);
                 sendStaffLetterEmail(
                     staff.email,
                     staff.name || 'Staff Member',
                     finalTitle || 'Letter Issued',
-                    finalContent
-                ).catch(err => console.error('Failed to send letter email:', err));
+                    finalContent,
+                    req.files || []
+                ).then(() => console.log('Email sent successfully'))
+                .catch(err => console.error('Failed to send letter email:', err));
             } else {
-                console.warn(`Staff member ${id} has no email address. Skipping email notification.`);
+                console.warn(`Staff member ${id} (${staff.name}) has no valid email address. Skipping email notification.`);
             }
         }
         return res.json({

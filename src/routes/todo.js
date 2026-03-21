@@ -26,6 +26,7 @@ router.post('/', async (req, res) => {
       status: status || 'SCHEDULE',
       date,
       turnAroundTime,
+      allocatedById: req.user.id,
     });
 
     return res.json({ success: true, activity });
@@ -50,6 +51,12 @@ router.get('/me', async (req, res) => {
         {
           model: User,
           as: 'transferredTo',
+          attributes: ['id'],
+          include: [{ model: StaffProfile, as: 'profile', attributes: ['name'] }]
+        },
+        {
+          model: User,
+          as: 'allocatedBy',
           attributes: ['id'],
           include: [{ model: StaffProfile, as: 'profile', attributes: ['name'] }]
         }
@@ -133,6 +140,45 @@ router.patch('/:id/transfer', async (req, res) => {
   } catch (e) {
     console.error(e);
     return res.status(500).json({ success: false, message: 'Failed to share activity' });
+  }
+});
+
+// Update activity details (creator only)
+router.patch('/:id', async (req, res) => {
+  try {
+    const activity = await Activity.findOne({
+      where: {
+        id: req.params.id,
+        userId: req.user.id, // Only creator can edit details
+        orgAccountId: req.tenantOrgAccountId,
+      }
+    });
+
+    if (!activity) {
+      return res.status(404).json({ success: false, message: 'Activity not found or unauthorized' });
+    }
+
+    if (activity.isClosed) {
+      return res.status(403).json({ success: false, message: 'Activity is closed and cannot be edited' });
+    }
+
+    const { title, description, remarks, date, turnAroundTime } = req.body || {};
+    const oldStatus = activity.status;
+
+    await activity.update({ title, description, remarks, date, turnAroundTime });
+
+    await ActivityHistory.create({
+      activityId: activity.id,
+      updatedById: req.user.id,
+      oldStatus,
+      newStatus: oldStatus,
+      remarks: 'Activity details updated via app'
+    });
+
+    return res.json({ success: true, activity });
+  } catch (e) {
+    console.error(e);
+    return res.status(500).json({ success: false, message: 'Failed to update activity details' });
   }
 });
 

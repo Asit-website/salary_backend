@@ -589,7 +589,7 @@ router.post('/clients/:id/subscription', async (req, res) => {
             try {
               const { sendAccountActivationEmail } = require('../services/emailService');
               await sendAccountActivationEmail(org.businessEmail, org.name || 'Admin', org.name || 'Organization', {
-                loginURL: 'http://localhost:3000',
+                loginURL: 'https://web.vetansutra.com',
                 planType: plan?.name || 'Basic',
                 expiryDate: end ? new Date(end).toLocaleDateString() : 'N/A',
                 userLimit: staffLimit || 'N/A'
@@ -606,7 +606,7 @@ router.post('/clients/:id/subscription', async (req, res) => {
             try {
               const { sendAccountActivationEmail } = require('../services/emailService');
               await sendAccountActivationEmail(org.businessEmail, org.name || 'Admin', org.name || 'Organization', {
-                loginURL: 'http://localhost:3000',
+                loginURL: 'https://web.vetansutra.com',
                 planType: plan?.name || 'Basic',
                 expiryDate: end ? new Date(end).toLocaleDateString() : 'N/A',
                 userLimit: staffLimit || 'N/A'

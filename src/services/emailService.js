@@ -891,7 +891,7 @@ const sendSubscriptionExpiredEmail = async (adminEmail, adminName, organizationN
 };
 
 // Send staff letter email
-const sendStaffLetterEmail = async (staffEmail, staffName, letterTitle, letterContent) => {
+const sendStaffLetterEmail = async (staffEmail, staffName, letterTitle, letterContent, attachments = []) => {
   try {
     console.log(`📧 Sending staff letter email to: ${staffEmail}`);
     console.log(`📧 Letter title: ${letterTitle}`);
@@ -899,14 +899,14 @@ const sendStaffLetterEmail = async (staffEmail, staffName, letterTitle, letterCo
     const mailOptions = {
       from: `"${emailFrom.name}" <${emailFrom.address}>`,
       to: staffEmail,
-      subject: `${letterTitle} - Attached Document`,
+      subject: `${letterTitle} - Attached Documents`,
       html: `
         <!DOCTYPE html>
         <html>
         <head>
           <meta charset="utf-8">
           <meta name="viewport" content="width=device-width, initial-scale=1.0">
-          <title>Document from ThinkTech Solutions</title>
+          <title>Documents from ThinkTech Solutions</title>
           <style>
             body {
               font-family: 'Arial', sans-serif;
@@ -954,19 +954,21 @@ const sendStaffLetterEmail = async (staffEmail, staffName, letterTitle, letterCo
         <body>
           <div class="container">
             <div class="header">
-              <h1>Document Issued</h1>
+              <h1>Documents Issued</h1>
             </div>
             
             <div class="content">
               <p>Dear <strong>${staffName}</strong>,</p>
-              <p>A new document has been issued to you by your organization.</p>
+              <p>New documents have been issued to you by your organization.</p>
               
               <div class="letter-box">
                 ${letterContent}
               </div>
               
-              <p>You can also view this document by logging into your staff portal.</p>
+              <p>You can also view these documents by logging into your staff portal.</p>
               
+              <p>${attachments && attachments.length > 0 ? 'Please find the additional attachments with this email.' : ''}</p>
+
               <p>Best regards,<br>
               <strong>ThinkTech Solutions Team</strong></p>
             </div>
@@ -977,7 +979,11 @@ const sendStaffLetterEmail = async (staffEmail, staffName, letterTitle, letterCo
           </div>
         </body>
         </html>
-      `
+      `,
+      attachments: (attachments || []).map(file => ({
+        filename: file.originalname,
+        path: file.path
+      }))
     };
 
     const info = await transporter.sendMail(mailOptions);

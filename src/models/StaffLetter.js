@@ -9,6 +9,7 @@ module.exports = (sequelize) => {
         content: { type: DataTypes.TEXT('long'), allowNull: false },
         issuedAt: { type: DataTypes.DATE, defaultValue: DataTypes.NOW, field: 'issued_at' },
         issuedBy: { type: DataTypes.BIGINT.UNSIGNED, allowNull: true, field: 'issued_by' },
+        attachments: { type: DataTypes.TEXT('long'), allowNull: true },
         orgAccountId: { type: DataTypes.BIGINT.UNSIGNED, allowNull: true, field: 'org_account_id' },
     }, {
         tableName: 'staff_letters',

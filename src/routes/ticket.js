@@ -105,6 +105,49 @@ router.patch('/:id/status', async (req, res) => {
     }
 });
 
+// Update ticket details (creator only)
+router.patch('/:id', async (req, res) => {
+    try {
+        const ticket = await Ticket.findOne({
+            where: {
+                id: req.params.id,
+                allocatedBy: req.user.id, // creator
+                orgAccountId: req.tenantOrgAccountId
+            }
+        });
+
+        if (!ticket) return res.status(404).json({ message: 'Ticket not found or unauthorized' });
+
+        if (ticket.isClosed) {
+            return res.status(403).json({ message: 'Ticket is closed and cannot be edited' });
+        }
+
+        const { title, description, priority, dueDate, allocatedTo } = req.body;
+        const oldStatus = ticket.status;
+
+        await ticket.update({
+            title,
+            description,
+            priority,
+            dueDate,
+            allocatedTo,
+            updatedBy: req.user.id
+        });
+
+        await TicketHistory.create({
+            ticketId: ticket.id,
+            updatedById: req.user.id,
+            oldStatus,
+            newStatus: oldStatus,
+            remarks: 'Ticket details updated via app'
+        });
+
+        res.json(ticket);
+    } catch (error) {
+        res.status(500).json({ message: error.message });
+    }
+});
+
 // Get staff list for allocation
 router.get('/staff', async (req, res) => {
     try {

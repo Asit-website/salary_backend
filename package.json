@@ -21,6 +21,7 @@
     "mysql2": "^3.10.3",
     "node-cron": "^4.2.1",
     "nodemailer": "^6.9.8",
+    "openai": "^6.32.0",
     "puppeteer": "^24.35.0",
     "sequelize": "^6.37.3"
   },

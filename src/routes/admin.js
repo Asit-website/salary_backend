@@ -13934,7 +13934,7 @@ router.post('/sales/assignments', async (req, res) => {
 
     const { AssignedJob } = sequelize.models;
 
-    const { clientId, staffUserId, title, description, status, assignedOn, dueDate } = req.body || {};
+    const { clientId, staffUserId, title, description, status, assignedOn, dueDate, clientAddress, clientLat, clientLng } = req.body || {};
 
     const normalizedClientId = Number(clientId) || null;
     const normalizedStaffUserId = Number(staffUserId) || null;
@@ -13978,7 +13978,9 @@ router.post('/sales/assignments', async (req, res) => {
       assignedOn: assignedOn ? new Date(assignedOn) : new Date(),
 
       dueDate: normalizedDueDate,
-
+      clientAddress: clientAddress ? String(clientAddress).slice(0, 255) : null,
+      clientLat: clientLat !== undefined ? Number(clientLat) : null,
+      clientLng: clientLng !== undefined ? Number(clientLng) : null,
       orgAccountId: orgId,
 
     };
@@ -14013,7 +14015,7 @@ router.put('/sales/assignments/:id', async (req, res) => {
 
     if (!row) return res.status(404).json({ success: false, message: 'Not found' });
 
-    const { clientId, staffUserId, title, description, status, assignedOn, dueDate } = req.body || {};
+    const { clientId, staffUserId, title, description, status, assignedOn, dueDate, clientAddress, clientLat, clientLng } = req.body || {};
 
     const patch = {};
     const nextClientId = clientId !== undefined ? (Number(clientId) || null) : (row.clientId ?? row.client_id ?? null);
@@ -14057,6 +14059,9 @@ router.put('/sales/assignments/:id', async (req, res) => {
     if (assignedOn !== undefined) patch.assignedOn = assignedOn ? new Date(assignedOn) : null;
 
     if (dueDate !== undefined) patch.dueDate = nextDueDate;
+    if (clientAddress !== undefined) patch.clientAddress = clientAddress ? String(clientAddress).slice(0, 255) : null;
+    if (clientLat !== undefined) patch.clientLat = Number(clientLat) || null;
+    if (clientLng !== undefined) patch.clientLng = Number(clientLng) || null;
 
     await row.update(patch);
 
