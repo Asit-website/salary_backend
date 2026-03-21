@@ -196,6 +196,31 @@ const TOOLS = [
   {
     type: 'function',
     function: {
+      name: 'getDepartments',
+      description: 'Get a list of all unique departments in the organization.',
+      parameters: {
+        type: 'object',
+        properties: {}
+      }
+    }
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'getStaffByDepartment',
+      description: 'Get a list of staff members belonging to a specific department.',
+      parameters: {
+        type: 'object',
+        properties: {
+          departmentName: { type: 'string', description: 'Name of the department to filter by.' }
+        },
+        required: ['departmentName']
+      }
+    }
+  },
+  {
+    type: 'function',
+    function: {
       name: 'getAllStaffNames',
       description: 'Get the names of all staff members in the organization.',
       parameters: {
@@ -222,7 +247,7 @@ class AIChatService {
         3. For list questions, reply in simple point format with one item per line.
         4. Use plain text only. Do not use markdown like **bold**.
         5. Never say you do not have access before using the relevant tool.
-        6. If no data is found, say "Data not available."
+        6. If a tool returns no records (e.g., no one is late, no one on leave), say "No data found for this request" or "No one is late today". Only say "Data not available" if the tool fails.
         7. Keep replies under 3 short lines unless the user asks for more detail.
 
         Current Organization ID: ${orgAccountId}.
@@ -257,6 +282,7 @@ class AIChatService {
       for (const toolCall of responseMessage.tool_calls) {
         const functionName = toolCall.function.name;
         const args = JSON.parse(toolCall.function.arguments);
+        console.log(`[AIChatTool] ${functionName}`, args);
         
         let toolResult;
         switch (functionName) {
@@ -298,6 +324,12 @@ class AIChatService {
             break;
           case 'getAllStaffNames':
             toolResult = await this.getAllStaffNames(orgAccountId);
+            break;
+          case 'getDepartments':
+            toolResult = await this.getDepartments(orgAccountId);
+            break;
+          case 'getStaffByDepartment':
+            toolResult = await this.getStaffByDepartment(orgAccountId, args.departmentName);
             break;
           default:
             toolResult = { error: 'Unknown function' };
@@ -342,6 +374,8 @@ class AIChatService {
       .replace(/\n{3,}/g, '\n\n')
       .trim();
 
+    console.log(`[AIChat] Raw: "${message.content}" -> Sanitized: "${sanitizedContent}"`);
+
     return {
       ...message,
       content: sanitizedContent || 'Data not available.'
@@ -370,6 +404,19 @@ class AIChatService {
     ]);
 
     const totalStaff = allStaff.length;
+
+    if (attendance.length === 0) {
+      console.log(`[AIChatAttendance] No records for ${date}`);
+      return {
+        date,
+        message: "No attendance records found for this date. No one has checked in yet.",
+        totalStaff,
+        present: 0,
+        absent: totalStaff,
+        late: 0,
+        latecomers: []
+      };
+    }
 
     // Lateness logic helper (matching attendance.js logic)
     let lateTiers = [];
@@ -410,7 +457,11 @@ class AIChatService {
               shiftTpl = await ShiftTemplate.findByPk(asg.shiftTemplateId);
             }
           }
-          // Fallback to user default
+          // Fallback to Profile Selection (matching payrollService.js)
+          if (!shiftTpl && a.user?.profile?.shiftSelection) {
+            shiftTpl = await ShiftTemplate.findByPk(Number(a.user.profile.shiftSelection));
+          }
+          // Final fallback to user default
           if (!shiftTpl && a.user?.shiftTemplateId) {
             shiftTpl = await ShiftTemplate.findByPk(a.user.shiftTemplateId);
           }
@@ -428,12 +479,20 @@ class AIChatService {
 
           if (punchInSec > shiftStartSec) {
             const lateMins = Math.floor((punchInSec - shiftStartSec) / 60);
-            for (const t of lateTiers) {
-              if (lateMins >= Number(t.minMinutes) && lateMins <= Number(t.maxMinutes)) {
-                isLate = true;
-                lateReason = `Late by ${lateMins} minutes`;
-                break;
+            
+            // If penalty tiers exist, use them. Otherwise, any lateMinutes > 0 is "Late".
+            if (lateTiers.length > 0) {
+              for (const t of lateTiers) {
+                if (lateMins >= Number(t.minMinutes) && lateMins <= Number(t.maxMinutes)) {
+                  isLate = true;
+                  const freqStr = t.frequency > 1 ? ` every ${t.frequency} times` : '';
+                  lateReason = `${lateMins} mins late. Penalty: ${t.deduction} day deduction${freqStr}.`;
+                  break;
+                }
               }
+            } else if (lateMins > 0) {
+              isLate = true;
+              lateReason = `${lateMins} mins late.`;
             }
           }
         }
@@ -450,20 +509,24 @@ class AIChatService {
     const halfDay = decoratedAttendance.filter(a => a.status === 'half_day' || a.halfDay === true).length;
     const overtimeCount = decoratedAttendance.filter(a => (a.overtimeMinutes || 0) > 0).length;
     
+    const latecomers = decoratedAttendance.filter(a => a.isLate).map(a => ({
+      name: a.user?.profile?.name || a.user?.phone,
+      reason: a.lateReason
+    }));
+    
+    console.log(`[AIChatAttendance] date=${date} total=${totalStaff} present=${present} late=${latecomers.length}`);
+
     return {
       date,
       totalStaff,
       present,
       absent: totalStaff - present,
-      late,
+      late: latecomers.length,
       halfDay,
       overtimeCount,
       presentStaffNames: decoratedAttendance.filter(a => a.status !== 'absent').map(a => a.user?.profile?.name || a.user?.phone),
       absentStaffNames: absentStaff.map(s => s.profile?.name || s.phone),
-      latecomers: decoratedAttendance.filter(a => a.isLate).map(a => ({
-        name: a.user?.profile?.name || a.user?.phone,
-        reason: a.lateReason
-      })),
+      latecomers,
       overtimeStaff: decoratedAttendance.filter(a => (a.overtimeMinutes || 0) > 0).map(a => ({
         name: a.user?.profile?.name || a.user?.phone,
         duration: `${Math.floor(a.overtimeMinutes / 60)}h ${a.overtimeMinutes % 60}m`
@@ -624,6 +687,33 @@ class AIChatService {
 
     const names = users.map(user => user.profile?.name).filter(Boolean);
     return { staffNames: names };
+  }
+
+  async getDepartments(orgAccountId) {
+    const profiles = await StaffProfile.findAll({
+      where: { orgAccountId },
+      attributes: [[User.sequelize.fn('DISTINCT', User.sequelize.col('department')), 'department']]
+    });
+    const depts = profiles.map(p => p.department).filter(Boolean);
+    return { departments: depts.length > 0 ? depts : ["No departments found"] };
+  }
+
+  async getStaffByDepartment(orgAccountId, departmentName) {
+    const users = await User.findAll({
+      where: { orgAccountId, role: 'staff' },
+      include: [{
+        model: StaffProfile,
+        as: 'profile',
+        where: { department: departmentName },
+        required: true
+      }]
+    });
+
+    return users.map(u => ({
+      name: u.profile?.name || u.phone,
+      designation: u.profile?.designation || 'Staff',
+      staffId: u.profile?.staffId
+    }));
   }
 
   async findUsersByName(orgAccountId, staffName) {

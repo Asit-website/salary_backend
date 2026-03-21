@@ -1,15 +1,16 @@
 const { OpenAI } = require('openai');
 const { sequelize } = require('../models');
+const models = require('../models');
 const { Op } = require('sequelize');
 const dayjs = require('dayjs');
 const aiProvider = require('../services/aiProvider');
-const { 
-  User, 
-  StaffProfile, 
-  Attendance, 
-  Activity, 
-  Meeting, 
-  Ticket, 
+const {
+  User,
+  StaffProfile,
+  Attendance,
+  Activity,
+  Meeting,
+  Ticket,
   ReliabilityScore,
   SalaryForecast,
   AIAnomaly,
@@ -119,6 +120,17 @@ const tools = [
       },
     },
   },
+  {
+    type: 'function',
+    function: {
+      name: 'get_late_penalty_rules',
+      description: 'Get the organization\'s rules for late arrival penalties (e.g., how many lates lead to a salary deduction).',
+      parameters: {
+        type: 'object',
+        properties: {},
+      },
+    },
+  },
 ];
 
 async function handleToolCall(toolCall, userId, orgAccountId) {
@@ -142,12 +154,12 @@ async function handleToolCall(toolCall, userId, orgAccountId) {
 
     case 'get_leave_status': {
       const balances = await models.LeaveBalance.findAll({ where: { userId } });
-      const requests = await models.LeaveRequest.findAll({ 
+      const requests = await models.LeaveRequest.findAll({
         where: { userId },
         limit: 5,
         order: [['createdAt', 'DESC']]
       });
-      
+
       const formattedRequests = requests.map(r => ({
         ...r.toJSON(),
         startDate: dayjs(r.startDate).format('DD MMM YYYY'),
@@ -167,16 +179,80 @@ async function handleToolCall(toolCall, userId, orgAccountId) {
         order: [['date', 'ASC']]
       });
 
-      // Format times to IST (UTC+5:30)
-      const formatted = records.map(r => ({
-        ...r.toJSON(),
-        date: r.date,
-        punchedInAt: r.punchedInAt ? dayjs(r.punchedInAt).utcOffset(330).format('hh:mm A') : null,
-        punchedOutAt: r.punchedOutAt ? dayjs(r.punchedOutAt).utcOffset(330).format('hh:mm A') : null,
-        totalWorkHours: r.totalWorkHours,
-        status: r.status,
-        breakTotalSeconds: r.breakTotalSeconds,
-        overtimeMinutes: r.overtimeMinutes
+      // Fetch user's shift info for lateness calculation
+      const [shiftAssignments, staffProfile, user] = await Promise.all([
+        models.StaffShiftAssignment.findAll({
+          where: { userId },
+          include: [{ model: models.ShiftTemplate, as: 'template' }],
+          order: [['effectiveFrom', 'ASC']]
+        }),
+        models.StaffProfile.findOne({ where: { userId } }),
+        models.User.findByPk(userId)
+      ]);
+
+      // Format times to IST (UTC+5:30) and calculate lateness
+      const formatted = await Promise.all(records.map(async (r) => {
+        const data = r.toJSON();
+        let lateMinutes = 0;
+        let isLate = false;
+
+        if (data.punchedInAt) {
+          const dateKey = data.date;
+
+          // 1. Check Roster
+          let shiftTpl = null;
+          try {
+            const roster = await models.StaffRoster.findOne({ where: { userId, date: dateKey } });
+            if (roster && roster.status === 'SHIFT' && roster.shiftTemplateId) {
+              shiftTpl = await models.ShiftTemplate.findByPk(roster.shiftTemplateId);
+            }
+          } catch (_) {}
+
+          // 2. Check Assignment
+          if (!shiftTpl) {
+            const dayShiftAsg = shiftAssignments
+              .filter(asg => dateKey >= asg.effectiveFrom && (!asg.effectiveTo || dateKey <= asg.effectiveTo))
+              .sort((a, b) => b.effectiveFrom.localeCompare(a.effectiveFrom))[0];
+            shiftTpl = dayShiftAsg?.template;
+          }
+
+          // 3. Fallback to Profile Selection
+          if (!shiftTpl && staffProfile?.shiftSelection) {
+            try {
+              shiftTpl = await models.ShiftTemplate.findByPk(Number(staffProfile.shiftSelection));
+            } catch (_) {}
+          }
+
+          // 4. Final fallback to User default
+          if (!shiftTpl && user?.shiftTemplateId) {
+            try {
+              shiftTpl = await models.ShiftTemplate.findByPk(user.shiftTemplateId);
+            } catch (_) {}
+          }
+
+          if (shiftTpl?.startTime) {
+            const [sh, sm, ss] = shiftTpl.startTime.split(':').map(Number);
+            const shiftStartSeconds = sh * 3600 + sm * 60 + (ss || 0);
+
+            const punchIn = new Date(data.punchedInAt);
+            const istDate = new Date(punchIn.getTime() + (5.5 * 3600 * 1000));
+            const punchInSeconds = istDate.getUTCHours() * 3600 + istDate.getUTCMinutes() * 60 + istDate.getUTCSeconds();
+
+            if (punchInSeconds > shiftStartSeconds) {
+              lateMinutes = Math.floor((punchInSeconds - shiftStartSeconds) / 60);
+              isLate = lateMinutes > 0;
+            }
+          }
+        }
+
+        return {
+          ...data,
+          date: data.date,
+          punchedInAt: data.punchedInAt ? dayjs(data.punchedInAt).utcOffset(330).format('hh:mm A') : null,
+          punchedOutAt: data.punchedOutAt ? dayjs(data.punchedOutAt).utcOffset(330).format('hh:mm A') : null,
+          isLate,
+          lateMinutes
+        };
       }));
 
       return JSON.stringify(formatted);
@@ -191,6 +267,10 @@ async function handleToolCall(toolCall, userId, orgAccountId) {
 
     case 'get_salary_and_overtime': {
       const month = args.month || dayjs().format('YYYY-MM');
+      const [yearStr, monthStr] = month.split('-');
+      const targetMonth = parseInt(monthStr);
+      const targetYear = parseInt(yearStr);
+
       const lines = await models.PayrollLine.findAll({
         where: { userId },
         limit: 3,
@@ -207,7 +287,17 @@ async function handleToolCall(toolCall, userId, orgAccountId) {
       });
 
       const assignment = await models.StaffSalaryAssignment.findOne({ where: { userId } });
-      return JSON.stringify({ recentPayroll: processedLines, salarySetup: assignment });
+
+      // Fetch projection/forecast for the month
+      const forecast = await models.SalaryForecast.findOne({
+        where: { userId, month: targetMonth, year: targetYear }
+      });
+
+      return JSON.stringify({ 
+        recentPayroll: processedLines, 
+        salarySetup: assignment,
+        currentForecast: forecast
+      });
     }
 
     case 'get_user_salary_template': {
@@ -239,6 +329,13 @@ async function handleToolCall(toolCall, userId, orgAccountId) {
       return JSON.stringify({ visitsCount: visits, recentOrders: orders, pendingJobs: jobs, targets });
     }
 
+    case 'get_late_penalty_rules': {
+      const rule = await models.AttendanceAutomationRule.findOne({
+        where: { key: 'late_punchin_penalty', orgAccountId, active: true }
+      });
+      return JSON.stringify(rule || { message: 'No active late penalty rule found' });
+    }
+
     default:
       return 'Unknown function';
   }
@@ -261,22 +358,25 @@ exports.askAI = async (req, res) => {
       You help employees with their attendance, leaves, tasks, and sales queries.
       
       TIMEZONE GUIDELINES:
-      - All timestamps provided by tools (punchedInAt, punchedOutAt, createdAt) are already formatted in Indian Standard Time (IST, UTC+5:30).
-      - Report these times exactly as provided. Do NOT attempt to convert them.
-      - If a time is "11:00 AM", it means 11:00 AM in the user's local time.
+      - All timestamps provided by tools (punchedInAt, punchedOutAt, createdAt) are already in IST (UTC+5:30). Report them exactly.
+
+      LATE PENALTY & DEDUCTION GUIDELINES:
+      1. When asked about being late ("Am I late?", "Late count"):
+         - Use "get_attendance_records" to find days marked as 'isLate: true'.
+         - Tell the user exactly WHICH dates they were late and by how many minutes ('lateMinutes').
+      2. When asked about salary deductions or "Why was my salary cut?":
+         - Use "get_salary_and_overtime" for the current month.
+         - Look at 'currentForecast.forecastNetPay' vs 'salarySetup'.
+         - Check 'currentForecast.assumptions' for 'lateCount' and 'latePenaltyDays'.
+         - Use "get_late_penalty_rules" to explain the organization's policy (e.g., "3 lates = 1 day salary deduction").
+         - Synthesize this: "Aap is mahine 4 baar late aaye hain. Company rule ke mutabik 3 lates par 1 din deduct hota hai, isliye ₹X deduct hue hain."
+      3. If no forecast is available, explain based on the rules and attendance records found.
 
       DETAILED SALARY GUIDELINES:
-      1. When asked about salary, deductions, or taxes:
-         - Use "get_salary_and_overtime" to see the latest payroll records.
-         - Look into the "earnings", "incentives", "deductions", and "totals" JSON fields.
-         - Identify specific deductions like "Provident Fund" (PF), "ESI", "Professional Tax" (PT), or "Income Tax".
-         - Explain why there is a difference between months by comparing the last few payroll entries (if provided).
-         - Use "get_user_salary_template" to explain the RULES for these calculations (percentages, fixed amounts).
-      2. Format payslip links as [Download Payslip](https://backend.vetansutra.com/uploads/...).
-      3. For shifts, use "get_user_shift_info" and explain start/end times and half-day thresholds.
-      4. Always be professional, clear, and use Hinglish if appropriate.
-      5. Provide breakdowns in a readable table or bullet points if many items are present.
-      6. For attendance queries, use the 'status' and 'totalWorkHours' from the record to explain if the user was Present, Late, or on Half-day.`
+      1. Use "get_salary_and_overtime" to see the latest payroll records (lines).
+      2. Identify specific deductions like PF, ESI, Tax, and now Late Penalties.
+      3. Format payslip links as [Download Payslip](payslipLink).
+      4. Always be professional, clear, and use Hinglish if appropriate.`
     };
 
     const apiMessages = [systemMessage, ...messages];
@@ -342,7 +442,7 @@ exports.getAttendanceProductivity = async (req, res) => {
 
     // 2. If no scores, or refresh requested, calculate them
     if (scores.length === 0) {
-      const users = await User.findAll({ 
+      const users = await User.findAll({
         where: { orgAccountId, role: 'staff' },
         include: [{ model: StaffProfile, as: 'profile' }]
       });
@@ -350,17 +450,17 @@ exports.getAttendanceProductivity = async (req, res) => {
       if (users.length > 0) {
         // Gathering stats for AI scoring
         const stats = await Promise.all(users.map(async (u) => {
-          const [presentDays, totalTasks, completedTasks] = await Promise.all([
-            Attendance.count({ where: { userId: u.id, date: { [Op.between]: [startDate, endDate] }, status: { [Op.ne]: 'Absent' } } }),
-            Activity.count({ where: { userId: u.id, date: { [Op.between]: [startDate, endDate] } } }),
-            Activity.count({ where: { userId: u.id, date: { [Op.between]: [startDate, endDate] }, status: 'CLOSED' } })
+          const [[{ presentDays }], [{ totalTasks }], [{ completedTasks }]] = await Promise.all([
+            sequelize.query("SELECT COUNT(*) as presentDays FROM attendance WHERE user_id = ? AND date BETWEEN ? AND ? AND status != 'Absent'", { replacements: [u.id, startDate, endDate], type: sequelize.QueryTypes.SELECT }),
+            sequelize.query("SELECT COUNT(*) as totalTasks FROM activities WHERE user_id = ? AND date BETWEEN ? AND ?", { replacements: [u.id, startDate, endDate], type: sequelize.QueryTypes.SELECT }),
+            sequelize.query("SELECT COUNT(*) as completedTasks FROM activities WHERE user_id = ? AND date BETWEEN ? AND ? AND status = 'CLOSED'", { replacements: [u.id, startDate, endDate], type: sequelize.QueryTypes.SELECT })
           ]);
           return { id: u.id, name: u.profile?.name || u.phone, presentDays, totalTasks, completedTasks };
         }));
 
         // Call AI to score
         const aiItems = await aiProvider.scoreReliability({ month, year, users: stats });
-        
+
         if (aiItems && Array.isArray(aiItems)) {
           // Save to DB
           await Promise.all(aiItems.map(async (item) => {
@@ -389,10 +489,10 @@ exports.getAttendanceProductivity = async (req, res) => {
     // 3. Format for frontend
     const formattedScores = await Promise.all(scores.map(async (s) => {
       // Detailed metrics for the table
-      const [presentDays, totalTasks, completedTasks] = await Promise.all([
-        Attendance.count({ where: { userId: s.userId, date: { [Op.between]: [startDate, endDate] }, status: { [Op.ne]: 'Absent' } } }),
-        Activity.count({ where: { userId: s.userId, date: { [Op.between]: [startDate, endDate] } } }),
-        Activity.count({ where: { userId: s.userId, date: { [Op.between]: [startDate, endDate] }, status: 'CLOSED' } })
+      const [[{ presentDays }], [{ totalTasks }], [{ completedTasks }]] = await Promise.all([
+        sequelize.query("SELECT COUNT(*) as presentDays FROM attendance WHERE user_id = ? AND date BETWEEN ? AND ? AND status != 'Absent'", { replacements: [s.userId, startDate, endDate], type: sequelize.QueryTypes.SELECT }),
+        sequelize.query("SELECT COUNT(*) as totalTasks FROM activities WHERE user_id = ? AND date BETWEEN ? AND ?", { replacements: [s.userId, startDate, endDate], type: sequelize.QueryTypes.SELECT }),
+        sequelize.query("SELECT COUNT(*) as completedTasks FROM activities WHERE user_id = ? AND date BETWEEN ? AND ? AND status = 'CLOSED'", { replacements: [s.userId, startDate, endDate], type: sequelize.QueryTypes.SELECT })
       ]);
 
       return {
@@ -450,6 +550,8 @@ exports.getSalaryForecast = async (req, res) => {
     const month = parseInt(req.query.month) || (dayjs().get('month') + 1);
     const year = parseInt(req.query.year) || dayjs().get('year');
 
+    const refresh = req.query.refresh === 'true';
+
     // 1. Fetch SalaryForecast rows
     let forecasts = await SalaryForecast.findAll({
       where: { month, year },
@@ -463,27 +565,29 @@ exports.getSalaryForecast = async (req, res) => {
     // 2. Fetch Risk Signals (AIAnomaly)
     let riskDetections = await AIAnomaly.findAll({
       where: { month, year, orgAccountId, type: 'risk_signal' },
-      include: [{ 
-        model: User, as: 'user', 
-        include: [{ model: StaffProfile, as: 'profile' }] 
+      include: [{
+        model: User, as: 'user',
+        include: [{ model: StaffProfile, as: 'profile' }]
       }]
     });
 
-    // 3. Trigger initial compute if empty
-    if (forecasts.length === 0) {
-      // Background compute (internal call)
-      await exports.computeSalaryForecast({ 
-        user: { orgAccountId }, 
-        body: { month, year } 
-      }, { json: () => {} });
-      
+    // 3. Trigger initial compute if empty OR refresh requested
+    if (forecasts.length === 0 || refresh) {
+      console.log(`[ComputeTrigger] Triggering compute. Refresh: ${refresh}`);
+      // Trigger compute
+      await exports.computeSalaryForecast({
+        user: { orgAccountId },
+        body: { month, year }
+      }, { status: () => ({ json: () => { } }), json: () => { } });
+
       // Re-fetch
       forecasts = await SalaryForecast.findAll({
         where: { month, year },
         include: [{
           model: User, as: 'user', where: { orgAccountId }, required: true,
           include: [{ model: StaffProfile, as: 'profile' }]
-        }]
+        }],
+        order: [['forecastNetPay', 'DESC']]
       });
       riskDetections = await AIAnomaly.findAll({
         where: { month, year, orgAccountId, type: 'risk_signal' },
@@ -492,16 +596,19 @@ exports.getSalaryForecast = async (req, res) => {
     }
 
     // 4. Format forecasts for frontend
-    const formattedForecasts = forecasts.map(f => ({
-      userId: f.userId,
-      userName: f.user?.profile?.name || f.user?.phone,
-      designation: f.user?.profile?.designation || 'Staff',
-      baseSalary: parseFloat(f.assumptions?.baseSalary || 20000),
-      forecastNetPay: parseFloat(f.forecastNetPay),
-      attendance: f.assumptions?.attendance || { present: 0, absent: 0, lateCount: 0 },
-      assumptions: f.assumptions || {},
-      salaryNotConfigured: !f.assumptions?.salaryConfigured
-    }));
+    const formattedForecasts = forecasts.map(f => {
+      const assumptions = typeof f.assumptions === 'string' ? JSON.parse(f.assumptions) : f.assumptions;
+      return {
+        userId: f.userId,
+        userName: f.user?.profile?.name || f.user?.phone,
+        designation: f.user?.profile?.designation || 'Staff',
+        baseSalary: parseFloat(assumptions?.baseSalary || 20000),
+        forecastNetPay: parseFloat(f.forecastNetPay),
+        attendance: assumptions?.attendance || { present: 0, absent: 0, lateCount: 0 },
+        assumptions: assumptions || {},
+        salaryNotConfigured: !assumptions?.salaryConfigured
+      };
+    });
 
     // 5. Format risk detections
     const formattedRisks = riskDetections.map(r => ({
@@ -518,7 +625,7 @@ exports.getSalaryForecast = async (req, res) => {
     // 6. Calculate summary
     const totalBaseSalary = formattedForecasts.reduce((sum, f) => sum + f.baseSalary, 0);
     const totalForecastedPay = formattedForecasts.reduce((sum, f) => sum + f.forecastNetPay, 0);
-    
+
     const summary = {
       totalBaseSalary,
       totalForecastedPay,
@@ -533,8 +640,8 @@ exports.getSalaryForecast = async (req, res) => {
         monthLabel: dayjs(`${year}-${month}-01`).add(1, 'month').format('MMMM'),
         amount: Math.round(totalBaseSalary * 1.05),
         rationale: "Includes projected overtime and 2 confirmed hiring requests for next month.",
-        breakdown: { 
-          basePay: totalBaseSalary, 
+        breakdown: {
+          basePay: totalBaseSalary,
           expectedOvertime: Math.round(totalBaseSalary * 0.03),
           newHiringSalary: Math.round(totalBaseSalary * 0.04),
           expectedDeductions: Math.round(totalBaseSalary * 0.02)
@@ -565,7 +672,7 @@ exports.computeSalaryForecast = async (req, res) => {
     const startDate = dayjs(`${year}-${month}-01`).startOf('month').format('YYYY-MM-DD');
     const endDate = dayjs(`${year}-${month}-01`).endOf('month').format('YYYY-MM-DD');
 
-    const users = await User.findAll({ 
+    const users = await User.findAll({
       where: { orgAccountId, role: 'staff' },
       include: [
         { model: StaffProfile, as: 'profile' },
@@ -578,14 +685,15 @@ exports.computeSalaryForecast = async (req, res) => {
     }
 
     // 1. Gather stats for all users
+    console.log(`[ComputeStats] Gathering data for ${users.length} users via raw SQL...`);
     const stats = await Promise.all(users.map(async (u) => {
-      const [present, absent, halfDay, lateCount, totalTasks, closedTasks] = await Promise.all([
-        Attendance.count({ where: { userId: u.id, date: { [Op.between]: [startDate, endDate] }, status: 'Present' } }),
-        Attendance.count({ where: { userId: u.id, date: { [Op.between]: [startDate, endDate] }, status: 'Absent' } }),
-        Attendance.count({ where: { userId: u.id, date: { [Op.between]: [startDate, endDate] }, status: 'Half Day' } }),
-        Attendance.count({ where: { userId: u.id, date: { [Op.between]: [startDate, endDate] }, late: true } }),
-        Activity.count({ where: { userId: u.id, date: { [Op.between]: [startDate, endDate] } } }),
-        Activity.count({ where: { userId: u.id, date: { [Op.between]: [startDate, endDate] }, status: 'CLOSED' } })
+      const [[{ present }], [{ absent }], [{ halfDay }], [{ lateCount }], [{ totalTasks }], [{ closedTasks }]] = await Promise.all([
+        sequelize.query("SELECT COUNT(*) as present FROM attendance WHERE user_id = ? AND date BETWEEN ? AND ? AND status = 'Present'", { replacements: [u.id, startDate, endDate], type: sequelize.QueryTypes.SELECT }),
+        sequelize.query("SELECT COUNT(*) as absent FROM attendance WHERE user_id = ? AND date BETWEEN ? AND ? AND status = 'Absent'", { replacements: [u.id, startDate, endDate], type: sequelize.QueryTypes.SELECT }),
+        sequelize.query("SELECT COUNT(*) as halfDay FROM attendance WHERE user_id = ? AND date BETWEEN ? AND ? AND status = 'Half Day'", { replacements: [u.id, startDate, endDate], type: sequelize.QueryTypes.SELECT }),
+        sequelize.query("SELECT COUNT(*) as lateCount FROM attendance WHERE user_id = ? AND date BETWEEN ? AND ? AND late = 1", { replacements: [u.id, startDate, endDate], type: sequelize.QueryTypes.SELECT }),
+        sequelize.query("SELECT COUNT(*) as totalTasks FROM activities WHERE user_id = ? AND date BETWEEN ? AND ?", { replacements: [u.id, startDate, endDate], type: sequelize.QueryTypes.SELECT }),
+        sequelize.query("SELECT COUNT(*) as closedTasks FROM activities WHERE user_id = ? AND date BETWEEN ? AND ? AND status = 'CLOSED'", { replacements: [u.id, startDate, endDate], type: sequelize.QueryTypes.SELECT })
       ]);
 
       const baseSalary = parseFloat(u.salaryTemplate?.baseSalary || 20000);
@@ -604,10 +712,17 @@ exports.computeSalaryForecast = async (req, res) => {
       };
     }));
 
+    console.log('[ComputeStats] First staff attendance sample:', stats[0]?.attendance);
+
+
+    console.log('[ComputeStats] Sample staff stats:', stats[0]);
+
     // 2. Call AI for Forecasting
+    console.log('[AI] Calling forecastSalary...');
     const aiForecasts = await aiProvider.forecastSalary({ month, year, users: stats });
-    
+
     if (aiForecasts && Array.isArray(aiForecasts)) {
+      console.log(`[AI] Received ${aiForecasts.length} forecasts.`);
       await Promise.all(aiForecasts.map(async (f) => {
         const staffStats = stats.find(s => s.id === Number(f.userId));
         await SalaryForecast.upsert({
@@ -626,12 +741,14 @@ exports.computeSalaryForecast = async (req, res) => {
     }
 
     // 3. Call AI for Risk Detection
+    console.log('[AI] Calling detectRiskSignals...');
     const aiRisks = await aiProvider.detectRiskSignals({ month, year, users: stats });
-    
+
     if (aiRisks && Array.isArray(aiRisks)) {
+      console.log(`[AI] Received ${aiRisks.length} risk signals.`);
       // Clear old risks for this month/year first
       await AIAnomaly.destroy({ where: { month, year, orgAccountId, type: 'risk_signal' } });
-      
+
       await Promise.all(aiRisks.map(async (r) => {
         const staffStats = stats.find(s => s.id === Number(r.userId));
         await AIAnomaly.create({
