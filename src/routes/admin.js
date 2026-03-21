@@ -7563,7 +7563,12 @@ router.get('/leaves', async (req, res) => {
     const rows = await LeaveRequest.findAll({
       where,
       include: [
-        { model: User, as: 'user', attributes: ['id', 'phone', 'role'] },
+        { 
+          model: User, 
+          as: 'user', 
+          attributes: ['id', 'phone', 'role'],
+          include: [{ model: StaffProfile, as: 'profile', attributes: ['name'] }]
+        },
         { model: User, as: 'reviewer', attributes: ['id', 'phone', 'role'] },
       ],
       order: [['createdAt', 'DESC']],
