@@ -44,7 +44,7 @@ async function getEffectiveLeaveBalance(userId, categoryKey, onDate) {
   const key = String(categoryKey).toLowerCase();
 
   const lb = await LeaveBalance.findOne({ where: { userId, categoryKey: key, cycleStart: start, cycleEnd: end } });
-  
+
   const catCfg = (tpl.categories || []).find(c => String(c.key).toLowerCase() === key);
   if (!catCfg) return null;
 
@@ -101,12 +101,12 @@ router.get('/categories', requireRole(['staff']), async (req, res) => {
       if (!balanceInfo) {
         return { key: c.key, name: c.name, total: Number(c.leaveCount || 0), used: 0, remaining: Number(c.leaveCount || 0) };
       }
-      return { 
-        key: String(c.key).toLowerCase(), 
-        name: c.name, 
-        total: balanceInfo.total, 
-        used: balanceInfo.used, 
-        remaining: balanceInfo.remaining 
+      return {
+        key: String(c.key).toLowerCase(),
+        name: c.name,
+        total: balanceInfo.total,
+        used: balanceInfo.used,
+        remaining: balanceInfo.remaining
       };
     }));
 

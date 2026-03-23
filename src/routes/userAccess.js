@@ -2,7 +2,7 @@ const express = require('express');
 const { Op } = require('sequelize');
 const { authRequired } = require('../middleware/auth');
 const { tenantEnforce } = require('../middleware/tenant');
-const { Badge, BadgePermission, StaffBadge, User, StaffProfile, OrgBrand, OrgBusinessInfo } = require('../models');
+const { Badge, BadgePermission, StaffBadge, User, StaffProfile, OrgBrand, OrgBusinessInfo, BadgeStaffAssignment } = require('../models');
 
 const router = express.Router();
 
@@ -64,7 +64,10 @@ router.get('/badges', authRequired, tenantEnforce, requireAdmin, async (req, res
     const orgAccountId = req.tenantOrgAccountId;
     const badges = await Badge.findAll({
       where: { orgAccountId, isActive: true },
-      include: [{ model: BadgePermission, as: 'permissions' }],
+      include: [
+        { model: BadgePermission, as: 'permissions' },
+        { model: BadgeStaffAssignment, as: 'managedStaffAssignments' }
+      ],
       order: [['name', 'ASC']],
     });
     return res.json({ success: true, badges });
@@ -76,7 +79,7 @@ router.get('/badges', authRequired, tenantEnforce, requireAdmin, async (req, res
 router.post('/badges', authRequired, tenantEnforce, requireAdmin, async (req, res) => {
   try {
     const orgAccountId = req.tenantOrgAccountId;
-    const { name, description, permissionKeys } = req.body || {};
+    const { name, description, permissionKeys, managedStaffIds } = req.body || {};
     const cleanName = String(name || '').trim();
     const keys = Array.isArray(permissionKeys) ? permissionKeys.filter((k) => permissionMap.has(k)) : [];
 
@@ -110,6 +113,17 @@ router.post('/badges', authRequired, tenantEnforce, requireAdmin, async (req, re
       }))
     );
 
+    if (Array.isArray(managedStaffIds) && managedStaffIds.length > 0) {
+      await BadgeStaffAssignment.bulkCreate(
+        managedStaffIds.map(sid => ({
+          orgAccountId,
+          badgeId: badge.id,
+          staffUserId: sid,
+          isActive: true
+        }))
+      );
+    }
+
     const created = await Badge.findByPk(badge.id, {
       include: [{ model: BadgePermission, as: 'permissions' }],
     });
@@ -124,7 +138,7 @@ router.put('/badges/:id', authRequired, tenantEnforce, requireAdmin, async (req,
   try {
     const orgAccountId = req.tenantOrgAccountId;
     const badgeId = Number(req.params.id);
-    const { name, description, permissionKeys } = req.body || {};
+    const { name, description, permissionKeys, managedStaffIds } = req.body || {};
     const cleanName = String(name || '').trim();
     const keys = Array.isArray(permissionKeys) ? permissionKeys.filter((k) => permissionMap.has(k)) : [];
 
@@ -161,6 +175,18 @@ router.put('/badges/:id', authRequired, tenantEnforce, requireAdmin, async (req,
       }))
     );
 
+    await BadgeStaffAssignment.destroy({ where: { badgeId } });
+    if (Array.isArray(managedStaffIds) && managedStaffIds.length > 0) {
+      await BadgeStaffAssignment.bulkCreate(
+        managedStaffIds.map(sid => ({
+          orgAccountId,
+          badgeId,
+          staffUserId: sid,
+          isActive: true
+        }))
+      );
+    }
+
     const updated = await Badge.findByPk(badgeId, {
       include: [{ model: BadgePermission, as: 'permissions' }],
     });
@@ -185,6 +211,7 @@ router.delete('/badges/:id', authRequired, tenantEnforce, requireAdmin, async (r
     }
 
     await BadgePermission.destroy({ where: { orgAccountId, badgeId } });
+    await BadgeStaffAssignment.destroy({ where: { badgeId } });
     await badge.update({ isActive: false, updatedById: req.user?.id || null });
     return res.json({ success: true });
   } catch (error) {

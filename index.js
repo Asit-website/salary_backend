@@ -29,6 +29,7 @@ const ticketRoutes = require('./src/routes/ticket');
 const taskManagementRoutes = require('./src/routes/taskManagement');
 const rosterRoutes = require('./src/routes/roster');
 const aiRoutes = require('./src/routes/ai');
+const channelPartnerRoutes = require('./src/routes/channelPartner');
 
 
 const { tenantEnforce } = require('./src/middleware/tenant');
@@ -92,6 +93,7 @@ app.use('/admin/sales-incentives', salesIncentiveRoutes);
 app.use('/auth', authRoutes);
 app.use('/admin/user-access', userAccessRoutes);
 app.use('/admin/task-management', taskManagementRoutes);
+app.use('/channel-partner', channelPartnerRoutes);
 app.use(rosterRoutes);
 app.use('/admin/ai', aiRoutes);
 app.use('/admin', adminRoutes);
@@ -110,6 +112,7 @@ app.use('/mobile/roles', rolesRoutes);
 app.use('/activities', todoRoutes);
 app.use('/meetings', meetingRoutes);
 app.use('/tickets', ticketRoutes);
+app.use('/ai', aiRoutes);
 app.use('/ai', aiRoutes);
 
 

@@ -117,7 +117,7 @@ async function calculateSalary(userId, monthKey) {
 
   const calculateAdvanceDeduction = async () => {
     const advances = await StaffAdvance.findAll({
-      where: { staffId: u.id, deductionMonth: monthKey, status: 'pending' }
+      where: { staffId: u.id, deductionMonth: monthKey }
     });
     return advances.reduce((sum, adv) => sum + parseFloat(adv.amount || 0), 0);
   };

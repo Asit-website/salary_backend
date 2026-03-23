@@ -152,6 +152,24 @@ router.post('/channel-partners', async (req, res) => {
       extra: extra || null,
     });
 
+    // Sync with User table
+    if (normalizedPhone) {
+      let user = await User.findOne({ where: { phone: String(normalizedPhone) } });
+      if (!user) {
+        const hash = await bcrypt.hash('123456', 10);
+        await User.create({
+          role: 'channel_partner',
+          phone: String(normalizedPhone),
+          passwordHash: hash,
+          channelPartnerId: normalizedPartnerId,
+          active: true
+        });
+      } else {
+        // Link existing user to this partner ID
+        await user.update({ channelPartnerId: normalizedPartnerId });
+      }
+    }
+
     return res.json({ success: true, channelPartner: row });
   } catch (_) {
     return res.status(500).json({ success: false, message: 'Failed to create channel partner' });
@@ -228,6 +246,26 @@ router.put('/channel-partners/:id', async (req, res) => {
       ...(extra !== undefined ? { extra } : {}),
     });
 
+    // Sync with User table on update
+    const finalPhone = normalizePhone(phone || row.phone);
+    const finalPartnerId = String(channelPartnerId || row.channelPartnerId).trim();
+
+    if (finalPhone) {
+      let user = await User.findOne({ where: { phone: String(finalPhone) } });
+      if (user) {
+        await user.update({ channelPartnerId: finalPartnerId });
+      } else {
+        const hash = await bcrypt.hash('123456', 10);
+        await User.create({
+          role: 'channel_partner',
+          phone: String(finalPhone),
+          passwordHash: hash,
+          channelPartnerId: finalPartnerId,
+          active: true
+        });
+      }
+    }
+
     return res.json({ success: true, channelPartner: row });
   } catch (_) {
     return res.status(500).json({ success: false, message: 'Failed to update channel partner' });
@@ -248,7 +286,7 @@ router.get('/clients', async (_req, res) => {
         });
         const shouldBeActive = !!(sub && new Date(sub.endAt) >= now);
         const targetStatus = shouldBeActive ? 'ACTIVE' : 'DISABLED';
-        if (org.status !== targetStatus) {
+        if (org.status !== targetStatus && org.status !== 'SUSPENDED') {
           await org.update({ status: targetStatus });
         }
         // Add subscription data to org object
@@ -321,7 +359,11 @@ router.get('/clients/:id/plan-details', async (req, res) => {
 
 router.post('/clients', async (req, res) => {
   try {
-    const { name, phone, status = 'ACTIVE', clientType, location, extra, businessEmail, state, city, channelPartnerId, roleDescription, employeeCount } = req.body || {};
+    const {
+      name, phone, status = 'ACTIVE', clientType, location, extra, businessEmail, state, city,
+      channelPartnerId, roleDescription, employeeCount,
+      contactPersonName, address, birthDate, anniversaryDate, gstNumber
+    } = req.body || {};
     if (!name) return res.status(400).json({ success: false, message: 'name required' });
 
     // Check if phone number already exists in either OrgAccount or User table
@@ -353,6 +395,11 @@ router.post('/clients', async (req, res) => {
       channelPartnerId: channelPartnerId || null,
       roleDescription: roleDescription || null,
       employeeCount: employeeCount || null,
+      contactPersonName: contactPersonName || null,
+      address: address || null,
+      birthDate: birthDate || null,
+      anniversaryDate: anniversaryDate || null,
+      gstNumber: gstNumber || null,
       extra: extra || null,
     });
 
@@ -393,7 +440,11 @@ router.put('/clients/:id', async (req, res) => {
   try {
     const row = await OrgAccount.findByPk(req.params.id);
     if (!row) return res.status(404).json({ success: false, message: 'Not found' });
-    const { name, phone, status, clientType, location, extra, businessEmail, state, city, channelPartnerId, roleDescription, employeeCount } = req.body || {};
+    const {
+      name, phone, status, clientType, location, extra, businessEmail, state, city,
+      channelPartnerId, roleDescription, employeeCount,
+      contactPersonName, address, birthDate, anniversaryDate, gstNumber
+    } = req.body || {};
 
     // Check if phone number already exists in either OrgAccount or User table (excluding current client)
     const normalizedPhone = normalizePhone(phone);
@@ -431,10 +482,15 @@ router.put('/clients/:id', async (req, res) => {
       ...(businessEmail !== undefined ? { businessEmail } : {}),
       ...(state !== undefined ? { state } : {}),
       ...(city !== undefined ? { city } : {}),
-      ...(channelPartnerId !== undefined ? { channelPartnerId } : {}),
-      ...(roleDescription !== undefined ? { roleDescription } : {}),
-      ...(employeeCount !== undefined ? { employeeCount } : {}),
-      ...(extra !== undefined ? { extra } : {}),
+      channelPartnerId: channelPartnerId !== undefined ? channelPartnerId : row.channelPartnerId,
+      roleDescription: roleDescription !== undefined ? roleDescription : row.roleDescription,
+      employeeCount: employeeCount !== undefined ? employeeCount : row.employeeCount,
+      contactPersonName: contactPersonName !== undefined ? contactPersonName : row.contactPersonName,
+      address: address !== undefined ? address : row.address,
+      birthDate: birthDate !== undefined ? birthDate : row.birthDate,
+      anniversaryDate: anniversaryDate !== undefined ? anniversaryDate : row.anniversaryDate,
+      gstNumber: gstNumber !== undefined ? gstNumber : row.gstNumber,
+      extra: extra !== undefined ? extra : row.extra,
     });
     return res.json({ success: true, client: row });
   } catch (e) {
@@ -761,7 +817,34 @@ router.post('/clients/:id/impersonate', async (req, res) => {
     });
   } catch (e) {
     console.error('Impersonate error:', e);
-    return res.status(500).json({ success: false, message: 'Failed to impersonate' });
+    return res.status(500).json({ success: false, message: 'Impersonation failed' });
+  }
+});
+
+// Toggle Client Status
+router.post('/clients/:id/toggle-status', async (req, res) => {
+  try {
+    const org = await OrgAccount.findByPk(req.params.id);
+    if (!org) return res.status(404).json({ success: false, message: 'Client not found' });
+
+    let newStatus;
+    if (org.status === 'SUSPENDED') {
+      // Re-activate: calculate what status it SHOULD have based on subscription
+      const sub = await Subscription.findOne({
+        where: { orgAccountId: org.id, status: 'ACTIVE' },
+        order: [['endAt', 'DESC']]
+      });
+      const now = new Date();
+      newStatus = (sub && new Date(sub.endAt) >= now) ? 'ACTIVE' : 'DISABLED';
+    } else {
+      // Deactivate
+      newStatus = 'SUSPENDED';
+    }
+
+    await org.update({ status: newStatus });
+    return res.json({ success: true, status: newStatus });
+  } catch (e) {
+    return res.status(500).json({ success: false, message: 'Failed to toggle status' });
   }
 });
 

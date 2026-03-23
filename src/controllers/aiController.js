@@ -206,7 +206,7 @@ async function handleToolCall(toolCall, userId, orgAccountId) {
             if (roster && roster.status === 'SHIFT' && roster.shiftTemplateId) {
               shiftTpl = await models.ShiftTemplate.findByPk(roster.shiftTemplateId);
             }
-          } catch (_) {}
+          } catch (_) { }
 
           // 2. Check Assignment
           if (!shiftTpl) {
@@ -220,14 +220,14 @@ async function handleToolCall(toolCall, userId, orgAccountId) {
           if (!shiftTpl && staffProfile?.shiftSelection) {
             try {
               shiftTpl = await models.ShiftTemplate.findByPk(Number(staffProfile.shiftSelection));
-            } catch (_) {}
+            } catch (_) { }
           }
 
           // 4. Final fallback to User default
           if (!shiftTpl && user?.shiftTemplateId) {
             try {
               shiftTpl = await models.ShiftTemplate.findByPk(user.shiftTemplateId);
-            } catch (_) {}
+            } catch (_) { }
           }
 
           if (shiftTpl?.startTime) {
@@ -293,8 +293,8 @@ async function handleToolCall(toolCall, userId, orgAccountId) {
         where: { userId, month: targetMonth, year: targetYear }
       });
 
-      return JSON.stringify({ 
-        recentPayroll: processedLines, 
+      return JSON.stringify({
+        recentPayroll: processedLines,
         salarySetup: assignment,
         currentForecast: forecast
       });

@@ -40,6 +40,7 @@ const ai = require('../services/aiProvider');
 const { Op } = require('sequelize');
 const { calculateSalary, generatePayslipPDF } = require('../services/payrollService');
 const { runAttendanceReminderManual } = require('../jobs');
+const { getScopedStaffIds } = require('../utils/scoping');
 
 const router = express.Router();
 
@@ -1141,21 +1142,21 @@ router.post('/payroll/:cycleId/lock', async (req, res) => {
     // Mark associated advances as deducted
     try {
       const { PayrollLine, StaffAdvance } = require('../models');
-      const staffIds = (await PayrollLine.findAll({ 
-        where: { cycleId: id }, 
-        attributes: ['userId'] 
+      const staffIds = (await PayrollLine.findAll({
+        where: { cycleId: id },
+        attributes: ['userId']
       })).map(l => l.userId);
 
       if (staffIds.length > 0) {
         await StaffAdvance.update(
           { status: 'deducted' },
-          { 
-            where: { 
+          {
+            where: {
               orgAccountId: orgId,
               deductionMonth: cycle.monthKey,
               status: 'pending',
               staffId: { [Op.in]: staffIds }
-            } 
+            }
           }
         );
       }
@@ -1198,12 +1199,12 @@ router.post('/payroll/:cycleId/unlock', async (req, res) => {
       const { StaffAdvance } = require('../models');
       await StaffAdvance.update(
         { status: 'pending' },
-        { 
-          where: { 
+        {
+          where: {
             orgAccountId: orgId,
             deductionMonth: cycle.monthKey,
             status: 'deducted'
-          } 
+          }
         }
       );
     } catch (advErr) {
@@ -5145,8 +5146,19 @@ router.delete('/settings/attendance-templates/assign/:assignmentId', async (req,
 router.get('/staff', requireRole(['admin', 'staff']), async (req, res) => {
   try {
     const orgId = requireOrg(req, res); if (!orgId) return;
+    const { module } = req.query || {};
+
+    let where = { role: 'staff', orgAccountId: orgId };
+
+    if (module === 'attendance') {
+      const scopedStaffIds = await getScopedStaffIds(req, orgId);
+      if (scopedStaffIds !== null) {
+        where.id = scopedStaffIds;
+      }
+    }
+
     const staff = await User.findAll({
-      where: { role: 'staff', orgAccountId: orgId },
+      where,
       include: [{ model: StaffProfile, as: 'profile' }],
       order: [['createdAt', 'DESC']],
     });
@@ -5615,9 +5627,9 @@ router.get('/advances', async (req, res) => {
     const { count, rows } = await StaffAdvance.findAndCountAll({
       where,
       include: [
-        { 
-          model: User, 
-          as: 'staffMember', 
+        {
+          model: User,
+          as: 'staffMember',
           attributes: ['id', 'phone'],
           include: [{ model: StaffProfile, as: 'profile', attributes: ['name'] }]
         }
@@ -5627,8 +5639,8 @@ router.get('/advances', async (req, res) => {
       offset: (parseInt(page) - 1) * parseInt(limit)
     });
 
-    return res.json({ 
-      success: true, 
+    return res.json({
+      success: true,
       data: rows,
       pagination: {
         total: count,
@@ -5645,7 +5657,7 @@ router.post('/advances', async (req, res) => {
   try {
     const orgId = requireOrg(req, res); if (!orgId) return;
     const { staffId, amount, advanceDate, notes, deductionMonth, status } = req.body;
-    
+
     if (!staffId || !amount || !advanceDate) {
       return res.status(400).json({ success: false, message: 'Missing required fields' });
     }
@@ -5663,7 +5675,7 @@ router.post('/advances', async (req, res) => {
       amount,
       advanceDate,
       deductionMonth: finalDeductionMonth,
-      status: status || 'pending',
+      // status: status || 'pending', // Status is no longer managed manually
       notes,
       createdBy: req.user.id,
       updatedBy: req.user.id
@@ -5689,7 +5701,7 @@ router.put('/advances/:id', async (req, res) => {
       amount: amount ?? row.amount,
       advanceDate: advanceDate ?? row.advanceDate,
       notes: notes ?? row.notes,
-      status: status ?? row.status,
+      // status: status ?? row.status, // Status is no longer managed manually
       updatedBy: req.user.id
     };
 
@@ -5714,10 +5726,6 @@ router.delete('/advances/:id', async (req, res) => {
 
     const row = await StaffAdvance.findOne({ where: { id, orgAccountId: orgId } });
     if (!row) return res.status(404).json({ success: false, message: 'Advance not found' });
-
-    if (row.status === 'deducted') {
-      return res.status(400).json({ success: false, message: 'Cannot delete a deducted advance' });
-    }
 
     await row.destroy();
     return res.json({ success: true, message: 'Advance deleted successfully' });
@@ -7080,6 +7088,8 @@ function computeItemAmount(item, ctx) {
             checkIn: toTime(r.punchedInAt),
             checkOut: toTime(r.punchedOutAt),
             status,
+            punchInPhotoUrl: r.punchInPhotoUrl,
+            punchOutPhotoUrl: r.punchOutPhotoUrl,
             user: { name: r.user?.profile?.name || null },
             staffProfile: { staffId: r.user?.profile?.staffId || null, department: r.user?.profile?.department || null }
           };
@@ -7688,9 +7698,9 @@ router.get('/leaves', async (req, res) => {
     const rows = await LeaveRequest.findAll({
       where,
       include: [
-        { 
-          model: User, 
-          as: 'user', 
+        {
+          model: User,
+          as: 'user',
           attributes: ['id', 'phone', 'role'],
           include: [{ model: StaffProfile, as: 'profile', attributes: ['name'] }]
         },
@@ -9292,8 +9302,23 @@ router.get('/attendance', async (req, res) => {
     }
 
     const orgStaffIds = (await User.findAll({ where: { orgAccountId: orgId, role: 'staff' }, attributes: ['id'] })).map(u => u.id);
-    const where = { ...whereClause, userId: orgStaffIds };
-    if (staffId && Number(staffId) > 0) where.userId = Number(staffId);
+
+    const scopedStaffIds = await getScopedStaffIds(req, orgId);
+    let allowedStaffIds = orgStaffIds;
+
+    if (scopedStaffIds !== null) {
+      allowedStaffIds = orgStaffIds.filter(id => scopedStaffIds.includes(id));
+    }
+
+    const where = { ...whereClause, userId: allowedStaffIds };
+
+    if (staffId && Number(staffId) > 0) {
+      if (allowedStaffIds.includes(Number(staffId))) {
+        where.userId = Number(staffId);
+      } else {
+        return res.json({ success: true, count: 0, data: [] });
+      }
+    }
 
     const rows = await Attendance.findAll({
       where,
@@ -9445,6 +9470,8 @@ router.get('/attendance', async (req, res) => {
         punchOutLatitude: r.punchOutLatitude,
         punchOutLongitude: r.punchOutLongitude,
         punchOutAddress: r.punchOutAddress,
+        punchInPhotoUrl: r.punchInPhotoUrl,
+        punchOutPhotoUrl: r.punchOutPhotoUrl,
       };
 
     });
@@ -10339,10 +10366,14 @@ router.post('/attendance', async (req, res) => {
   try {
 
     const orgId = requireOrg(req, res); if (!orgId) return;
-
     const body = req.body || {};
-
     const uid = Number(body.userId || body.staffId);
+    if (!uid) return res.status(400).json({ success: false, message: 'userId or staffId required' });
+
+    const scopedStaffIds = await getScopedStaffIds(req, orgId);
+    if (scopedStaffIds !== null && !scopedStaffIds.includes(uid)) {
+      return res.status(403).json({ success: false, message: 'You are not allowed to mark attendance for this staff' });
+    }
 
     const dateIso = toIsoDateOnly(body.date || body.dateIso || body.onDate);
 
@@ -10513,7 +10544,17 @@ router.post('/attendance/bulk', async (req, res) => {
     const orgId = requireOrg(req, res); if (!orgId) return;
     const body = req.body || {};
 
-    const staffIds = Array.isArray(body.staffIds) ? body.staffIds.map(Number).filter(n => Number.isFinite(n)) : [];
+    let staffIds = Array.isArray(body.staffIds) ? body.staffIds.map(Number).filter(n => Number.isFinite(n)) : [];
+
+    const scopedStaffIds = await getScopedStaffIds(req, orgId);
+    if (scopedStaffIds !== null) {
+      staffIds = staffIds.filter(id => scopedStaffIds.includes(id));
+    }
+
+    if (staffIds.length === 0) {
+      return res.status(400).json({ success: false, message: 'No allowed staff selected for bulk marking' });
+    }
+
     const dateIso = toIsoDateOnly(body.date || body.dateIso);
     const statusRaw = String(body.status || '').toLowerCase();
     const status = ['present', 'absent', 'half_day', 'leave', 'overtime'].includes(statusRaw) ? statusRaw : 'present';

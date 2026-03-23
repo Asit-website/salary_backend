@@ -5,12 +5,17 @@ module.exports = (sequelize) => {
     'User',
     {
       id: { type: DataTypes.BIGINT.UNSIGNED, primaryKey: true, autoIncrement: true },
-      role: { type: DataTypes.ENUM('superadmin', 'admin', 'staff'), allowNull: false },
+      role: { type: DataTypes.ENUM('superadmin', 'admin', 'staff', 'channel_partner'), allowNull: false },
       orgAccountId: {
         type: DataTypes.BIGINT.UNSIGNED,
         allowNull: true,
         field: 'org_account_id',
         references: { model: 'org_accounts', key: 'id' },
+      },
+      channelPartnerId: {
+        type: DataTypes.STRING(100),
+        allowNull: true,
+        field: 'channel_partner_id'
       },
       phone: { type: DataTypes.STRING(20), allowNull: false, unique: true },
       passwordHash: {
