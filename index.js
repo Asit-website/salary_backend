@@ -34,6 +34,8 @@ const channelPartnerRoutes = require('./src/routes/channelPartner');
 const { verifyEmailConfig } = require('./src/services/emailService');
 
 
+
+
 const { tenantEnforce } = require('./src/middleware/tenant');
 const { scheduleSubscriptionSweep } = require('./src/jobs/subscriptionSweep');
 const { scheduleSubscriptionExpiryReminders, scheduleZktecoSync, scheduleAttendanceReminders } = require('./src/jobs');
@@ -124,6 +126,7 @@ app.use('/mobile/roles', rolesRoutes);
 app.use('/activities', todoRoutes);
 app.use('/meetings', meetingRoutes);
 app.use('/tickets', ticketRoutes);
+app.use('/ai', aiRoutes);
 app.use('/ai', aiRoutes);
 
 // 404 Handler
