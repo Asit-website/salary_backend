@@ -179,6 +179,11 @@ module.exports = (sequelize) => {
       experience: { type: DataTypes.JSON, allowNull: true },
 
       extra: { type: DataTypes.JSON, allowNull: true },
+      faceId: {
+        type: DataTypes.STRING(255),
+        allowNull: true,
+        field: 'face_id'
+      },
       orgAccountId: { type: DataTypes.BIGINT.UNSIGNED, allowNull: true, field: 'org_account_id' },
     },
     {

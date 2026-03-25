@@ -41,6 +41,7 @@ const defineUserRole = require('./UserRole');
 const defineBadge = require('./Badge');
 const defineBadgePermission = require('./BadgePermission');
 const defineStaffBadge = require('./StaffBadge');
+const defineBadgeStaffAssignment = require('./BadgeStaffAssignment');
 const defineAssignedJob = require('./AssignedJob');
 const defineSalesTarget = require('./SalesTarget');
 const defineOrder = require('./Order');
@@ -139,6 +140,7 @@ const UserRole = defineUserRole(sequelize);
 const Badge = defineBadge(sequelize);
 const BadgePermission = defineBadgePermission(sequelize);
 const StaffBadge = defineStaffBadge(sequelize);
+const BadgeStaffAssignment = defineBadgeStaffAssignment(sequelize);
 const AssignedJob = defineAssignedJob(sequelize);
 const TicketHistory = require('./TicketHistory')(sequelize);
 const SalesTarget = defineSalesTarget(sequelize);
@@ -459,6 +461,19 @@ Badge.belongsToMany(User, {
   as: 'users'
 });
 
+// Explicit associations for the junction model (needed for eager loading)
+StaffBadge.belongsTo(Badge, { foreignKey: 'badgeId', as: 'badge' });
+Badge.hasMany(StaffBadge, { foreignKey: 'badgeId', as: 'staffBadges' });
+StaffBadge.belongsTo(User, { foreignKey: 'userId', as: 'user' });
+User.hasMany(StaffBadge, { foreignKey: 'userId', as: 'staffBadges' });
+
+// Badge - Staff Assignments (for scoping)
+Badge.hasMany(BadgeStaffAssignment, { foreignKey: 'badgeId', as: 'managedStaffAssignments' });
+BadgeStaffAssignment.belongsTo(Badge, { foreignKey: 'badgeId', as: 'badge' });
+
+User.hasMany(BadgeStaffAssignment, { foreignKey: 'staffUserId', as: 'badgeAssignments' });
+BadgeStaffAssignment.belongsTo(User, { foreignKey: 'staffUserId', as: 'staff' });
+
 // Asset Management associations - simplified
 User.hasMany(Asset, { foreignKey: 'createdBy', as: 'createdAssets' });
 User.hasMany(Asset, { foreignKey: 'updatedBy', as: 'updatedAssets' });
@@ -637,6 +652,7 @@ module.exports = {
   Badge,
   BadgePermission,
   StaffBadge,
+  BadgeStaffAssignment,
 
   AssignedJob,
   Client,

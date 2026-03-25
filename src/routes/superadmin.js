@@ -45,7 +45,10 @@ router.get('/plans', async (_req, res) => {
 
 router.post('/plans', async (req, res) => {
   try {
-    const { code, name, periodDays, price, features, active, expenseEnabled } = req.body || {};
+    const {
+      code, name, periodDays, price, features, active,
+      expenseEnabled, payrollEnabled, performanceEnabled, aiReportsEnabled, aiAssistantEnabled, taskManagementEnabled
+    } = req.body || {};
     if (!code || !name || !periodDays) {
       return res.status(400).json({ success: false, message: 'code, name, periodDays required' });
     }
@@ -57,6 +60,11 @@ router.post('/plans', async (req, res) => {
       features: features || null,
       active: active !== false,
       expenseEnabled: !!expenseEnabled,
+      payrollEnabled: !!payrollEnabled,
+      performanceEnabled: !!performanceEnabled,
+      aiReportsEnabled: !!aiReportsEnabled,
+      aiAssistantEnabled: !!aiAssistantEnabled,
+      taskManagementEnabled: !!taskManagementEnabled,
     });
     return res.json({ success: true, plan: row });
   } catch (e) {
@@ -68,7 +76,10 @@ router.put('/plans/:id', async (req, res) => {
   try {
     const row = await Plan.findByPk(req.params.id);
     if (!row) return res.status(404).json({ success: false, message: 'Not found' });
-    const { code, name, periodDays, price, features, active, expenseEnabled } = req.body || {};
+    const {
+      code, name, periodDays, price, features, active,
+      expenseEnabled, payrollEnabled, performanceEnabled, aiReportsEnabled, aiAssistantEnabled, taskManagementEnabled
+    } = req.body || {};
     await row.update({
       ...(code !== undefined ? { code: String(code).toUpperCase() } : {}),
       ...(name !== undefined ? { name } : {}),
@@ -77,6 +88,11 @@ router.put('/plans/:id', async (req, res) => {
       ...(features !== undefined ? { features } : {}),
       ...(active !== undefined ? { active: !!active } : {}),
       ...(expenseEnabled !== undefined ? { expenseEnabled: !!expenseEnabled } : {}),
+      ...(payrollEnabled !== undefined ? { payrollEnabled: !!payrollEnabled } : {}),
+      ...(performanceEnabled !== undefined ? { performanceEnabled: !!performanceEnabled } : {}),
+      ...(aiReportsEnabled !== undefined ? { aiReportsEnabled: !!aiReportsEnabled } : {}),
+      ...(aiAssistantEnabled !== undefined ? { aiAssistantEnabled: !!aiAssistantEnabled } : {}),
+      ...(taskManagementEnabled !== undefined ? { taskManagementEnabled: !!taskManagementEnabled } : {}),
     });
     return res.json({ success: true, plan: row });
   } catch (e) {
@@ -151,6 +167,24 @@ router.post('/channel-partners', async (req, res) => {
       gstNumber: gstNumber || null,
       extra: extra || null,
     });
+
+    // Sync with User table
+    if (normalizedPhone) {
+      let user = await User.findOne({ where: { phone: String(normalizedPhone) } });
+      if (!user) {
+        const hash = await bcrypt.hash('123456', 10);
+        await User.create({
+          role: 'channel_partner',
+          phone: String(normalizedPhone),
+          passwordHash: hash,
+          channelPartnerId: normalizedPartnerId,
+          active: true
+        });
+      } else {
+        // Link existing user to this partner ID
+        await user.update({ channelPartnerId: normalizedPartnerId });
+      }
+    }
 
     return res.json({ success: true, channelPartner: row });
   } catch (_) {
@@ -228,6 +262,26 @@ router.put('/channel-partners/:id', async (req, res) => {
       ...(extra !== undefined ? { extra } : {}),
     });
 
+    // Sync with User table on update
+    const finalPhone = normalizePhone(phone || row.phone);
+    const finalPartnerId = String(channelPartnerId || row.channelPartnerId).trim();
+
+    if (finalPhone) {
+      let user = await User.findOne({ where: { phone: String(finalPhone) } });
+      if (user) {
+        await user.update({ channelPartnerId: finalPartnerId });
+      } else {
+        const hash = await bcrypt.hash('123456', 10);
+        await User.create({
+          role: 'channel_partner',
+          phone: String(finalPhone),
+          passwordHash: hash,
+          channelPartnerId: finalPartnerId,
+          active: true
+        });
+      }
+    }
+
     return res.json({ success: true, channelPartner: row });
   } catch (_) {
     return res.status(500).json({ success: false, message: 'Failed to update channel partner' });
@@ -248,7 +302,7 @@ router.get('/clients', async (_req, res) => {
         });
         const shouldBeActive = !!(sub && new Date(sub.endAt) >= now);
         const targetStatus = shouldBeActive ? 'ACTIVE' : 'DISABLED';
-        if (org.status !== targetStatus) {
+        if (org.status !== targetStatus && org.status !== 'SUSPENDED') {
           await org.update({ status: targetStatus });
         }
         // Add subscription data to org object
@@ -321,7 +375,11 @@ router.get('/clients/:id/plan-details', async (req, res) => {
 
 router.post('/clients', async (req, res) => {
   try {
-    const { name, phone, status = 'ACTIVE', clientType, location, extra, businessEmail, state, city, channelPartnerId, roleDescription, employeeCount } = req.body || {};
+    const {
+      name, phone, status = 'ACTIVE', clientType, location, extra, businessEmail, state, city,
+      channelPartnerId, roleDescription, employeeCount,
+      contactPersonName, address, birthDate, anniversaryDate, gstNumber
+    } = req.body || {};
     if (!name) return res.status(400).json({ success: false, message: 'name required' });
 
     // Check if phone number already exists in either OrgAccount or User table
@@ -353,6 +411,11 @@ router.post('/clients', async (req, res) => {
       channelPartnerId: channelPartnerId || null,
       roleDescription: roleDescription || null,
       employeeCount: employeeCount || null,
+      contactPersonName: contactPersonName || null,
+      address: address || null,
+      birthDate: birthDate || null,
+      anniversaryDate: anniversaryDate || null,
+      gstNumber: gstNumber || null,
       extra: extra || null,
     });
 
@@ -393,7 +456,11 @@ router.put('/clients/:id', async (req, res) => {
   try {
     const row = await OrgAccount.findByPk(req.params.id);
     if (!row) return res.status(404).json({ success: false, message: 'Not found' });
-    const { name, phone, status, clientType, location, extra, businessEmail, state, city, channelPartnerId, roleDescription, employeeCount } = req.body || {};
+    const {
+      name, phone, status, clientType, location, extra, businessEmail, state, city,
+      channelPartnerId, roleDescription, employeeCount,
+      contactPersonName, address, birthDate, anniversaryDate, gstNumber
+    } = req.body || {};
 
     // Check if phone number already exists in either OrgAccount or User table (excluding current client)
     const normalizedPhone = normalizePhone(phone);
@@ -431,10 +498,15 @@ router.put('/clients/:id', async (req, res) => {
       ...(businessEmail !== undefined ? { businessEmail } : {}),
       ...(state !== undefined ? { state } : {}),
       ...(city !== undefined ? { city } : {}),
-      ...(channelPartnerId !== undefined ? { channelPartnerId } : {}),
-      ...(roleDescription !== undefined ? { roleDescription } : {}),
-      ...(employeeCount !== undefined ? { employeeCount } : {}),
-      ...(extra !== undefined ? { extra } : {}),
+      channelPartnerId: channelPartnerId !== undefined ? channelPartnerId : row.channelPartnerId,
+      roleDescription: roleDescription !== undefined ? roleDescription : row.roleDescription,
+      employeeCount: employeeCount !== undefined ? employeeCount : row.employeeCount,
+      contactPersonName: contactPersonName !== undefined ? contactPersonName : row.contactPersonName,
+      address: address !== undefined ? address : row.address,
+      birthDate: birthDate !== undefined ? birthDate : row.birthDate,
+      anniversaryDate: anniversaryDate !== undefined ? anniversaryDate : row.anniversaryDate,
+      gstNumber: gstNumber !== undefined ? gstNumber : row.gstNumber,
+      extra: extra !== undefined ? extra : row.extra,
     });
     return res.json({ success: true, client: row });
   } catch (e) {
@@ -452,7 +524,11 @@ router.post('/clients/:id/subscription', async (req, res) => {
     const org = await OrgAccount.findByPk(orgAccountId);
     if (!org) return res.status(404).json({ success: false, message: 'Organization not found' });
 
-    const { planId, planCode, startAt, staffLimit, maxGeolocationStaff, salesEnabled, geolocationEnabled, expenseEnabled } = req.body || {};
+    const {
+      planId, planCode, startAt, staffLimit, maxGeolocationStaff,
+      salesEnabled, geolocationEnabled, expenseEnabled,
+      payrollEnabled, performanceEnabled, aiReportsEnabled, aiAssistantEnabled, taskManagementEnabled
+    } = req.body || {};
 
     // Check if client has an active subscription that hasn't expired
     const existingSubscription = await Subscription.findOne({
@@ -523,6 +599,26 @@ router.post('/clients/:id/subscription', async (req, res) => {
           updateData.expenseEnabled = !!expenseEnabled;
           messageArr.push(`Expense module ${expenseEnabled ? 'enabled' : 'disabled'}`);
         }
+        if (payrollEnabled !== undefined && !!payrollEnabled !== existingSubscription.payrollEnabled) {
+          updateData.payrollEnabled = !!payrollEnabled;
+          messageArr.push(`Payroll module ${payrollEnabled ? 'enabled' : 'disabled'}`);
+        }
+        if (performanceEnabled !== undefined && !!performanceEnabled !== existingSubscription.performanceEnabled) {
+          updateData.performanceEnabled = !!performanceEnabled;
+          messageArr.push(`Performance module ${performanceEnabled ? 'enabled' : 'disabled'}`);
+        }
+        if (aiReportsEnabled !== undefined && !!aiReportsEnabled !== existingSubscription.aiReportsEnabled) {
+          updateData.aiReportsEnabled = !!aiReportsEnabled;
+          messageArr.push(`AI Reports module ${aiReportsEnabled ? 'enabled' : 'disabled'}`);
+        }
+        if (aiAssistantEnabled !== undefined && !!aiAssistantEnabled !== existingSubscription.aiAssistantEnabled) {
+          updateData.aiAssistantEnabled = !!aiAssistantEnabled;
+          messageArr.push(`AI Assistant module ${aiAssistantEnabled ? 'enabled' : 'disabled'}`);
+        }
+        if (taskManagementEnabled !== undefined && !!taskManagementEnabled !== existingSubscription.taskManagementEnabled) {
+          updateData.taskManagementEnabled = !!taskManagementEnabled;
+          messageArr.push(`Task Management module ${taskManagementEnabled ? 'enabled' : 'disabled'}`);
+        }
 
         if (Object.keys(updateData).length > 0) {
           await existingSubscription.update(updateData);
@@ -555,7 +651,12 @@ router.post('/clients/:id/subscription', async (req, res) => {
       maxGeolocationStaff,
       salesEnabled,
       geolocationEnabled,
-      expenseEnabled
+      expenseEnabled,
+      payrollEnabled,
+      performanceEnabled,
+      aiReportsEnabled,
+      aiAssistantEnabled,
+      taskManagementEnabled
     });
 
     const sub = await Subscription.create({
@@ -569,6 +670,11 @@ router.post('/clients/:id/subscription', async (req, res) => {
       salesEnabled: salesEnabled !== undefined ? !!salesEnabled : (plan.salesEnabled || false),
       geolocationEnabled: geolocationEnabled !== undefined ? !!geolocationEnabled : (plan.geolocationEnabled || false),
       expenseEnabled: expenseEnabled !== undefined ? !!expenseEnabled : (plan.expenseEnabled || false),
+      payrollEnabled: payrollEnabled !== undefined ? !!payrollEnabled : (plan.payrollEnabled || false),
+      performanceEnabled: performanceEnabled !== undefined ? !!performanceEnabled : (plan.performanceEnabled || false),
+      aiReportsEnabled: aiReportsEnabled !== undefined ? !!aiReportsEnabled : (plan.aiReportsEnabled || false),
+      aiAssistantEnabled: aiAssistantEnabled !== undefined ? !!aiAssistantEnabled : (plan.aiAssistantEnabled || false),
+      taskManagementEnabled: taskManagementEnabled !== undefined ? !!taskManagementEnabled : (plan.taskManagementEnabled || false),
     });
     console.log('Subscription created successfully:', sub.id);
 
@@ -761,7 +867,34 @@ router.post('/clients/:id/impersonate', async (req, res) => {
     });
   } catch (e) {
     console.error('Impersonate error:', e);
-    return res.status(500).json({ success: false, message: 'Failed to impersonate' });
+    return res.status(500).json({ success: false, message: 'Impersonation failed' });
+  }
+});
+
+// Toggle Client Status
+router.post('/clients/:id/toggle-status', async (req, res) => {
+  try {
+    const org = await OrgAccount.findByPk(req.params.id);
+    if (!org) return res.status(404).json({ success: false, message: 'Client not found' });
+
+    let newStatus;
+    if (org.status === 'SUSPENDED') {
+      // Re-activate: calculate what status it SHOULD have based on subscription
+      const sub = await Subscription.findOne({
+        where: { orgAccountId: org.id, status: 'ACTIVE' },
+        order: [['endAt', 'DESC']]
+      });
+      const now = new Date();
+      newStatus = (sub && new Date(sub.endAt) >= now) ? 'ACTIVE' : 'DISABLED';
+    } else {
+      // Deactivate
+      newStatus = 'SUSPENDED';
+    }
+
+    await org.update({ status: newStatus });
+    return res.json({ success: true, status: newStatus });
+  } catch (e) {
+    return res.status(500).json({ success: false, message: 'Failed to toggle status' });
   }
 });
 

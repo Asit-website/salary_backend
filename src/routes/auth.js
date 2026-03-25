@@ -168,8 +168,8 @@ router.post('/verify-otp', async (req, res) => {
       return res.status(403).json({ success: false, message: 'User disabled' });
     }
 
-    // Subscription/Org enforcement on OTP login for non-superadmin
-    if (user && user.role !== 'superadmin') {
+    // Subscription/Org enforcement on OTP login for non-superadmin and non-partner
+    if (user && user.role !== 'superadmin' && user.role !== 'channel_partner') {
       try {
         const { OrgAccount, Subscription, Plan } = require('../models');
         const org = await OrgAccount.findByPk(user.orgAccountId);
@@ -193,7 +193,7 @@ router.post('/verify-otp', async (req, res) => {
 
     const secret = process.env.JWT_SECRET || 'dev_secret_change_me';
     const token = jwt.sign(
-      { id: user.id, role: user.role, phone: user.phone, name, orgAccountId: user.orgAccountId },
+      { id: user.id, role: user.role, phone: user.phone, name, orgAccountId: user.orgAccountId, channelPartnerId: user.channelPartnerId },
       secret,
       { expiresIn: process.env.JWT_EXPIRES_IN || '7d' }
     );
@@ -201,7 +201,7 @@ router.post('/verify-otp', async (req, res) => {
     return res.json({
       success: true,
       token,
-      user: { id: user.id, role: user.role, phone: user.phone, name, orgAccountId: user.orgAccountId },
+      user: { id: user.id, role: user.role, phone: user.phone, name, orgAccountId: user.orgAccountId, channelPartnerId: user.channelPartnerId },
     });
   } catch (e) {
     return res.status(500).json({ success: false, message: 'Failed to verify OTP' });
@@ -226,8 +226,8 @@ router.post('/login', async (req, res) => {
       return res.status(401).json({ success: false, message: 'Invalid credentials' });
     }
 
-    // Subscription/Org enforcement on password login for non-superadmin
-    if (user.role !== 'superadmin') {
+    // Subscription/Org enforcement on password login for non-superadmin/partner
+    if (user.role !== 'superadmin' && user.role !== 'channel_partner') {
       try {
         const { OrgAccount, Subscription, Plan } = require('../models');
         const org = await OrgAccount.findByPk(user.orgAccountId);
@@ -251,7 +251,7 @@ router.post('/login', async (req, res) => {
 
     const secret = process.env.JWT_SECRET || 'dev_secret_change_me';
     const token = jwt.sign(
-      { id: user.id, role: user.role, phone: user.phone, name, orgAccountId: user.orgAccountId },
+      { id: user.id, role: user.role, phone: user.phone, name, orgAccountId: user.orgAccountId, channelPartnerId: user.channelPartnerId },
       secret,
       { expiresIn: process.env.JWT_EXPIRES_IN || '7d' }
     );
@@ -259,7 +259,7 @@ router.post('/login', async (req, res) => {
     return res.json({
       success: true,
       token,
-      user: { id: user.id, role: user.role, phone: user.phone, name, orgAccountId: user.orgAccountId },
+      user: { id: user.id, role: user.role, phone: user.phone, name, orgAccountId: user.orgAccountId, channelPartnerId: user.channelPartnerId },
     });
   } catch (e) {
     return res.status(500).json({ success: false, message: 'Login failed' });
@@ -269,7 +269,11 @@ router.post('/login', async (req, res) => {
 // Public: signup a new Admin for a new OrgAccount (pending activation by Super Admin)
 router.post('/signup-admin', async (req, res) => {
   try {
-    const { phone, name, businessName, password, businessEmail, state, city, channelPartnerId, roleDescription, employeeCount } = req.body || {};
+    const {
+      phone, name, businessName, password, businessEmail, state, city,
+      channelPartnerId, roleDescription, employeeCount,
+      contactPersonName, address, birthDate, anniversaryDate, gstNumber
+    } = req.body || {};
     if (!phone || !name || !businessName) {
       return res.status(400).json({ success: false, message: 'phone, name, businessName required' });
     }
@@ -299,6 +303,11 @@ router.post('/signup-admin', async (req, res) => {
       channelPartnerId: channelPartnerId || null,
       roleDescription: roleDescription || null,
       employeeCount: employeeCount || null,
+      contactPersonName: contactPersonName || null,
+      address: address || null,
+      birthDate: birthDate || null,
+      anniversaryDate: anniversaryDate || null,
+      gstNumber: gstNumber || null,
     });
 
     const hash = await bcrypt.hash(String(password || '123456'), 10);

@@ -3,7 +3,7 @@ const { User, OrgAccount, Subscription, Plan } = require('../models');
 async function tenantEnforce(req, res, next) {
   try {
     if (!req.user) return res.status(401).json({ success: false, message: 'Unauthenticated' });
-    if (req.user.role === 'superadmin') {
+    if (req.user.role === 'superadmin' || req.user.role === 'channel_partner') {
       // Superadmin can specify org via header, query, or fallback to their own orgAccountId
       const headerOrg = req.headers['x-org-id'] || req.query.orgId || null;
       const user = await User.findByPk(req.user.id);

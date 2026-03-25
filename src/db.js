@@ -5,6 +5,14 @@ const { sequelize, User, StaffProfile } = require('./models');
 async function initDb() {
   await sequelize.authenticate();
 
+  // Ensure face_id column exists
+  try {
+    await sequelize.query('ALTER TABLE staff_profiles ADD COLUMN IF NOT EXISTS face_id VARCHAR(255) NULL AFTER photo_url');
+  } catch (err) {
+    // IF NOT EXISTS might not work in some MySQL versions, so we catch error
+    console.log('AWS Rekognition: Note on face_id column (might already exist):', err.message);
+  }
+
   const phone = process.env.SUPERADMIN_PHONE;
   const password = process.env.SUPERADMIN_PASSWORD;
 

@@ -1,10 +1,10 @@
 const express = require('express');
+const dayjs = require('dayjs');
 
 const bcrypt = require('bcryptjs');
 
 const exceljs = require('exceljs');
 
-const dayjs = require('dayjs');
 
 function getCellValue(cell) {
   if (!cell || cell.value === null || cell.value === undefined) return null;
@@ -40,6 +40,8 @@ const ai = require('../services/aiProvider');
 const { Op } = require('sequelize');
 const { calculateSalary, generatePayslipPDF } = require('../services/payrollService');
 const { runAttendanceReminderManual } = require('../jobs');
+const { getScopedStaffIds } = require('../utils/scoping');
+const { enrollFace } = require('../services/awsService');
 
 const router = express.Router();
 
@@ -729,6 +731,478 @@ router.get('/payroll/:cycleId/export', async (req, res) => {
 
 
 
+// Export Monthly Summary as Excel (Designation or Department wise totals)
+router.get('/payroll/monthly-summary-excel', async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
+    const { PayrollCycle, PayrollLine, User, StaffProfile, OrgAccount } = require('../models');
+
+    const monthKey = req.query.monthKey;
+    const groupBy = req.query.groupBy || 'designation'; // 'designation' or 'department'
+    if (!monthKey) return res.status(400).json({ success: false, message: 'monthKey is required' });
+
+    const cycle = await PayrollCycle.findOne({ where: { monthKey, orgAccountId: orgId } });
+    if (!cycle) return res.status(404).json({ success: false, message: 'Payroll cycle not found for this month' });
+
+    const [org, lines] = await Promise.all([
+      OrgAccount.findByPk(orgId),
+      PayrollLine.findAll({ where: { cycleId: cycle.id }, order: [['id', 'ASC']] })
+    ]);
+
+    const userIds = [...new Set(lines.map(l => l.userId))];
+    const users = await User.findAll({ 
+      where: { id: userIds }, 
+      include: [{ model: StaffProfile, as: 'profile' }] 
+    });
+
+    const userMap = new Map(users.map(u => [u.id, u]));
+    const [year, month] = cycle.monthKey.split('-').map(Number);
+    const monthName = new Date(year, month - 1, 1).toLocaleString('en-IN', { month: 'long', year: 'numeric' });
+
+    const workbook = new exceljs.Workbook();
+    const worksheet = workbook.addWorksheet('Monthly Summary');
+
+
+    // Company Header
+    worksheet.getRow(1).height = 30;
+    worksheet.mergeCells('A1:Q1');
+    const companyCell = worksheet.getCell('A1');
+    companyCell.value = org ? org.name.toUpperCase() : 'ORGANIZATION';
+    companyCell.font = { bold: true, size: 16 };
+    companyCell.alignment = { horizontal: 'center', vertical: 'middle' };
+
+    worksheet.getRow(2).height = 20;
+    worksheet.mergeCells('A2:Q2');
+    const addrCell = worksheet.getCell('A2');
+    addrCell.value = org ? (org.address || '') : '';
+    addrCell.font = { size: 11 };
+    addrCell.alignment = { horizontal: 'center', vertical: 'middle' };
+
+    worksheet.mergeCells('A3:Q3');
+    const titleCell = worksheet.getCell('A3');
+    const typeLabel = groupBy === 'department' ? 'DEPARTMENT' : 'DESIGNATION';
+    titleCell.value = `Monthly Summary (${typeLabel} WISE) for the Month of ${monthName.toUpperCase()}`;
+    titleCell.font = { bold: true, size: 11 };
+    titleCell.alignment = { horizontal: 'center' };
+
+    // Multi-level headers
+    worksheet.getRow(4).values = []; // Empty row for labels
+    worksheet.mergeCells('C4:I4');
+    const earnHeader = worksheet.getCell('C4');
+    earnHeader.value = 'E A R N I N G S';
+    earnHeader.font = { bold: true };
+    earnHeader.alignment = { horizontal: 'center' };
+    earnHeader.border = { top: { style: 'thin' }, left: { style: 'thin' }, bottom: { style: 'thin' }, right: { style: 'thin' } };
+
+    worksheet.mergeCells('K4:O4');
+    const dedHeader = worksheet.getCell('K4');
+    dedHeader.value = 'D E D U C T I O N S';
+    dedHeader.font = { bold: true };
+    dedHeader.alignment = { horizontal: 'center' };
+    dedHeader.border = { top: { style: 'thin' }, left: { style: 'thin' }, bottom: { style: 'thin' }, right: { style: 'thin' } };
+
+    // Define columns structure without assigning to worksheet.columns (to avoid Row 1 overwrite)
+    const labelHeader = groupBy === 'department' ? 'Department' : 'Designation';
+    const cols = [
+      { header: 'SL', width: 5 },
+      { header: labelHeader, width: 25 },
+      { header: 'BASIC', width: 12 },
+      { header: 'Dearness Allow.', width: 12 },
+      { header: 'House rent Allow.', width: 12 },
+      { header: 'Over Time', width: 10 },
+      { header: 'Medical Allowance', width: 12 },
+      { header: 'Other Allowance', width: 12 },
+      { header: 'Conveyance', width: 12 },
+      { header: 'Gross Pay', width: 12 },
+      { header: 'P.F.', width: 10 },
+      { header: 'E.S.I.', width: 10 },
+      { header: 'P.Tax', width: 10 },
+      { header: 'T.D.S.', width: 10 },
+      { header: 'Loan/Advance', width: 12 },
+      { header: 'Total Deduction', width: 15 },
+      { header: 'Net Pay', width: 15 },
+    ];
+
+    // Set column widths manually
+    cols.forEach((c, idx) => {
+      worksheet.getColumn(idx + 1).width = c.width;
+    });
+
+    // Actual column headers row (Row 5)
+    const headerRow = worksheet.getRow(5);
+    headerRow.values = cols.map(c => c.header);
+    headerRow.font = { bold: true };
+    headerRow.eachCell(cell => {
+      cell.border = { top: { style: 'thin' }, left: { style: 'thin' }, bottom: { style: 'thin' }, right: { style: 'thin' } };
+      cell.alignment = { horizontal: 'center', vertical: 'middle' };
+    });
+
+    // Group and aggregate data
+    const grouped = {};
+    lines.forEach(line => {
+      const u = userMap.get(line.userId);
+      const groupVal = groupBy === 'department' ? (u?.profile?.department || 'OTHER') : (u?.profile?.designation || 'OTHER');
+      
+      const e = typeof line.earnings === 'string' ? JSON.parse(line.earnings) : (line.earnings || {});
+      const d = typeof line.deductions === 'string' ? JSON.parse(line.deductions) : (line.deductions || {});
+      const s = typeof line.attendanceSummary === 'string' ? JSON.parse(line.attendanceSummary) : (line.attendanceSummary || {});
+      const t = typeof line.totals === 'string' ? JSON.parse(line.totals) : (line.totals || {});
+
+      if (!grouped[groupVal]) {
+        grouped[groupVal] = {
+          e_basic: 0, e_da: 0, e_hra: 0, e_ot: 0, e_medical: 0, e_other: 0, e_conveyance: 0, grossPay: 0,
+          d_pf: 0, d_esi: 0, d_ptax: 0, d_tds: 0, d_loan: 0, totalDeduction: 0, netPay: 0
+        };
+      }
+      
+      const g = grouped[groupVal];
+      g.e_basic += Number(e.basic_salary || 0);
+      g.e_da += Number(e.da || 0);
+      g.e_hra += Number(e.hra || 0);
+      g.e_ot += Number(s.overtimePay || e.overtime_pay || 0);
+      g.e_medical += Number(e.medical_allowance || 0);
+      g.e_other += Number(e.other_allowance || 0);
+      g.e_conveyance += Number(e.conveyance || e.conveyance_allowance || 0);
+      g.grossPay += Number(t.grossSalary || 0);
+      g.d_pf += Number(d.pf || 0);
+      g.d_esi += Number(d.esi || 0);
+      g.d_ptax += Number(d.ptax || 0);
+      g.d_tds += Number(d.tds || 0);
+      g.d_loan += Number(d.loan_advance || 0);
+      g.totalDeduction += Number(t.totalDeductions || 0);
+      g.netPay += Number(t.netSalary || 0);
+    });
+
+    let sl = 1;
+    let currentRow = 6;
+    const grandTotals = Array(15).fill(0); // For e_basic till netPay
+
+    for (const [label, totals] of Object.entries(grouped)) {
+      const rowValues = [
+        sl++,
+        label.toUpperCase(),
+        totals.e_basic, totals.e_da, totals.e_hra, totals.e_ot, totals.e_medical, totals.e_other, totals.e_conveyance,
+        totals.grossPay, totals.d_pf, totals.d_esi, totals.d_ptax, totals.d_tds, totals.d_loan, totals.totalDeduction, totals.netPay
+      ];
+      const row = worksheet.addRow(rowValues);
+      row.eachCell(cell => {
+        cell.border = { top: { style: 'thin' }, left: { style: 'thin' }, bottom: { style: 'thin' }, right: { style: 'thin' } };
+      });
+      
+      // Update grand totals
+      const numericPart = rowValues.slice(2);
+      numericPart.forEach((val, idx) => grandTotals[idx] += val);
+      currentRow++;
+    }
+
+    // Grand Total Row
+    const totalRowValues = [null, 'Grand Total', ...grandTotals];
+    const totalRow = worksheet.addRow(totalRowValues);
+    totalRow.font = { bold: true };
+    totalRow.eachCell(cell => {
+      cell.border = { top: { style: 'thin' }, left: { style: 'thin' }, bottom: { style: 'thin' }, right: { style: 'thin' } };
+    });
+
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', `attachment; filename=Monthly-Summary-${cycle.monthKey}.xlsx`);
+
+    await workbook.xlsx.write(res);
+    res.end();
+
+  } catch (e) {
+    console.error('Monthly summary export error:', e);
+    return res.status(500).json({ success: false, message: 'Failed to export monthly summary', error: e.message });
+  }
+});
+
+
+// Export Salary Register as Excel by Month (formatted)
+router.get('/payroll/salary-register-excel-by-month', async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
+    const { PayrollCycle, PayrollLine, User, StaffProfile, OrgAccount } = require('../models');
+
+    const monthKey = req.query.monthKey;
+    if (!monthKey) return res.status(400).json({ success: false, message: 'monthKey is required' });
+
+    const cycle = await PayrollCycle.findOne({ where: { monthKey, orgAccountId: orgId } });
+    if (!cycle) return res.status(404).json({ success: false, message: 'Payroll cycle not found for this month' });
+
+    // Reuse the same logic as below (refactored into a helper would be better, but for speed I'll replicate or call internally)
+    // Actually, I'll just redirect or call the same handler. 
+    // Redirect is easiest:
+    const groupBy = req.query.groupBy || 'department';
+    return res.redirect(`${req.baseUrl}/payroll/${cycle.id}/salary-register-excel?groupBy=${groupBy}`);
+  } catch (e) {
+    console.error('Salary Register Excel by month error:', e);
+    return res.status(500).json({ success: false, message: 'Failed to export Salary Register', error: e.message });
+  }
+});
+
+
+// Export Salary Register as Excel (formatted)
+router.get('/payroll/:cycleId/salary-register-excel', async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
+    const { PayrollCycle, PayrollLine, User, StaffProfile, OrgAccount } = require('../models');
+
+    const id = Number(req.params.cycleId);
+    const cycle = await PayrollCycle.findOne({ where: { id, orgAccountId: orgId } });
+    if (!cycle) return res.status(404).json({ success: false, message: 'Cycle not found' });
+
+    const [org, lines] = await Promise.all([
+      OrgAccount.findByPk(orgId),
+      PayrollLine.findAll({ where: { cycleId: id }, order: [['id', 'ASC']] })
+    ]);
+
+    const userIds = [...new Set(lines.map(l => l.userId))];
+    const users = await User.findAll({ 
+      where: { id: userIds }, 
+      include: [{ model: StaffProfile, as: 'profile' }] 
+    });
+
+    const userMap = new Map(users.map(u => [u.id, u]));
+    const [year, month] = cycle.monthKey.split('-').map(Number);
+    const monthName = new Date(year, month - 1, 1).toLocaleString('en-IN', { month: 'long', year: 'numeric' });
+    const groupBy = req.query.groupBy || 'department'; // 'designation' or 'department'
+
+    const workbook = new exceljs.Workbook();
+    const worksheet = workbook.addWorksheet('Salary Register');
+
+    // Define columns
+    const columns = [
+      { header: 'SL', key: 'sl', width: 5 },
+      { header: 'Name of Employee', key: 'name', width: 25 },
+      { header: 'Work days', key: 'workDays', width: 8 },
+      { header: 'Paid Sun', key: 'paidSun', width: 8 },
+      { header: 'Paid Holi', key: 'paidHoli', width: 8 },
+      { header: 'Absent', key: 'absent', width: 8 },
+      { header: 'Total pay day', key: 'totalPayDay', width: 12 },
+      { header: 'Basic Rate', key: 'basicRate', width: 12 },
+      // EARNINGS
+      { header: 'BASIC', key: 'e_basic', width: 10 },
+      { header: 'Dearness Allow.', key: 'e_da', width: 12 },
+      { header: 'House rent Allow.', key: 'e_hra', width: 12 },
+      { header: 'Over Time', key: 'e_ot', width: 10 },
+      { header: 'Medical Allowance', key: 'e_medical', width: 12 },
+      { header: 'Other Allowance', key: 'e_other', width: 12 },
+      { header: 'Conveyance', key: 'e_conveyance', width: 12 },
+      { header: 'Gross Pay', key: 'grossPay', width: 12 },
+      // DEDUCTIONS
+      { header: 'P.F.', key: 'd_pf', width: 10 },
+      { header: 'E.S.I.', key: 'd_esi', width: 10 },
+      { header: 'P.Tax', key: 'd_ptax', width: 10 },
+      { header: 'T.D.S.', key: 'd_tds', width: 10 },
+      { header: 'Loan/Advance', key: 'd_loan', width: 12 },
+      { header: 'Total Deduction', key: 'totalDeduction', width: 15 },
+      { header: 'Net Pay', key: 'netPay', width: 15 },
+      { header: 'Signature/Date', key: 'signature', width: 20 },
+    ];
+
+    worksheet.columns = columns;
+
+    // Company Header
+    worksheet.mergeCells('A1:X1');
+    const companyCell = worksheet.getCell('A1');
+    companyCell.value = org.name.toUpperCase();
+    companyCell.font = { bold: true, size: 14 };
+    companyCell.alignment = { horizontal: 'center' };
+
+    worksheet.mergeCells('A2:X2');
+    const addressCell = worksheet.getCell('A2');
+    addressCell.value = org.address || '';
+    addressCell.alignment = { horizontal: 'center' };
+
+    worksheet.mergeCells('A3:X3');
+    const titleCell = worksheet.getCell('A3');
+    titleCell.value = `Pay Register for the Month of ${monthName.toUpperCase()}`;
+    titleCell.font = { bold: true };
+    titleCell.alignment = { horizontal: 'center' };
+
+    // Group Headers (Earnings / Deductions)
+    worksheet.mergeCells('I4:P4');
+    const earningsLabel = worksheet.getCell('I4');
+    earningsLabel.value = 'E A R N I N G S';
+    earningsLabel.alignment = { horizontal: 'center' };
+    earningsLabel.font = { bold: true };
+
+    worksheet.mergeCells('Q4:V4');
+    const deductionsLabel = worksheet.getCell('Q4');
+    deductionsLabel.value = 'D E D U C T I O N S';
+    deductionsLabel.alignment = { horizontal: 'center' };
+    deductionsLabel.font = { bold: true };
+
+    // Header Row (Row 5)
+    const headerRow = worksheet.getRow(5);
+    headerRow.values = columns.map(c => c.header);
+    headerRow.font = { bold: true };
+    headerRow.eachCell(cell => {
+      cell.border = {
+        top: { style: 'thin' },
+        left: { style: 'thin' },
+        bottom: { style: 'thin' },
+        right: { style: 'thin' }
+      };
+    });
+
+    // Group by designation
+    const grouped = {};
+    lines.forEach(line => {
+      const u = userMap.get(line.userId);
+      const groupVal = groupBy === 'designation' ? (u?.profile?.designation || 'OTHER') : (u?.profile?.department || 'OTHER');
+      if (!grouped[groupVal]) grouped[groupVal] = [];
+      grouped[groupVal].push(line);
+    });
+
+    let sl = 1;
+    let currentRow = 6;
+    const grandTotals = {
+      e_basic: 0, e_da: 0, e_hra: 0, e_ot: 0, e_medical: 0, e_other: 0, e_conveyance: 0, grossPay: 0,
+      d_pf: 0, d_esi: 0, d_ptax: 0, d_tds: 0, d_loan: 0, totalDeduction: 0, netPay: 0, basicRate: 0
+    };
+
+    for (const [groupVal, groupLines] of Object.entries(grouped)) {
+      const subTotals = {
+        e_basic: 0, e_da: 0, e_hra: 0, e_ot: 0, e_medical: 0, e_other: 0, e_conveyance: 0, grossPay: 0,
+        d_pf: 0, d_esi: 0, d_ptax: 0, d_tds: 0, d_loan: 0, totalDeduction: 0, netPay: 0
+      };
+
+      groupLines.forEach(line => {
+        const u = userMap.get(line.userId);
+        const e = typeof line.earnings === 'string' ? JSON.parse(line.earnings) : (line.earnings || {});
+        const d = typeof line.deductions === 'string' ? JSON.parse(line.deductions) : (line.deductions || {});
+        const s = typeof line.attendanceSummary === 'string' ? JSON.parse(line.attendanceSummary) : (line.attendanceSummary || {});
+        const t = typeof line.totals === 'string' ? JSON.parse(line.totals) : (line.totals || {});
+
+        const rowData = {
+          sl: sl++,
+          name: u?.profile?.name || u?.phone || '',
+          workDays: Number(s.present || 0),
+          paidSun: Number(s.weeklyOff || 0),
+          paidHoli: Number(s.holidays || 0),
+          absent: Number(s.absent || 0),
+          totalPayDay: Number(s.present || 0) + Number(s.weeklyOff || 0) + Number(s.holidays || 0) + Number(s.half || 0) * 0.5,
+          basicRate: Number(u?.basicSalary || 0),
+          e_basic: Number(e.basic_salary || 0),
+          e_da: Number(e.da || 0),
+          e_hra: Number(e.hra || 0),
+          e_ot: Number(s.overtimePay || e.overtime_pay || 0),
+          e_medical: Number(e.medical_allowance || 0),
+          e_other: Number(e.other_allowance || 0),
+          e_conveyance: Number(e.conveyance || e.conveyance_allowance || 0),
+          grossPay: Number(t.grossSalary || 0),
+          d_pf: Number(d.pf || 0),
+          d_esi: Number(d.esi || 0),
+          d_ptax: Number(d.ptax || 0),
+          d_tds: Number(d.tds || 0),
+          d_loan: Number(d.loan_advance || 0),
+          totalDeduction: Number(t.totalDeductions || 0),
+          netPay: Number(t.netSalary || 0),
+          signature: line.paidAt 
+            ? new Date(line.paidAt).toLocaleDateString('en-IN', { day: '2-digit', month: '2-digit', year: 'numeric' })
+            : (cycle.status === 'PAID' && cycle.paidAt 
+                ? new Date(cycle.paidAt).toLocaleDateString('en-IN', { day: '2-digit', month: '2-digit', year: 'numeric' })
+                : '')
+        };
+
+        const row = worksheet.addRow(rowData);
+        row.eachCell(cell => {
+          cell.border = {
+            top: { style: 'thin' },
+            left: { style: 'thin' },
+            bottom: { style: 'thin' },
+            right: { style: 'thin' }
+          };
+        });
+
+        // Add to sub-totals
+        Object.keys(subTotals).forEach(key => subTotals[key] += rowData[key]);
+        // Add to grand-totals
+        Object.keys(grandTotals).forEach(key => grandTotals[key] += rowData[key]);
+        grandTotals.basicRate += rowData.basicRate;
+
+        currentRow++;
+      });
+
+      // Write sub-total for this group (with Group Label at the bottom)
+      const subTotalRowId = currentRow;
+      worksheet.mergeCells(`A${subTotalRowId}:H${subTotalRowId}`);
+      const groupCell = worksheet.getCell(`A${subTotalRowId}`);
+      groupCell.value = groupVal.toUpperCase();
+      groupCell.font = { bold: true };
+      groupCell.alignment = { horizontal: 'center' };
+
+      const subRow = worksheet.getRow(subTotalRowId);
+      subRow.getCell('I').value = subTotals.e_basic;
+      subRow.getCell('J').value = subTotals.e_da;
+      subRow.getCell('K').value = subTotals.e_hra;
+      subRow.getCell('L').value = subTotals.e_ot;
+      subRow.getCell('M').value = subTotals.e_medical;
+      subRow.getCell('N').value = subTotals.e_other;
+      subRow.getCell('O').value = subTotals.e_conveyance;
+      subRow.getCell('P').value = subTotals.grossPay;
+      subRow.getCell('Q').value = subTotals.d_pf;
+      subRow.getCell('R').value = subTotals.d_esi;
+      subRow.getCell('S').value = subTotals.d_ptax;
+      subRow.getCell('T').value = subTotals.d_tds;
+      subRow.getCell('U').value = subTotals.d_loan;
+      subRow.getCell('V').value = subTotals.totalDeduction;
+      subRow.getCell('W').value = subTotals.netPay;
+      subRow.font = { bold: true };
+      subRow.eachCell(cell => {
+        cell.border = {
+          top: { style: 'thin' },
+          left: { style: 'thin' },
+          bottom: { style: 'thin' },
+          right: { style: 'thin' }
+        };
+      });
+      currentRow++;
+    }
+
+    // Grand Total Row
+    const totalRow = worksheet.addRow({
+      name: 'Grand Total',
+      e_basic: grandTotals.e_basic,
+      e_da: grandTotals.e_da,
+      e_hra: grandTotals.e_hra,
+      e_ot: grandTotals.e_ot,
+      e_medical: grandTotals.e_medical,
+      e_other: grandTotals.e_other,
+      e_conveyance: grandTotals.e_conveyance,
+      grossPay: grandTotals.grossPay,
+      d_pf: grandTotals.d_pf,
+      d_esi: grandTotals.d_esi,
+      d_ptax: grandTotals.d_ptax,
+      d_tds: grandTotals.d_tds,
+      d_loan: grandTotals.d_loan,
+      totalDeduction: grandTotals.totalDeduction,
+      netPay: grandTotals.netPay,
+      basicRate: grandTotals.basicRate
+    });
+    totalRow.font = { bold: true };
+    totalRow.eachCell(cell => {
+      cell.border = {
+        top: { style: 'thin' },
+        left: { style: 'thin' },
+        bottom: { style: 'thick' },
+        right: { style: 'thin' }
+      };
+    });
+
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', `attachment; filename=Salary-Register-${cycle.monthKey}.xlsx`);
+    await workbook.xlsx.write(res);
+    return res.end();
+
+  } catch (e) {
+    console.error('Salary Register Excel error:', e);
+    return res.status(500).json({ success: false, message: 'Failed to export Salary Register', error: e.message });
+  }
+});
+
+
+
 // Update a payroll line values (earnings/deductions/incentives/adjustments/status/remarks) (org-scoped)
 
 router.put('/payroll/:cycleId/line/:lineId', async (req, res) => {
@@ -1141,21 +1615,21 @@ router.post('/payroll/:cycleId/lock', async (req, res) => {
     // Mark associated advances as deducted
     try {
       const { PayrollLine, StaffAdvance } = require('../models');
-      const staffIds = (await PayrollLine.findAll({ 
-        where: { cycleId: id }, 
-        attributes: ['userId'] 
+      const staffIds = (await PayrollLine.findAll({
+        where: { cycleId: id },
+        attributes: ['userId']
       })).map(l => l.userId);
 
       if (staffIds.length > 0) {
         await StaffAdvance.update(
           { status: 'deducted' },
-          { 
-            where: { 
+          {
+            where: {
               orgAccountId: orgId,
               deductionMonth: cycle.monthKey,
               status: 'pending',
               staffId: { [Op.in]: staffIds }
-            } 
+            }
           }
         );
       }
@@ -1198,12 +1672,12 @@ router.post('/payroll/:cycleId/unlock', async (req, res) => {
       const { StaffAdvance } = require('../models');
       await StaffAdvance.update(
         { status: 'pending' },
-        { 
-          where: { 
+        {
+          where: {
             orgAccountId: orgId,
             deductionMonth: cycle.monthKey,
             status: 'deducted'
-          } 
+          }
         }
       );
     } catch (advErr) {
@@ -5145,8 +5619,19 @@ router.delete('/settings/attendance-templates/assign/:assignmentId', async (req,
 router.get('/staff', requireRole(['admin', 'staff']), async (req, res) => {
   try {
     const orgId = requireOrg(req, res); if (!orgId) return;
+    const { module } = req.query || {};
+
+    let where = { role: 'staff', orgAccountId: orgId };
+
+    if (module === 'attendance') {
+      const scopedStaffIds = await getScopedStaffIds(req, orgId);
+      if (scopedStaffIds !== null) {
+        where.id = scopedStaffIds;
+      }
+    }
+
     const staff = await User.findAll({
-      where: { role: 'staff', orgAccountId: orgId },
+      where,
       include: [{ model: StaffProfile, as: 'profile' }],
       order: [['createdAt', 'DESC']],
     });
@@ -5615,9 +6100,9 @@ router.get('/advances', async (req, res) => {
     const { count, rows } = await StaffAdvance.findAndCountAll({
       where,
       include: [
-        { 
-          model: User, 
-          as: 'staffMember', 
+        {
+          model: User,
+          as: 'staffMember',
           attributes: ['id', 'phone'],
           include: [{ model: StaffProfile, as: 'profile', attributes: ['name'] }]
         }
@@ -5627,8 +6112,8 @@ router.get('/advances', async (req, res) => {
       offset: (parseInt(page) - 1) * parseInt(limit)
     });
 
-    return res.json({ 
-      success: true, 
+    return res.json({
+      success: true,
       data: rows,
       pagination: {
         total: count,
@@ -5645,7 +6130,7 @@ router.post('/advances', async (req, res) => {
   try {
     const orgId = requireOrg(req, res); if (!orgId) return;
     const { staffId, amount, advanceDate, notes, deductionMonth, status } = req.body;
-    
+
     if (!staffId || !amount || !advanceDate) {
       return res.status(400).json({ success: false, message: 'Missing required fields' });
     }
@@ -5663,7 +6148,7 @@ router.post('/advances', async (req, res) => {
       amount,
       advanceDate,
       deductionMonth: finalDeductionMonth,
-      status: status || 'pending',
+      // status: status || 'pending', // Status is no longer managed manually
       notes,
       createdBy: req.user.id,
       updatedBy: req.user.id
@@ -5689,7 +6174,7 @@ router.put('/advances/:id', async (req, res) => {
       amount: amount ?? row.amount,
       advanceDate: advanceDate ?? row.advanceDate,
       notes: notes ?? row.notes,
-      status: status ?? row.status,
+      // status: status ?? row.status, // Status is no longer managed manually
       updatedBy: req.user.id
     };
 
@@ -5714,10 +6199,6 @@ router.delete('/advances/:id', async (req, res) => {
 
     const row = await StaffAdvance.findOne({ where: { id, orgAccountId: orgId } });
     if (!row) return res.status(404).json({ success: false, message: 'Advance not found' });
-
-    if (row.status === 'deducted') {
-      return res.status(400).json({ success: false, message: 'Cannot delete a deducted advance' });
-    }
 
     await row.destroy();
     return res.json({ success: true, message: 'Advance deleted successfully' });
@@ -7080,6 +7561,8 @@ function computeItemAmount(item, ctx) {
             checkIn: toTime(r.punchedInAt),
             checkOut: toTime(r.punchedOutAt),
             status,
+            punchInPhotoUrl: r.punchInPhotoUrl,
+            punchOutPhotoUrl: r.punchOutPhotoUrl,
             user: { name: r.user?.profile?.name || null },
             staffProfile: { staffId: r.user?.profile?.staffId || null, department: r.user?.profile?.department || null }
           };
@@ -7688,9 +8171,9 @@ router.get('/leaves', async (req, res) => {
     const rows = await LeaveRequest.findAll({
       where,
       include: [
-        { 
-          model: User, 
-          as: 'user', 
+        {
+          model: User,
+          as: 'user',
           attributes: ['id', 'phone', 'role'],
           include: [{ model: StaffProfile, as: 'profile', attributes: ['name'] }]
         },
@@ -9292,8 +9775,23 @@ router.get('/attendance', async (req, res) => {
     }
 
     const orgStaffIds = (await User.findAll({ where: { orgAccountId: orgId, role: 'staff' }, attributes: ['id'] })).map(u => u.id);
-    const where = { ...whereClause, userId: orgStaffIds };
-    if (staffId && Number(staffId) > 0) where.userId = Number(staffId);
+
+    const scopedStaffIds = await getScopedStaffIds(req, orgId);
+    let allowedStaffIds = orgStaffIds;
+
+    if (scopedStaffIds !== null) {
+      allowedStaffIds = orgStaffIds.filter(id => scopedStaffIds.includes(id));
+    }
+
+    const where = { ...whereClause, userId: allowedStaffIds };
+
+    if (staffId && Number(staffId) > 0) {
+      if (allowedStaffIds.includes(Number(staffId))) {
+        where.userId = Number(staffId);
+      } else {
+        return res.json({ success: true, count: 0, data: [] });
+      }
+    }
 
     const rows = await Attendance.findAll({
       where,
@@ -9445,6 +9943,8 @@ router.get('/attendance', async (req, res) => {
         punchOutLatitude: r.punchOutLatitude,
         punchOutLongitude: r.punchOutLongitude,
         punchOutAddress: r.punchOutAddress,
+        punchInPhotoUrl: r.punchInPhotoUrl,
+        punchOutPhotoUrl: r.punchOutPhotoUrl,
       };
 
     });
@@ -10339,10 +10839,14 @@ router.post('/attendance', async (req, res) => {
   try {
 
     const orgId = requireOrg(req, res); if (!orgId) return;
-
     const body = req.body || {};
-
     const uid = Number(body.userId || body.staffId);
+    if (!uid) return res.status(400).json({ success: false, message: 'userId or staffId required' });
+
+    const scopedStaffIds = await getScopedStaffIds(req, orgId);
+    if (scopedStaffIds !== null && !scopedStaffIds.includes(uid)) {
+      return res.status(403).json({ success: false, message: 'You are not allowed to mark attendance for this staff' });
+    }
 
     const dateIso = toIsoDateOnly(body.date || body.dateIso || body.onDate);
 
@@ -10513,7 +11017,17 @@ router.post('/attendance/bulk', async (req, res) => {
     const orgId = requireOrg(req, res); if (!orgId) return;
     const body = req.body || {};
 
-    const staffIds = Array.isArray(body.staffIds) ? body.staffIds.map(Number).filter(n => Number.isFinite(n)) : [];
+    let staffIds = Array.isArray(body.staffIds) ? body.staffIds.map(Number).filter(n => Number.isFinite(n)) : [];
+
+    const scopedStaffIds = await getScopedStaffIds(req, orgId);
+    if (scopedStaffIds !== null) {
+      staffIds = staffIds.filter(id => scopedStaffIds.includes(id));
+    }
+
+    if (staffIds.length === 0) {
+      return res.status(400).json({ success: false, message: 'No allowed staff selected for bulk marking' });
+    }
+
     const dateIso = toIsoDateOnly(body.date || body.dateIso);
     const statusRaw = String(body.status || '').toLowerCase();
     const status = ['present', 'absent', 'half_day', 'leave', 'overtime'].includes(statusRaw) ? statusRaw : 'present';
@@ -11337,7 +11851,7 @@ router.post('/staff', requireRole(['admin', 'staff']), async (req, res) => {
 
 
 
-    await StaffProfile.create({
+    const createdProfile = await StaffProfile.create({
       userId: staffUser.id,
       orgAccountId: orgId,
       staffId: staffId ? String(staffId) : null,
@@ -11358,6 +11872,21 @@ router.post('/staff', requireRole(['admin', 'staff']), async (req, res) => {
       education: education || null,
       experience: experience || null,
     });
+
+    // FACE ENROLLMENT: If photo is provided, enroll in AWS Rekognition
+    if (photoUrl) {
+      try {
+        const fullPhotoUrl = photoUrl.startsWith('http') ? photoUrl : `${req.protocol}://${req.get('host')}${photoUrl}`;
+        const faceId = await enrollFace(fullPhotoUrl, staffUser.id);
+        if (faceId) {
+          await createdProfile.update({ faceId });
+          console.log(`AWS Rekognition: Enrolled face for staff ${staffUser.id}`);
+        }
+      } catch (faceError) {
+        console.error(`AWS Rekognition: Face enrollment failed for staff ${staffUser.id}:`, faceError.message);
+        // We don't fail the whole request since staff is already created
+      }
+    }
 
 
 
@@ -11780,10 +12309,27 @@ router.put('/staff/:id', requireRole(['admin', 'staff']), async (req, res) => {
       if (salaryDetailAccess !== undefined) patchProfile.salaryDetailAccess = !!salaryDetailAccess;
       if (allowCurrentCycleSalaryAccess !== undefined) patchProfile.allowCurrentCycleSalaryAccess = !!allowCurrentCycleSalaryAccess;
       if (dateOfJoining) patchProfile.dateOfJoining = dateOfJoining;
+      const oldPhotoUrl = profile.photoUrl;
       if (photoUrl !== undefined) patchProfile.photoUrl = photoUrl;
       if (education !== undefined) patchProfile.education = education;
       if (experience !== undefined) patchProfile.experience = experience;
       await profile.update(patchProfile);
+
+      // FACE ENROLLMENT: If photo has changed, re-enroll in AWS Rekognition
+      if (photoUrl && photoUrl !== oldPhotoUrl) {
+        try {
+          const protocol = req.headers['x-forwarded-proto'] || req.protocol;
+          const host = req.get('host');
+          const fullPhotoUrl = photoUrl.startsWith('http') ? photoUrl : `${protocol}://${host}${photoUrl}`;
+          const faceId = await enrollFace(fullPhotoUrl, staff.id);
+          if (faceId) {
+            await profile.update({ faceId });
+            console.log(`AWS Rekognition: Re-enrolled face for staff ${staff.id}`);
+          }
+        } catch (faceError) {
+          console.error(`AWS Rekognition: Face re-enrollment failed for staff ${staff.id}:`, faceError.message);
+        }
+      }
     }
 
     return res.json({ success: true, staff: staff });

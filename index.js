@@ -11,6 +11,7 @@ const authRoutes = require('./src/routes/auth');
 const adminRoutes = require('./src/routes/admin');
 const superadminRoutes = require('./src/routes/superadmin');
 const attendanceRoutes = require('./src/routes/attendance');
+const kioskRoutes = require('./src/routes/kiosk');
 const salesRoutes = require('./src/routes/sales');
 const leaveRoutes = require('./src/routes/leave');
 const weeklyOffRoutes = require('./src/routes/weeklyOff');
@@ -29,14 +30,25 @@ const ticketRoutes = require('./src/routes/ticket');
 const taskManagementRoutes = require('./src/routes/taskManagement');
 const rosterRoutes = require('./src/routes/roster');
 const aiRoutes = require('./src/routes/ai');
+const channelPartnerRoutes = require('./src/routes/channelPartner');
+const { verifyEmailConfig } = require('./src/services/emailService');
 
 
 const { tenantEnforce } = require('./src/middleware/tenant');
 const { scheduleSubscriptionSweep } = require('./src/jobs/subscriptionSweep');
 const { scheduleSubscriptionExpiryReminders, scheduleZktecoSync, scheduleAttendanceReminders } = require('./src/jobs');
-const { verifyEmailConfig } = require('./src/services/emailService');
+const { ensureCollectionExists } = require('./src/services/awsService');
 
 const app = express();
+
+// Initialize AWS Rekognition Collection
+ensureCollectionExists().then(success => {
+  if (success) {
+    console.log('AWS Rekognition service initialized.');
+  } else {
+    console.warn('AWS Rekognition service failed to initialize collections.');
+  }
+});
 
 app.use(cors());
 app.use(express.json({ limit: '2mb' }));
@@ -84,14 +96,16 @@ app.get('/uploads/payslips/:month/:filename', (req, res) => {
 
 app.use('/uploads', express.static(uploadsDir));
 
-app.get('/health', (_req, res) => res.json({ ok: true }));
+app.use('/health', (_req, res) => res.json({ ok: true }));
+app.use('/auth', authRoutes);
+app.use('/kiosk', kioskRoutes);
 
 app.use('/admin/letters', letterRoutes);
 app.use('/admin/sales-incentives', salesIncentiveRoutes);
 
-app.use('/auth', authRoutes);
 app.use('/admin/user-access', userAccessRoutes);
 app.use('/admin/task-management', taskManagementRoutes);
+app.use('/channel-partner', channelPartnerRoutes);
 app.use(rosterRoutes);
 app.use('/admin/ai', aiRoutes);
 app.use('/admin', adminRoutes);
@@ -112,6 +126,10 @@ app.use('/meetings', meetingRoutes);
 app.use('/tickets', ticketRoutes);
 app.use('/ai', aiRoutes);
 
+// 404 Handler
+app.use((req, res) => {
+  res.status(404).json({ success: false, message: `Route ${req.originalUrl} not found` });
+});
 
 const port = Number(process.env.PORT || 4000);
 

@@ -34,6 +34,11 @@ router.post('/plans', authRequired, requireRole('superadmin'), async (req, res) 
       salesEnabled,
       geolocationEnabled,
       maxGeolocationStaff,
+      payrollEnabled,
+      performanceEnabled,
+      aiReportsEnabled,
+      aiAssistantEnabled,
+      taskManagementEnabled,
       features
     } = req.body;
 
@@ -48,6 +53,11 @@ router.post('/plans', authRequired, requireRole('superadmin'), async (req, res) 
       geolocationEnabled,
       maxGeolocationStaff,
       features,
+      payrollEnabled,
+      performanceEnabled,
+      aiReportsEnabled,
+      aiAssistantEnabled,
+      taskManagementEnabled,
       active: true
     });
 
@@ -76,6 +86,11 @@ router.put('/plans/:id', authRequired, requireRole('superadmin'), async (req, re
       salesEnabled,
       geolocationEnabled,
       maxGeolocationStaff,
+      payrollEnabled,
+      performanceEnabled,
+      aiReportsEnabled,
+      aiAssistantEnabled,
+      taskManagementEnabled,
       features,
       active
     } = req.body;
@@ -89,6 +104,11 @@ router.put('/plans/:id', authRequired, requireRole('superadmin'), async (req, re
       salesEnabled,
       geolocationEnabled,
       maxGeolocationStaff,
+      payrollEnabled,
+      performanceEnabled,
+      aiReportsEnabled,
+      aiAssistantEnabled,
+      taskManagementEnabled,
       features,
       active
     });
@@ -122,7 +142,15 @@ router.post('/assign-subscription', authRequired, requireRole('superadmin'), asy
       startAt: startAt || new Date(),
       endAt: endAt || new Date(Date.now() + 30 * 24 * 60 * 60 * 1000), // 30 days from now
       status: 'ACTIVE',
-      staffLimit: plan.staffLimit
+      staffLimit: plan.staffLimit,
+      salesEnabled: plan.salesEnabled,
+      geolocationEnabled: plan.geolocationEnabled,
+      expenseEnabled: plan.expenseEnabled,
+      payrollEnabled: plan.payrollEnabled,
+      performanceEnabled: plan.performanceEnabled,
+      aiReportsEnabled: plan.aiReportsEnabled,
+      aiAssistantEnabled: plan.aiAssistantEnabled,
+      taskManagementEnabled: plan.taskManagementEnabled
     });
 
     // Get updated subscription with plan
@@ -241,6 +269,11 @@ router.get('/subscription-info', authRequired, tenantEnforce, async (req, res) =
       salesEnabled: !!subscription.salesEnabled,
       geolocationEnabled: !!subscription.geolocationEnabled,
       expenseEnabled: !!subscription.expenseEnabled,
+      payrollEnabled: !!subscription.payrollEnabled,
+      performanceEnabled: !!subscription.performanceEnabled,
+      aiReportsEnabled: !!subscription.aiReportsEnabled,
+      aiAssistantEnabled: !!subscription.aiAssistantEnabled,
+      taskManagementEnabled: !!subscription.taskManagementEnabled,
       maxGeolocationStaff: subscription.maxGeolocationStaff !== null ? subscription.maxGeolocationStaff : (subscription.meta?.maxGeolocationStaff || subscription.plan.maxGeolocationStaff),
       subscriptionStatus: subscription.status
     };

@@ -43,6 +43,36 @@ module.exports = (sequelize) => {
         defaultValue: 0,
         field: 'max_geolocation_staff'
       },
+      payrollEnabled: {
+        type: DataTypes.BOOLEAN,
+        allowNull: false,
+        defaultValue: false,
+        field: 'payroll_enabled'
+      },
+      performanceEnabled: {
+        type: DataTypes.BOOLEAN,
+        allowNull: false,
+        defaultValue: false,
+        field: 'performance_enabled'
+      },
+      aiReportsEnabled: {
+        type: DataTypes.BOOLEAN,
+        allowNull: false,
+        defaultValue: false,
+        field: 'ai_reports_enabled'
+      },
+      aiAssistantEnabled: {
+        type: DataTypes.BOOLEAN,
+        allowNull: false,
+        defaultValue: false,
+        field: 'ai_assistant_enabled'
+      },
+      taskManagementEnabled: {
+        type: DataTypes.BOOLEAN,
+        allowNull: false,
+        defaultValue: false,
+        field: 'task_management_enabled'
+      },
       features: { type: DataTypes.JSON, allowNull: true },
       active: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: true },
     },
