@@ -45,7 +45,10 @@ router.get('/plans', async (_req, res) => {
 
 router.post('/plans', async (req, res) => {
   try {
-    const { code, name, periodDays, price, features, active, expenseEnabled } = req.body || {};
+    const {
+      code, name, periodDays, price, features, active,
+      expenseEnabled, payrollEnabled, performanceEnabled, aiReportsEnabled, aiAssistantEnabled, taskManagementEnabled
+    } = req.body || {};
     if (!code || !name || !periodDays) {
       return res.status(400).json({ success: false, message: 'code, name, periodDays required' });
     }
@@ -57,6 +60,11 @@ router.post('/plans', async (req, res) => {
       features: features || null,
       active: active !== false,
       expenseEnabled: !!expenseEnabled,
+      payrollEnabled: !!payrollEnabled,
+      performanceEnabled: !!performanceEnabled,
+      aiReportsEnabled: !!aiReportsEnabled,
+      aiAssistantEnabled: !!aiAssistantEnabled,
+      taskManagementEnabled: !!taskManagementEnabled,
     });
     return res.json({ success: true, plan: row });
   } catch (e) {
@@ -68,7 +76,10 @@ router.put('/plans/:id', async (req, res) => {
   try {
     const row = await Plan.findByPk(req.params.id);
     if (!row) return res.status(404).json({ success: false, message: 'Not found' });
-    const { code, name, periodDays, price, features, active, expenseEnabled } = req.body || {};
+    const {
+      code, name, periodDays, price, features, active,
+      expenseEnabled, payrollEnabled, performanceEnabled, aiReportsEnabled, aiAssistantEnabled, taskManagementEnabled
+    } = req.body || {};
     await row.update({
       ...(code !== undefined ? { code: String(code).toUpperCase() } : {}),
       ...(name !== undefined ? { name } : {}),
@@ -77,6 +88,11 @@ router.put('/plans/:id', async (req, res) => {
       ...(features !== undefined ? { features } : {}),
       ...(active !== undefined ? { active: !!active } : {}),
       ...(expenseEnabled !== undefined ? { expenseEnabled: !!expenseEnabled } : {}),
+      ...(payrollEnabled !== undefined ? { payrollEnabled: !!payrollEnabled } : {}),
+      ...(performanceEnabled !== undefined ? { performanceEnabled: !!performanceEnabled } : {}),
+      ...(aiReportsEnabled !== undefined ? { aiReportsEnabled: !!aiReportsEnabled } : {}),
+      ...(aiAssistantEnabled !== undefined ? { aiAssistantEnabled: !!aiAssistantEnabled } : {}),
+      ...(taskManagementEnabled !== undefined ? { taskManagementEnabled: !!taskManagementEnabled } : {}),
     });
     return res.json({ success: true, plan: row });
   } catch (e) {
@@ -508,7 +524,11 @@ router.post('/clients/:id/subscription', async (req, res) => {
     const org = await OrgAccount.findByPk(orgAccountId);
     if (!org) return res.status(404).json({ success: false, message: 'Organization not found' });
 
-    const { planId, planCode, startAt, staffLimit, maxGeolocationStaff, salesEnabled, geolocationEnabled, expenseEnabled } = req.body || {};
+    const {
+      planId, planCode, startAt, staffLimit, maxGeolocationStaff,
+      salesEnabled, geolocationEnabled, expenseEnabled,
+      payrollEnabled, performanceEnabled, aiReportsEnabled, aiAssistantEnabled, taskManagementEnabled
+    } = req.body || {};
 
     // Check if client has an active subscription that hasn't expired
     const existingSubscription = await Subscription.findOne({
@@ -579,6 +599,26 @@ router.post('/clients/:id/subscription', async (req, res) => {
           updateData.expenseEnabled = !!expenseEnabled;
           messageArr.push(`Expense module ${expenseEnabled ? 'enabled' : 'disabled'}`);
         }
+        if (payrollEnabled !== undefined && !!payrollEnabled !== existingSubscription.payrollEnabled) {
+          updateData.payrollEnabled = !!payrollEnabled;
+          messageArr.push(`Payroll module ${payrollEnabled ? 'enabled' : 'disabled'}`);
+        }
+        if (performanceEnabled !== undefined && !!performanceEnabled !== existingSubscription.performanceEnabled) {
+          updateData.performanceEnabled = !!performanceEnabled;
+          messageArr.push(`Performance module ${performanceEnabled ? 'enabled' : 'disabled'}`);
+        }
+        if (aiReportsEnabled !== undefined && !!aiReportsEnabled !== existingSubscription.aiReportsEnabled) {
+          updateData.aiReportsEnabled = !!aiReportsEnabled;
+          messageArr.push(`AI Reports module ${aiReportsEnabled ? 'enabled' : 'disabled'}`);
+        }
+        if (aiAssistantEnabled !== undefined && !!aiAssistantEnabled !== existingSubscription.aiAssistantEnabled) {
+          updateData.aiAssistantEnabled = !!aiAssistantEnabled;
+          messageArr.push(`AI Assistant module ${aiAssistantEnabled ? 'enabled' : 'disabled'}`);
+        }
+        if (taskManagementEnabled !== undefined && !!taskManagementEnabled !== existingSubscription.taskManagementEnabled) {
+          updateData.taskManagementEnabled = !!taskManagementEnabled;
+          messageArr.push(`Task Management module ${taskManagementEnabled ? 'enabled' : 'disabled'}`);
+        }
 
         if (Object.keys(updateData).length > 0) {
           await existingSubscription.update(updateData);
@@ -611,7 +651,12 @@ router.post('/clients/:id/subscription', async (req, res) => {
       maxGeolocationStaff,
       salesEnabled,
       geolocationEnabled,
-      expenseEnabled
+      expenseEnabled,
+      payrollEnabled,
+      performanceEnabled,
+      aiReportsEnabled,
+      aiAssistantEnabled,
+      taskManagementEnabled
     });
 
     const sub = await Subscription.create({
@@ -625,6 +670,11 @@ router.post('/clients/:id/subscription', async (req, res) => {
       salesEnabled: salesEnabled !== undefined ? !!salesEnabled : (plan.salesEnabled || false),
       geolocationEnabled: geolocationEnabled !== undefined ? !!geolocationEnabled : (plan.geolocationEnabled || false),
       expenseEnabled: expenseEnabled !== undefined ? !!expenseEnabled : (plan.expenseEnabled || false),
+      payrollEnabled: payrollEnabled !== undefined ? !!payrollEnabled : (plan.payrollEnabled || false),
+      performanceEnabled: performanceEnabled !== undefined ? !!performanceEnabled : (plan.performanceEnabled || false),
+      aiReportsEnabled: aiReportsEnabled !== undefined ? !!aiReportsEnabled : (plan.aiReportsEnabled || false),
+      aiAssistantEnabled: aiAssistantEnabled !== undefined ? !!aiAssistantEnabled : (plan.aiAssistantEnabled || false),
+      taskManagementEnabled: taskManagementEnabled !== undefined ? !!taskManagementEnabled : (plan.taskManagementEnabled || false),
     });
     console.log('Subscription created successfully:', sub.id);
 

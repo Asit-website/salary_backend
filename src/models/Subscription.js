@@ -35,6 +35,36 @@ module.exports = (sequelize) => {
         allowNull: false,
         defaultValue: false,
         field: 'expense_enabled'
+      },
+      payrollEnabled: {
+        type: DataTypes.BOOLEAN,
+        allowNull: false,
+        defaultValue: false,
+        field: 'payroll_enabled'
+      },
+      performanceEnabled: {
+        type: DataTypes.BOOLEAN,
+        allowNull: false,
+        defaultValue: false,
+        field: 'performance_enabled'
+      },
+      aiReportsEnabled: {
+        type: DataTypes.BOOLEAN,
+        allowNull: false,
+        defaultValue: false,
+        field: 'ai_reports_enabled'
+      },
+      aiAssistantEnabled: {
+        type: DataTypes.BOOLEAN,
+        allowNull: false,
+        defaultValue: false,
+        field: 'ai_assistant_enabled'
+      },
+      taskManagementEnabled: {
+        type: DataTypes.BOOLEAN,
+        allowNull: false,
+        defaultValue: false,
+        field: 'task_management_enabled'
       }
     },
     { tableName: 'subscriptions', underscored: true }
