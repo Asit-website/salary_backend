@@ -23,11 +23,7 @@ function requireOrg(req, res) {
   return Number(orgId);
 }
 
-router.use(authRequired);
-router.use(requireRole(['admin', 'superadmin', 'staff']));
-router.use(tenantEnforce);
-
-router.get('/admin/roster/staff', async (req, res) => {
+router.get('/admin/roster/staff', authRequired, requireRole(['admin', 'superadmin', 'staff']), tenantEnforce, async (req, res) => {
   try {
     if (req.user?.role === 'staff') return res.status(403).json({ success: false, message: 'Forbidden' });
     const orgId = requireOrg(req, res); if (!orgId) return;
@@ -95,7 +91,7 @@ router.get('/admin/roster/staff', async (req, res) => {
   }
 });
 
-router.get('/admin/roster', async (req, res) => {
+router.get('/admin/roster', authRequired, requireRole(['admin', 'superadmin', 'staff']), tenantEnforce, async (req, res) => {
   try {
     if (req.user?.role === 'staff') return res.status(403).json({ success: false, message: 'Forbidden' });
     const orgId = requireOrg(req, res); if (!orgId) return;
@@ -124,7 +120,7 @@ router.get('/admin/roster', async (req, res) => {
   }
 });
 
-router.post('/admin/roster', async (req, res) => {
+router.post('/admin/roster', authRequired, requireRole(['admin', 'superadmin', 'staff']), tenantEnforce, async (req, res) => {
   try {
     if (req.user?.role === 'staff') return res.status(403).json({ success: false, message: 'Forbidden' });
     const orgId = requireOrg(req, res); if (!orgId) return;

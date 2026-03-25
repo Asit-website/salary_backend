@@ -1,4 +1,5 @@
 const express = require('express');
+const dayjs = require('dayjs');
 
 const bcrypt = require('bcryptjs');
 
@@ -40,7 +41,10 @@ const { Op } = require('sequelize');
 const { calculateSalary, generatePayslipPDF } = require('../services/payrollService');
 const { runAttendanceReminderManual } = require('../jobs');
 const { getScopedStaffIds } = require('../utils/scoping');
+
+const { enrollFace } = require('../services/awsService');
 const dayjs = require('dayjs');
+
 
 const router = express.Router();
 
@@ -11850,7 +11854,7 @@ router.post('/staff', requireRole(['admin', 'staff']), async (req, res) => {
 
 
 
-    await StaffProfile.create({
+    const createdProfile = await StaffProfile.create({
       userId: staffUser.id,
       orgAccountId: orgId,
       staffId: staffId ? String(staffId) : null,
@@ -11871,6 +11875,21 @@ router.post('/staff', requireRole(['admin', 'staff']), async (req, res) => {
       education: education || null,
       experience: experience || null,
     });
+
+    // FACE ENROLLMENT: If photo is provided, enroll in AWS Rekognition
+    if (photoUrl) {
+      try {
+        const fullPhotoUrl = photoUrl.startsWith('http') ? photoUrl : `${req.protocol}://${req.get('host')}${photoUrl}`;
+        const faceId = await enrollFace(fullPhotoUrl, staffUser.id);
+        if (faceId) {
+          await createdProfile.update({ faceId });
+          console.log(`AWS Rekognition: Enrolled face for staff ${staffUser.id}`);
+        }
+      } catch (faceError) {
+        console.error(`AWS Rekognition: Face enrollment failed for staff ${staffUser.id}:`, faceError.message);
+        // We don't fail the whole request since staff is already created
+      }
+    }
 
 
 
@@ -12293,10 +12312,27 @@ router.put('/staff/:id', requireRole(['admin', 'staff']), async (req, res) => {
       if (salaryDetailAccess !== undefined) patchProfile.salaryDetailAccess = !!salaryDetailAccess;
       if (allowCurrentCycleSalaryAccess !== undefined) patchProfile.allowCurrentCycleSalaryAccess = !!allowCurrentCycleSalaryAccess;
       if (dateOfJoining) patchProfile.dateOfJoining = dateOfJoining;
+      const oldPhotoUrl = profile.photoUrl;
       if (photoUrl !== undefined) patchProfile.photoUrl = photoUrl;
       if (education !== undefined) patchProfile.education = education;
       if (experience !== undefined) patchProfile.experience = experience;
       await profile.update(patchProfile);
+
+      // FACE ENROLLMENT: If photo has changed, re-enroll in AWS Rekognition
+      if (photoUrl && photoUrl !== oldPhotoUrl) {
+        try {
+          const protocol = req.headers['x-forwarded-proto'] || req.protocol;
+          const host = req.get('host');
+          const fullPhotoUrl = photoUrl.startsWith('http') ? photoUrl : `${protocol}://${host}${photoUrl}`;
+          const faceId = await enrollFace(fullPhotoUrl, staff.id);
+          if (faceId) {
+            await profile.update({ faceId });
+            console.log(`AWS Rekognition: Re-enrolled face for staff ${staff.id}`);
+          }
+        } catch (faceError) {
+          console.error(`AWS Rekognition: Face re-enrollment failed for staff ${staff.id}:`, faceError.message);
+        }
+      }
     }
 
     return res.json({ success: true, staff: staff });

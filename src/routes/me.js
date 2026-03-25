@@ -7,6 +7,7 @@ const { User, StaffProfile, StaffShiftAssignment, ShiftTemplate, SalaryAccess, S
 const { authRequired } = require('../middleware/auth');
 const { upload } = require('../upload');
 const { calculateSalary, generatePayslipPDF } = require('../services/payrollService');
+const { enrollFace } = require('../services/awsService');
 
 const router = express.Router();
 
@@ -535,6 +536,19 @@ router.post('/profile/photo', upload.single('photo'), async (req, res) => {
       orgAccountId: (profile.orgAccountId === null || profile.orgAccountId === undefined) ? user.orgAccountId : profile.orgAccountId,
       photoUrl
     });
+
+    // FACE ENROLLMENT: Update AWS Rekognition collection
+    try {
+      const fullPhotoUrl = `${req.protocol}://${req.get('host')}${photoUrl}`;
+      const faceId = await enrollFace(fullPhotoUrl, user.id);
+      if (faceId) {
+        await profile.update({ faceId });
+        console.log(`AWS Rekognition: Re-enrolled face for staff ${user.id} (Mobile Update)`);
+      }
+    } catch (faceError) {
+      console.error(`AWS Rekognition: Face enrollment failed for staff ${user.id} (Mobile Update):`, faceError.message);
+      // We don't fail the request since photo is already uploaded
+    }
 
     return res.json({ success: true, photoUrl });
   } catch (e) {
