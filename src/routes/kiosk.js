@@ -65,7 +65,7 @@ async function getEffectiveShiftTemplate(userId, dateKey) {
 router.get('/list-faces', kioskAuth, async (req, res) => {
   try {
     const faces = await listFaces();
-    
+
     // Fetch user details for these faces to make it readable
     const userIds = faces.map(f => f.ExternalImageId).filter(Boolean);
     const users = await User.findAll({
@@ -132,7 +132,7 @@ router.post('/face-recognition', kioskAuth, upload.single('photo'), async (req, 
         orgAccountId: staff.orgAccountId,
         date: dateKey,
         punchedInAt: now,
-        status: 'PRESENT', 
+        status: 'PRESENT',
         source: 'kiosk'
       });
       action = 'IN';
@@ -140,7 +140,7 @@ router.post('/face-recognition', kioskAuth, upload.single('photo'), async (req, 
       // PUNCH OUT - Calculate status and total work hours
       const inAt = new Date(record.punchedInAt);
       const shiftTpl = await getEffectiveShiftTemplate(userId, dateKey);
-      
+
       const breakTotalSeconds = Number(record.breakTotalSeconds || 0);
       const totalWorkSeconds = diffSeconds(inAt, now) - breakTotalSeconds;
       const totalWorkMinutes = Math.floor(totalWorkSeconds / 60);
@@ -168,9 +168,9 @@ router.post('/face-recognition', kioskAuth, upload.single('photo'), async (req, 
       action = 'OUT';
       responseData = { totalWorkHours: totalWorkHours.toFixed(2), status };
     } else if (record.punchedOutAt) {
-      return res.json({ 
-        success: true, 
-        alreadyDone: true, 
+      return res.json({
+        success: true,
+        alreadyDone: true,
         message: `Already punched out for today, ${staff.profile?.name || 'Staff'}.`,
         staffName: staff.profile?.name
       });
@@ -188,11 +188,19 @@ router.post('/face-recognition', kioskAuth, upload.single('photo'), async (req, 
   } catch (error) {
     console.error('Kiosk face-recognition error:', error);
     
-    if (error.message === 'No face detected in the image') {
-      return res.status(400).json({ success: false, message: 'Face not detected in frame. Please look directly at the camera.' });
+    // AWS throws InvalidParameterException if no faces are detected in the image
+    if (error.name === 'InvalidParameterException' || error.message.includes('No face detected')) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Face not detected in frame. Please look directly at the camera.' 
+      });
     }
     
-    return res.status(500).json({ success: false, message: 'Internal server error during identification' });
+    // Default 500 error with message
+    return res.status(500).json({ 
+      success: false, 
+      message: 'Identification failed: ' + (error.message || 'Server error')
+    });
   }
 });
 

@@ -1,7 +1,8 @@
 const { listFaces, deleteFace, enrollFace } = require('../src/services/awsService');
 const { User, StaffProfile } = require('../src/models');
 const { initDb } = require('../src/db');
-require('dotenv').config();
+const path = require('path');
+require('dotenv').config({ path: path.join(__dirname, '../.env') });
 
 const API_BASE_URL = 'https://backend.vetansutra.com'; // Change if needed
 
