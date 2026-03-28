@@ -109,8 +109,11 @@ router.post('/face-recognition', kioskAuth, upload.single('photo'), async (req, 
       include: [{ model: StaffProfile, as: 'profile' }]
     });
 
-    if (!staff || !staff.active) {
-      return res.status(404).json({ success: false, message: 'Staff member not found or inactive' });
+    if (!staff) {
+      return res.status(404).json({ success: false, message: `Staff not found for ID: ${userId}` });
+    }
+    if (!staff.active) {
+      return res.status(403).json({ success: false, message: `Staff member (${staff.profile?.name}) is currently inactive` });
     }
 
     const dateKey = todayKey();
