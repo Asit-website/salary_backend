@@ -731,7 +731,7 @@ async function calculateSalary(userId, monthKey) {
     isGenerated: false,
     payslipPath: null,
     user: u,
-    paymentStatus: 'ESTIMATED',
+    paymentStatus: (Number(yy) < now.getFullYear() || (Number(yy) === now.getFullYear() && Number(mm) < (now.getMonth() + 1))) ? 'DUE' : 'ESTIMATED',
     generatedAt: new Date()
   };
 }
