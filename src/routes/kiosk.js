@@ -136,8 +136,8 @@ router.post('/face-recognition', kioskAuth, upload.single('photo'), async (req, 
         source: 'kiosk'
       });
       action = 'IN';
-    } else if (record.punchedInAt && !record.punchedOutAt) {
-      // PUNCH OUT - Calculate status and total work hours
+    } else {
+      // PUNCH OUT (or UPDATE PUNCH OUT) - Calculate status and total work hours
       const inAt = new Date(record.punchedInAt);
       const shiftTpl = await getEffectiveShiftTemplate(userId, dateKey);
 
@@ -167,13 +167,6 @@ router.post('/face-recognition', kioskAuth, upload.single('photo'), async (req, 
       });
       action = 'OUT';
       responseData = { totalWorkHours: totalWorkHours.toFixed(2), status };
-    } else if (record.punchedOutAt) {
-      return res.json({
-        success: true,
-        alreadyDone: true,
-        message: `Already punched out for today, ${staff.profile?.name || 'Staff'}.`,
-        staffName: staff.profile?.name
-      });
     }
 
     return res.json({
