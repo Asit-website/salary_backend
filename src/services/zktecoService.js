@@ -1,6 +1,10 @@
+const { Attendance, StaffProfile, AttendanceAutomationRule, sequelize, OrgAccount } = require('../models');
 const axios = require('axios');
-const { Attendance, StaffProfile, AttendanceAutomationRule, sequelize } = require('../models');
 const { Op } = require('sequelize');
+const overtimeService = require('./overtimeService');
+const earlyExitService = require('./earlyExitService');
+const earlyOvertimeService = require('./earlyOvertimeService');
+const latePunchInService = require('./latePunchInService');
 
 /**
  * ZKTeco EasyTimePro Service
@@ -113,23 +117,93 @@ class ZktecoService {
         const workMinutes = Math.floor(totalWorkSeconds / 60);
         const shift = await this.getShiftTemplate(userId, date);
 
-        let status = 'present';
+        // Declare local variables for results
         let overtimeMinutes = 0;
+        let overtimeAmount = 0;
+        let overtimeRuleId = null;
+        let earlyOvertimeMinutes = 0;
+        let earlyOvertimeAmount = 0;
+        let earlyOvertimeRuleId = null;
+        let earlyExitMinutes = 0;
+        let earlyExitAmount = 0;
+        let earlyExitRuleId = null;
+        let breakDeductionAmount = 0;
+        let breakRuleId = null;
+        let excessBreakMinutes = 0;
+        let status = 'PRESENT';
 
-        if (shift) {
-            if (Number.isFinite(Number(shift.overtimeStartMinutes)) && workMinutes > shift.overtimeStartMinutes) {
-                overtimeMinutes = workMinutes - shift.overtimeStartMinutes;
-                status = 'overtime';
-            } else if (Number.isFinite(Number(shift.halfDayThresholdMinutes)) && workMinutes < shift.halfDayThresholdMinutes) {
-                status = 'half_day';
-            } else {
-                status = 'present';
-            }
-        } else {
-            // Case 1: No shift assigned -> always present
-            if (workMinutes < 1) return null; // Still handle empty data
-            status = 'present';
-            overtimeMinutes = 0;
+        // Fetch Org ID to get rules
+        const staff = await StaffProfile.findOne({ where: { userId } });
+        const orgAccountObj = await OrgAccount.findByPk(staff?.orgAccountId);
+
+        if (orgAccountObj) {
+            const daysInMonth = new Date(new Date(date).getFullYear(), new Date(date).getMonth() + 1, 0).getDate();
+
+            // 1. Overtime Calculation
+            const otResult = await overtimeService.calculateOvertime({
+                userId,
+                orgAccountId: staff.orgAccountId,
+                date,
+                totalWorkHours: (workMinutes / 60),
+                punchedInAt: firstIn,
+                punchedOutAt: lastOut
+            }, orgAccountObj, date, daysInMonth);
+
+            overtimeMinutes = otResult.overtimeMinutes;
+            overtimeAmount = otResult.overtimeAmount;
+            overtimeRuleId = otResult.overtimeRuleId;
+            if (otResult.status) status = otResult.status;
+
+            // 1.5 Early Overtime Calculation
+            const eotResult = await earlyOvertimeService.calculateEarlyOvertime({
+                userId,
+                orgAccountId: staff.orgAccountId,
+                date,
+                punchedInAt: firstIn
+            }, orgAccountObj, date, daysInMonth);
+
+            earlyOvertimeMinutes = eotResult.earlyOvertimeMinutes;
+            earlyOvertimeAmount = eotResult.earlyOvertimeAmount;
+            earlyOvertimeRuleId = eotResult.earlyOvertimeRuleId;
+
+            // 3. Early Exit Calculation
+            const eeResult = await earlyExitService.calculateEarlyExit({
+                userId,
+                orgAccountId: staff.orgAccountId,
+                date,
+                punchedOutAt: lastOut
+            }, orgAccountObj, date, daysInMonth);
+
+            // 4. Late Punch-In Calculation
+            const lpResult = await latePunchInService.calculateLatePenalty({
+                userId,
+                orgAccountId: staff.orgAccountId,
+                date,
+                punchedInAt: firstIn
+            }, orgAccountObj, date, daysInMonth);
+
+            // 5. Break Deduction Calculation
+            const breakService = require('./breakService');
+            // Construct a virtual attendance record for break calculation
+            const virtualRecord = {
+                userId,
+                orgAccountId: staff.orgAccountId,
+                date,
+                breakTotalSeconds: totalBreakSeconds
+            };
+            const breakResult = await breakService.calculateBreakDeduction(virtualRecord, orgAccountObj, date, daysInMonth);
+
+            earlyExitMinutes = eeResult.earlyExitMinutes;
+            earlyExitAmount = eeResult.earlyExitAmount;
+            earlyExitRuleId = eeResult.earlyExitRuleId;
+
+            latePunchInMinutes = lpResult.latePunchInMinutes;
+            latePunchInAmount = lpResult.latePunchInAmount;
+            latePunchInRuleId = lpResult.latePunchInRuleId;
+
+            breakDeductionAmount = breakResult.breakDeductionAmount;
+            breakRuleId = breakResult.breakRuleId;
+            excessBreakMinutes = breakResult.excessBreakMinutes;
         }
 
         return {
@@ -138,6 +212,20 @@ class ZktecoService {
             totalWorkHours: (totalWorkSeconds / 3600).toFixed(2),
             breakTotalSeconds: totalBreakSeconds,
             overtimeMinutes,
+            overtimeAmount,
+            overtimeRuleId,
+            earlyExitMinutes,
+            earlyExitAmount,
+            earlyExitRuleId,
+            breakDeductionAmount,
+            breakRuleId,
+            excessBreakMinutes,
+            earlyOvertimeMinutes,
+            earlyOvertimeAmount,
+            earlyOvertimeRuleId,
+            latePunchInMinutes,
+            latePunchInAmount,
+            latePunchInRuleId,
             status,
             latitude: dayPunches[0].latitude,
             longitude: dayPunches[0].longitude,
@@ -257,6 +345,17 @@ class ZktecoService {
                     totalWorkHours: res.totalWorkHours,
                     breakTotalSeconds: res.breakTotalSeconds,
                     overtimeMinutes: res.overtimeMinutes,
+                    overtimeAmount: res.overtimeAmount,
+                    overtimeRuleId: res.overtimeRuleId,
+                    earlyExitMinutes: res.earlyExitMinutes,
+                    earlyExitAmount: res.earlyExitAmount,
+                    earlyExitRuleId: res.earlyExitRuleId,
+                    latePunchInMinutes: res.latePunchInMinutes,
+                    latePunchInAmount: res.latePunchInAmount,
+                    latePunchInRuleId: res.latePunchInRuleId,
+                    breakDeductionAmount: res.breakDeductionAmount,
+                    breakRuleId: res.breakRuleId,
+                    excessBreakMinutes: res.excessBreakMinutes,
                     status: res.status,
                     source: 'biometric',
                     latitude: res.latitude,

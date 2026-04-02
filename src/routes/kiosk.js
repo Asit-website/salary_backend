@@ -1,8 +1,10 @@
 const express = require('express');
 const multer = require('multer');
 const { searchFace, listFaces } = require('../services/awsService');
-const { User, StaffProfile, Attendance, AppSetting, StaffAttendanceAssignment, AttendanceTemplate, StaffShiftAssignment, ShiftTemplate, StaffRoster } = require('../models');
+const { User, StaffProfile, Attendance, AppSetting, StaffAttendanceAssignment, AttendanceTemplate, StaffShiftAssignment, ShiftTemplate, StaffRoster, OrgAccount } = require('../models');
 const { Op } = require('sequelize');
+const earlyOvertimeService = require('../services/earlyOvertimeService');
+const latePunchInService = require('../services/latePunchInService');
 
 const router = express.Router();
 const storage = multer.memoryStorage();
@@ -135,6 +137,53 @@ router.post('/face-recognition', kioskAuth, upload.single('photo'), async (req, 
         status: 'PRESENT',
         source: 'kiosk'
       });
+      
+      // Calculate Early Overtime if applicable
+      try {
+        const orgAccount = await OrgAccount.findByPk(staff.orgAccountId);
+        const daysInMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
+        const eotResult = await earlyOvertimeService.calculateEarlyOvertime({
+          userId: staff.id,
+          orgAccountId: staff.orgAccountId,
+          date: dateKey,
+          punchedInAt: now
+        }, orgAccount, now, daysInMonth);
+
+        if (eotResult && eotResult.earlyOvertimeMinutes > 0) {
+          await record.update({
+            earlyOvertimeMinutes: eotResult.earlyOvertimeMinutes,
+            earlyOvertimeAmount: eotResult.earlyOvertimeAmount,
+            earlyOvertimeRuleId: eotResult.ruleId || eotResult.earlyOvertimeRuleId,
+            status: 'OVERTIME'
+          });
+        }
+      } catch (eotErr) {
+        console.error('Kiosk Early OT calculation error:', eotErr);
+      }
+
+      // Calculate Late Punch-In Penalty if applicable
+      try {
+        const orgAccount = await OrgAccount.findByPk(staff.orgAccountId);
+        const daysInMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
+        const lpResult = await latePunchInService.calculateLatePenalty({
+          userId: staff.id,
+          orgAccountId: staff.orgAccountId,
+          date: dateKey,
+          punchedInAt: now
+        }, orgAccount, now, daysInMonth);
+
+        if (lpResult && lpResult.isLate) {
+          await record.update({
+            latePunchInMinutes: lpResult.latePunchInMinutes,
+            latePunchInAmount: lpResult.latePunchInAmount,
+            latePunchInRuleId: lpResult.latePunchInRuleId,
+            isLate: true
+          });
+        }
+      } catch (lpErr) {
+        console.error('Kiosk Late Penalty calculation error:', lpErr);
+      }
+
       action = 'IN';
     } else {
       // PUNCH OUT (or UPDATE PUNCH OUT) - Calculate status and total work hours
@@ -149,24 +198,65 @@ router.post('/face-recognition', kioskAuth, upload.single('photo'), async (req, 
       let status = 'present';
       let overtimeMinutes = 0;
 
-      if (shiftTpl) {
-        if (Number.isFinite(Number(shiftTpl.overtimeStartMinutes)) && totalWorkMinutes > shiftTpl.overtimeStartMinutes) {
-          overtimeMinutes = totalWorkMinutes - shiftTpl.overtimeStartMinutes;
-          status = 'overtime';
-        } else if (Number.isFinite(Number(shiftTpl.halfDayThresholdMinutes)) && totalWorkMinutes < shiftTpl.halfDayThresholdMinutes) {
-          status = 'half_day';
-        }
+      const { OrgAccount } = require('../models');
+      const { calculateOvertime } = require('../services/overtimeService');
+      const earlyExitService = require('../services/earlyExitService');
+
+      const orgAccount = await OrgAccount.findByPk(staff.orgAccountId);
+      
+      const daysInMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
+      
+      // 1. Overtime Calculation
+      const otData = await calculateOvertime({ 
+        ...record.toJSON(), 
+        userId: staff.id,
+        orgAccountId: staff.orgAccountId,
+        punchedOutAt: now,
+        totalWorkHours 
+      }, orgAccount, now, daysInMonth);
+
+      // 2. Early Exit Calculation
+      const eeData = await earlyExitService.calculateEarlyExit({
+        ...record.toJSON(),
+        userId: staff.id,
+        orgAccountId: staff.orgAccountId,
+        punchedOutAt: now
+      }, orgAccount, now, daysInMonth);
+
+      // 3. Break Deduction Calculation
+      const breakService = require('../services/breakService');
+      const breakResult = await breakService.calculateBreakDeduction(record, orgAccount, now, daysInMonth);
+
+      let finalStatus = otData.status || 'PRESENT';
+      if (record.earlyOvertimeMinutes > 0) {
+        finalStatus = 'OVERTIME';
+      }
+      if (staff.shiftTemplateId) {
+        // ... existing status logic
       }
 
       await record.update({
         punchedOutAt: now,
-        status: status.toUpperCase(),
+        status: finalStatus,
         totalWorkHours,
-        overtimeMinutes,
+        overtimeMinutes: otData.overtimeMinutes || 0,
+        overtimeAmount: otData.overtimeAmount || 0,
+        overtimeRuleId: otData.overtimeRuleId || null,
+        earlyExitMinutes: eeData.earlyExitMinutes || 0,
+        earlyExitAmount: eeData.earlyExitAmount || 0,
+        earlyExitRuleId: eeData.earlyExitRuleId || null,
+        breakDeductionAmount: breakResult.breakDeductionAmount || 0,
+        breakRuleId: breakResult.breakRuleId || null,
+        excessBreakMinutes: breakResult.excessBreakMinutes || 0,
         source: 'kiosk'
       });
       action = 'OUT';
-      responseData = { totalWorkHours: totalWorkHours.toFixed(2), status };
+      responseData = { 
+        totalWorkHours: totalWorkHours.toFixed(2), 
+        status: finalStatus, 
+        overtimeAmount: otData.overtimeAmount,
+        overtimeMinutes: otData.overtimeMinutes
+      };
     }
 
     return res.json({

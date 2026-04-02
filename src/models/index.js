@@ -96,6 +96,16 @@ const defineActivityHistory = require('./ActivityHistory');
 const defineMeetingHistory = require('./MeetingHistory');
 const defineStaffRoster = require('./StaffRoster');
 const defineStaffAdvance = require('./StaffAdvance');
+const defineOvertimeRule = require('./OvertimeRule');
+const defineStaffOvertimeAssignment = require('./StaffOvertimeAssignment');
+const defineEarlyExitRule = require('./EarlyExitRule');
+const defineStaffEarlyExitAssignment = require('./StaffEarlyExitAssignment');
+const defineBreakRule = require('./BreakRule');
+const defineStaffBreakAssignment = require('./StaffBreakAssignment');
+const defineEarlyOvertimeRule = require('./EarlyOvertimeRule');
+const defineStaffEarlyOvertimeAssignment = require('./StaffEarlyOvertimeAssignment');
+const defineLatePunchInRule = require('./LatePunchInRule');
+const defineStaffLatePunchInAssignment = require('./StaffLatePunchInAssignment');
 
 
 
@@ -196,6 +206,16 @@ const ActivityHistory = defineActivityHistory(sequelize);
 const MeetingHistory = defineMeetingHistory(sequelize);
 const StaffRoster = defineStaffRoster(sequelize);
 const StaffAdvance = defineStaffAdvance(sequelize);
+const OvertimeRule = defineOvertimeRule(sequelize);
+const StaffOvertimeAssignment = defineStaffOvertimeAssignment(sequelize);
+const EarlyExitRule = defineEarlyExitRule(sequelize);
+const StaffEarlyExitAssignment = defineStaffEarlyExitAssignment(sequelize);
+const BreakRule = defineBreakRule(sequelize);
+const StaffBreakAssignment = defineStaffBreakAssignment(sequelize);
+const EarlyOvertimeRule = defineEarlyOvertimeRule(sequelize);
+const StaffEarlyOvertimeAssignment = defineStaffEarlyOvertimeAssignment(sequelize);
+const LatePunchInRule = defineLatePunchInRule(sequelize);
+const StaffLatePunchInAssignment = defineStaffLatePunchInAssignment(sequelize);
 
 
 
@@ -609,6 +629,70 @@ User.hasMany(StaffAdvance, { foreignKey: 'staffId', as: 'advances' });
 StaffAdvance.belongsTo(User, { foreignKey: 'staffId', as: 'staffMember' });
 StaffAdvance.belongsTo(OrgAccount, { foreignKey: 'orgAccountId', as: 'orgAccount' });
 
+// Overtime Rule associations
+OrgAccount.hasMany(OvertimeRule, { foreignKey: 'orgAccountId', as: 'overtimeRules' });
+OvertimeRule.belongsTo(OrgAccount, { foreignKey: 'orgAccountId', as: 'orgAccount' });
+
+OrgAccount.belongsTo(OvertimeRule, { foreignKey: 'overtimeRuleId', as: 'activeOvertimeRule' });
+
+Attendance.belongsTo(OvertimeRule, { foreignKey: 'overtimeRuleId', as: 'overtimeRule' });
+OvertimeRule.hasMany(Attendance, { foreignKey: 'overtimeRuleId', as: 'attendanceRecords' });
+
+User.hasMany(StaffOvertimeAssignment, { foreignKey: 'userId', as: 'overtimeAssignments' });
+StaffOvertimeAssignment.belongsTo(User, { foreignKey: 'userId', as: 'user' });
+OvertimeRule.hasMany(StaffOvertimeAssignment, { foreignKey: 'overtimeRuleId', as: 'assignments' });
+StaffOvertimeAssignment.belongsTo(OvertimeRule, { foreignKey: 'overtimeRuleId', as: 'rule' });
+
+// Early Exit Rule associations
+OrgAccount.hasMany(EarlyExitRule, { foreignKey: 'orgAccountId', as: 'earlyExitRules' });
+EarlyExitRule.belongsTo(OrgAccount, { foreignKey: 'orgAccountId', as: 'orgAccount' });
+
+OrgAccount.belongsTo(EarlyExitRule, { foreignKey: 'earlyExitRuleId', as: 'activeEarlyExitRule' });
+
+Attendance.belongsTo(EarlyExitRule, { foreignKey: 'earlyExitRuleId', as: 'earlyExitRule' });
+EarlyExitRule.hasMany(Attendance, { foreignKey: 'earlyExitRuleId', as: 'attendanceRecords' });
+
+User.hasMany(StaffEarlyExitAssignment, { foreignKey: 'userId', as: 'earlyExitAssignments' });
+StaffEarlyExitAssignment.belongsTo(User, { foreignKey: 'userId', as: 'user' });
+EarlyExitRule.hasMany(StaffEarlyExitAssignment, { foreignKey: 'earlyExitRuleId', as: 'assignments' });
+StaffEarlyExitAssignment.belongsTo(EarlyExitRule, { foreignKey: 'earlyExitRuleId', as: 'rule' });
+
+// Break Rule associations
+OrgAccount.hasMany(BreakRule, { foreignKey: 'orgAccountId', as: 'breakRules' });
+BreakRule.belongsTo(OrgAccount, { foreignKey: 'orgAccountId', as: 'orgAccount' });
+OrgAccount.belongsTo(BreakRule, { foreignKey: 'breakRuleId', as: 'activeBreakRule' });
+Attendance.belongsTo(BreakRule, { foreignKey: 'breakRuleId', as: 'breakRule' });
+BreakRule.hasMany(Attendance, { foreignKey: 'breakRuleId', as: 'attendanceRecords' });
+User.hasMany(StaffBreakAssignment, { foreignKey: 'userId', as: 'breakAssignments' });
+StaffBreakAssignment.belongsTo(User, { foreignKey: 'userId', as: 'user' });
+BreakRule.hasMany(StaffBreakAssignment, { foreignKey: 'breakRuleId', as: 'assignments' });
+StaffBreakAssignment.belongsTo(BreakRule, { foreignKey: 'breakRuleId', as: 'rule' });
+
+// Early Overtime Rule associations
+OrgAccount.hasMany(EarlyOvertimeRule, { foreignKey: 'orgAccountId', as: 'earlyOvertimeRules' });
+EarlyOvertimeRule.belongsTo(OrgAccount, { foreignKey: 'orgAccountId', as: 'orgAccount' });
+OrgAccount.belongsTo(EarlyOvertimeRule, { foreignKey: 'earlyOvertimeRuleId', as: 'activeEarlyOvertimeRule' });
+
+Attendance.belongsTo(EarlyOvertimeRule, { foreignKey: 'earlyOvertimeRuleId', as: 'earlyOvertimeRule' });
+EarlyOvertimeRule.hasMany(Attendance, { foreignKey: 'earlyOvertimeRuleId', as: 'attendanceRecords' });
+
+User.hasMany(StaffEarlyOvertimeAssignment, { foreignKey: 'userId', as: 'earlyOvertimeAssignments' });
+StaffEarlyOvertimeAssignment.belongsTo(User, { foreignKey: 'userId', as: 'user' });
+EarlyOvertimeRule.hasMany(StaffEarlyOvertimeAssignment, { foreignKey: 'earlyOvertimeRuleId', as: 'assignments' });
+StaffEarlyOvertimeAssignment.belongsTo(EarlyOvertimeRule, { foreignKey: 'earlyOvertimeRuleId', as: 'rule' });
+
+// Late Punch-In Rule associations
+OrgAccount.hasMany(LatePunchInRule, { foreignKey: 'orgAccountId', as: 'latePunchInRules' });
+LatePunchInRule.belongsTo(OrgAccount, { foreignKey: 'orgAccountId', as: 'orgAccount' });
+
+Attendance.belongsTo(LatePunchInRule, { foreignKey: 'latePunchInRuleId', as: 'latePunchInRule' });
+LatePunchInRule.hasMany(Attendance, { foreignKey: 'latePunchInRuleId', as: 'attendanceRecords' });
+
+User.hasMany(StaffLatePunchInAssignment, { foreignKey: 'userId', as: 'latePunchInAssignments' });
+StaffLatePunchInAssignment.belongsTo(User, { foreignKey: 'userId', as: 'user' });
+LatePunchInRule.hasMany(StaffLatePunchInAssignment, { foreignKey: 'latePunchInRuleId', as: 'assignments' });
+StaffLatePunchInAssignment.belongsTo(LatePunchInRule, { foreignKey: 'latePunchInRuleId', as: 'rule' });
+
 module.exports = {
   sequelize,
   User,
@@ -707,4 +791,14 @@ module.exports = {
   MeetingHistory,
   StaffRoster,
   StaffAdvance,
+  OvertimeRule,
+  StaffOvertimeAssignment,
+  EarlyExitRule,
+  StaffEarlyExitAssignment,
+  BreakRule,
+  StaffBreakAssignment,
+  EarlyOvertimeRule,
+  StaffEarlyOvertimeAssignment,
+  LatePunchInRule,
+  StaffLatePunchInAssignment,
 };

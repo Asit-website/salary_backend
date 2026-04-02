@@ -2,10 +2,12 @@ const express = require('express');
 const { Op } = require('sequelize');
 const puppeteer = require('puppeteer');
 
-const { User, StaffProfile, Attendance, LeaveRequest, AppSetting, AttendanceTemplate, StaffAttendanceAssignment, StaffShiftAssignment, ShiftTemplate, StaffHolidayAssignment, HolidayTemplate, HolidayDate, StaffGeofenceAssignment, GeofenceTemplate, GeofenceSite, LocationPing, DeviceInfo, WeeklyOffTemplate, StaffWeeklyOffAssignment, AttendanceAutomationRule, OrgAccount, StaffRoster } = require('../models');
+const { User, StaffProfile, Attendance, LeaveRequest, AppSetting, AttendanceTemplate, StaffAttendanceAssignment, StaffShiftAssignment, ShiftTemplate, StaffHolidayAssignment, HolidayTemplate, HolidayDate, StaffGeofenceAssignment, GeofenceTemplate, GeofenceSite, LocationPing, DeviceInfo, WeeklyOffTemplate, StaffWeeklyOffAssignment, AttendanceAutomationRule, OrgAccount, StaffRoster, StaffLatePunchInAssignment, LatePunchInRule } = require('../models');
 const { authRequired } = require('../middleware/auth');
 const { requireRole } = require('../middleware/roles');
 const { upload } = require('../upload');
+const earlyOvertimeService = require('../services/earlyOvertimeService');
+const latePunchInService = require('../services/latePunchInService');
 
 const router = express.Router();
 
@@ -471,7 +473,17 @@ router.get('/status', async (req, res) => {
   });
 
   let overtimeSeconds = 0;
-  if (assignedShift && Number.isFinite(Number(assignedShift.overtimeStartMinutes))) {
+  let overtimeAmount = 0;
+
+  const { calculateOvertime } = require('../services/overtimeService');
+  const orgAccount = await OrgAccount.findByPk(req.user.orgAccountId);
+  
+  if (record?.punchedInAt) {
+    const otData = await calculateOvertime({ ...record.toJSON(), totalWorkHours: workSeconds / 3600 }, orgAccount, now);
+    overtimeSeconds = (otData.overtimeMinutes || 0) * 60;
+    overtimeAmount = otData.overtimeAmount || 0;
+  } else if (assignedShift && Number.isFinite(Number(assignedShift.overtimeStartMinutes))) {
+    // Fallback if no record but shift has basic OT threshold
     const totalWorkMinutes = Math.floor(workSeconds / 60);
     if (totalWorkMinutes > assignedShift.overtimeStartMinutes) {
       overtimeSeconds = (totalWorkMinutes - assignedShift.overtimeStartMinutes) * 60;
@@ -634,6 +646,19 @@ router.get('/history', async (req, res) => {
       woConfig = Array.isArray(raw) ? raw : [];
     }
 
+    // Late Rule Assignment Check
+    const userLateAsg = await StaffLatePunchInAssignment.findOne({
+      where: { 
+        userId, 
+        orgAccountId: req.user.orgAccountId, 
+        active: true,
+        effectiveFrom: { [Op.lte]: new Date().toISOString().split('T')[0] } 
+      },
+      include: [{ model: LatePunchInRule, as: 'rule' }],
+      order: [['effectiveFrom', 'DESC']]
+    });
+    const hasLateRule = !!(userLateAsg && userLateAsg.rule && userLateAsg.rule.active);
+
     // Late Penalty Rule Fetch
     let lateTiers = [];
     let lateRuleActive = false;
@@ -688,6 +713,7 @@ router.get('/history', async (req, res) => {
       let breakSeconds = 0;
       let overtimeSeconds = 0;
       let leaveType = null;
+      let lateReason = null;
 
       const isAdminLeave = record && (Number(record.breakTotalSeconds) === -1 || String(record.status || '').toLowerCase() === 'leave');
       const isAdminHalf = record && (Number(record.breakTotalSeconds) === -2 || String(record.status || '').toLowerCase() === 'half_day');
@@ -714,11 +740,10 @@ router.get('/history', async (req, res) => {
         const shiftTpl = await getEffectiveShiftTemplate(userId, key);
         const totalWorkMinutes = Math.floor(workingSeconds / 60);
 
-        if (shiftTpl && Number.isFinite(Number(shiftTpl.overtimeStartMinutes))) {
-          if (totalWorkMinutes > shiftTpl.overtimeStartMinutes) {
-            overtimeSeconds = (totalWorkMinutes - shiftTpl.overtimeStartMinutes) * 60;
-          }
-        }
+        const { calculateOvertime } = require('../services/overtimeService');
+        const orgAcc = await OrgAccount.findByPk(req.user.orgAccountId);
+        const otData = await calculateOvertime({ ...record.toJSON(), totalWorkHours: workingSeconds / 3600 }, orgAcc, outAt);
+        overtimeSeconds = (otData.overtimeMinutes || 0) * 60;
 
         if (record.status) {
           dayStatus = record.status.toUpperCase();
@@ -788,44 +813,25 @@ router.get('/history', async (req, res) => {
         }
       }
 
-      // Late Penalty Calculation
-      let isLateThisDay = false;
-      let isPenaltyDay = false;
-      let lateReason = null;
+      // Late Penalty (Use persisted data if available)
+      let isLateThisDay = !!record?.isLate;
+      let lateAmt = Number(record?.latePunchInAmount || 0);
+      let lateMins = Number(record?.latePunchInMinutes || 0);
 
-      if (lateRuleActive && record?.punchedInAt && (dayStatus === 'PRESENT' || dayStatus === 'OVERTIME' || dayStatus === 'HALF_DAY')) {
-        const shiftTpl = await getEffectiveShiftTemplate(userId, key);
-        if (shiftTpl?.startTime) {
-          const [sh, sm, ss] = shiftTpl.startTime.split(':').map(Number);
-          const shiftStartSec = sh * 3600 + sm * 60 + (ss || 0);
-
-          const punchIn = new Date(record.punchedInAt);
-          const istDate = new Date(punchIn.getTime() + (5.5 * 3600 * 1000));
-          const punchInSec = istDate.getUTCHours() * 3600 + istDate.getUTCMinutes() * 60 + istDate.getUTCSeconds();
-
-          if (punchInSec > shiftStartSec) {
-            const diffMin = Math.floor((punchInSec - shiftStartSec) / 60);
-
-            for (let i = 0; i < lateTiers.length; i++) {
-              const t = lateTiers[i];
-              if (diffMin >= Number(t.minMinutes) && diffMin <= Number(t.maxMinutes)) {
-                isLateThisDay = true;
-                lateRunningCounts[i]++;
-                summary.lateCount++;
-                const freq = Number(t.frequency);
-
-                if (freq > 0 && lateRunningCounts[i] % freq === 0) {
-                  isPenaltyDay = true;
-                  summary.latePenaltyDays += Number(t.deduction);
-                  lateReason = `Late Punch-In Penalty (occurence #${lateRunningCounts[i]} in ${t.minMinutes}-${t.maxMinutes}m tier)`;
-                } else {
-                  lateReason = `Late arrival (${diffMin} min)`;
-                }
-                break;
-              }
-            }
-          }
+      if (hasLateRule) {
+        if (lateAmt > 0) {
+          lateReason = `Late Penalty: ₹${lateAmt} (${lateMins} min)`;
+          summary.lateCount++;
+          // latePenaltyDays is a legacy field for 'penalty days' vs money. 
+          // For backwards compatibility in the summary object, we keep it 0 or add a new summary field.
+        } else if (isLateThisDay) {
+          lateReason = `Late arrival (${lateMins} min)`;
+          summary.lateCount++;
         }
+      } else {
+        isLateThisDay = false;
+        lateAmt = 0;
+        lateMins = 0;
       }
 
       if (dayStatus === 'PRESENT') summary.present += 1;
@@ -846,7 +852,10 @@ router.get('/history', async (req, res) => {
         totalWorkHours: record?.totalWorkHours || null,
         leaveType,
         isLate: isLateThisDay,
-        isPenaltyDay: isPenaltyDay,
+        hasLateRule,
+        isPenaltyDay: lateAmt > 0,
+        latePunchInAmount: lateAmt,
+        latePunchInMinutes: lateMins,
         reason: lateReason
       });
     }
@@ -1003,6 +1012,52 @@ router.post('/punch-in', upload.single('photo'), async (req, res) => {
         address
       });
 
+    // Calculate Early Overtime if applicable
+    try {
+      const orgAccount = await OrgAccount.findByPk(req.user.orgAccountId);
+      const daysInMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
+      const eotResult = await earlyOvertimeService.calculateEarlyOvertime({
+        userId: req.user.id,
+        orgAccountId: req.user.orgAccountId,
+        date: key,
+        punchedInAt: now
+      }, orgAccount, now, daysInMonth);
+
+      if (eotResult && eotResult.earlyOvertimeMinutes > 0) {
+        await record.update({
+          earlyOvertimeMinutes: eotResult.earlyOvertimeMinutes,
+          earlyOvertimeAmount: eotResult.earlyOvertimeAmount,
+          earlyOvertimeRuleId: eotResult.ruleId || eotResult.earlyOvertimeRuleId,
+          status: 'OVERTIME'
+        });
+      }
+    } catch (eotErr) {
+      console.error('Mobile Early OT calculation error:', eotErr);
+    }
+
+    // Calculate Late Punch-In Penalty if applicable
+    try {
+      const orgAccount = await OrgAccount.findByPk(req.user.orgAccountId);
+      const daysInMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
+      const lpResult = await latePunchInService.calculateLatePenalty({
+        userId: req.user.id,
+        orgAccountId: req.user.orgAccountId,
+        date: key,
+        punchedInAt: now
+      }, orgAccount, now, daysInMonth);
+
+      if (lpResult && lpResult.isLate) {
+        await record.update({
+          latePunchInMinutes: lpResult.latePunchInMinutes,
+          latePunchInAmount: lpResult.latePunchInAmount,
+          latePunchInRuleId: lpResult.latePunchInRuleId,
+          isLate: true
+        });
+      }
+    } catch (lpErr) {
+      console.error('Mobile Late Penalty calculation error:', lpErr);
+    }
+
     return res.json({ success: true, attendance: record });
   } catch (e) {
     return res.status(500).json({ success: false, message: 'Punch-in failed' });
@@ -1120,36 +1175,59 @@ router.post('/punch-out', upload.single('photo'), async (req, res) => {
     const totalWorkMinutes = Math.floor(totalWorkSeconds / 60);
     const totalWorkHours = totalWorkSeconds / 3600;
 
-    let status = 'present';
-    let overtimeMinutes = 0;
+    // Use centralized services for OT and Early Exit
+    const { calculateOvertime } = require('../services/overtimeService');
+    const earlyExitService = require('../services/earlyExitService');
+    const orgAccount = await OrgAccount.findByPk(req.user.orgAccountId);
+    
+    const daysInMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
 
-    // Use shift template rules if available, otherwise fall back to defaults
-    if (shiftTpl) {
-      // Calculate overtime minutes
-      if (Number.isFinite(Number(shiftTpl.overtimeStartMinutes)) && totalWorkMinutes > shiftTpl.overtimeStartMinutes) {
-        overtimeMinutes = totalWorkMinutes - shiftTpl.overtimeStartMinutes;
-        status = 'overtime';
-      } else if (Number.isFinite(Number(shiftTpl.halfDayThresholdMinutes)) && totalWorkMinutes < shiftTpl.halfDayThresholdMinutes) {
-        status = 'half_day';
-      } else {
-        status = 'present';
-      }
-    } else {
-      // Case 1: No shift assigned -> always PRESENT (as long as they worked any time)
-      status = 'present';
-      overtimeMinutes = 0;
+    // 1. Overtime Calculation
+    const otResult = await calculateOvertime({
+      userId: req.user.id,
+      orgAccountId: req.user.orgAccountId,
+      date: key,
+      totalWorkHours: totalWorkHours,
+      punchedInAt: record.punchedInAt,
+      punchedOutAt: now
+    }, orgAccount, now, daysInMonth);
+
+    // 2. Early Exit Calculation
+    const eeResult = await earlyExitService.calculateEarlyExit({
+      userId: req.user.id,
+      orgAccountId: req.user.orgAccountId,
+      date: key,
+      punchedOutAt: now
+    }, orgAccount, now, daysInMonth);
+
+    // 3. Break Deduction Calculation
+    const breakService = require('../services/breakService');
+    const breakResult = await breakService.calculateBreakDeduction(record, orgAccount, now, daysInMonth);
+
+    let status = otResult.status || 'present';
+    if (record.earlyOvertimeMinutes > 0) {
+      status = 'overtime';
     }
 
     const address = req.body?.address ? String(req.body.address) : null;
+    
     await record.update({
       punchedOutAt: now,
       punchOutPhotoUrl: photoUrl,
       isOnBreak: false,
       breakStartedAt: null,
       breakTotalSeconds,
-      status: status,
+      status: status.toUpperCase(),
       totalWorkHours: totalWorkHours,
-      overtimeMinutes: overtimeMinutes,
+      overtimeMinutes: otResult.overtimeMinutes || 0,
+      overtimeAmount: otResult.overtimeAmount || 0,
+      overtimeRuleId: otResult.overtimeRuleId || null,
+      earlyExitMinutes: eeResult.earlyExitMinutes || 0,
+      earlyExitAmount: eeResult.earlyExitAmount || 0,
+      earlyExitRuleId: eeResult.earlyExitRuleId || null,
+      breakDeductionAmount: breakResult.breakDeductionAmount || 0,
+      breakRuleId: breakResult.breakRuleId || null,
+      excessBreakMinutes: breakResult.excessBreakMinutes || 0,
       punchOutLatitude: lat,
       punchOutLongitude: lng,
       punchOutAddress: address
