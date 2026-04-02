@@ -104,32 +104,44 @@ class LatePunchInService {
     }
     if (!Array.isArray(thresholds)) thresholds = [];
 
+    let matchedTier = null;
     if (pType === 'SLABS') {
-        // Slab logic: Find the tier that matches late minutes
         const tier = thresholds.find(t => latePunchInMinutes >= Number(t.minMinutes) && latePunchInMinutes <= Number(t.maxMinutes));
-        if (tier && Number(tier.frequency || 0) === 1) {
-            // Only direct single-occurrence deductions are calculated here.
-            // Frequency-based logic (e.g. 3rd occurrence) is usually handled during payroll generation.
-            deductionAmount = dailySalary * Number(tier.deduction || 0);
+        if (tier) {
+            matchedTier = tier;
+            if (Number(tier.frequency || 0) === 1) {
+                deductionAmount = dailySalary * Number(tier.deduction || 0);
+            }
         }
     } else if (pType === 'FIXED_AMOUNT') {
         const threshold = thresholds.find(t => latePunchInMinutes >= Number(t.minMinutes));
-        if (threshold) deductionAmount = Number(threshold.value || 0);
+        if (threshold) {
+            matchedTier = threshold;
+            deductionAmount = Number(threshold.value || 0);
+        }
     } else if (pType === 'FIXED_AMOUNT_PER_HOUR') {
         const threshold = thresholds.find(t => latePunchInMinutes >= Number(t.minMinutes));
         if (threshold) {
+            matchedTier = threshold;
             const hours = Math.ceil(latePunchInMinutes / 60);
             deductionAmount = Number(threshold.value || 0) * hours;
         }
     } else if (pType === 'HALF_DAY') {
         const threshold = thresholds.find(t => latePunchInMinutes >= Number(t.minMinutes));
-        if (threshold) deductionAmount = dailySalary / 2;
+        if (threshold) {
+            matchedTier = threshold;
+            deductionAmount = dailySalary / 2;
+        }
     } else if (pType === 'FULL_DAY') {
         const threshold = thresholds.find(t => latePunchInMinutes >= Number(t.minMinutes));
-        if (threshold) deductionAmount = dailySalary;
+        if (threshold) {
+            matchedTier = threshold;
+            deductionAmount = dailySalary;
+        }
     } else if (pType === 'SALARY_MULTIPLIER') {
         const threshold = thresholds.find(t => latePunchInMinutes >= Number(t.minMinutes));
         if (threshold) {
+            matchedTier = threshold;
             const hourlySalary = dailySalary / 8; // Assuming 8-hour workday
             deductionAmount = hourlySalary * Number(threshold.value || 0);
         }
@@ -140,7 +152,9 @@ class LatePunchInService {
     return {
       latePunchInMinutes,
       latePunchInAmount: parseFloat(deductionAmount.toFixed(2)),
-      latePunchInRuleId: finalRule.id
+      latePunchInRuleId: finalRule.id,
+      tier: matchedTier,
+      rule: finalRule
     };
   }
 }

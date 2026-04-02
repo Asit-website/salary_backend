@@ -181,6 +181,11 @@ async function computeBreakMeta({ userId, monthKey, orgAccount }) {
 }
 
 async function computeLatePenaltyMeta({ userId, monthKey, orgAccount, baseSalary }) {
+  const fs = require('fs');
+  const log = (msg) => fs.appendFileSync('payroll_debug.log', `[${new Date().toISOString()}] [User ${userId}] ${msg}\n`);
+  
+  log(`Entering computeLatePenaltyMeta. Month: ${monthKey}, baseSalary: ${baseSalary}`);
+
   const { start, endKey, end } = getMonthRange(monthKey);
   const daysInMonth = Number(end.getDate() || 30);
   const dailySalary = baseSalary / daysInMonth;
@@ -188,17 +193,20 @@ async function computeLatePenaltyMeta({ userId, monthKey, orgAccount, baseSalary
   // 1. Fetch all attendance records for the month
   const rows = await Attendance.findAll({
     where: { userId, date: { [Op.gte]: start, [Op.lte]: endKey } },
-    attributes: ['id', 'userId', 'orgAccountId', 'latePunchInMinutes', 'latePunchInAmount', 'latePunchInRuleId', 'isLate', 'date', 'status'],
+    attributes: ['id', 'userId', 'orgAccountId', 'latePunchInMinutes', 'latePunchInAmount', 'latePunchInRuleId', 'isLate', 'date', 'status', 'punchedInAt'],
     order: [['date', 'ASC']]
   });
+
+  log(`Found ${rows.length} attendance records for the month.`);
 
   let totalLateMinutes = 0;
   let totalLatePenalty = 0;
   let lateCount = 0;
+  let totalLateDays = 0;
 
   // 2. Resolve the applicable rule (Assignment-based primary)
   const { StaffLatePunchInAssignment, LatePunchInRule } = require('../models');
-  const targetOrgId = orgAccount?.id || orgAccount;
+  const targetOrgId = orgAccount?.id || (typeof orgAccount === 'object' ? orgAccount.id : orgAccount);
   
   const assignment = await StaffLatePunchInAssignment.findOne({
     where: {
@@ -212,47 +220,48 @@ async function computeLatePenaltyMeta({ userId, monthKey, orgAccount, baseSalary
   });
 
   const rule = (assignment && assignment.rule && assignment.rule.active) ? assignment.rule : null;
+  log(`Rule resolving for user. Assignment ID: ${assignment?.id || 'None'}, Rule ID: ${rule?.id || 'None'}, Rule Active: ${rule?.active || 'N/A'}`);
 
   if (rule) {
-    // A. Advanced Rule Logic
-    let thresholds = rule.thresholds;
-    if (typeof thresholds === 'string') {
-      try { thresholds = JSON.parse(thresholds); } catch (e) { thresholds = []; }
-    }
-    if (!Array.isArray(thresholds)) thresholds = [];
-    const pType = rule.penaltyType || 'SLABS';
-
-    const slabOccurrences = {}; // index -> count
+    const latePunchInService = require('./latePunchInService');
 
     for (const row of rows) {
-      const rowLateMinutes = Number(row.latePunchInMinutes || row.getDataValue('late_punchin_minutes') || 0);
-      const rowLateAmount = Number(row.latePunchInAmount || row.getDataValue('late_punchin_amount') || 0);
-      const rowIsLate = row.isLate || row.getDataValue('is_late') || (row.status === 'late') || (rowLateMinutes > 0);
+      // Unified property access (Seq instance vs Raw/Plain)
+      const getVal = (obj, prop, field) => obj[prop] !== undefined ? obj[prop] : (obj.getDataValue ? obj.getDataValue(field) : obj[field]);
+      
+      let rowLateMinutes = Number(getVal(row, 'latePunchInMinutes', 'late_punchin_minutes') || 0);
+      let rowLateAmount = Number(getVal(row, 'latePunchInAmount', 'late_punchin_amount') || 0);
+      let rowIsLate = getVal(row, 'isLate', 'is_late') || (row.status === 'late') || (rowLateMinutes > 0);
+
+      // Robust check: If rule is active but data is zero/missing, compute it on-the-fly
+      if ((rowLateMinutes <= 0 || rowLateAmount <= 0) && row.punchedInAt) {
+          const lpResult = await latePunchInService.calculateLatePenalty(row, orgAccount, row.punchedInAt, daysInMonth);
+          rowLateMinutes = lpResult.latePunchInMinutes;
+          rowLateAmount = lpResult.latePunchInAmount;
+          rowIsLate = (rowLateMinutes > 0);
+          
+          if (lpResult.tier) {
+              totalLateDays += Number(lpResult.tier.deduction || 0);
+          }
+      } else if (rowLateAmount > 0) {
+          // If amount is already there but days are missing, try to resolve days from rule
+          let thresholds = rule.thresholds;
+          if (typeof thresholds === 'string') { try { thresholds = JSON.parse(thresholds); } catch (e) { thresholds = []; } }
+          
+          const tier = (Array.isArray(thresholds)) ? thresholds.find(t => rowLateMinutes >= Number(t.minMinutes) && rowLateMinutes <= Number(t.maxMinutes)) : null;
+          if (tier && (tier.deduction || tier.value)) {
+              totalLateDays += Number(tier.deduction || (rule.penaltyType === 'HALF_DAY' ? 0.5 : (rule.penaltyType === 'FULL_DAY' ? 1.0 : 0)));
+          } else if (dailySalary > 0) {
+              // Fallback to salary estimation
+              totalLateDays += (rowLateAmount / dailySalary);
+          }
+      }
 
       if (!rowIsLate || rowLateMinutes <= 0) continue;
 
       totalLateMinutes += rowLateMinutes;
       lateCount += 1;
-
-      if (rowLateAmount > 0) {
-        totalLatePenalty += rowLateAmount;
-      } else if (pType === 'FIXED_AMOUNT') {
-        totalLatePenalty += Number(rule.amount || 0);
-      } else if (pType === 'SLABS') {
-        const matchingSlab = thresholds
-          .filter(t => (rowLateMinutes >= (t.minMinutes || 0)))
-          .sort((a, b) => (b.minMinutes || 0) - (a.minMinutes || 0))[0];
-
-        if (matchingSlab) {
-          const idx = thresholds.indexOf(matchingSlab);
-          slabOccurrences[idx] = (slabOccurrences[idx] || 0) + 1;
-          const freq = Number(matchingSlab.frequency || 1);
-          if (slabOccurrences[idx] % freq === 0) {
-            if (matchingSlab.type === 'fixed') totalLatePenalty += Number(matchingSlab.value || 0);
-            else if (matchingSlab.type === 'daily_salary') totalLatePenalty += dailySalary * Number(matchingSlab.value || 0);
-          }
-        }
-      }
+      totalLatePenalty += rowLateAmount;
     }
   } else {
     // B. Legacy Global Logic (Fallback)
@@ -284,7 +293,9 @@ async function computeLatePenaltyMeta({ userId, monthKey, orgAccount, baseSalary
             if (rowLateMinutes >= Number(t.minMinutes) && rowLateMinutes <= Number(t.maxMinutes)) {
               tierCounts[i]++;
               if (Number(t.frequency) > 0 && tierCounts[i] % Number(t.frequency) === 0) {
-                totalLatePenalty += (dailySalary * Number(t.deduction));
+                const dedVal = Number(t.deduction || 0);
+                totalLatePenalty += (dailySalary * dedVal);
+                totalLateDays += dedVal;
               }
               break;
             }
@@ -297,6 +308,7 @@ async function computeLatePenaltyMeta({ userId, monthKey, orgAccount, baseSalary
   return {
     latePunchInMinutes: totalLateMinutes,
     latePunchInPenalty: parseFloat(totalLatePenalty.toFixed(2)),
+    latePenaltyDays: parseFloat(totalLateDays.toFixed(2)),
     lateCount
   };
 }
@@ -422,6 +434,9 @@ async function calculateSalary(userId, monthKey) {
         computeLatePenaltyMeta({ userId: u.id, monthKey, orgAccount, baseSalary: basicSalary })
       ]);
 
+      const fl = require('fs');
+      fl.appendFileSync('payroll_debug.log', `[${new Date().toISOString()}] [User ${u.id}] calculateSalary (Existing): lpResult: ${JSON.stringify(lp)}\n`);
+
       // Note: Regular overtime (ot) usually fetched separately or part of another flow, 
       // but let's ensure these 4 automated deductions/earnings are correctly mapped.
 
@@ -437,21 +452,22 @@ async function calculateSalary(userId, monthKey) {
         deductions = { ...(deductions || {}), break_penalty: br.breakPenalty };
       }
 
-      if (lp.latePunchInPenalty > 0 && !Number(deductions?.late_punchin_penalty || 0)) {
+      if (lp.latePunchInPenalty > 0) {
         deductions = { ...(deductions || {}), late_punchin_penalty: lp.latePunchInPenalty };
       }
 
       attendanceSummary = {
         ...(attendanceSummary || {}),
-        earlyExitMinutes: Number(attendanceSummary?.earlyExitMinutes || ee.earlyExitMinutes || 0),
-        earlyExitPenalty: Number(attendanceSummary?.earlyExitPenalty || ee.earlyExitPenalty || 0),
-        excessBreakMinutes: Number(attendanceSummary?.excessBreakMinutes || br.excessBreakMinutes || 0),
-        breakPenalty: Number(attendanceSummary?.breakPenalty || br.breakPenalty || 0),
-        earlyOvertimeMinutes: Number(attendanceSummary?.earlyOvertimeMinutes || eot.earlyOvertimeMinutes || 0),
-        earlyOvertimePay: Number(attendanceSummary?.earlyOvertimePay || eot.earlyOvertimePay || 0),
-        latePunchInMinutes: Number(attendanceSummary?.latePunchInMinutes || lp.latePunchInMinutes || 0),
-        latePunchInPenalty: Number(attendanceSummary?.latePunchInPenalty || lp.latePunchInPenalty || 0),
-        lateCount: Number(attendanceSummary?.lateCount || lp.lateCount || 0),
+        earlyExitMinutes: Number(ee.earlyExitMinutes || 0),
+        earlyExitPenalty: Number(ee.earlyExitPenalty || 0),
+        excessBreakMinutes: Number(br.excessBreakMinutes || 0),
+        breakPenalty: Number(br.breakPenalty || 0),
+        earlyOvertimeMinutes: Number(eot.earlyOvertimeMinutes || 0),
+        earlyOvertimePay: Number(eot.earlyOvertimePay || 0),
+        latePunchInMinutes: Number(lp.latePunchInMinutes || 0),
+        latePunchInPenalty: Number(lp.latePunchInPenalty || 0),
+        latePenaltyDays: Number(lp.latePenaltyDays || 0),
+        lateCount: Number(lp.lateCount || 0),
       };
 
       const te = Object.values(earnings || {}).reduce((s, v) => s + (Number(v) || 0), 0);
@@ -765,11 +781,14 @@ async function calculateSalary(userId, monthKey) {
     userId: u.id, 
     monthKey, 
     orgAccount: u.orgAccount, 
-    baseSalary: Number(earnings.basic_salary || 0) + Number(earnings.da || 0) 
+    baseSalary: Number(earnings.basic_salary || sd.basicSalary || 0) + Number(earnings.da || sd.da || 0) 
   });
 
+  const fl = require('fs');
+  fl.appendFileSync('payroll_debug.log', `[${new Date().toISOString()}] [User ${u.id}] calculateSalary (Live): lpResult: ${JSON.stringify(lp)}\n`);
+
   const latePenaltyAmount = Number(lp?.latePunchInPenalty || 0);
-  if (latePenaltyAmount > 0 && !Number(deductions.late_punchin_penalty || 0)) {
+  if (latePenaltyAmount > 0) {
     deductions = { ...deductions, late_punchin_penalty: latePenaltyAmount };
   }
   const daysForRatio = daysInMonth;
@@ -936,6 +955,8 @@ async function calculateSalary(userId, monthKey) {
       absent, weeklyOff: weeklyOffCount, holidays: holidaysCount, ratio,
       lateCount: lp.lateCount, 
       latePenalty: lp.latePunchInPenalty,
+      latePunchInPenalty: lp.latePunchInPenalty,
+      latePenaltyDays: lp.latePenaltyDays,
       latePunchInMinutes: lp.latePunchInMinutes,
       overtimeMinutes: overtime.overtimeMinutes,
       overtimeHours: overtime.overtimeHours,

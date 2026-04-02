@@ -1,0 +1,22 @@
+{
+  "id": 229,
+  "cycleId": 124,
+  "userId": 59,
+  "earnings": "{\"basic_salary\":1130}",
+  "incentives": "{}",
+  "deductions": "{\"early_exit_penalty\":564.52,\"break_penalty\":10}",
+  "totals": "{\"totalEarnings\":1130,\"totalIncentives\":0,\"totalDeductions\":574.52,\"grossSalary\":1130,\"netSalary\":555.48,\"ratio\":0.03225806451612903}",
+  "attendanceSummary": "{\"present\":1,\"half\":0,\"leave\":0,\"paidLeave\":0,\"unpaidLeave\":0,\"absent\":30,\"weeklyOff\":0,\"holidays\":0,\"ratio\":0.03225806451612903,\"overtimeMinutes\":0,\"overtimeHours\":0,\"overtimeHourlyRate\":0,\"overtimePay\":0,\"lateCount\":0,\"latePenaltyDays\":0,\"earlyExitMinutes\":120,\"earlyExitPenalty\":564.52,\"breakPenalty\":10,\"excessBreakMinutes\":5,\"netSalary\":0}",
+  "adjustments": "[]",
+  "payslipPath": null,
+  "remarks": null,
+  "status": "INCLUDED",
+  "paidAt": null,
+  "paidMode": null,
+  "paidRef": null,
+  "paidAmount": null,
+  "paidBy": null,
+  "isManual": false,
+  "createdAt": "2026-03-31T11:24:53.000Z",
+  "updatedAt": "2026-04-01T07:49:17.000Z"
+}

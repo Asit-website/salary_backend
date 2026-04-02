@@ -1,0 +1,421 @@
+[2026-04-02T09:11:20.577Z] [Late-Dbg] Rule resolved for User 57: RuleID=undefined, IsActive=undefined
+[2026-04-02T09:11:20.812Z] [Late-Dbg] Rule resolved for User 58: RuleID=undefined, IsActive=undefined
+[2026-04-02T09:11:20.885Z] [Late-Dbg] Rule resolved for User 59: RuleID=1, IsActive=true
+[2026-04-02T09:11:20.891Z] [Late-Dbg] Shift Found: 11:00:00, StartSeconds: 39600
+[2026-04-02T09:11:20.892Z] [Late-Dbg] Date 2026-04-01: In=Wed Apr 01 2026 11:30:00 GMT+0530 (India Standard Time), PunchSeconds=41400, DiffMin=30
+[2026-04-02T09:11:20.893Z] [Late-Dbg] Matched Fixed Threshold: 15m, Value: 30
+[2026-04-02T09:11:20.894Z] [Late-Dbg] Final LateCount: 1, Counts: [0]
+[2026-04-02T09:11:20.895Z] [Late-Dbg] Final LateCount: 1, Amount: 30, Days: 0
+[2026-04-02T09:11:20.974Z] [Late-Dbg] Rule resolved for User 60: RuleID=undefined, IsActive=undefined
+[2026-04-02T09:11:21.069Z] [Late-Dbg] Rule resolved for User 61: RuleID=undefined, IsActive=undefined
+[2026-04-02T09:11:21.137Z] [Late-Dbg] Rule resolved for User 62: RuleID=undefined, IsActive=undefined
+[2026-04-02T09:11:21.206Z] [Late-Dbg] Rule resolved for User 63: RuleID=2, IsActive=true
+[2026-04-02T09:11:21.211Z] [Late-Dbg] Shift Found: 11:00:00, StartSeconds: 39600
+[2026-04-02T09:11:21.212Z] [Late-Dbg] Date 2026-04-01: In=Wed Apr 01 2026 11:19:00 GMT+0530 (India Standard Time), PunchSeconds=40740, DiffMin=19
+[2026-04-02T09:11:21.212Z] [Late-Dbg] Matched SLAB 0: 15-60
+[2026-04-02T09:11:21.212Z] [Late-Dbg] Date 2026-04-02: In=Thu Apr 02 2026 11:34:00 GMT+0530 (India Standard Time), PunchSeconds=41640, DiffMin=34
+[2026-04-02T09:11:21.213Z] [Late-Dbg] Matched SLAB 0: 15-60
+[2026-04-02T09:11:21.213Z] [Late-Dbg] Final LateCount: 2, Counts: [2]
+[2026-04-02T09:11:21.214Z] [Late-Dbg] Final LateCount: 2, Amount: 2000, Days: 2
+[2026-04-02T09:11:21.317Z] [Late-Dbg] Rule resolved for User 64: RuleID=undefined, IsActive=undefined
+[2026-04-02T09:11:42.945Z] [Late-Dbg] Rule resolved for User 57: RuleID=undefined, IsActive=undefined
+[2026-04-02T09:11:43.490Z] [Late-Dbg] Rule resolved for User 58: RuleID=undefined, IsActive=undefined
+[2026-04-02T09:11:43.556Z] [Late-Dbg] Rule resolved for User 59: RuleID=1, IsActive=true
+[2026-04-02T09:11:43.561Z] [Late-Dbg] Shift Found: 11:00:00, StartSeconds: 39600
+[2026-04-02T09:11:43.562Z] [Late-Dbg] Date 2026-04-01: In=Wed Apr 01 2026 11:30:00 GMT+0530 (India Standard Time), PunchSeconds=41400, DiffMin=30
+[2026-04-02T09:11:43.562Z] [Late-Dbg] Matched Fixed Threshold: 15m, Value: 30
+[2026-04-02T09:11:43.563Z] [Late-Dbg] Final LateCount: 1, Counts: [0]
+[2026-04-02T09:11:43.563Z] [Late-Dbg] Final LateCount: 1, Amount: 30, Days: 0
+[2026-04-02T09:11:43.646Z] [Late-Dbg] Rule resolved for User 60: RuleID=undefined, IsActive=undefined
+[2026-04-02T09:11:43.705Z] [Late-Dbg] Rule resolved for User 61: RuleID=undefined, IsActive=undefined
+[2026-04-02T09:11:43.772Z] [Late-Dbg] Rule resolved for User 62: RuleID=undefined, IsActive=undefined
+[2026-04-02T09:11:43.846Z] [Late-Dbg] Rule resolved for User 63: RuleID=2, IsActive=true
+[2026-04-02T09:11:43.849Z] [Late-Dbg] Shift Found: 11:00:00, StartSeconds: 39600
+[2026-04-02T09:11:43.850Z] [Late-Dbg] Date 2026-04-01: In=Wed Apr 01 2026 11:19:00 GMT+0530 (India Standard Time), PunchSeconds=40740, DiffMin=19
+[2026-04-02T09:11:43.850Z] [Late-Dbg] Matched SLAB 0: 15-60
+[2026-04-02T09:11:43.850Z] [Late-Dbg] Date 2026-04-02: In=Thu Apr 02 2026 11:34:00 GMT+0530 (India Standard Time), PunchSeconds=41640, DiffMin=34
+[2026-04-02T09:11:43.850Z] [Late-Dbg] Matched SLAB 0: 15-60
+[2026-04-02T09:11:43.851Z] [Late-Dbg] Final LateCount: 2, Counts: [2]
+[2026-04-02T09:11:43.851Z] [Late-Dbg] Final LateCount: 2, Amount: 2000, Days: 2
+[2026-04-02T09:11:43.931Z] [Late-Dbg] Rule resolved for User 64: RuleID=undefined, IsActive=undefined
+[2026-04-02T09:13:10.682Z] [Late-Dbg] Rule resolved for User 57: RuleID=undefined, IsActive=undefined
+[2026-04-02T09:13:10.937Z] [Late-Dbg] Rule resolved for User 58: RuleID=undefined, IsActive=undefined
+[2026-04-02T09:13:11.024Z] [Late-Dbg] Rule resolved for User 59: RuleID=1, IsActive=true
+[2026-04-02T09:13:11.030Z] [Late-Dbg] Shift Found: 11:00:00, StartSeconds: 39600
+[2026-04-02T09:13:11.031Z] [Late-Dbg] Date 2026-04-01: In=Wed Apr 01 2026 11:30:00 GMT+0530 (India Standard Time), PunchSeconds=41400, DiffMin=30
+[2026-04-02T09:13:11.031Z] [Late-Dbg] Matched Fixed Threshold: 15m, Value: 30
+[2026-04-02T09:13:11.032Z] [Late-Dbg] Final LateCount: 1, Counts: [0]
+[2026-04-02T09:13:11.032Z] [Late-Dbg] Final LateCount: 1, Amount: 30, Days: 0
+[2026-04-02T09:13:11.134Z] [Late-Dbg] Rule resolved for User 60: RuleID=undefined, IsActive=undefined
+[2026-04-02T09:13:11.209Z] [Late-Dbg] Rule resolved for User 61: RuleID=undefined, IsActive=undefined
+[2026-04-02T09:13:11.289Z] [Late-Dbg] Rule resolved for User 62: RuleID=undefined, IsActive=undefined
+[2026-04-02T09:13:11.370Z] [Late-Dbg] Rule resolved for User 63: RuleID=2, IsActive=true
+[2026-04-02T09:13:11.375Z] [Late-Dbg] Shift Found: 11:00:00, StartSeconds: 39600
+[2026-04-02T09:13:11.376Z] [Late-Dbg] Date 2026-04-01: In=Wed Apr 01 2026 11:19:00 GMT+0530 (India Standard Time), PunchSeconds=40740, DiffMin=19
+[2026-04-02T09:13:11.378Z] [Late-Dbg] Matched SLAB 0: 15-60
+[2026-04-02T09:13:11.378Z] [Late-Dbg] Date 2026-04-02: In=Thu Apr 02 2026 11:34:00 GMT+0530 (India Standard Time), PunchSeconds=41640, DiffMin=34
+[2026-04-02T09:13:11.379Z] [Late-Dbg] Matched SLAB 0: 15-60
+[2026-04-02T09:13:11.379Z] [Late-Dbg] Final LateCount: 2, Counts: [2]
+[2026-04-02T09:13:11.380Z] [Late-Dbg] Final LateCount: 2, Amount: 2000, Days: 2
+[2026-04-02T09:13:11.469Z] [Late-Dbg] Rule resolved for User 64: RuleID=undefined, IsActive=undefined
+[2026-04-02T09:14:21.519Z] [Late-Dbg] Rule resolved for User 57: RuleID=undefined, IsActive=undefined
+[2026-04-02T09:14:21.668Z] [Late-Dbg] Rule resolved for User 58: RuleID=undefined, IsActive=undefined
+[2026-04-02T09:14:21.756Z] [Late-Dbg] Rule resolved for User 59: RuleID=1, IsActive=true
+[2026-04-02T09:14:21.760Z] [Late-Dbg] Shift Found: 11:00:00, StartSeconds: 39600
+[2026-04-02T09:14:21.761Z] [Late-Dbg] Date 2026-04-01: In=Wed Apr 01 2026 11:30:00 GMT+0530 (India Standard Time), PunchSeconds=41400, DiffMin=30
+[2026-04-02T09:14:21.762Z] [Late-Dbg] Matched Fixed Threshold: 15m, Value: 30
+[2026-04-02T09:14:21.763Z] [Late-Dbg] Final LateCount: 1, Counts: [0]
+[2026-04-02T09:14:21.764Z] [Late-Dbg] Final LateCount: 1, Amount: 30, Days: 0
+[2026-04-02T09:14:21.869Z] [Late-Dbg] Rule resolved for User 60: RuleID=undefined, IsActive=undefined
+[2026-04-02T09:14:21.951Z] [Late-Dbg] Rule resolved for User 61: RuleID=undefined, IsActive=undefined
+[2026-04-02T09:14:22.049Z] [Late-Dbg] Rule resolved for User 62: RuleID=undefined, IsActive=undefined
+[2026-04-02T09:14:22.142Z] [Late-Dbg] Rule resolved for User 63: RuleID=2, IsActive=true
+[2026-04-02T09:14:22.148Z] [Late-Dbg] Shift Found: 11:00:00, StartSeconds: 39600
+[2026-04-02T09:14:22.148Z] [Late-Dbg] Date 2026-04-01: In=Wed Apr 01 2026 11:19:00 GMT+0530 (India Standard Time), PunchSeconds=40740, DiffMin=19
+[2026-04-02T09:14:22.149Z] [Late-Dbg] Matched SLAB 0: 15-60
+[2026-04-02T09:14:22.149Z] [Late-Dbg] Date 2026-04-02: In=Thu Apr 02 2026 11:34:00 GMT+0530 (India Standard Time), PunchSeconds=41640, DiffMin=34
+[2026-04-02T09:14:22.150Z] [Late-Dbg] Matched SLAB 0: 15-60
+[2026-04-02T09:14:22.150Z] [Late-Dbg] Final LateCount: 2, Counts: [2]
+[2026-04-02T09:14:22.151Z] [Late-Dbg] Final LateCount: 2, Amount: 2000, Days: 2
+[2026-04-02T09:14:22.289Z] [Late-Dbg] Rule resolved for User 64: RuleID=undefined, IsActive=undefined
+[2026-04-02T09:14:25.443Z] [Late-Dbg] Rule resolved for User 57: RuleID=undefined, IsActive=undefined
+[2026-04-02T09:14:25.626Z] [Late-Dbg] Rule resolved for User 58: RuleID=undefined, IsActive=undefined
+[2026-04-02T09:14:25.981Z] [Late-Dbg] Rule resolved for User 59: RuleID=1, IsActive=true
+[2026-04-02T09:14:25.986Z] [Late-Dbg] Shift Found: 11:00:00, StartSeconds: 39600
+[2026-04-02T09:14:25.986Z] [Late-Dbg] Date 2026-04-01: In=Wed Apr 01 2026 11:30:00 GMT+0530 (India Standard Time), PunchSeconds=41400, DiffMin=30
+[2026-04-02T09:14:25.987Z] [Late-Dbg] Matched Fixed Threshold: 15m, Value: 30
+[2026-04-02T09:14:25.987Z] [Late-Dbg] Final LateCount: 1, Counts: [0]
+[2026-04-02T09:14:25.988Z] [Late-Dbg] Final LateCount: 1, Amount: 30, Days: 0
+[2026-04-02T09:14:26.088Z] [Late-Dbg] Rule resolved for User 60: RuleID=undefined, IsActive=undefined
+[2026-04-02T09:14:26.212Z] [Late-Dbg] Rule resolved for User 61: RuleID=undefined, IsActive=undefined
+[2026-04-02T09:14:26.299Z] [Late-Dbg] Rule resolved for User 62: RuleID=undefined, IsActive=undefined
+[2026-04-02T09:14:26.358Z] [Late-Dbg] Rule resolved for User 63: RuleID=2, IsActive=true
+[2026-04-02T09:14:26.364Z] [Late-Dbg] Shift Found: 11:00:00, StartSeconds: 39600
+[2026-04-02T09:14:26.365Z] [Late-Dbg] Date 2026-04-01: In=Wed Apr 01 2026 11:19:00 GMT+0530 (India Standard Time), PunchSeconds=40740, DiffMin=19
+[2026-04-02T09:14:26.365Z] [Late-Dbg] Matched SLAB 0: 15-60
+[2026-04-02T09:14:26.365Z] [Late-Dbg] Date 2026-04-02: In=Thu Apr 02 2026 11:34:00 GMT+0530 (India Standard Time), PunchSeconds=41640, DiffMin=34
+[2026-04-02T09:14:26.366Z] [Late-Dbg] Matched SLAB 0: 15-60
+[2026-04-02T09:14:26.366Z] [Late-Dbg] Final LateCount: 2, Counts: [2]
+[2026-04-02T09:14:26.367Z] [Late-Dbg] Final LateCount: 2, Amount: 2000, Days: 2
+[2026-04-02T09:14:26.462Z] [Late-Dbg] Rule resolved for User 64: RuleID=undefined, IsActive=undefined
+[2026-04-02T09:16:52.126Z] [Late-Dbg] Rule resolved for User 57: RuleID=undefined, IsActive=undefined
+[2026-04-02T09:16:52.259Z] [Late-Dbg] Rule resolved for User 58: RuleID=undefined, IsActive=undefined
+[2026-04-02T09:16:52.387Z] [Late-Dbg] Rule resolved for User 59: RuleID=1, IsActive=true
+[2026-04-02T09:16:52.392Z] [Late-Dbg] Shift Found: 11:00:00, StartSeconds: 39600
+[2026-04-02T09:16:52.393Z] [Late-Dbg] Date 2026-04-01: In=Wed Apr 01 2026 11:30:00 GMT+0530 (India Standard Time), PunchSeconds=41400, DiffMin=30
+[2026-04-02T09:16:52.393Z] [Late-Dbg] Matched Fixed Threshold: 15m, Value: 30
+[2026-04-02T09:16:52.394Z] [Late-Dbg] Final LateCount: 1, Counts: [0]
+[2026-04-02T09:16:52.394Z] [Late-Dbg] Final LateCount: 1, Amount: 30, Days: 0
+[2026-04-02T09:16:52.505Z] [Late-Dbg] Rule resolved for User 60: RuleID=undefined, IsActive=undefined
+[2026-04-02T09:16:52.577Z] [Late-Dbg] Rule resolved for User 61: RuleID=undefined, IsActive=undefined
+[2026-04-02T09:16:52.643Z] [Late-Dbg] Rule resolved for User 62: RuleID=undefined, IsActive=undefined
+[2026-04-02T09:16:52.715Z] [Late-Dbg] Rule resolved for User 63: RuleID=2, IsActive=true
+[2026-04-02T09:16:52.719Z] [Late-Dbg] Shift Found: 11:00:00, StartSeconds: 39600
+[2026-04-02T09:16:52.720Z] [Late-Dbg] Date 2026-04-01: In=Wed Apr 01 2026 11:19:00 GMT+0530 (India Standard Time), PunchSeconds=40740, DiffMin=19
+[2026-04-02T09:16:52.720Z] [Late-Dbg] Matched SLAB 0: 15-60
+[2026-04-02T09:16:52.721Z] [Late-Dbg] Date 2026-04-02: In=Thu Apr 02 2026 11:34:00 GMT+0530 (India Standard Time), PunchSeconds=41640, DiffMin=34
+[2026-04-02T09:16:52.721Z] [Late-Dbg] Matched SLAB 0: 15-60
+[2026-04-02T09:16:52.722Z] [Late-Dbg] Final LateCount: 2, Counts: [2]
+[2026-04-02T09:16:52.723Z] [Late-Dbg] Final LateCount: 2, Amount: 2000, Days: 2
+[2026-04-02T09:16:52.799Z] [Late-Dbg] Rule resolved for User 64: RuleID=undefined, IsActive=undefined
+[2026-04-02T09:18:16.486Z] [Late-Dbg] Rule resolved for User 57: RuleID=undefined, IsActive=undefined
+[2026-04-02T09:18:16.618Z] [Late-Dbg] Rule resolved for User 58: RuleID=undefined, IsActive=undefined
+[2026-04-02T09:18:16.722Z] [Late-Dbg] Rule resolved for User 59: RuleID=1, IsActive=true
+[2026-04-02T09:18:16.724Z] [Late-Dbg] Shift Found: 11:00:00, StartSeconds: 39600
+[2026-04-02T09:18:16.725Z] [Late-Dbg] Date 2026-04-01: In=Wed Apr 01 2026 11:30:00 GMT+0530 (India Standard Time), PunchSeconds=41400, DiffMin=30
+[2026-04-02T09:18:16.725Z] [Late-Dbg] Matched Fixed Threshold: 15m, Value: 30
+[2026-04-02T09:18:16.725Z] [Late-Dbg] Final LateCount: 1, Counts: [0]
+[2026-04-02T09:18:16.726Z] [Late-Dbg] Final LateCount: 1, Amount: 30, Days: 0
+[2026-04-02T09:18:16.809Z] [Late-Dbg] Rule resolved for User 60: RuleID=undefined, IsActive=undefined
+[2026-04-02T09:18:16.895Z] [Late-Dbg] Rule resolved for User 61: RuleID=undefined, IsActive=undefined
+[2026-04-02T09:18:16.953Z] [Late-Dbg] Rule resolved for User 62: RuleID=undefined, IsActive=undefined
+[2026-04-02T09:18:17.039Z] [Late-Dbg] Rule resolved for User 63: RuleID=2, IsActive=true
+[2026-04-02T09:18:17.044Z] [Late-Dbg] Shift Found: 11:00:00, StartSeconds: 39600
+[2026-04-02T09:18:17.045Z] [Late-Dbg] Date 2026-04-01: In=Wed Apr 01 2026 11:19:00 GMT+0530 (India Standard Time), PunchSeconds=40740, DiffMin=19
+[2026-04-02T09:18:17.045Z] [Late-Dbg] Matched SLAB 0: 15-60
+[2026-04-02T09:18:17.047Z] [Late-Dbg] Date 2026-04-02: In=Thu Apr 02 2026 11:34:00 GMT+0530 (India Standard Time), PunchSeconds=41640, DiffMin=34
+[2026-04-02T09:18:17.048Z] [Late-Dbg] Matched SLAB 0: 15-60
+[2026-04-02T09:18:17.049Z] [Late-Dbg] Final LateCount: 2, Counts: [2]
+[2026-04-02T09:18:17.050Z] [Late-Dbg] Final LateCount: 2, Amount: 2000, Days: 2
+[2026-04-02T09:18:17.137Z] [Late-Dbg] Rule resolved for User 64: RuleID=undefined, IsActive=undefined
+[2026-04-02T09:18:52.062Z] [Late-Dbg] Rule resolved for User 57: RuleID=undefined, IsActive=undefined
+[2026-04-02T09:18:52.990Z] [Late-Dbg] Rule resolved for User 58: RuleID=undefined, IsActive=undefined
+[2026-04-02T09:18:53.100Z] [Late-Dbg] Rule resolved for User 59: RuleID=1, IsActive=true
+[2026-04-02T09:18:53.104Z] [Late-Dbg] Shift Found: 11:00:00, StartSeconds: 39600
+[2026-04-02T09:18:53.104Z] [Late-Dbg] Date 2026-04-01: In=Wed Apr 01 2026 11:30:00 GMT+0530 (India Standard Time), PunchSeconds=41400, DiffMin=30
+[2026-04-02T09:18:53.105Z] [Late-Dbg] Matched Fixed Threshold: 15m, Value: 30
+[2026-04-02T09:18:53.105Z] [Late-Dbg] Date 2026-04-02: In=Thu Apr 02 2026 11:32:00 GMT+0530 (India Standard Time), PunchSeconds=41520, DiffMin=32
+[2026-04-02T09:18:53.105Z] [Late-Dbg] Matched Fixed Threshold: 15m, Value: 30
+[2026-04-02T09:18:53.106Z] [Late-Dbg] Final LateCount: 2, Counts: [0]
+[2026-04-02T09:18:53.106Z] [Late-Dbg] Final LateCount: 2, Amount: 60, Days: 0
+[2026-04-02T09:18:53.233Z] [Late-Dbg] Rule resolved for User 60: RuleID=undefined, IsActive=undefined
+[2026-04-02T09:18:53.344Z] [Late-Dbg] Rule resolved for User 61: RuleID=undefined, IsActive=undefined
+[2026-04-02T09:18:53.436Z] [Late-Dbg] Rule resolved for User 62: RuleID=undefined, IsActive=undefined
+[2026-04-02T09:18:53.502Z] [Late-Dbg] Rule resolved for User 63: RuleID=2, IsActive=true
+[2026-04-02T09:18:53.507Z] [Late-Dbg] Shift Found: 11:00:00, StartSeconds: 39600
+[2026-04-02T09:18:53.507Z] [Late-Dbg] Date 2026-04-01: In=Wed Apr 01 2026 11:19:00 GMT+0530 (India Standard Time), PunchSeconds=40740, DiffMin=19
+[2026-04-02T09:18:53.508Z] [Late-Dbg] Matched SLAB 0: 15-60
+[2026-04-02T09:18:53.508Z] [Late-Dbg] Date 2026-04-02: In=Thu Apr 02 2026 11:34:00 GMT+0530 (India Standard Time), PunchSeconds=41640, DiffMin=34
+[2026-04-02T09:18:53.509Z] [Late-Dbg] Matched SLAB 0: 15-60
+[2026-04-02T09:18:53.510Z] [Late-Dbg] Final LateCount: 2, Counts: [2]
+[2026-04-02T09:18:53.510Z] [Late-Dbg] Final LateCount: 2, Amount: 2000, Days: 2
+[2026-04-02T09:18:53.602Z] [Late-Dbg] Rule resolved for User 64: RuleID=undefined, IsActive=undefined
+[2026-04-02T09:25:08.271Z] [Late-Dbg] Rule resolved for User 57: RuleID=undefined, IsActive=undefined
+[2026-04-02T09:25:08.468Z] [Late-Dbg] Rule resolved for User 58: RuleID=undefined, IsActive=undefined
+[2026-04-02T09:25:08.559Z] [Late-Dbg] Rule resolved for User 59: RuleID=1, IsActive=true
+[2026-04-02T09:25:08.567Z] [Late-Dbg] Shift Found: 11:00:00, StartSeconds: 39600
+[2026-04-02T09:25:08.568Z] [Late-Dbg] Using Stored Lateness: 30m, Amount: 30
+[2026-04-02T09:25:08.569Z] [Late-Dbg] Using Stored Lateness: 32m, Amount: 30
+[2026-04-02T09:25:08.570Z] [Late-Dbg] Final LateCount: 2, Counts: [0]
+[2026-04-02T09:25:08.571Z] [Late-Dbg] Final LateCount: 2, Amount: 60, Days: 0
+[2026-04-02T09:25:08.749Z] [Late-Dbg] Rule resolved for User 60: RuleID=undefined, IsActive=undefined
+[2026-04-02T09:25:08.900Z] [Late-Dbg] Rule resolved for User 61: RuleID=undefined, IsActive=undefined
+[2026-04-02T09:25:09.062Z] [Late-Dbg] Rule resolved for User 62: RuleID=undefined, IsActive=undefined
+[2026-04-02T09:25:09.394Z] [Late-Dbg] Rule resolved for User 63: RuleID=2, IsActive=true
+[2026-04-02T09:25:09.398Z] [Late-Dbg] Shift Found: 11:00:00, StartSeconds: 39600
+[2026-04-02T09:25:09.399Z] [Late-Dbg] Using Stored Lateness: 19m, Amount: 500
+[2026-04-02T09:25:09.400Z] [Late-Dbg] Using Stored Lateness: 34m, Amount: 500
+[2026-04-02T09:25:09.400Z] [Late-Dbg] Final LateCount: 2, Counts: [0]
+[2026-04-02T09:25:09.401Z] [Late-Dbg] Final LateCount: 2, Amount: 1000, Days: 0
+[2026-04-02T09:25:09.497Z] [Late-Dbg] Rule resolved for User 64: RuleID=undefined, IsActive=undefined
+[2026-04-02T09:25:20.422Z] [Late-Dbg] Rule resolved for User 57: RuleID=undefined, IsActive=undefined
+[2026-04-02T09:25:20.716Z] [Late-Dbg] Rule resolved for User 58: RuleID=undefined, IsActive=undefined
+[2026-04-02T09:25:20.825Z] [Late-Dbg] Rule resolved for User 59: RuleID=1, IsActive=true
+[2026-04-02T09:25:20.829Z] [Late-Dbg] Shift Found: 11:00:00, StartSeconds: 39600
+[2026-04-02T09:25:20.830Z] [Late-Dbg] Using Stored Lateness: 30m, Amount: 30
+[2026-04-02T09:25:20.830Z] [Late-Dbg] Using Stored Lateness: 32m, Amount: 30
+[2026-04-02T09:25:20.831Z] [Late-Dbg] Final LateCount: 2, Counts: [0]
+[2026-04-02T09:25:20.831Z] [Late-Dbg] Final LateCount: 2, Amount: 60, Days: 0
+[2026-04-02T09:25:20.953Z] [Late-Dbg] Rule resolved for User 60: RuleID=undefined, IsActive=undefined
+[2026-04-02T09:25:21.032Z] [Late-Dbg] Rule resolved for User 61: RuleID=undefined, IsActive=undefined
+[2026-04-02T09:25:21.106Z] [Late-Dbg] Rule resolved for User 62: RuleID=undefined, IsActive=undefined
+[2026-04-02T09:25:21.171Z] [Late-Dbg] Rule resolved for User 63: RuleID=2, IsActive=true
+[2026-04-02T09:25:21.176Z] [Late-Dbg] Shift Found: 11:00:00, StartSeconds: 39600
+[2026-04-02T09:25:21.176Z] [Late-Dbg] Using Stored Lateness: 19m, Amount: 500
+[2026-04-02T09:25:21.177Z] [Late-Dbg] Using Stored Lateness: 34m, Amount: 500
+[2026-04-02T09:25:21.177Z] [Late-Dbg] Final LateCount: 2, Counts: [0]
+[2026-04-02T09:25:21.178Z] [Late-Dbg] Final LateCount: 2, Amount: 1000, Days: 0
+[2026-04-02T09:25:21.288Z] [Late-Dbg] Rule resolved for User 64: RuleID=undefined, IsActive=undefined
+[2026-04-02T09:25:59.242Z] [Late-Dbg] Rule resolved for User 57: RuleID=undefined, IsActive=undefined
+[2026-04-02T09:25:59.360Z] [Late-Dbg] Rule resolved for User 58: RuleID=undefined, IsActive=undefined
+[2026-04-02T09:25:59.423Z] [Late-Dbg] Rule resolved for User 59: RuleID=1, IsActive=true
+[2026-04-02T09:25:59.428Z] [Late-Dbg] Shift Found: 11:00:00, StartSeconds: 39600
+[2026-04-02T09:25:59.429Z] [Late-Dbg] Using Stored Lateness: 30m, Amount: 30
+[2026-04-02T09:25:59.429Z] [Late-Dbg] Using Stored Lateness: 32m, Amount: 30
+[2026-04-02T09:25:59.430Z] [Late-Dbg] Final LateCount: 2, Counts: [0]
+[2026-04-02T09:25:59.431Z] [Late-Dbg] Final LateCount: 2, Amount: 60, Days: 0
+[2026-04-02T09:25:59.525Z] [Late-Dbg] Rule resolved for User 60: RuleID=undefined, IsActive=undefined
+[2026-04-02T09:25:59.587Z] [Late-Dbg] Rule resolved for User 61: RuleID=undefined, IsActive=undefined
+[2026-04-02T09:25:59.640Z] [Late-Dbg] Rule resolved for User 62: RuleID=undefined, IsActive=undefined
+[2026-04-02T09:25:59.700Z] [Late-Dbg] Rule resolved for User 63: RuleID=2, IsActive=true
+[2026-04-02T09:25:59.705Z] [Late-Dbg] Shift Found: 11:00:00, StartSeconds: 39600
+[2026-04-02T09:25:59.706Z] [Late-Dbg] Using Stored Lateness: 19m, Amount: 500
+[2026-04-02T09:25:59.706Z] [Late-Dbg] Using Stored Lateness: 34m, Amount: 500
+[2026-04-02T09:25:59.707Z] [Late-Dbg] Final LateCount: 2, Counts: [0]
+[2026-04-02T09:25:59.707Z] [Late-Dbg] Final LateCount: 2, Amount: 1000, Days: 0
+[2026-04-02T09:25:59.779Z] [Late-Dbg] Rule resolved for User 64: RuleID=undefined, IsActive=undefined
+[2026-04-02T09:26:55.181Z] [Late-Dbg] Rule resolved for User 57: RuleID=undefined, IsActive=undefined
+[2026-04-02T09:26:55.341Z] [Late-Dbg] Rule resolved for User 58: RuleID=undefined, IsActive=undefined
+[2026-04-02T09:26:55.458Z] [Late-Dbg] Rule resolved for User 59: RuleID=1, IsActive=true
+[2026-04-02T09:26:55.466Z] [Late-Dbg] Shift Found: 11:00:00, StartSeconds: 39600
+[2026-04-02T09:26:55.466Z] [Late-Dbg] Using Stored Lateness: 30m, Amount: 30
+[2026-04-02T09:26:55.467Z] [Late-Dbg] Using Stored Lateness: 32m, Amount: 30
+[2026-04-02T09:26:55.468Z] [Late-Dbg] Final LateCount: 2, Counts: [0]
+[2026-04-02T09:26:55.468Z] [Late-Dbg] Final LateCount: 2, Amount: 60, Days: 0
+[2026-04-02T09:26:55.904Z] [Late-Dbg] Rule resolved for User 60: RuleID=undefined, IsActive=undefined
+[2026-04-02T09:26:56.051Z] [Late-Dbg] Rule resolved for User 61: RuleID=undefined, IsActive=undefined
+[2026-04-02T09:26:56.475Z] [Late-Dbg] Rule resolved for User 62: RuleID=undefined, IsActive=undefined
+[2026-04-02T09:26:56.561Z] [Late-Dbg] Rule resolved for User 63: RuleID=2, IsActive=true
+[2026-04-02T09:26:56.567Z] [Late-Dbg] Shift Found: 11:00:00, StartSeconds: 39600
+[2026-04-02T09:26:56.569Z] [Late-Dbg] Using Stored Lateness: 19m, Amount: 500
+[2026-04-02T09:26:56.570Z] [Late-Dbg] Using Stored Lateness: 34m, Amount: 500
+[2026-04-02T09:26:56.571Z] [Late-Dbg] Final LateCount: 2, Counts: [0]
+[2026-04-02T09:26:56.573Z] [Late-Dbg] Final LateCount: 2, Amount: 1000, Days: 0
+[2026-04-02T09:26:56.835Z] [Late-Dbg] Rule resolved for User 64: RuleID=undefined, IsActive=undefined
+[2026-04-02T09:26:59.244Z] [Late-Dbg] Rule resolved for User 57: RuleID=undefined, IsActive=undefined
+[2026-04-02T09:27:00.157Z] [Late-Dbg] Rule resolved for User 58: RuleID=undefined, IsActive=undefined
+[2026-04-02T09:27:00.592Z] [Late-Dbg] Rule resolved for User 59: RuleID=1, IsActive=true
+[2026-04-02T09:27:00.596Z] [Late-Dbg] Shift Found: 11:00:00, StartSeconds: 39600
+[2026-04-02T09:27:00.597Z] [Late-Dbg] Using Stored Lateness: 30m, Amount: 30
+[2026-04-02T09:27:00.598Z] [Late-Dbg] Using Stored Lateness: 32m, Amount: 30
+[2026-04-02T09:27:00.599Z] [Late-Dbg] Final LateCount: 2, Counts: [0]
+[2026-04-02T09:27:00.600Z] [Late-Dbg] Final LateCount: 2, Amount: 60, Days: 0
+[2026-04-02T09:27:00.713Z] [Late-Dbg] Rule resolved for User 60: RuleID=undefined, IsActive=undefined
+[2026-04-02T09:27:00.808Z] [Late-Dbg] Rule resolved for User 61: RuleID=undefined, IsActive=undefined
+[2026-04-02T09:27:00.880Z] [Late-Dbg] Rule resolved for User 62: RuleID=undefined, IsActive=undefined
+[2026-04-02T09:27:00.992Z] [Late-Dbg] Rule resolved for User 63: RuleID=2, IsActive=true
+[2026-04-02T09:27:00.997Z] [Late-Dbg] Shift Found: 11:00:00, StartSeconds: 39600
+[2026-04-02T09:27:00.998Z] [Late-Dbg] Using Stored Lateness: 19m, Amount: 500
+[2026-04-02T09:27:00.999Z] [Late-Dbg] Using Stored Lateness: 34m, Amount: 500
+[2026-04-02T09:27:00.999Z] [Late-Dbg] Final LateCount: 2, Counts: [0]
+[2026-04-02T09:27:01.000Z] [Late-Dbg] Final LateCount: 2, Amount: 1000, Days: 0
+[2026-04-02T09:27:01.090Z] [Late-Dbg] Rule resolved for User 64: RuleID=undefined, IsActive=undefined
+[2026-04-02T09:28:12.330Z] [Late-Dbg] Rule resolved for User 57: RuleID=undefined, IsActive=undefined
+[2026-04-02T09:28:12.408Z] [Late-Dbg] Rule resolved for User 58: RuleID=undefined, IsActive=undefined
+[2026-04-02T09:28:12.468Z] [Late-Dbg] Rule resolved for User 59: RuleID=1, IsActive=true
+[2026-04-02T09:28:12.479Z] [Late-Dbg] Shift Found: 11:00:00, StartSeconds: 39600
+[2026-04-02T09:28:12.480Z] [Late-Dbg] Final LateCount: 0, Counts: [0]
+[2026-04-02T09:28:12.481Z] [Late-Dbg] Final LateCount: 0, Amount: 0, Days: 0
+[2026-04-02T09:28:12.539Z] [Late-Dbg] Rule resolved for User 60: RuleID=undefined, IsActive=undefined
+[2026-04-02T09:28:12.591Z] [Late-Dbg] Rule resolved for User 61: RuleID=undefined, IsActive=undefined
+[2026-04-02T09:28:12.634Z] [Late-Dbg] Rule resolved for User 62: RuleID=undefined, IsActive=undefined
+[2026-04-02T09:28:12.694Z] [Late-Dbg] Rule resolved for User 63: RuleID=2, IsActive=true
+[2026-04-02T09:28:12.697Z] [Late-Dbg] Shift Found: 11:00:00, StartSeconds: 39600
+[2026-04-02T09:28:12.698Z] [Late-Dbg] Using Stored Lateness: 27m, Amount: 1000
+[2026-04-02T09:28:12.699Z] [Late-Dbg] Final LateCount: 1, Counts: [0]
+[2026-04-02T09:28:12.699Z] [Late-Dbg] Final LateCount: 1, Amount: 1000, Days: 0
+[2026-04-02T09:28:12.792Z] [Late-Dbg] Rule resolved for User 64: RuleID=undefined, IsActive=undefined
+[2026-04-02T09:28:36.047Z] [Late-Dbg] Rule resolved for User 57: RuleID=undefined, IsActive=undefined
+[2026-04-02T09:28:36.121Z] [Late-Dbg] Rule resolved for User 58: RuleID=undefined, IsActive=undefined
+[2026-04-02T09:28:36.184Z] [Late-Dbg] Rule resolved for User 59: RuleID=1, IsActive=true
+[2026-04-02T09:28:36.190Z] [Late-Dbg] Shift Found: 11:00:00, StartSeconds: 39600
+[2026-04-02T09:28:36.190Z] [Late-Dbg] Final LateCount: 0, Counts: [0]
+[2026-04-02T09:28:36.191Z] [Late-Dbg] Final LateCount: 0, Amount: 0, Days: 0
+[2026-04-02T09:28:36.250Z] [Late-Dbg] Rule resolved for User 60: RuleID=undefined, IsActive=undefined
+[2026-04-02T09:28:36.967Z] [Late-Dbg] Rule resolved for User 61: RuleID=undefined, IsActive=undefined
+[2026-04-02T09:28:37.035Z] [Late-Dbg] Rule resolved for User 62: RuleID=undefined, IsActive=undefined
+[2026-04-02T09:28:37.084Z] [Late-Dbg] Rule resolved for User 63: RuleID=2, IsActive=true
+[2026-04-02T09:28:37.092Z] [Late-Dbg] Shift Found: 11:00:00, StartSeconds: 39600
+[2026-04-02T09:28:37.093Z] [Late-Dbg] Using Stored Lateness: 27m, Amount: 1000
+[2026-04-02T09:28:37.093Z] [Late-Dbg] Final LateCount: 1, Counts: [0]
+[2026-04-02T09:28:37.093Z] [Late-Dbg] Final LateCount: 1, Amount: 1000, Days: 0
+[2026-04-02T09:28:37.151Z] [Late-Dbg] Rule resolved for User 64: RuleID=undefined, IsActive=undefined
+[2026-04-02T09:30:10.779Z] [Late-Dbg] Rule resolved for User 57: RuleID=undefined, IsActive=undefined
+[2026-04-02T09:30:10.830Z] [Late-Dbg] Rule resolved for User 58: RuleID=undefined, IsActive=undefined
+[2026-04-02T09:30:10.893Z] [Late-Dbg] Rule resolved for User 59: RuleID=1, IsActive=true
+[2026-04-02T09:30:10.902Z] [Late-Dbg] Shift Found: 11:00:00, StartSeconds: 39600
+[2026-04-02T09:30:10.903Z] [Late-Dbg] Final LateCount: 0, Counts: [0]
+[2026-04-02T09:30:10.903Z] [Late-Dbg] Final LateCount: 0, Amount: 0, Days: 0
+[2026-04-02T09:30:10.981Z] [Late-Dbg] Rule resolved for User 60: RuleID=undefined, IsActive=undefined
+[2026-04-02T09:30:11.082Z] [Late-Dbg] Rule resolved for User 61: RuleID=undefined, IsActive=undefined
+[2026-04-02T09:30:11.143Z] [Late-Dbg] Rule resolved for User 62: RuleID=undefined, IsActive=undefined
+[2026-04-02T09:30:11.195Z] [Late-Dbg] Rule resolved for User 63: RuleID=2, IsActive=true
+[2026-04-02T09:30:11.199Z] [Late-Dbg] Shift Found: 11:00:00, StartSeconds: 39600
+[2026-04-02T09:30:11.200Z] [Late-Dbg] Using Stored Lateness: 27m, Amount: 1000
+[2026-04-02T09:30:11.200Z] [Late-Dbg] Final LateCount: 1, Counts: [0]
+[2026-04-02T09:30:11.201Z] [Late-Dbg] Final LateCount: 1, Amount: 1000, Days: 0
+[2026-04-02T09:30:11.277Z] [Late-Dbg] Rule resolved for User 64: RuleID=undefined, IsActive=undefined
+[2026-04-02T09:31:41.411Z] [Late-Dbg] Rule resolved for User 57: RuleID=undefined, IsActive=undefined
+[2026-04-02T09:31:41.482Z] [Late-Dbg] Rule resolved for User 58: RuleID=undefined, IsActive=undefined
+[2026-04-02T09:31:41.552Z] [Late-Dbg] Rule resolved for User 59: RuleID=1, IsActive=true
+[2026-04-02T09:31:41.555Z] [Late-Dbg] Shift Found: 11:00:00, StartSeconds: 39600
+[2026-04-02T09:31:41.556Z] [Late-Dbg] Final LateCount: 0, Counts: [0]
+[2026-04-02T09:31:41.557Z] [Late-Dbg] Final LateCount: 0, Amount: 0, Days: 0
+[2026-04-02T09:31:41.610Z] [Late-Dbg] Rule resolved for User 60: RuleID=undefined, IsActive=undefined
+[2026-04-02T09:31:41.682Z] [Late-Dbg] Rule resolved for User 61: RuleID=undefined, IsActive=undefined
+[2026-04-02T09:31:41.733Z] [Late-Dbg] Rule resolved for User 62: RuleID=undefined, IsActive=undefined
+[2026-04-02T09:31:41.793Z] [Late-Dbg] Rule resolved for User 63: RuleID=2, IsActive=true
+[2026-04-02T09:31:41.796Z] [Late-Dbg] Shift Found: 11:00:00, StartSeconds: 39600
+[2026-04-02T09:31:41.796Z] [Late-Dbg] Using Stored Lateness: 27m, Amount: 1000
+[2026-04-02T09:31:41.797Z] [Late-Dbg] Final LateCount: 1, Counts: [0]
+[2026-04-02T09:31:41.797Z] [Late-Dbg] Final LateCount: 1, Amount: 1000, Days: 0
+[2026-04-02T09:31:41.853Z] [Late-Dbg] Rule resolved for User 64: RuleID=undefined, IsActive=undefined
+[2026-04-02T09:32:53.018Z] [Late-Dbg] User 57 Final: LateCount=0, Amt=0, Days=0
+[2026-04-02T09:32:53.081Z] [Late-Dbg] User 58 Final: LateCount=0, Amt=0, Days=0
+[2026-04-02T09:32:53.124Z] [Late-Dbg] User 59 Final: LateCount=0, Amt=0, Days=0
+[2026-04-02T09:32:53.168Z] [Late-Dbg] Day 2026-04-02: Using Stored Amt 30
+[2026-04-02T09:32:53.169Z] [Late-Dbg] User 60 Final: LateCount=1, Amt=30, Days=0
+[2026-04-02T09:32:53.262Z] [Late-Dbg] User 61 Final: LateCount=0, Amt=0, Days=0
+[2026-04-02T09:32:53.308Z] [Late-Dbg] User 62 Final: LateCount=0, Amt=0, Days=0
+[2026-04-02T09:32:53.354Z] [Late-Dbg] Day 2026-04-02: Using Stored Amt 1000
+[2026-04-02T09:32:53.355Z] [Late-Dbg] User 63 Final: LateCount=1, Amt=1000, Days=0
+[2026-04-02T09:32:53.414Z] [Late-Dbg] User 64 Final: LateCount=0, Amt=0, Days=0
+[2026-04-02T10:14:12.620Z] [Late-Dbg] User 57 Final: LateCount=0, Amt=0, Days=0
+[2026-04-02T10:14:12.727Z] [Late-Dbg] User 58 Final: LateCount=0, Amt=0, Days=0
+[2026-04-02T10:14:12.809Z] [Late-Dbg] User 59 Final: LateCount=0, Amt=0, Days=0
+[2026-04-02T10:14:12.885Z] [Late-Dbg] Day 2026-04-02: Using Stored Amt 30
+[2026-04-02T10:14:12.886Z] [Late-Dbg] User 60 Final: LateCount=1, Amt=30, Days=0
+[2026-04-02T10:14:12.983Z] [Late-Dbg] User 61 Final: LateCount=0, Amt=0, Days=0
+[2026-04-02T10:14:13.025Z] [Late-Dbg] User 62 Final: LateCount=0, Amt=0, Days=0
+[2026-04-02T10:14:13.088Z] [Late-Dbg] Day 2026-04-02: Using Stored Amt 1000
+[2026-04-02T10:14:13.088Z] [Late-Dbg] User 63 Final: LateCount=1, Amt=1000, Days=0
+[2026-04-02T10:14:13.154Z] [Late-Dbg] Day 2026-04-02: Using Stored Amt 1002.93
+[2026-04-02T10:14:13.155Z] [Late-Dbg] User 64 Final: LateCount=1, Amt=1002.93, Days=0
+[2026-04-02T10:15:35.451Z] [Late-Dbg] User 57 Final: LateCount=0, Amt=0, Days=0
+[2026-04-02T10:15:35.604Z] [Late-Dbg] User 58 Final: LateCount=0, Amt=0, Days=0
+[2026-04-02T10:15:35.666Z] [Late-Dbg] User 59 Final: LateCount=0, Amt=0, Days=0
+[2026-04-02T10:15:35.778Z] [Late-Dbg] Day 2026-04-02: Using Stored Amt 30
+[2026-04-02T10:15:35.779Z] [Late-Dbg] User 60 Final: LateCount=1, Amt=30, Days=0
+[2026-04-02T10:15:35.907Z] [Late-Dbg] User 61 Final: LateCount=0, Amt=0, Days=0
+[2026-04-02T10:15:36.014Z] [Late-Dbg] User 62 Final: LateCount=0, Amt=0, Days=0
+[2026-04-02T10:15:36.100Z] [Late-Dbg] Day 2026-04-02: Using Stored Amt 1000
+[2026-04-02T10:15:36.100Z] [Late-Dbg] User 63 Final: LateCount=1, Amt=1000, Days=0
+[2026-04-02T10:15:36.197Z] [Late-Dbg] Day 2026-04-02: Using Stored Amt 1002.93
+[2026-04-02T10:15:36.198Z] [Late-Dbg] User 64 Final: LateCount=1, Amt=1002.93, Days=0
+[2026-04-02T10:22:23.995Z] [Late-Dbg] User 57 Final: LateCount=0, Amt=0, Days=0
+[2026-04-02T10:22:24.424Z] [Late-Dbg] User 58 Final: LateCount=0, Amt=0, Days=0
+[2026-04-02T10:22:26.347Z] [Late-Dbg] User 59 Final: LateCount=0, Amt=0, Days=0
+[2026-04-02T10:22:28.361Z] [Late-Dbg] Day 2026-04-02: Using Stored Amt 30
+[2026-04-02T10:22:28.362Z] [Late-Dbg] User 60 Final: LateCount=1, Amt=30, Days=0
+[2026-04-02T10:22:29.479Z] [Late-Dbg] User 61 Final: LateCount=0, Amt=0, Days=0
+[2026-04-02T10:22:29.861Z] [Late-Dbg] User 62 Final: LateCount=0, Amt=0, Days=0
+[2026-04-02T10:22:30.214Z] [Late-Dbg] Day 2026-04-02: Using Stored Amt 1000
+[2026-04-02T10:22:30.300Z] [Late-Dbg] User 63 Final: LateCount=1, Amt=1000, Days=0
+[2026-04-02T10:22:30.625Z] [Late-Dbg] Day 2026-04-02: Using Stored Amt 1002.93
+[2026-04-02T10:22:30.776Z] [Late-Dbg] User 64 Final: LateCount=1, Amt=1002.93, Days=0
+[2026-04-02T10:29:14.967Z] [Late-Dbg] User 57 Final: LateCount=0, Amt=0, Days=0
+[2026-04-02T10:29:15.067Z] [Late-Dbg] User 58 Final: LateCount=0, Amt=0, Days=0
+[2026-04-02T10:29:15.154Z] [Late-Dbg] User 59 Final: LateCount=0, Amt=0, Days=0
+[2026-04-02T10:29:15.226Z] [Late-Dbg] Day 2026-04-02: Using Stored Amt 30
+[2026-04-02T10:29:15.228Z] [Late-Dbg] User 60 Final: LateCount=1, Amt=30, Days=0
+[2026-04-02T10:29:15.317Z] [Late-Dbg] User 61 Final: LateCount=0, Amt=0, Days=0
+[2026-04-02T10:29:15.368Z] [Late-Dbg] User 62 Final: LateCount=0, Amt=0, Days=0
+[2026-04-02T10:29:15.429Z] [Late-Dbg] Day 2026-04-02: Using Stored Amt 1000
+[2026-04-02T10:29:15.430Z] [Late-Dbg] User 63 Final: LateCount=1, Amt=1000, Days=0
+[2026-04-02T10:29:15.510Z] [Late-Dbg] Day 2026-04-02: Using Stored Amt 1002.93
+[2026-04-02T10:29:15.511Z] [Late-Dbg] User 64 Final: LateCount=1, Amt=1002.93, Days=0
+[2026-04-02T10:29:38.785Z] [Late-Dbg] User 57 Final: LateCount=0, Amt=0, Days=0
+[2026-04-02T10:29:38.871Z] [Late-Dbg] User 58 Final: LateCount=0, Amt=0, Days=0
+[2026-04-02T10:29:38.953Z] [Late-Dbg] User 59 Final: LateCount=0, Amt=0, Days=0
+[2026-04-02T10:29:39.013Z] [Late-Dbg] Day 2026-04-02: Using Stored Amt 30
+[2026-04-02T10:29:39.014Z] [Late-Dbg] User 60 Final: LateCount=1, Amt=30, Days=0
+[2026-04-02T10:29:39.152Z] [Late-Dbg] User 61 Final: LateCount=0, Amt=0, Days=0
+[2026-04-02T10:29:39.210Z] [Late-Dbg] User 62 Final: LateCount=0, Amt=0, Days=0
+[2026-04-02T10:29:39.284Z] [Late-Dbg] Day 2026-04-02: Using Stored Amt 1000
+[2026-04-02T10:29:39.285Z] [Late-Dbg] User 63 Final: LateCount=1, Amt=1000, Days=0
+[2026-04-02T10:29:39.434Z] [Late-Dbg] Day 2026-04-02: Using Stored Amt 1002.93
+[2026-04-02T10:29:39.435Z] [Late-Dbg] User 64 Final: LateCount=1, Amt=1002.93, Days=0
+[2026-04-02T10:33:31.581Z] [Late-Dbg] User 57 Final: LateCount=0, Amt=0, Days=0
+[2026-04-02T10:33:31.697Z] [Late-Dbg] User 58 Final: LateCount=0, Amt=0, Days=0
+[2026-04-02T10:33:31.784Z] [Late-Dbg] User 59 Final: LateCount=0, Amt=0, Days=0
+[2026-04-02T10:33:31.832Z] [Late-Dbg] Day 2026-04-02: Using Stored Amt 30
+[2026-04-02T10:33:31.833Z] [Late-Dbg] User 60 Final: LateCount=1, Amt=30, Days=0
+[2026-04-02T10:33:31.932Z] [Late-Dbg] User 61 Final: LateCount=0, Amt=0, Days=0
+[2026-04-02T10:33:31.970Z] [Late-Dbg] User 62 Final: LateCount=0, Amt=0, Days=0
+[2026-04-02T10:33:32.033Z] [Late-Dbg] Day 2026-04-02: Using Stored Amt 1000
+[2026-04-02T10:33:32.034Z] [Late-Dbg] User 63 Final: LateCount=1, Amt=1000, Days=0
+[2026-04-02T10:33:32.129Z] [Late-Dbg] Day 2026-04-02: Using Stored Amt 1002.93
+[2026-04-02T10:33:32.130Z] [Late-Dbg] User 64 Final: LateCount=1, Amt=1002.93, Days=0
+[2026-04-02T10:36:51.908Z] [Late-Dbg] User 57 Final: LateCount=0, Amt=0, Days=0
+[2026-04-02T10:36:51.985Z] [Late-Dbg] User 58 Final: LateCount=0, Amt=0, Days=0
+[2026-04-02T10:36:52.046Z] [Late-Dbg] User 59 Final: LateCount=0, Amt=0, Days=0
+[2026-04-02T10:36:52.094Z] [Late-Dbg] Day 2026-04-02: Using Stored Amt 30
+[2026-04-02T10:36:52.095Z] [Late-Dbg] User 60 Final: LateCount=1, Amt=30, Days=0
+[2026-04-02T10:36:52.184Z] [Late-Dbg] User 61 Final: LateCount=0, Amt=0, Days=0
+[2026-04-02T10:36:52.256Z] [Late-Dbg] User 62 Final: LateCount=0, Amt=0, Days=0
+[2026-04-02T10:36:52.666Z] [Late-Dbg] Day 2026-04-02: Using Stored Amt 1000
+[2026-04-02T10:36:52.667Z] [Late-Dbg] User 63 Final: LateCount=1, Amt=1000, Days=0
+[2026-04-02T10:36:53.060Z] [Late-Dbg] Day 2026-04-02: Using Stored Amt 1002.93
+[2026-04-02T10:36:53.062Z] [Late-Dbg] User 64 Final: LateCount=1, Amt=1002.93, Days=0
+[2026-04-02T10:37:53.148Z] [Late-Dbg] User 57 Final: LateCount=0, Amt=0, Days=0
+[2026-04-02T10:37:53.192Z] [Late-Dbg] User 58 Final: LateCount=0, Amt=0, Days=0
+[2026-04-02T10:37:53.241Z] [Late-Dbg] User 59 Final: LateCount=0, Amt=0, Days=0
+[2026-04-02T10:37:53.292Z] [Late-Dbg] Day 2026-04-02: Using Stored Amt 30
+[2026-04-02T10:37:53.293Z] [Late-Dbg] User 60 Final: LateCount=1, Amt=30, Days=0
+[2026-04-02T10:37:53.379Z] [Late-Dbg] User 61 Final: LateCount=0, Amt=0, Days=0
+[2026-04-02T10:37:53.437Z] [Late-Dbg] User 62 Final: LateCount=0, Amt=0, Days=0
+[2026-04-02T10:37:53.492Z] [Late-Dbg] Day 2026-04-02: Using Stored Amt 1000
+[2026-04-02T10:37:53.493Z] [Late-Dbg] User 63 Final: LateCount=1, Amt=1000, Days=0
+[2026-04-02T10:37:53.560Z] [Late-Dbg] Day 2026-04-02: Using Stored Amt 1002.93
+[2026-04-02T10:37:53.562Z] [Late-Dbg] User 64 Final: LateCount=1, Amt=1002.93, Days=0
+[2026-04-02T10:53:39.528Z] [Late-Dbg] User 57 Final: LateCount=0, Amt=0, Days=0
+[2026-04-02T10:53:39.631Z] [Late-Dbg] User 58 Final: LateCount=0, Amt=0, Days=0
+[2026-04-02T10:53:39.679Z] [Late-Dbg] User 59 Final: LateCount=0, Amt=0, Days=0
+[2026-04-02T10:53:39.746Z] [Late-Dbg] Day 2026-04-02: Using Stored Amt 30
+[2026-04-02T10:53:39.747Z] [Late-Dbg] User 60 Final: LateCount=1, Amt=30, Days=0
+[2026-04-02T10:53:39.839Z] [Late-Dbg] User 61 Final: LateCount=0, Amt=0, Days=0
+[2026-04-02T10:53:39.944Z] [Late-Dbg] User 62 Final: LateCount=0, Amt=0, Days=0
+[2026-04-02T10:53:39.994Z] [Late-Dbg] Day 2026-04-02: Using Stored Amt 1000
+[2026-04-02T10:53:39.995Z] [Late-Dbg] User 63 Final: LateCount=1, Amt=1000, Days=0
+[2026-04-02T10:53:40.120Z] [Late-Dbg] Day 2026-04-02: Using Stored Amt 1002.93
+[2026-04-02T10:53:40.121Z] [Late-Dbg] User 64 Final: LateCount=1, Amt=1002.93, Days=0
