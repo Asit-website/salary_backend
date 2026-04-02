@@ -1913,18 +1913,16 @@ router.get('/my-payroll-status', async (req, res) => {
 
     console.error('My payroll status error:', e);
 
-    return res.status(500).json({ success: false, message: 'Failed to get payroll status' });
-
   }
-
 });
-
-
-
 router.post('/payroll/:cycleId/compute', async (req, res) => {
+  const fs = require('fs');
+  const logPath = './payroll_debug.log';
+  const log = (msg) => {
+    try { fs.appendFileSync(logPath, `[${new Date().toISOString()}] ${msg}\n`); } catch (err) { console.error('Failed to write to payroll_debug.log', err); }
+  };
 
   try {
-
     const orgId = requireOrg(req, res); if (!orgId) return;
 
     const { PayrollCycle, PayrollLine, User, Attendance, LeaveRequest, StaffLoan, StaffAdvance, ExpenseClaim, LeaveEncashment, SalaryTemplate, EarlyExitRule, StaffEarlyExitAssignment, OrgAccount, StaffLatePunchInAssignment, LatePunchInRule, AttendanceAutomationRule } = require('../models');
@@ -2252,7 +2250,9 @@ router.post('/payroll/:cycleId/compute', async (req, res) => {
           'overtimeAmount', 'earlyExitAmount', 'earlyExitMinutes', 'userId',
           'orgAccountId', 'earlyExitRuleId', 'breakDeductionAmount',
           'breakRuleId', 'excessBreakMinutes', 'breakTotalSeconds',
-          'totalWorkHours', 'earlyOvertimeMinutes', 'earlyOvertimeAmount', 'earlyOvertimeRuleId'
+          'totalWorkHours', 'earlyOvertimeMinutes', 'earlyOvertimeAmount', 'earlyOvertimeRuleId',
+          'latePunchInMinutes', 'latePunchInAmount', 'late_punchin_minutes', 'late_punchin_amount',
+          'latePunchInRuleId', 'late_punchin_rule_id'
         ]
       });
 
@@ -2422,6 +2422,7 @@ router.post('/payroll/:cycleId/compute', async (req, res) => {
       // Category counts: classify calendar days (for current month, only count till today)
       let present = 0, half = 0, leave = 0, absent = 0, paidLeave = 0, unpaidLeave = 0;
       const daysInMonth = end.getDate();
+      const dailySalary = (Number(e.basic_salary || sd.basicSalary || 0) + Number(e.da || sd.da || 0)) / daysInMonth;
       const now = new Date();
       const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
       const isCurrentMonth = Number(yy) === now.getFullYear() && Number(mm) === (now.getMonth() + 1);
@@ -2456,156 +2457,132 @@ router.post('/payroll/:cycleId/compute', async (req, res) => {
       }
 
       // Late Entry Penalty Logic (Integrated Rule Automation)
+      // Late Entry Penalty Logic (Integrated Rule Automation - Refactored for Per-Day Resolution)
       let lateCount = 0;
       let latePenaltyDays = 0;
       let latePenaltyAmount = 0;
 
-      // 1. Resolve active late rule for this staff member
-      const userLateAsg = latePunchInAssignments.find(asg => {
-        const asgId = asg.userId || asg.user_id;
-        return asgId === u.id && 
-               start >= asg.effectiveFrom && 
-               (!asg.effectiveTo || start <= asg.effectiveTo);
-      });
-      const activeRule = userLateAsg?.rule || null;
-
-      if (activeRule && activeRule.active) {
-        try {
-          let thresholds = activeRule.thresholds;
-          if (typeof thresholds === 'string') {
-            try { thresholds = JSON.parse(thresholds); } catch (e) { thresholds = []; }
-          }
-          if (!Array.isArray(thresholds)) thresholds = [];
-          
-          const pType = activeRule.penaltyType || 'SLABS';
-          
-          const shiftAsg = await StaffShiftAssignment.findOne({
-            where: { userId: u.id },
-            include: [{ model: ShiftTemplate, as: 'template' }],
-            order: [['effectiveFrom', 'DESC'], ['id', 'DESC']]
-          });
-
-          let shiftTpl = shiftAsg?.template;
-          if (!shiftTpl && u.profile?.shiftSelection) {
-            shiftTpl = await ShiftTemplate.findOne({ where: { id: Number(u.profile.shiftSelection), active: true } });
-          }
-
-          if (shiftTpl?.startTime) {
-            const [sh, sm, ss] = shiftTpl.startTime.split(':').map(Number);
-            const shiftStartSeconds = sh * 3600 + sm * 60 + (ss || 0);
-            
-            let counts = new Array(thresholds.length).fill(0);
-
-            for (const a of atts) {
-              if (!a.punchedInAt) continue;
-              const status = String(a.status || '').toLowerCase();
-              if (status !== 'present' && status !== 'half_day' && status !== 'overtime') {
-                // Fallback: check if latePunchInMinutes is already > 0 (e.g. from manual update)
-                if (Number(a.latePunchInMinutes || 0) <= 0) continue;
-              }
-
-              const punchIn = new Date(a.punchedInAt);
-              const istDate = new Date(punchIn.getTime() + (5.5 * 3600 * 1000));
-              const punchInSeconds = istDate.getUTCHours() * 3600 + istDate.getUTCMinutes() * 60 + istDate.getUTCSeconds();
-              
-              const diffMin = Math.max(Number(a.latePunchInMinutes || 0), Math.floor((punchInSeconds - shiftStartSeconds) / 60));
-
-              if (diffMin > 0) {
-                if (pType === 'SLABS') {
-                  for (let i = 0; i < thresholds.length; i++) {
-                    const t = thresholds[i];
-                    if (diffMin >= Number(t.minMinutes) && diffMin <= Number(t.maxMinutes)) {
-                      counts[i]++;
-                      lateCount++;
-                      break;
-                    }
-                  }
-                } else {
-                  // Fixed penalty types count every lateness if it hits the minimum threshold
-                  const tBase = thresholds
-                    .filter(x => diffMin >= Number(x.minMinutes))
-                    .sort((a, b) => Number(b.minMinutes) - Number(a.minMinutes))[0];
-                  if (tBase) {
-                    lateCount++;
-                    if (pType === 'FIXED_AMOUNT') {
-                      latePenaltyAmount += Number(tBase.value || 0);
-                    } else if (pType === 'FIXED_AMOUNT_PER_HOUR') {
-                      latePenaltyAmount += Number(tBase.value || 0) * Math.ceil(diffMin / 60);
-                    } else if (pType === 'HALF_DAY') {
-                      latePenaltyDays += 0.5;
-                    } else if (pType === 'FULL_DAY') {
-                      latePenaltyDays += 1;
-                    }
-                  }
-                }
-              }
-            }
-
-            // Calculate slabs-based deduction days after per-day loop
-            if (pType === 'SLABS') {
-              for (let i = 0; i < thresholds.length; i++) {
-                const t = thresholds[i];
-                if (t.frequency > 0 && counts[i] > 0) {
-                  latePenaltyDays += Math.floor(counts[i] / t.frequency) * Number(t.deduction);
-                }
-              }
-            }
-          }
-        } catch (err) {
-          console.error(`Error calculating rule-based late penalty for staff ${u.id}:`, err);
+      try {
+        // Resolve Shift Template once (fallback to profile if no specific assignment)
+        const shiftAsg = await StaffShiftAssignment.findOne({
+          where: { userId: u.id },
+          include: [{ model: ShiftTemplate, as: 'template' }],
+          order: [['effectiveFrom', 'DESC'], ['id', 'DESC']]
+        });
+        let shiftTpl = shiftAsg?.template;
+        if (!shiftTpl && u.profile?.shiftSelection) {
+          shiftTpl = await ShiftTemplate.findOne({ where: { id: Number(u.profile.shiftSelection), active: true } });
         }
-      } else if (lateRuleActive) {
-        // Fallback to legacy global org rule
-        try {
-          let tierCounts = new Array(lateTiers.length).fill(0);
 
-          const shiftAsg = await StaffShiftAssignment.findOne({
-            where: { userId: u.id },
-            include: [{ model: ShiftTemplate, as: 'template' }],
-            order: [['effectiveFrom', 'DESC'], ['id', 'DESC']]
-          });
+        if (shiftTpl?.startTime) {
+          const [sh, sm, ss] = shiftTpl.startTime.split(':').map(Number);
+          const shiftStartSeconds = sh * 3600 + sm * 60 + (ss || 0);
 
-          let shiftTpl = shiftAsg?.template;
-          if (!shiftTpl && u.profile?.shiftSelection) {
-            shiftTpl = await ShiftTemplate.findOne({ where: { id: Number(u.profile.shiftSelection), active: true } });
-          }
+          // We'll need a way to track SLABS/Tiers across the month even with per-day rules
+          // Since rules are usually stable for a user, we use a map to cache thresholds/counts per RuleID
+          const ruleCounts = {}; 
+          const tierCounts = new Array(lateTiers.length).fill(0);
 
-          if (shiftTpl?.startTime) {
-            const [sh, sm, ss] = shiftTpl.startTime.split(':').map(Number);
-            const shiftStartSeconds = sh * 3600 + sm * 60 + (ss || 0);
+          for (const a of atts) {
+            if (!a.punchedInAt) continue;
+            const dayKey = toDateKey(a.date);
+            const status = String(a.status || '').toLowerCase();
+            if (status !== 'present' && status !== 'half_day' && status !== 'overtime') {
+              if (Number(a.latePunchInMinutes || 0) <= 0) continue;
+            }
 
-            for (const a of atts) {
-              if (!a.punchedInAt) continue;
-              const status = String(a.status || '').toLowerCase();
-              if (status !== 'present' && status !== 'half_day' && status !== 'overtime') continue;
+            // A. PRIORITIZE STORED VALUES (from ai_processor or manual edit)
+            const storedAmt = Number(a.latePunchInAmount || a.late_punchin_amount || 0);
+            const storedMins = Number(a.latePunchInMinutes || a.late_punchin_minutes || 0);
+            if (storedAmt > 0) {
+              lateCount++;
+              latePenaltyAmount += storedAmt;
+              log(`[Late-Dbg] Day ${dayKey}: Using Stored Amt ${storedAmt}`);
+              continue;
+            }
 
-              const punchIn = new Date(a.punchedInAt);
-              const istDate = new Date(punchIn.getTime() + (5.5 * 3600 * 1000));
-              const punchInSeconds = istDate.getUTCHours() * 3600 + istDate.getUTCMinutes() * 60 + istDate.getUTCSeconds();
+            // B. RESOLVE RULE FOR THIS DAY
+            const dayAsg = latePunchInAssignments.find(asg => {
+              const asgId = asg.userId || asg.user_id;
+              const effFrom = toDateKey(asg.effectiveFrom);
+              const effTo = asg.effectiveTo ? toDateKey(asg.effectiveTo) : null;
+              return asgId === u.id && dayKey >= effFrom && (!effTo || dayKey <= effTo);
+            });
+            const activeRule = dayAsg?.rule;
 
-              if (punchInSeconds > shiftStartSeconds) {
-                const lateMins = Math.floor((punchInSeconds - shiftStartSeconds) / 60);
-                for (let i = 0; i < lateTiers.length; i++) {
-                  const t = lateTiers[i];
-                  if (lateMins >= Number(t.minMinutes) && lateMins <= Number(t.maxMinutes)) {
-                    tierCounts[i] += 1;
-                    lateCount += 1;
+            // C. CALCULATE DIFF
+            const punchIn = new Date(a.punchedInAt);
+            const istDate = new Date(punchIn.getTime() + (5.5 * 3600 * 1000));
+            const punchInSeconds = istDate.getUTCHours() * 3600 + istDate.getUTCMinutes() * 60 + istDate.getUTCSeconds();
+            const diffMin = Math.max(storedMins, Math.floor((punchInSeconds - shiftStartSeconds) / 60));
+
+            if (diffMin <= 0) continue;
+
+            if (activeRule && activeRule.active) {
+              // Assignment-based Rule
+              let thresholds = activeRule.thresholds;
+              if (typeof thresholds === 'string') try { thresholds = JSON.parse(thresholds); } catch (e) { thresholds = []; }
+              if (!Array.isArray(thresholds)) thresholds = [];
+              const pType = activeRule.penaltyType || 'SLABS';
+
+              if (pType === 'SLABS') {
+                if (!ruleCounts[activeRule.id]) ruleCounts[activeRule.id] = { thresholds, counts: new Array(thresholds.length).fill(0) };
+                const rc = ruleCounts[activeRule.id];
+                for (let i = 0; i < thresholds.length; i++) {
+                  const t = thresholds[i];
+                  if (diffMin >= Number(t.minMinutes) && diffMin <= Number(t.maxMinutes)) {
+                    rc.counts[i]++;
+                    lateCount++;
                     break;
                   }
                 }
+              } else {
+                const tBase = thresholds.filter(x => diffMin >= Number(x.minMinutes)).sort((a,b) => Number(b.minMinutes)-Number(a.minMinutes))[0];
+                if (tBase) {
+                  lateCount++;
+                  if (pType === 'FIXED_AMOUNT') latePenaltyAmount += Number(tBase.value || 0);
+                  else if (pType === 'FIXED_AMOUNT_PER_HOUR') latePenaltyAmount += Number(tBase.value || 0) * Math.ceil(diffMin / 60);
+                  else if (pType === 'HALF_DAY') { latePenaltyDays += 0.5; if (dailySalary > 0) latePenaltyAmount += (0.5 * dailySalary); }
+                  else if (pType === 'FULL_DAY') { latePenaltyDays += 1; if (dailySalary > 0) latePenaltyAmount += dailySalary; }
+                  log(`[Late-Dbg] Day ${dayKey}: Matched Rule ${activeRule.id} Fixed, Amt: ${latePenaltyAmount}`);
+                }
               }
-            }
-
-            for (let i = 0; i < lateTiers.length; i++) {
-              const t = lateTiers[i];
-              if (t.frequency > 0 && tierCounts[i] > 0) {
-                latePenaltyDays += Math.floor(tierCounts[i] / t.frequency) * Number(t.deduction);
+            } else if (lateRuleActive) {
+              // Legacy Global Rule
+              for (let i = 0; i < lateTiers.length; i++) {
+                const t = lateTiers[i];
+                if (diffMin >= Number(t.minMinutes) && diffMin <= Number(t.maxMinutes)) {
+                  tierCounts[i]++;
+                  lateCount++;
+                  break;
+                }
               }
             }
           }
-        } catch (err) {
-          console.error('Error calculating legacy late penalty in compute route:', err);
+
+          // D. POST-LOOP SLABS CALCULATION
+          Object.values(ruleCounts).forEach(rc => {
+            rc.thresholds.forEach((t, i) => {
+              if (t.frequency > 0 && rc.counts[i] > 0) {
+                const dedDays = Math.floor(rc.counts[i] / t.frequency) * Number(t.deduction);
+                latePenaltyDays += dedDays;
+                if (dailySalary > 0) latePenaltyAmount += (dedDays * dailySalary);
+              }
+            });
+          });
+
+          lateTiers.forEach((t, i) => {
+            if (t.frequency > 0 && tierCounts[i] > 0) {
+              const dedVal = Math.floor(tierCounts[i] / t.frequency) * Number(t.deduction);
+              latePenaltyDays += dedVal;
+              if (dailySalary > 0) latePenaltyAmount += (dedVal * dailySalary);
+            }
+          });
+
+          log(`[Late-Dbg] User ${u.id} Final: LateCount=${lateCount}, Amt=${latePenaltyAmount}, Days=${latePenaltyDays}`);
         }
+      } catch (err) {
+        console.error(`Error in per-day lateness calculation for staff ${u.id}:`, err);
       }
 
 
@@ -2613,7 +2590,7 @@ router.post('/payroll/:cycleId/compute', async (req, res) => {
       // Proration by payable units: present(1) + half(0.5) + weeklyOff(1) + holidays(1) + paidLeave(1)
 
       const payableUnitsRaw = present + (half * 0.5) + weeklyOff + holidays + paidLeave;
-      const payableUnits = Math.max(0, payableUnitsRaw - latePenaltyDays);
+      const payableUnits = Math.max(0, payableUnitsRaw);
       const daysForRatio = daysInMonth;
       const ratio = daysForRatio > 0 ? Math.max(0, Math.min(1, payableUnits / daysForRatio)) : 1;
 
@@ -2624,9 +2601,9 @@ router.post('/payroll/:cycleId/compute', async (req, res) => {
         const res = {};
         Object.entries(obj || {}).forEach(([k, v]) => {
           if (exemptKeys.includes(k)) {
-            res[k] = Math.round(Number(v || 0));
+            res[k] = Number(v || 0);
           } else {
-            res[k] = Math.ceil(Number(v || 0) * r);
+            res[k] = Number(v || 0) * r;
           }
         });
         return res;
@@ -2675,7 +2652,7 @@ router.post('/payroll/:cycleId/compute', async (req, res) => {
       } catch (e) { }
       const finalD = prorate(finalDeductions, ratio, ['loan_emi', 'advance_deduction']);
       if (latePenaltyAmount > 0) {
-        finalD.late_penalty = (finalD.late_penalty || 0) + latePenaltyAmount;
+        finalD.late_punchin_penalty = (finalD.late_punchin_penalty || 0) + latePenaltyAmount;
       }
 
       // FETCH APPROVED LEAVE ENCASHMENTS (Not pro-rated)
@@ -2694,7 +2671,7 @@ router.post('/payroll/:cycleId/compute', async (req, res) => {
           if (amount <= 0) {
             const base = Number(e?.basic_salary || sd.basicSalary || 0) + Number(e?.da || sd.da || 0);
             const dailyRate = base / daysInMonth;
-            amount = Math.round(dailyRate * Number(enc.days || 0));
+            amount = dailyRate * Number(enc.days || 0);
           }
           const catName = categoryNames[enc.categoryKey.toLowerCase()] || enc.categoryKey.toUpperCase();
           const label = `LEAVE_ENCASHMENT: ${catName}`;
@@ -2743,7 +2720,7 @@ router.post('/payroll/:cycleId/compute', async (req, res) => {
       if (overtimePay <= 0 && totalOvertimeMinutes > 0) {
         const overtimeBaseSalary = Number(e?.basic_salary || sd.basicSalary || 0) + Number(e?.da || sd.da || 0);
         hourlyRate = daysInMonth > 0 ? (overtimeBaseSalary / (daysInMonth * 8)) : 0;
-        overtimePay = Math.round(Math.max(0, overtimeHours) * Math.max(0, hourlyRate));
+        overtimePay = Math.max(0, overtimeHours) * Math.max(0, hourlyRate);
       }
 
       if (overtimePay > 0) {
@@ -2826,12 +2803,12 @@ router.post('/payroll/:cycleId/compute', async (req, res) => {
         earlyOvertimePay: totalEarlyOvertimeAmount,
         lateCount,
         latePenaltyDays,
-        latePenaltyAmount,
+        latePenalty: latePenaltyAmount,
+        latePunchInPenalty: latePenaltyAmount,
         earlyExitMinutes: totalEarlyExitMinutes,
         earlyExitPenalty: totalEarlyExitAmount,
         breakPenalty: totalBreakPenaltyAmount,
         excessBreakMinutes: totalExcessBreakMinutes,
-        // Ensure netSalary reflected here is consistent with the final totals
         netSalary: Math.max(0, netSalary),
       };
       const totals = { totalEarnings, totalIncentives, totalDeductions, grossSalary, netSalary, ratio };
