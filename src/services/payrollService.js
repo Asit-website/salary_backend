@@ -2,6 +2,7 @@ const puppeteer = require('puppeteer');
 const fs = require('fs');
 const path = require('path');
 const { Op } = require('sequelize');
+const axios = require('axios');
 const {
   User, StaffProfile, StaffShiftAssignment, ShiftTemplate, SalaryAccess,
   StaffAttendanceAssignment, AttendanceTemplate, StaffSalaryAssignment, SalaryTemplate,
@@ -28,22 +29,275 @@ function getMonthRange(monthKey) {
   return { yy, mm, start, end, endKey };
 }
 
-async function computeOvertimeMeta({ userId, monthKey, overtimeBaseSalary }) {
+async function computeOvertimeMeta({ userId, monthKey, overtimeBaseSalary, orgAccount }) {
   const { start, endKey, end } = getMonthRange(monthKey);
   const rows = await Attendance.findAll({
     where: { userId, date: { [Op.gte]: start, [Op.lte]: endKey } },
-    attributes: ['overtimeMinutes']
+    attributes: ['id', 'userId', 'orgAccountId', 'overtimeMinutes', 'overtimeAmount', 'overtimeRuleId', 'totalWorkHours', 'date', 'punchedInAt', 'punchedOutAt']
   });
-  const overtimeMinutes = rows.reduce((s, r) => s + (Number(r.overtimeMinutes || 0) || 0), 0);
-  const overtimeHours = overtimeMinutes / 60;
+  
+  const { calculateOvertime } = require('./overtimeService');
   const daysInMonth = Number(end.getDate() || 30);
+
+  let totalOvertimeMinutes = 0;
+  let totalOvertimePay = 0;
+
+  for (const row of rows) {
+    // Try both camelCase and snake_case to be extra safe against model mapping issues
+    let otAmount = Number(row.overtimeAmount !== undefined ? row.overtimeAmount : (row.getDataValue ? row.getDataValue('overtime_amount') : (row.overtime_amount || 0)));
+    let otMinutes = Number(row.overtimeMinutes !== undefined ? row.overtimeMinutes : (row.getDataValue ? row.getDataValue('overtime_minutes') : (row.overtime_minutes || 0)));
+
+    console.log(`[Payroll-OT] Row: ${row.date}, Amt: ${otAmount}, Min: ${otMinutes}`);
+
+    // If an Automation Rule is active and amount is missing, calculate it
+    if (orgAccount?.overtimeRuleId && otAmount <= 0 && otMinutes > 0) {
+        const result = await calculateOvertime(row, orgAccount, row.punchedOutAt, daysInMonth);
+        otAmount = result.overtimeAmount;
+        otMinutes = result.overtimeMinutes;
+    }
+
+    totalOvertimeMinutes += otMinutes;
+    totalOvertimePay += otAmount;
+  }
+
+  const overtimeHours = totalOvertimeMinutes / 60;
   const hourlyRate = daysInMonth > 0 ? (Number(overtimeBaseSalary || 0) / (daysInMonth * 8)) : 0;
-  const overtimePay = Math.round(Math.max(0, overtimeHours) * Math.max(0, hourlyRate));
+
+  const hasActiveRule = Number(orgAccount?.overtimeRuleId) > 0;
+  console.log(`[Payroll-OT] Final - User: ${userId}, TotalMin: ${totalOvertimeMinutes}, TotalPay: ${totalOvertimePay}, RuleActive: ${hasActiveRule}`);
+
+  if (!hasActiveRule && totalOvertimePay <= 0 && totalOvertimeMinutes > 0) {
+    totalOvertimePay = Math.round(Math.max(0, overtimeHours) * Math.max(0, hourlyRate));
+    console.log(`[Payroll-OT] Fallback applied: ${totalOvertimePay}`);
+  }
+
   return {
-    overtimeMinutes,
+    overtimeMinutes: totalOvertimeMinutes,
     overtimeHours: Number(overtimeHours.toFixed(2)),
     overtimeHourlyRate: Number(hourlyRate.toFixed(2)),
-    overtimePay
+    overtimePay: totalOvertimePay
+  };
+}
+
+async function computeEarlyOvertimeMeta({ userId, monthKey, orgAccount }) {
+  const { start, endKey, end } = getMonthRange(monthKey);
+  const rows = await Attendance.findAll({
+    where: { userId, date: { [Op.gte]: start, [Op.lte]: endKey } },
+    attributes: ['id', 'userId', 'orgAccountId', 'earlyOvertimeMinutes', 'earlyOvertimeAmount', 'earlyOvertimeRuleId', 'date', 'punchedInAt']
+  });
+  
+  const { calculateEarlyOvertime } = require('./earlyOvertimeService');
+  const daysInMonth = Number(end.getDate() || 30);
+
+  let totalEarlyOvertimeMinutes = 0;
+  let totalEarlyOvertimePay = 0;
+
+  for (const row of rows) {
+    let eotAmount = Number(row.earlyOvertimeAmount !== undefined ? row.earlyOvertimeAmount : (row.getDataValue ? row.getDataValue('early_overtime_amount') : (row.early_overtime_amount || 0)));
+    let eotMinutes = Number(row.earlyOvertimeMinutes !== undefined ? row.earlyOvertimeMinutes : (row.getDataValue ? row.getDataValue('early_overtime_minutes') : (row.early_overtime_minutes || 0)));
+
+    if (orgAccount?.earlyOvertimeRuleId && eotAmount <= 0 && eotMinutes > 0) {
+        const result = await calculateEarlyOvertime(row, orgAccount, row.punchedInAt, daysInMonth);
+        eotAmount = result.earlyOvertimeAmount;
+        eotMinutes = result.earlyOvertimeMinutes;
+    }
+
+    totalEarlyOvertimeMinutes += eotMinutes;
+    totalEarlyOvertimePay += eotAmount;
+  }
+
+  return {
+    earlyOvertimeMinutes: totalEarlyOvertimeMinutes,
+    earlyOvertimePay: totalEarlyOvertimePay
+  };
+}
+
+async function computeEarlyExitMeta({ userId, monthKey, orgAccount }) {
+  const { start, endKey, end } = getMonthRange(monthKey);
+  const daysInMonth = Number(end.getDate() || 30);
+  const rows = await Attendance.findAll({
+    where: { userId, date: { [Op.gte]: start, [Op.lte]: endKey } },
+    attributes: ['id', 'userId', 'orgAccountId', 'earlyExitMinutes', 'earlyExitAmount', 'earlyExitRuleId', 'date', 'punchedOutAt']
+  });
+  
+  const earlyExitService = require('./earlyExitService');
+
+  let totalEarlyExitMinutes = 0;
+  let totalEarlyExitPenalty = 0;
+
+  for (const row of rows) {
+    let eeAmount = Number(row.earlyExitAmount !== undefined ? row.earlyExitAmount : (row.getDataValue ? row.getDataValue('early_exit_amount') : (row.early_exit_amount || 0)));
+    let eeMinutes = Number(row.earlyExitMinutes !== undefined ? row.earlyExitMinutes : (row.getDataValue ? row.getDataValue('early_exit_minutes') : (row.early_exit_minutes || 0)));
+
+    // If an Automation Rule is active and amount is missing, calculate it
+    if (orgAccount?.earlyExitRuleId && eeAmount <= 0 && eeMinutes > 0) {
+        const result = await earlyExitService.calculateEarlyExit(row, orgAccount, row.punchedOutAt, daysInMonth);
+        eeAmount = result.earlyExitAmount;
+        eeMinutes = result.earlyExitMinutes;
+    }
+
+    totalEarlyExitMinutes += eeMinutes;
+    totalEarlyExitPenalty += eeAmount;
+  }
+
+  return {
+    earlyExitMinutes: totalEarlyExitMinutes,
+    earlyExitPenalty: totalEarlyExitPenalty
+  };
+}
+
+async function computeBreakMeta({ userId, monthKey, orgAccount }) {
+  const { start, endKey, end } = getMonthRange(monthKey);
+  const daysInMonth = Number(end.getDate() || 30);
+  const rows = await Attendance.findAll({
+    where: { userId, date: { [Op.gte]: start, [Op.lte]: endKey } },
+    attributes: ['id', 'userId', 'orgAccountId', 'breakDeductionAmount', 'excessBreakMinutes', 'breakRuleId', 'date', 'punchedOutAt', 'breakTotalSeconds']
+  });
+  
+  const breakService = require('./breakService');
+
+  let totalExcessBreakMinutes = 0;
+  let totalBreakPenalty = 0;
+
+  for (const row of rows) {
+    let bAmount = Number(row.breakDeductionAmount !== undefined ? row.breakDeductionAmount : (row.getDataValue ? row.getDataValue('break_deduction_amount') : (row.break_deduction_amount || 0)));
+    let bMinutes = Number(row.excessBreakMinutes !== undefined ? row.excessBreakMinutes : (row.getDataValue ? row.getDataValue('excess_break_minutes') : (row.excess_break_minutes || 0)));
+
+    // Re-calculate if rule is active but no penalty saved
+    if (orgAccount?.breakRuleId && bAmount <= 0 && (row.breakTotalSeconds || 0) > 0) {
+        const result = await breakService.calculateBreakDeduction(row, orgAccount, row.punchedOutAt, daysInMonth);
+        bAmount = result.breakDeductionAmount;
+        bMinutes = result.excessBreakMinutes;
+    }
+
+    totalExcessBreakMinutes += bMinutes;
+    totalBreakPenalty += bAmount;
+  }
+
+  return {
+    excessBreakMinutes: totalExcessBreakMinutes,
+    breakPenalty: totalBreakPenalty
+  };
+}
+
+async function computeLatePenaltyMeta({ userId, monthKey, orgAccount, baseSalary }) {
+  const { start, endKey, end } = getMonthRange(monthKey);
+  const daysInMonth = Number(end.getDate() || 30);
+  const dailySalary = baseSalary / daysInMonth;
+
+  // 1. Fetch all attendance records for the month
+  const rows = await Attendance.findAll({
+    where: { userId, date: { [Op.gte]: start, [Op.lte]: endKey } },
+    attributes: ['id', 'userId', 'orgAccountId', 'latePunchInMinutes', 'latePunchInAmount', 'latePunchInRuleId', 'isLate', 'date', 'status'],
+    order: [['date', 'ASC']]
+  });
+
+  let totalLateMinutes = 0;
+  let totalLatePenalty = 0;
+  let lateCount = 0;
+
+  // 2. Resolve the applicable rule (Assignment-based primary)
+  const { StaffLatePunchInAssignment, LatePunchInRule } = require('../models');
+  const targetOrgId = orgAccount?.id || orgAccount;
+  
+  const assignment = await StaffLatePunchInAssignment.findOne({
+    where: {
+      userId,
+      orgAccountId: targetOrgId,
+      effectiveFrom: { [Op.lte]: endKey },
+      [Op.or]: [{ effectiveTo: null }, { effectiveTo: { [Op.gte]: start } }]
+    },
+    order: [['effectiveFrom', 'DESC']],
+    include: [{ model: LatePunchInRule, as: 'rule' }]
+  });
+
+  const rule = (assignment && assignment.rule && assignment.rule.active) ? assignment.rule : null;
+
+  if (rule) {
+    // A. Advanced Rule Logic
+    let thresholds = rule.thresholds;
+    if (typeof thresholds === 'string') {
+      try { thresholds = JSON.parse(thresholds); } catch (e) { thresholds = []; }
+    }
+    if (!Array.isArray(thresholds)) thresholds = [];
+    const pType = rule.penaltyType || 'SLABS';
+
+    const slabOccurrences = {}; // index -> count
+
+    for (const row of rows) {
+      const rowLateMinutes = Number(row.latePunchInMinutes || row.getDataValue('late_punchin_minutes') || 0);
+      const rowLateAmount = Number(row.latePunchInAmount || row.getDataValue('late_punchin_amount') || 0);
+      const rowIsLate = row.isLate || row.getDataValue('is_late') || (row.status === 'late') || (rowLateMinutes > 0);
+
+      if (!rowIsLate || rowLateMinutes <= 0) continue;
+
+      totalLateMinutes += rowLateMinutes;
+      lateCount += 1;
+
+      if (rowLateAmount > 0) {
+        totalLatePenalty += rowLateAmount;
+      } else if (pType === 'FIXED_AMOUNT') {
+        totalLatePenalty += Number(rule.amount || 0);
+      } else if (pType === 'SLABS') {
+        const matchingSlab = thresholds
+          .filter(t => (rowLateMinutes >= (t.minMinutes || 0)))
+          .sort((a, b) => (b.minMinutes || 0) - (a.minMinutes || 0))[0];
+
+        if (matchingSlab) {
+          const idx = thresholds.indexOf(matchingSlab);
+          slabOccurrences[idx] = (slabOccurrences[idx] || 0) + 1;
+          const freq = Number(matchingSlab.frequency || 1);
+          if (slabOccurrences[idx] % freq === 0) {
+            if (matchingSlab.type === 'fixed') totalLatePenalty += Number(matchingSlab.value || 0);
+            else if (matchingSlab.type === 'daily_salary') totalLatePenalty += dailySalary * Number(matchingSlab.value || 0);
+          }
+        }
+      }
+    }
+  } else {
+    // B. Legacy Global Logic (Fallback)
+    const { AttendanceAutomationRule } = require('../models');
+    const penaltyRule = await AttendanceAutomationRule.findOne({
+      where: { key: 'late_punchin_penalty', orgAccountId: orgAccount.id, active: true }
+    });
+
+    if (penaltyRule) {
+      let config = penaltyRule.config;
+      if (typeof config === 'string') { try { config = JSON.parse(config); } catch (e) { config = {}; } }
+      if (config.active !== false) {
+        let tiers = config.tiers || [{
+          minMinutes: Number(config.lateMinutes || 15),
+          maxMinutes: 9999,
+          deduction: Number(config.deduction || 1),
+          frequency: Number(config.threshold || 3)
+        }];
+        const tierCounts = new Array(tiers.length).fill(0);
+        for (const row of rows) {
+          const rowIsLate = row.isLate || row.getDataValue('is_late') || (row.status === 'late');
+          const rowLateMinutes = Number(row.latePunchInMinutes || row.getDataValue('late_punchin_minutes') || 0);
+          if (!rowIsLate || rowLateMinutes <= 0) continue;
+          totalLateMinutes += rowLateMinutes;
+          lateCount += 1;
+
+          for (let i = 0; i < tiers.length; i++) {
+            const t = tiers[i];
+            if (rowLateMinutes >= Number(t.minMinutes) && rowLateMinutes <= Number(t.maxMinutes)) {
+              tierCounts[i]++;
+              if (Number(t.frequency) > 0 && tierCounts[i] % Number(t.frequency) === 0) {
+                totalLatePenalty += (dailySalary * Number(t.deduction));
+              }
+              break;
+            }
+          }
+        }
+      }
+    }
+  }
+
+  return {
+    latePunchInMinutes: totalLateMinutes,
+    latePunchInPenalty: parseFloat(totalLatePenalty.toFixed(2)),
+    lateCount
   };
 }
 
@@ -156,20 +410,50 @@ async function calculateSalary(userId, monthKey) {
       attendanceSummary = { present: payableDays, absent: daysInMonth - payableDays };
     }
 
-    // Backfill overtime info for legacy lines that were generated before overtime pay support
+    // Backfill overtime and early exit info for legacy lines
     try {
-      const overtimeBaseSalary = Number(earnings?.basic_salary || u.basicSalary || 0) + Number(earnings?.da || u.da || 0);
-      const ot = await computeOvertimeMeta({ userId: u.id, monthKey, overtimeBaseSalary });
-      if (ot.overtimePay > 0 && !Number(earnings?.overtime_pay || 0)) {
-        earnings = { ...(earnings || {}), overtime_pay: ot.overtimePay };
+      const basicSalary = Number(earnings?.basic_salary || u.basicSalary || 0) + Number(earnings?.da || u.da || 0);
+      const orgAccount = await OrgAccount.findByPk(u.orgAccountId);
+
+      const [ee, br, eot, lp] = await Promise.all([
+        computeEarlyExitMeta({ userId: u.id, monthKey, orgAccount }),
+        computeBreakMeta({ userId: u.id, monthKey, orgAccount }),
+        computeEarlyOvertimeMeta({ userId: u.id, monthKey, orgAccount }),
+        computeLatePenaltyMeta({ userId: u.id, monthKey, orgAccount, baseSalary: basicSalary })
+      ]);
+
+      // Note: Regular overtime (ot) usually fetched separately or part of another flow, 
+      // but let's ensure these 4 automated deductions/earnings are correctly mapped.
+
+      if (eot.earlyOvertimePay > 0 && !Number(earnings?.early_overtime_pay || 0)) {
+        earnings = { ...(earnings || {}), early_overtime_pay: eot.earlyOvertimePay };
       }
+      
+      if (ee.earlyExitPenalty > 0 && !Number(deductions?.early_exit_penalty || 0)) {
+        deductions = { ...(deductions || {}), early_exit_penalty: ee.earlyExitPenalty };
+      }
+      
+      if (br.breakPenalty > 0 && !Number(deductions?.break_penalty || 0)) {
+        deductions = { ...(deductions || {}), break_penalty: br.breakPenalty };
+      }
+
+      if (lp.latePunchInPenalty > 0 && !Number(deductions?.late_punchin_penalty || 0)) {
+        deductions = { ...(deductions || {}), late_punchin_penalty: lp.latePunchInPenalty };
+      }
+
       attendanceSummary = {
         ...(attendanceSummary || {}),
-        overtimeMinutes: Number(attendanceSummary?.overtimeMinutes || ot.overtimeMinutes || 0),
-        overtimeHours: Number(attendanceSummary?.overtimeHours || ot.overtimeHours || 0),
-        overtimeHourlyRate: Number(attendanceSummary?.overtimeHourlyRate || ot.overtimeHourlyRate || 0),
-        overtimePay: Number(attendanceSummary?.overtimePay || ot.overtimePay || 0),
+        earlyExitMinutes: Number(attendanceSummary?.earlyExitMinutes || ee.earlyExitMinutes || 0),
+        earlyExitPenalty: Number(attendanceSummary?.earlyExitPenalty || ee.earlyExitPenalty || 0),
+        excessBreakMinutes: Number(attendanceSummary?.excessBreakMinutes || br.excessBreakMinutes || 0),
+        breakPenalty: Number(attendanceSummary?.breakPenalty || br.breakPenalty || 0),
+        earlyOvertimeMinutes: Number(attendanceSummary?.earlyOvertimeMinutes || eot.earlyOvertimeMinutes || 0),
+        earlyOvertimePay: Number(attendanceSummary?.earlyOvertimePay || eot.earlyOvertimePay || 0),
+        latePunchInMinutes: Number(attendanceSummary?.latePunchInMinutes || lp.latePunchInMinutes || 0),
+        latePunchInPenalty: Number(attendanceSummary?.latePunchInPenalty || lp.latePunchInPenalty || 0),
+        lateCount: Number(attendanceSummary?.lateCount || lp.lateCount || 0),
       };
+
       const te = Object.values(earnings || {}).reduce((s, v) => s + (Number(v) || 0), 0);
       const ti = Object.values(incentives || {}).reduce((s, v) => s + (Number(v) || 0), 0);
       const td = Object.values(deductions || {}).reduce((s, v) => s + (Number(v) || 0), 0);
@@ -473,111 +757,23 @@ async function calculateSalary(userId, monthKey) {
     }
   }
 
-  const payableUnitsRaw = present + (half * 0.5) + weeklyOffCount + holidaysCount + paidLeaveCount;
+  const payableUnits = present + (half * 0.5) + paidLeaveCount + weeklyOffCount + holidaysCount;
+  ratio = daysInMonth > 0 ? (payableUnits / daysInMonth) : 0;
+  
+  // Calculate Late Penalty separately via the new meta function
+  const lp = await computeLatePenaltyMeta({ 
+    userId: u.id, 
+    monthKey, 
+    orgAccount: u.orgAccount, 
+    baseSalary: Number(earnings.basic_salary || 0) + Number(earnings.da || 0) 
+  });
 
-  // Late Entry Penalty Logic
-  let lateCount = 0;
-  let latePenaltyDays = 0;
-  try {
-    const penaltyRule = await AttendanceAutomationRule.findOne({
-      where: { key: 'late_punchin_penalty', orgAccountId: u.orgAccountId, active: true }
-    });
-    if (penaltyRule) {
-      let config = penaltyRule.config;
-      if (typeof config === 'string') {
-        try { config = JSON.parse(config); } catch (e) {
-          try { config = JSON.parse(JSON.parse(config)); } catch (__) { config = {}; }
-        }
-      }
-
-      const isRuleActive = config.active !== false && penaltyRule.active;
-      if (isRuleActive) {
-        let tiers = [];
-        if (Array.isArray(config.tiers) && config.tiers.length > 0) {
-          tiers = config.tiers;
-        } else {
-          tiers = [{
-            minMinutes: Number(config.lateMinutes || 15),
-            maxMinutes: 9999,
-            deduction: Number(config.deduction || 1),
-            frequency: Number(config.threshold || 3)
-          }];
-        }
-
-        let tierCounts = new Array(tiers.length).fill(0);
-
-        // Fetch detailed attendance for the month
-        const detailedAtts = await Attendance.findAll({
-          where: { userId: u.id, date: { [Op.gte]: start, [Op.lte]: endKey } },
-          attributes: ['date', 'punchedInAt', 'status']
-        });
-
-        // Pre-fetch all shift templates and assignments for the month
-        const allShiftTemplates = await ShiftTemplate.findAll({ where: { orgAccountId: u.orgAccountId, active: true } });
-        const shiftTemplateMap = {};
-        allShiftTemplates.forEach(t => { shiftTemplateMap[t.id] = t; });
-
-        const shiftAssignments = await StaffShiftAssignment.findAll({
-          where: { userId: u.id },
-          include: [{ model: ShiftTemplate, as: 'template' }],
-          order: [['effectiveFrom', 'ASC']]
-        });
-
-        for (const a of detailedAtts) {
-          if (!a.punchedInAt) continue;
-
-          // Check if it's a work status (present/half_day/overtime)
-          const status = String(a.status || '').toLowerCase();
-          if (status !== 'present' && status !== 'half_day' && status !== 'overtime') continue;
-
-          const dateKey = a.date;
-          const dayShiftAsg = shiftAssignments
-            .filter(asg => dateKey >= asg.effectiveFrom && (!asg.effectiveTo || dateKey <= asg.effectiveTo))
-            .sort((a, b) => b.effectiveFrom.localeCompare(a.effectiveFrom))[0];
-
-          let shiftTpl = dayShiftAsg?.template || u.shiftTemplate;
-          if (!shiftTpl && u.profile?.shiftSelection) {
-            shiftTpl = shiftTemplateMap[Number(u.profile.shiftSelection)];
-          }
-
-          if (shiftTpl?.startTime) {
-            const [sh, sm, ss] = shiftTpl.startTime.split(':').map(Number);
-            const shiftStartSeconds = sh * 3600 + sm * 60 + (ss || 0);
-
-            const punchIn = new Date(a.punchedInAt);
-            const istDate = new Date(punchIn.getTime() + (5.5 * 3600 * 1000));
-            const punchInSeconds = istDate.getUTCHours() * 3600 + istDate.getUTCMinutes() * 60 + istDate.getUTCSeconds();
-
-            if (punchInSeconds > shiftStartSeconds) {
-              const lateMins = Math.floor((punchInSeconds - shiftStartSeconds) / 60);
-
-              for (let i = 0; i < tiers.length; i++) {
-                const t = tiers[i];
-                if (lateMins >= Number(t.minMinutes) && lateMins <= Number(t.maxMinutes)) {
-                  tierCounts[i] += 1;
-                  lateCount += 1;
-                  break;
-                }
-              }
-            }
-          }
-        }
-
-        for (let i = 0; i < tiers.length; i++) {
-          const t = tiers[i];
-          if (t.frequency > 0 && tierCounts[i] > 0) {
-            latePenaltyDays += Math.floor(tierCounts[i] / t.frequency) * Number(t.deduction);
-          }
-        }
-      }
-    }
-  } catch (err) {
-    console.error('Error calculating late penalty:', err);
+  const latePenaltyAmount = Number(lp?.latePunchInPenalty || 0);
+  if (latePenaltyAmount > 0 && !Number(deductions.late_punchin_penalty || 0)) {
+    deductions = { ...deductions, late_punchin_penalty: latePenaltyAmount };
   }
-
-  const payableUnits = Math.max(0, payableUnitsRaw - latePenaltyDays);
   const daysForRatio = daysInMonth;
-  const ratio = daysForRatio > 0 ? Math.max(0, Math.min(1, payableUnits / daysForRatio)) : 1;
+  ratio = daysForRatio > 0 ? Math.max(0, Math.min(1, payableUnits / daysForRatio)) : 1;
 
   const loanDeduction = await calculateLoanDeduction();
   const advanceDeduction = await calculateAdvanceDeduction();
@@ -631,7 +827,6 @@ async function calculateSalary(userId, monthKey) {
       finalDeductions[k] = Math.round(Number(finalDeductions[k] || 0) * ratio);
     }
   });
-  const totalDeductions = sumObj(finalDeductions);
 
   // Pro-rate standard incentives
   Object.keys(finalIncentives).forEach(k => {
@@ -656,7 +851,6 @@ async function calculateSalary(userId, monthKey) {
   } catch (e) {
     console.error('Error fetching sales incentives for payroll:', e);
   }
-  const totalIncentives = sumObj(finalIncentives);
 
   // Pro-rate standard earnings, keep Expenses as is
   Object.keys(finalEarnings).forEach(k => {
@@ -681,7 +875,7 @@ async function calculateSalary(userId, monthKey) {
       let amount = Number(enc.amount || 0);
       if (amount <= 0) {
         const base = Number(earnings?.basic_salary || sd.basicSalary || 0) + Number(earnings?.da || sd.da || 0);
-        const dailyRate = base / 30; // Standard 30 days month for encashment calculation
+        const dailyRate = base / daysInMonth; 
         amount = Math.round(dailyRate * Number(enc.days || 0));
       }
       const catName = categoryNames[enc.categoryKey.toLowerCase()] || enc.categoryKey.toUpperCase();
@@ -693,36 +887,66 @@ async function calculateSalary(userId, monthKey) {
   }
 
   // Overtime pay
-  const overtimeBaseSalary = Number(earnings?.basic_salary || sd.basicSalary || 0) + Number(earnings?.da || sd.da || 0);
-  const overtimeMeta = await computeOvertimeMeta({ userId: u.id, monthKey, overtimeBaseSalary });
-  if (overtimeMeta.overtimePay > 0) {
-    finalEarnings.overtime_pay = overtimeMeta.overtimePay;
+  const basicSalary = Number(finalEarnings.basic_salary || sd.basicSalary || 0) + Number(finalEarnings.da || sd.da || 0);
+  const [overtime, earlyExit, breakMeta, earlyOvertime] = await Promise.all([
+    computeOvertimeMeta({ userId: u.id, monthKey, overtimeBaseSalary: basicSalary, orgAccount: u.orgAccount }),
+    computeEarlyExitMeta({ userId: u.id, monthKey, orgAccount: u.orgAccount }),
+    computeBreakMeta({ userId: u.id, monthKey, orgAccount: u.orgAccount }),
+    computeEarlyOvertimeMeta({ userId: u.id, monthKey, orgAccount: u.orgAccount }),
+  ]);
+
+  if (overtime.overtimePay > 0) {
+    finalEarnings.overtime_pay = overtime.overtimePay;
   }
 
-  const totalEarnings = sumObj(finalEarnings);
+  if (earlyOvertime.earlyOvertimePay > 0) {
+    finalEarnings.early_overtime_pay = (finalEarnings.early_overtime_pay || 0) + earlyOvertime.earlyOvertimePay;
+  }
 
-  const grossSalary = totalEarnings + totalIncentives;
-  const netSalary = grossSalary - totalDeductions;
+  // Early Exit penalties
+  if (earlyExit.earlyExitPenalty > 0) {
+    finalDeductions.early_exit_penalty = (finalDeductions.early_exit_penalty || 0) + earlyExit.earlyExitPenalty;
+  }
+  
+  // Break penalties
+  if (breakMeta.breakPenalty > 0) {
+    finalDeductions.break_penalty = (finalDeductions.break_penalty || 0) + breakMeta.breakPenalty;
+  }
+
+  const _totalEarnings = sumObj(finalEarnings);
+  const _totalIncentives = sumObj(finalIncentives);
+  const _totalDeductions = sumObj(finalDeductions);
+
+  const grossSalary = _totalEarnings + _totalIncentives;
+  const netSalary = grossSalary - _totalDeductions;
 
   return {
     success: true,
     monthKey,
     totals: {
-      totalEarnings,
-      totalIncentives,
-      totalDeductions,
+      totalEarnings: _totalEarnings,
+      totalIncentives: _totalIncentives,
+      totalDeductions: _totalDeductions,
       grossSalary,
-      netSalary,
+      netSalary: Math.max(0, netSalary),
       ratio
     },
     attendanceSummary: {
       present, half, leave, paidLeave: paidLeaveCount, unpaidLeave,
       absent, weeklyOff: weeklyOffCount, holidays: holidaysCount, ratio,
-      lateCount, latePenaltyDays,
-      overtimeMinutes: overtimeMeta.overtimeMinutes,
-      overtimeHours: overtimeMeta.overtimeHours,
-      overtimeHourlyRate: overtimeMeta.overtimeHourlyRate,
-      overtimePay: overtimeMeta.overtimePay,
+      lateCount: lp.lateCount, 
+      latePenalty: lp.latePunchInPenalty,
+      latePunchInMinutes: lp.latePunchInMinutes,
+      overtimeMinutes: overtime.overtimeMinutes,
+      overtimeHours: overtime.overtimeHours,
+      overtimeHourlyRate: overtime.overtimeHourlyRate,
+      overtimePay: overtime.overtimePay,
+      earlyExitMinutes: earlyExit.earlyExitMinutes,
+      earlyExitPenalty: earlyExit.earlyExitPenalty,
+      breakPenalty: breakMeta.breakPenalty,
+      excessBreakMinutes: breakMeta.excessBreakMinutes,
+      earlyOvertimeMinutes: earlyOvertime.earlyOvertimeMinutes,
+      earlyOvertimePay: earlyOvertime.earlyOvertimePay,
     },
     earnings: finalEarnings,
     incentives: finalIncentives,
@@ -867,6 +1091,10 @@ async function generatePayslipPDF(data, savePath = null) {
           ${showOvertime ? `<div class="info-row"><strong>Overtime:</strong> ${overtimeHours.toFixed(2)}h (${overtimeMinutes}m)</div>` : ''}
           ${showOvertime ? `<div class="info-row"><strong>OT Rate:</strong> ${fmt(overtimeRate)}/hr</div>` : ''}
           ${showOvertime ? `<div class="info-row"><strong>OT Pay:</strong> ${fmt(overtimePay)}</div>` : ''}
+          ${(att.earlyExitMinutes > 0 || att.earlyExitPenalty > 0) ? `<div class="info-row"><strong>Early Exit:</strong> ${att.earlyExitMinutes}m</div>` : ''}
+          ${(att.earlyExitPenalty > 0) ? `<div class="info-row"><strong>Early Exit Fine:</strong> ${fmt(att.earlyExitPenalty)}</div>` : ''}
+          ${(att.earlyOvertimeMinutes > 0) ? `<div class="info-row"><strong>Early Overtime:</strong> ${att.earlyOvertimeMinutes}m</div>` : ''}
+          ${(att.earlyOvertimePay > 0) ? `<div class="info-row"><strong>Early OT Pay:</strong> ${fmt(att.earlyOvertimePay)}</div>` : ''}
         </div>
       </div>
 
@@ -952,5 +1180,10 @@ async function generatePayslipPDF(data, savePath = null) {
 
 module.exports = {
   calculateSalary,
+  computeOvertimeMeta,
+  computeEarlyOvertimeMeta,
+  computeEarlyExitMeta,
+  computeBreakMeta,
+  computeLatePenaltyMeta,
   generatePayslipPDF
 };

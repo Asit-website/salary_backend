@@ -23,6 +23,10 @@ module.exports = (sequelize) => {
       gstNumber: { type: DataTypes.STRING(50), allowNull: true },
       status: { type: DataTypes.ENUM('ACTIVE', 'DISABLED', 'SUSPENDED'), allowNull: false, defaultValue: 'ACTIVE' },
       createdBy: { type: DataTypes.BIGINT.UNSIGNED, allowNull: true },
+      overtimeRuleId: { type: DataTypes.BIGINT.UNSIGNED, allowNull: true, field: 'overtime_rule_id' },
+      earlyExitRuleId: { type: DataTypes.BIGINT.UNSIGNED, allowNull: true, field: 'early_exit_rule_id' },
+      breakRuleId: { type: DataTypes.BIGINT.UNSIGNED, allowNull: true, field: 'break_rule_id' },
+      earlyOvertimeRuleId: { type: DataTypes.BIGINT.UNSIGNED, allowNull: true, field: 'early_overtime_rule_id' },
     },
     { tableName: 'org_accounts', underscored: true }
   );

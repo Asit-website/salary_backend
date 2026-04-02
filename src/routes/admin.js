@@ -19,7 +19,7 @@ function getCellValue(cell) {
 
 
 
-const { sequelize, User, StaffProfile, Role, Permission, AppSetting, DocumentType, ShiftTemplate, ShiftBreak, ShiftRotationalSlot, StaffShiftAssignment, SalaryAccess, AttendanceTemplate, StaffAttendanceAssignment, SalaryTemplate, StaffSalaryAssignment, Site, WorkUnit, Route, RouteStop, StaffRouteAssignment, SiteCheckpoint, PatrolLog, LeaveTemplate, LeaveTemplateCategory, StaffLeaveAssignment, LeaveBalance, LeaveRequest, AIAnomaly, ReliabilityScore, SalaryForecast, Attendance, Client, AssignedJob, SalesTarget, HolidayTemplate, HolidayDate, StaffHolidayAssignment, WeeklyOffTemplate, StaffWeeklyOffAssignment, Subscription, Plan, SalesVisit, Asset, AssetAssignment, AssetMaintenance, StaffLoan, StaffAdvance, OrderProduct, StaffOrderProduct, AttendanceAutomationRule, StaffGeofenceAssignment, GeofenceTemplate, GeofenceSite, DeviceInfo, Appraisal, Rating, OrgAccount } = require('../models');
+const { sequelize, User, StaffProfile, Role, Permission, AppSetting, DocumentType, ShiftTemplate, ShiftBreak, ShiftRotationalSlot, StaffShiftAssignment, SalaryAccess, AttendanceTemplate, StaffAttendanceAssignment, SalaryTemplate, StaffSalaryAssignment, Site, WorkUnit, Route, RouteStop, StaffRouteAssignment, SiteCheckpoint, PatrolLog, LeaveTemplate, LeaveTemplateCategory, StaffLeaveAssignment, LeaveBalance, LeaveRequest, AIAnomaly, ReliabilityScore, SalaryForecast, Attendance, Client, AssignedJob, SalesTarget, HolidayTemplate, HolidayDate, StaffHolidayAssignment, WeeklyOffTemplate, StaffWeeklyOffAssignment, Subscription, Plan, SalesVisit, Asset, AssetAssignment, AssetMaintenance, StaffLoan, StaffAdvance, OrderProduct, StaffOrderProduct, AttendanceAutomationRule, StaffGeofenceAssignment, GeofenceTemplate, GeofenceSite, DeviceInfo, Appraisal, Rating, OrgAccount, OvertimeRule, StaffOvertimeAssignment, EarlyExitRule, StaffEarlyExitAssignment, LatePunchInRule, StaffLatePunchInAssignment } = require('../models');
 
 const multer = require('multer');
 
@@ -39,6 +39,9 @@ const ai = require('../services/aiProvider');
 
 const { Op } = require('sequelize');
 const { calculateSalary, generatePayslipPDF } = require('../services/payrollService');
+const { calculateOvertime } = require('../services/overtimeService');
+const earlyExitService = require('../services/earlyExitService');
+const earlyOvertimeService = require('../services/earlyOvertimeService');
 const { runAttendanceReminderManual } = require('../jobs');
 const { getScopedStaffIds } = require('../utils/scoping');
 
@@ -752,9 +755,9 @@ router.get('/payroll/monthly-summary-excel', async (req, res) => {
     ]);
 
     const userIds = [...new Set(lines.map(l => l.userId))];
-    const users = await User.findAll({ 
-      where: { id: userIds }, 
-      include: [{ model: StaffProfile, as: 'profile' }] 
+    const users = await User.findAll({
+      where: { id: userIds },
+      include: [{ model: StaffProfile, as: 'profile' }]
     });
 
     const userMap = new Map(users.map(u => [u.id, u]));
@@ -844,7 +847,7 @@ router.get('/payroll/monthly-summary-excel', async (req, res) => {
     lines.forEach(line => {
       const u = userMap.get(line.userId);
       const groupVal = groupBy === 'department' ? (u?.profile?.department || 'OTHER') : (u?.profile?.designation || 'OTHER');
-      
+
       const e = typeof line.earnings === 'string' ? JSON.parse(line.earnings) : (line.earnings || {});
       const d = typeof line.deductions === 'string' ? JSON.parse(line.deductions) : (line.deductions || {});
       const s = typeof line.attendanceSummary === 'string' ? JSON.parse(line.attendanceSummary) : (line.attendanceSummary || {});
@@ -856,7 +859,7 @@ router.get('/payroll/monthly-summary-excel', async (req, res) => {
           d_pf: 0, d_esi: 0, d_ptax: 0, d_tds: 0, d_loan: 0, totalDeduction: 0, netPay: 0
         };
       }
-      
+
       const g = grouped[groupVal];
       g.e_basic += Number(e.basic_salary || 0);
       g.e_da += Number(e.da || 0);
@@ -890,7 +893,7 @@ router.get('/payroll/monthly-summary-excel', async (req, res) => {
       row.eachCell(cell => {
         cell.border = { top: { style: 'thin' }, left: { style: 'thin' }, bottom: { style: 'thin' }, right: { style: 'thin' } };
       });
-      
+
       // Update grand totals
       const numericPart = rowValues.slice(2);
       numericPart.forEach((val, idx) => grandTotals[idx] += val);
@@ -958,9 +961,9 @@ router.get('/payroll/:cycleId/salary-register-excel', async (req, res) => {
     ]);
 
     const userIds = [...new Set(lines.map(l => l.userId))];
-    const users = await User.findAll({ 
-      where: { id: userIds }, 
-      include: [{ model: StaffProfile, as: 'profile' }] 
+    const users = await User.findAll({
+      where: { id: userIds },
+      include: [{ model: StaffProfile, as: 'profile' }]
     });
 
     const userMap = new Map(users.map(u => [u.id, u]));
@@ -1100,11 +1103,11 @@ router.get('/payroll/:cycleId/salary-register-excel', async (req, res) => {
           d_loan: Number(d.loan_advance || 0),
           totalDeduction: Number(t.totalDeductions || 0),
           netPay: Number(t.netSalary || 0),
-          signature: line.paidAt 
+          signature: line.paidAt
             ? new Date(line.paidAt).toLocaleDateString('en-IN', { day: '2-digit', month: '2-digit', year: 'numeric' })
-            : (cycle.status === 'PAID' && cycle.paidAt 
-                ? new Date(cycle.paidAt).toLocaleDateString('en-IN', { day: '2-digit', month: '2-digit', year: 'numeric' })
-                : '')
+            : (cycle.status === 'PAID' && cycle.paidAt
+              ? new Date(cycle.paidAt).toLocaleDateString('en-IN', { day: '2-digit', month: '2-digit', year: 'numeric' })
+              : '')
         };
 
         const row = worksheet.addRow(rowData);
@@ -1387,7 +1390,10 @@ router.get('/staff/:id/salary-compute', async (req, res) => {
 
     const atts = await Attendance.findAll({
       where: { userId: u.id, date: { [Op.gte]: start, [Op.lte]: endKey } },
-      attributes: ['status', 'date', 'overtimeMinutes']
+      attributes: [
+        'status', 'date', 'overtimeMinutes', 'breakDeductionAmount',
+        'breakRuleId', 'excessBreakMinutes', 'breakTotalSeconds'
+      ]
     });
 
     const attMap = {}; for (const a of atts) { attMap[String(a.date).slice(0, 10)] = String(a.status || '').toLowerCase(); }
@@ -1921,7 +1927,7 @@ router.post('/payroll/:cycleId/compute', async (req, res) => {
 
     const orgId = requireOrg(req, res); if (!orgId) return;
 
-    const { PayrollCycle, PayrollLine, User, Attendance, LeaveRequest, StaffLoan, StaffAdvance, ExpenseClaim, LeaveEncashment, SalaryTemplate } = require('../models');
+    const { PayrollCycle, PayrollLine, User, Attendance, LeaveRequest, StaffLoan, StaffAdvance, ExpenseClaim, LeaveEncashment, SalaryTemplate, EarlyExitRule, StaffEarlyExitAssignment, OrgAccount, StaffLatePunchInAssignment, LatePunchInRule, AttendanceAutomationRule } = require('../models');
 
     const cycleId = Number(req.params.cycleId);
 
@@ -1954,6 +1960,12 @@ router.post('/payroll/:cycleId/compute', async (req, res) => {
         include: [{ model: SalaryTemplate, as: 'salaryTemplate' }]
       });
     }
+
+    // Fetch late assignments for the organization to avoid ReferenceError inside the loop
+    const latePunchInAssignments = await StaffLatePunchInAssignment.findAll({
+      where: { orgAccountId: orgId },
+      include: [{ model: LatePunchInRule, as: 'rule' }]
+    });
 
 
 
@@ -2235,7 +2247,13 @@ router.post('/payroll/:cycleId/compute', async (req, res) => {
       // Attendance summary and proration for the month
       const atts = await Attendance.findAll({
         where: { userId: u.id, date: { [Op.gte]: start, [Op.lte]: endKey } },
-        attributes: ['status', 'date', 'overtimeMinutes', 'punchedInAt']
+        attributes: [
+          'status', 'date', 'overtimeMinutes', 'punchedInAt', 'punchedOutAt',
+          'overtimeAmount', 'earlyExitAmount', 'earlyExitMinutes', 'userId',
+          'orgAccountId', 'earlyExitRuleId', 'breakDeductionAmount',
+          'breakRuleId', 'excessBreakMinutes', 'breakTotalSeconds',
+          'totalWorkHours', 'earlyOvertimeMinutes', 'earlyOvertimeAmount', 'earlyOvertimeRuleId'
+        ]
       });
 
       const attMap = {};
@@ -2437,11 +2455,107 @@ router.post('/payroll/:cycleId/compute', async (req, res) => {
         else { absent += 1; }
       }
 
-      // Late Entry Penalty Logic
+      // Late Entry Penalty Logic (Integrated Rule Automation)
       let lateCount = 0;
       let latePenaltyDays = 0;
+      let latePenaltyAmount = 0;
 
-      if (lateRuleActive) {
+      // 1. Resolve active late rule for this staff member
+      const userLateAsg = latePunchInAssignments.find(asg => {
+        const asgId = asg.userId || asg.user_id;
+        return asgId === u.id && 
+               start >= asg.effectiveFrom && 
+               (!asg.effectiveTo || start <= asg.effectiveTo);
+      });
+      const activeRule = userLateAsg?.rule || null;
+
+      if (activeRule && activeRule.active) {
+        try {
+          let thresholds = activeRule.thresholds;
+          if (typeof thresholds === 'string') {
+            try { thresholds = JSON.parse(thresholds); } catch (e) { thresholds = []; }
+          }
+          if (!Array.isArray(thresholds)) thresholds = [];
+          
+          const pType = activeRule.penaltyType || 'SLABS';
+          
+          const shiftAsg = await StaffShiftAssignment.findOne({
+            where: { userId: u.id },
+            include: [{ model: ShiftTemplate, as: 'template' }],
+            order: [['effectiveFrom', 'DESC'], ['id', 'DESC']]
+          });
+
+          let shiftTpl = shiftAsg?.template;
+          if (!shiftTpl && u.profile?.shiftSelection) {
+            shiftTpl = await ShiftTemplate.findOne({ where: { id: Number(u.profile.shiftSelection), active: true } });
+          }
+
+          if (shiftTpl?.startTime) {
+            const [sh, sm, ss] = shiftTpl.startTime.split(':').map(Number);
+            const shiftStartSeconds = sh * 3600 + sm * 60 + (ss || 0);
+            
+            let counts = new Array(thresholds.length).fill(0);
+
+            for (const a of atts) {
+              if (!a.punchedInAt) continue;
+              const status = String(a.status || '').toLowerCase();
+              if (status !== 'present' && status !== 'half_day' && status !== 'overtime') {
+                // Fallback: check if latePunchInMinutes is already > 0 (e.g. from manual update)
+                if (Number(a.latePunchInMinutes || 0) <= 0) continue;
+              }
+
+              const punchIn = new Date(a.punchedInAt);
+              const istDate = new Date(punchIn.getTime() + (5.5 * 3600 * 1000));
+              const punchInSeconds = istDate.getUTCHours() * 3600 + istDate.getUTCMinutes() * 60 + istDate.getUTCSeconds();
+              
+              const diffMin = Math.max(Number(a.latePunchInMinutes || 0), Math.floor((punchInSeconds - shiftStartSeconds) / 60));
+
+              if (diffMin > 0) {
+                if (pType === 'SLABS') {
+                  for (let i = 0; i < thresholds.length; i++) {
+                    const t = thresholds[i];
+                    if (diffMin >= Number(t.minMinutes) && diffMin <= Number(t.maxMinutes)) {
+                      counts[i]++;
+                      lateCount++;
+                      break;
+                    }
+                  }
+                } else {
+                  // Fixed penalty types count every lateness if it hits the minimum threshold
+                  const tBase = thresholds
+                    .filter(x => diffMin >= Number(x.minMinutes))
+                    .sort((a, b) => Number(b.minMinutes) - Number(a.minMinutes))[0];
+                  if (tBase) {
+                    lateCount++;
+                    if (pType === 'FIXED_AMOUNT') {
+                      latePenaltyAmount += Number(tBase.value || 0);
+                    } else if (pType === 'FIXED_AMOUNT_PER_HOUR') {
+                      latePenaltyAmount += Number(tBase.value || 0) * Math.ceil(diffMin / 60);
+                    } else if (pType === 'HALF_DAY') {
+                      latePenaltyDays += 0.5;
+                    } else if (pType === 'FULL_DAY') {
+                      latePenaltyDays += 1;
+                    }
+                  }
+                }
+              }
+            }
+
+            // Calculate slabs-based deduction days after per-day loop
+            if (pType === 'SLABS') {
+              for (let i = 0; i < thresholds.length; i++) {
+                const t = thresholds[i];
+                if (t.frequency > 0 && counts[i] > 0) {
+                  latePenaltyDays += Math.floor(counts[i] / t.frequency) * Number(t.deduction);
+                }
+              }
+            }
+          }
+        } catch (err) {
+          console.error(`Error calculating rule-based late penalty for staff ${u.id}:`, err);
+        }
+      } else if (lateRuleActive) {
+        // Fallback to legacy global org rule
         try {
           let tierCounts = new Array(lateTiers.length).fill(0);
 
@@ -2490,7 +2604,7 @@ router.post('/payroll/:cycleId/compute', async (req, res) => {
             }
           }
         } catch (err) {
-          console.error('Error calculating late penalty in compute route:', err);
+          console.error('Error calculating legacy late penalty in compute route:', err);
         }
       }
 
@@ -2560,6 +2674,9 @@ router.post('/payroll/:cycleId/compute', async (req, res) => {
         }
       } catch (e) { }
       const finalD = prorate(finalDeductions, ratio, ['loan_emi', 'advance_deduction']);
+      if (latePenaltyAmount > 0) {
+        finalD.late_penalty = (finalD.late_penalty || 0) + latePenaltyAmount;
+      }
 
       // FETCH APPROVED LEAVE ENCASHMENTS (Not pro-rated)
       try {
@@ -2576,7 +2693,7 @@ router.post('/payroll/:cycleId/compute', async (req, res) => {
           let amount = Number(enc.amount || 0);
           if (amount <= 0) {
             const base = Number(e?.basic_salary || sd.basicSalary || 0) + Number(e?.da || sd.da || 0);
-            const dailyRate = base / 30;
+            const dailyRate = base / daysInMonth;
             amount = Math.round(dailyRate * Number(enc.days || 0));
           }
           const catName = categoryNames[enc.categoryKey.toLowerCase()] || enc.categoryKey.toUpperCase();
@@ -2587,14 +2704,106 @@ router.post('/payroll/:cycleId/compute', async (req, res) => {
         console.error('Error fetching leave encashment for compute route:', err);
       }
 
-      // Overtime computation: shift-rule/no-shift logic is already persisted in attendance.overtimeMinutes
-      const overtimeMinutes = atts.reduce((s, a) => s + (Number(a.overtimeMinutes || 0) || 0), 0);
-      const overtimeHours = overtimeMinutes / 60;
-      const overtimeBaseSalary = Number(e?.basic_salary || sd.basicSalary || 0) + Number(e?.da || sd.da || 0);
-      const hourlyRate = daysInMonth > 0 ? (overtimeBaseSalary / (daysInMonth * 8)) : 0;
-      const overtimePay = Math.round(Math.max(0, overtimeHours) * Math.max(0, hourlyRate));
+      // Overtime computation: Prioritize persisted automation rule amount over legacy formulas
+      // Only for staff assigned to an overtime rule
+      let totalOvertimeAmount = 0;
+      let totalOvertimeMinutes = 0;
+
+      const otAssignment = await StaffOvertimeAssignment.findOne({ where: { userId: u.id, orgAccountId: orgId } });
+
+      // Fetch Org settings for fallback rule (Moved up to fix ReferenceError)
+      const orgAccountRecord = await OrgAccount.findByPk(orgId);
+
+      try {
+        for (const a of atts) {
+          // Prioritize already stored database values for minutes and amount
+          // Only fallback to re-calculation if DB value is missing or 0
+          let finalOtAmt = Number(a.overtimeAmount || a.overtime_amount || 0);
+          let finalOtMins = Number(a.overtimeMinutes || a.overtime_minutes || 0);
+
+          if (finalOtAmt === 0 || finalOtMins === 0) {
+            // RE-CALCULATE only if database values are missing
+            const otRes = await calculateOvertime(a, orgAccountRecord, a.punchedOutAt, daysInMonth);
+            if (finalOtAmt === 0) finalOtAmt = Number(otRes.overtimeAmount || 0);
+            if (finalOtMins === 0) finalOtMins = Number(otRes.overtimeMinutes || 0);
+          }
+
+          totalOvertimeAmount += finalOtAmt;
+          totalOvertimeMinutes += finalOtMins;
+        }
+      } catch (otErr) {
+        console.error(`[Payroll-OT-Error] Failed for staff ${u.id}:`, otErr);
+      }
+
+      const overtimeHours = totalOvertimeMinutes / 60;
+      let overtimePay = totalOvertimeAmount;
+      let hourlyRate = 0;
+
+      // Legacy fallback: Only if NO automation rule amounts were found but minutes exist
+      if (overtimePay <= 0 && totalOvertimeMinutes > 0) {
+        const overtimeBaseSalary = Number(e?.basic_salary || sd.basicSalary || 0) + Number(e?.da || sd.da || 0);
+        hourlyRate = daysInMonth > 0 ? (overtimeBaseSalary / (daysInMonth * 8)) : 0;
+        overtimePay = Math.round(Math.max(0, overtimeHours) * Math.max(0, hourlyRate));
+      }
+
       if (overtimePay > 0) {
         finalE.overtime_pay = overtimePay;
+      }
+
+      // Early Overtime Computation
+      let totalEarlyOvertimeAmount = 0;
+      let totalEarlyOvertimeMinutes = 0;
+      try {
+        for (const a of atts) {
+          let eotAmt = Number(a.earlyOvertimeAmount || a.early_overtime_amount || 0);
+          let eotMins = Number(a.earlyOvertimeMinutes || a.early_overtime_minutes || 0);
+
+          if ((eotAmt === 0 || eotMins === 0) && orgAccountRecord?.earlyOvertimeRuleId) {
+            const eotRes = await earlyOvertimeService.calculateEarlyOvertime(a, orgAccountRecord, a.punchedInAt, daysInMonth);
+            if (eotAmt === 0) eotAmt = Number(eotRes.earlyOvertimeAmount || 0);
+            if (eotMins === 0) eotMins = Number(eotRes.earlyOvertimeMinutes || 0);
+          }
+          totalEarlyOvertimeAmount += eotAmt;
+          totalEarlyOvertimeMinutes += eotMins;
+        }
+      } catch (eotErr) {
+        console.error(`[Payroll-Early-OT-Error] Failed for staff ${u.id}:`, eotErr);
+      }
+
+      if (totalEarlyOvertimeAmount > 0) {
+        finalE.early_overtime_pay = totalEarlyOvertimeAmount;
+      }
+
+      // Early Exit Computation
+      let totalEarlyExitAmount = 0;
+      let totalEarlyExitMinutes = 0;
+      let totalBreakPenaltyAmount = 0;
+      let totalExcessBreakMinutes = 0;
+
+      for (const a of atts) {
+        // ALWAYS RE-CALCULATE if we are re-generating payroll to ensure multiplier fix is applied
+        const eeRes = await earlyExitService.calculateEarlyExit(a, orgAccountRecord, a.punchedOutAt, daysInMonth);
+        totalEarlyExitAmount += eeRes.earlyExitAmount;
+        totalEarlyExitMinutes += eeRes.earlyExitMinutes;
+
+        // NEW: Break Deduction Recalculation
+        const breakService = require('../services/breakService');
+        const breakRes = await breakService.calculateBreakDeduction(a, orgAccountRecord, a.punchedOutAt, daysInMonth);
+
+        // Prioritize already stored amount if regeneration is happening
+        const finalBreakAmt = Math.max(Number(a.breakDeductionAmount || a.break_deduction_amount || 0), Number(breakRes.breakDeductionAmount || 0));
+        const finalExcessMins = Math.max(Number(a.excessBreakMinutes || a.excess_break_minutes || 0), Number(breakRes.excessBreakMinutes || 0));
+
+        totalBreakPenaltyAmount += finalBreakAmt;
+        totalExcessBreakMinutes += finalExcessMins;
+      }
+
+      if (totalEarlyExitAmount > 0) {
+        finalD.early_exit_penalty = (finalD.early_exit_penalty || 0) + totalEarlyExitAmount;
+      }
+
+      if (totalBreakPenaltyAmount > 0) {
+        finalD.break_penalty = (finalD.break_penalty || 0) + totalBreakPenaltyAmount;
       }
 
       // Sum pro-rated components for totals to ensure consistency
@@ -2609,12 +2818,21 @@ router.post('/payroll/:cycleId/compute', async (req, res) => {
       const totalAbsent = absent;
       const attendanceSummary = {
         present, half, leave, paidLeave, unpaidLeave, absent: totalAbsent, weeklyOff, holidays, ratio,
-        overtimeMinutes,
+        overtimeMinutes: totalOvertimeMinutes,
         overtimeHours: Number(overtimeHours.toFixed(2)),
         overtimeHourlyRate: Number(hourlyRate.toFixed(2)),
         overtimePay,
+        earlyOvertimeMinutes: totalEarlyOvertimeMinutes,
+        earlyOvertimePay: totalEarlyOvertimeAmount,
         lateCount,
-        latePenaltyDays
+        latePenaltyDays,
+        latePenaltyAmount,
+        earlyExitMinutes: totalEarlyExitMinutes,
+        earlyExitPenalty: totalEarlyExitAmount,
+        breakPenalty: totalBreakPenaltyAmount,
+        excessBreakMinutes: totalExcessBreakMinutes,
+        // Ensure netSalary reflected here is consistent with the final totals
+        netSalary: Math.max(0, netSalary),
       };
       const totals = { totalEarnings, totalIncentives, totalDeductions, grossSalary, netSalary, ratio };
 
@@ -2645,12 +2863,10 @@ router.post('/payroll/:cycleId/compute', async (req, res) => {
 
     return res.json({ success: true, cycle, lines });
 
-  } catch (e) {
-
-    return res.status(500).json({ success: false, message: 'Failed to compute payroll' });
-
+  } catch (err) {
+    console.error('CRITICAL: Failed to compute payroll:', err);
+    res.status(500).json({ success: false, message: 'Failed to compute payroll', error: err.message });
   }
-
 });
 
 
@@ -9610,13 +9826,17 @@ router.get('/staff-salary-list', async (req, res) => {
 router.get('/staff/:id', async (req, res) => {
   try {
     const orgId = requireOrg(req, res); if (!orgId) return;
-    const id = Number(req.params.id);
+    const id = req.params.id;
     const user = await User.findOne({
       where: { id, orgAccountId: orgId, role: 'staff' },
       include: [
         { model: StaffProfile, as: 'profile' }
       ]
     });
+    if (!user) {
+      return res.status(404).json({ success: false, message: 'Staff not found' });
+    }
+
     // Fetch shift template separately if profile has shiftSelection
     let shiftTemplate = null;
     if (user?.profile?.shiftSelection) {
@@ -9848,6 +10068,13 @@ router.get('/attendance', async (req, res) => {
       order: [['effectiveFrom', 'DESC']]
     });
 
+    const { LatePunchInRule, StaffLatePunchInAssignment } = require('../models');
+    const latePunchInAssignments = await StaffLatePunchInAssignment.findAll({
+      where: { userId: userIds, orgAccountId: orgId, active: true },
+      include: [{ model: LatePunchInRule, as: 'rule' }],
+      order: [['effectiveFrom', 'DESC']]
+    });
+
     const allShiftTemplates = await ShiftTemplate.findAll({ where: { orgAccountId: orgId, active: true } });
     const shiftTemplateMap = {};
     allShiftTemplates.forEach(t => { shiftTemplateMap[t.id] = t; });
@@ -9871,8 +10098,8 @@ router.get('/attendance', async (req, res) => {
 
       let isLate = false;
       let latePenaltyText = null;
-
-      if (lateRuleActive && r.punchedInAt && (status === 'present' || status === 'half_day' || status === 'overtime')) {
+      let latePunchInMinutes = 0;
+      if (r.punchedInAt && (status === 'present' || status === 'half_day' || status === 'overtime')) {
         const dayShiftAsg = shiftAssignments.find(asg => asg.userId === r.userId && r.date >= asg.effectiveFrom && (!asg.effectiveTo || r.date <= asg.effectiveTo));
         let shiftTpl = dayShiftAsg?.template || (r.user?.shiftTemplateId ? shiftTemplateMap[r.user.shiftTemplateId] : null);
         if (!shiftTpl && r.user?.profile?.shiftSelection) {
@@ -9887,15 +10114,75 @@ router.get('/attendance', async (req, res) => {
           const shiftStartSec = sh * 3600 + sm * 60 + (ss || 0);
 
           if (punchInSec > shiftStartSec) {
-            const diffMin = Math.floor((punchInSec - shiftStartSec) / 60);
-            for (let i = 0; i < lateTiers.length; i++) {
-              const t = lateTiers[i];
-              if (diffMin >= Number(t.minMinutes) && diffMin <= Number(t.maxMinutes)) {
-                isLate = true;
-                const freq = Number(t.frequency);
-                latePenaltyText = freq === 1 ? `-${t.deduction} Day (${diffMin} min late)` : `Counts towards ${t.deduction} Day penalty (${diffMin} min late)`;
-                break;
+            const rawLateMins = Math.floor((punchInSec - shiftStartSec) / 60);
+            
+            // Per-user rule assignment (Primary & Absolute)
+            // Use String() for safe comparison of DATEONLY and IDs
+            const userLateAsg = latePunchInAssignments.find(asg => 
+              String(asg.userId) === String(r.userId) && 
+              String(r.date) >= String(asg.effectiveFrom) && 
+              (!asg.effectiveTo || String(r.date) <= String(asg.effectiveTo))
+            );
+            const activeRule = userLateAsg?.rule;
+
+            if (activeRule && activeRule.active) {
+              latePunchInMinutes = rawLateMins;
+              const pType = activeRule.penaltyType || 'SLABS';
+              let thresholds = activeRule.thresholds || [];
+              if (typeof thresholds === 'string') {
+                try { thresholds = JSON.parse(thresholds); } catch (e) { thresholds = []; }
               }
+              if (!Array.isArray(thresholds)) thresholds = [];
+
+              if (pType === 'SLABS') {
+                for (let i = 0; i < thresholds.length; i++) {
+                  const t = thresholds[i];
+                  if (latePunchInMinutes >= Number(t.minMinutes) && latePunchInMinutes <= Number(t.maxMinutes)) {
+                    isLate = true;
+                    const freq = Number(t.frequency || 1);
+                    latePenaltyText = freq === 1 ? `-${t.deduction} Day (${latePunchInMinutes} min late)` : `Counts towards ${t.deduction} Day penalty (${latePunchInMinutes} min late)`;
+                    break;
+                  }
+                }
+              } else if (pType === 'FIXED_AMOUNT') {
+                const t = thresholds.find(x => latePunchInMinutes >= Number(x.minMinutes));
+                if (t) {
+                  isLate = true;
+                  latePenaltyText = `Fixed Penalty: ₹${t.value} (${latePunchInMinutes} min late)`;
+                }
+              } else if (pType === 'FIXED_AMOUNT_PER_HOUR') {
+                const t = thresholds.find(x => latePunchInMinutes >= Number(x.minMinutes));
+                if (t) {
+                  isLate = true;
+                  const hours = Math.ceil(latePunchInMinutes / 60);
+                  latePenaltyText = `Penalty: ₹${t.value * hours} (${hours} hrs late)`;
+                }
+              } else if (pType === 'HALF_DAY') {
+                const t = thresholds.find(x => latePunchInMinutes >= Number(x.minMinutes));
+                if (t) {
+                  isLate = true;
+                  latePenaltyText = `-0.5 Day Penalty (${latePunchInMinutes} min late)`;
+                }
+              } else if (pType === 'FULL_DAY') {
+                const t = thresholds.find(x => latePunchInMinutes >= Number(x.minMinutes));
+                if (t) {
+                  isLate = true;
+                  latePenaltyText = `-1.0 Day Penalty (${latePunchInMinutes} min late)`;
+                }
+              }
+            } else if (lateRuleActive) {
+              // Fallback to global rule ONLY IF global automation is enabled AND no personal rule was found
+              // (If personal rule was null, we treat as 'No Rule' for this user)
+              if (!userLateAsg) {
+                 latePunchInMinutes = 0;
+              } else {
+                 // Even if assignment exists, if global is active, we might show minutes?
+                 // User said: "jisko assign hai usko ana chaye". 
+                 // This implies if NOT assigned, don't show.
+                 latePunchInMinutes = 0;
+              }
+            } else {
+              latePunchInMinutes = 0;
             }
           }
         }
@@ -9924,6 +10211,7 @@ router.get('/attendance', async (req, res) => {
 
         status,
         isLate,
+        latePunchInMinutes,
         latePenaltyText,
 
         user: {
@@ -9947,6 +10235,10 @@ router.get('/attendance', async (req, res) => {
         punchOutAddress: r.punchOutAddress,
         punchInPhotoUrl: r.punchInPhotoUrl,
         punchOutPhotoUrl: r.punchOutPhotoUrl,
+        earlyExitMinutes: Number(r.earlyExitMinutes || 0),
+        earlyExitAmount: Number(r.earlyExitAmount || 0),
+        earlyOvertimeMinutes: Number(r.earlyOvertimeMinutes || 0),
+        earlyOvertimeAmount: Number(r.earlyOvertimeAmount || 0),
       };
 
     });
@@ -10891,6 +11183,9 @@ router.post('/attendance', async (req, res) => {
     const joinDateTime = (t) => (t ? new Date(`${dateIso}T${normalizeTime(t)}`) : null);
 
     let payload = {
+      userId: uid,
+      orgAccountId: orgId,
+      date: dateIso,
       punchedInAt: joinDateTime(checkIn),
       punchedOutAt: joinDateTime(checkOut),
       status,
@@ -10905,40 +11200,90 @@ router.post('/attendance', async (req, res) => {
     } else {
       // For present or overtime, ensure any existing sentinel is cleared if status is explicitly provided
       payload.breakTotalSeconds = 0;
+
+      // Overtime calculation using Automation Rules
+      try {
+        const orgAccount = await OrgAccount.findByPk(orgId);
+        const punchedInAt = body.punchedInAt || payload.punchedInAt; // Use body if available
+        const punchedOutAt = body.punchedOutAt || payload.punchedOutAt;
+
+        console.log(`[AdminAttendance] User: ${uid}, Org: ${orgId}, In: ${punchedInAt}, Out: ${punchedOutAt}`);
+        if (punchedInAt && punchedOutAt) {
+          const totalWorkHours = Math.max(0, (new Date(punchedOutAt) - new Date(punchedInAt)) / 3600000);
+          console.log(`[AdminAttendance] Calling calculateOvertime for ${uid} with totalWorkHours: ${totalWorkHours}`);
+          const otResult = await calculateOvertime({
+            userId: uid,
+            orgAccountId: orgId,
+            date: dateIso,
+            punchedInAt,
+            punchedOutAt,
+            totalWorkHours
+          }, orgAccount);
+
+          payload.overtimeMinutes = otResult.overtimeMinutes;
+          payload.overtimeAmount = otResult.overtimeAmount;
+          payload.overtimeRuleId = otResult.overtimeRuleId;
+          payload.punchedInAt = punchedInAt;
+          payload.punchedOutAt = punchedOutAt;
+
+          // 2. Early Exit Calculation
+          const earlyExitService = require('../services/earlyExitService');
+          const eeResult = await earlyExitService.calculateEarlyExit({
+            userId: uid,
+            orgAccountId: orgId,
+            date: dateIso,
+            punchedOutAt
+          }, orgAccount);
+
+          payload.earlyExitMinutes = eeResult.earlyExitMinutes;
+          payload.earlyExitAmount = eeResult.earlyExitAmount;
+          payload.earlyExitRuleId = eeResult.earlyExitRuleId;
+
+          // 3. Early Overtime Calculation
+          const earlyOvertimeService = require('../services/earlyOvertimeService');
+          const eotResult = await earlyOvertimeService.calculateEarlyOvertime({
+            userId: uid,
+            orgAccountId: orgId,
+            date: dateIso,
+            punchedInAt
+          }, orgAccount);
+
+          payload.earlyOvertimeMinutes = eotResult.earlyOvertimeMinutes;
+          payload.earlyOvertimeAmount = eotResult.earlyOvertimeAmount;
+          payload.earlyOvertimeRuleId = eotResult.earlyOvertimeRuleId;
+
+          // 4. Late Punch-In Calculation
+          const latePunchInService = require('../services/latePunchInService');
+          const lpResult = await latePunchInService.calculateLatePenalty({
+            userId: uid,
+            orgAccountId: orgId,
+            date: dateIso,
+            punchedInAt
+          }, orgAccount);
+
+          payload.latePunchInMinutes = lpResult.latePunchInMinutes;
+          payload.latePunchInAmount = lpResult.latePunchInAmount;
+          payload.latePunchInRuleId = lpResult.latePunchInRuleId;
+
+          // Sync status if OT occurred and user didn't mark as something else (leave/absent/half_day)
+          if (otResult.overtimeMinutes > 0 && !['half_day', 'leave', 'absent'].includes(status)) {
+            payload.status = otResult.status || 'overtime';
+          }
+        } else {
+          // Fallback for manual overtime minutes entry if no rule or times
+          const provided = req.body?.overtimeMinutes;
+          if (status === 'overtime' && Number.isFinite(Number(provided))) {
+            payload.overtimeMinutes = Number(provided);
+          } else {
+            payload.overtimeMinutes = 0;
+            payload.overtimeAmount = 0;
+            payload.overtimeRuleId = null;
+          }
+        }
+      } catch (e) {
+        console.error('Manual OT calculation error:', e);
+      }
     }
-    // Overtime minutes: auto-compute if shift has rule, else accept provided minutes
-    try {
-      const { StaffShiftAssignment, ShiftTemplate } = require('../models');
-      const asg = await StaffShiftAssignment.findOne({
-        where: { userId: uid, effectiveFrom: { [Op.lte]: dateIso } },
-        order: [['effectiveFrom', 'DESC']]
-      });
-      let otMin = null;
-      if (asg) {
-        const tpl = await ShiftTemplate.findByPk(asg.shiftTemplateId || asg.shift_template_id);
-        const startAfter = Number(tpl?.overtimeStartMinutes || 0);
-        if (Number.isFinite(startAfter) && startAfter > 0 && payload.punchedInAt && payload.punchedOutAt) {
-          const diffMin = Math.floor((payload.punchedOutAt - payload.punchedInAt) / 60000);
-          if (diffMin > startAfter) otMin = diffMin - startAfter;
-          else otMin = 0;
-        }
-      }
-      if (otMin != null) {
-        payload.overtimeMinutes = otMin;
-        if (otMin > 0 && status !== 'half_day' && status !== 'leave' && status !== 'absent') {
-          payload.status = 'overtime';
-        } else {
-          payload.overtimeMinutes = 0;
-        }
-      } else {
-        const provided = req.body?.overtimeMinutes;
-        if (status === 'overtime' && Number.isFinite(Number(provided)) && Number(provided) >= 0) {
-          payload.overtimeMinutes = Number(provided);
-        } else {
-          payload.overtimeMinutes = 0;
-        }
-      }
-    } catch (_) { /* ignore */ }
 
 
 
@@ -11056,39 +11401,73 @@ router.post('/attendance/bulk', async (req, res) => {
       const user = await User.findOne({ where: { id: uid, orgAccountId: orgId, role: 'staff' } });
       if (!user) continue;
       const payload = { ...basePayload };
-      // Compute OT minutes per staff (shift rule), else take provided
+      // Overtime calculation using Automation Rules (Bulk)
       try {
-        const { StaffShiftAssignment, ShiftTemplate } = require('../models');
-        const asg = await StaffShiftAssignment.findOne({
-          where: { userId: uid, effectiveFrom: { [Op.lte]: dateIso } },
-          order: [['effectiveFrom', 'DESC']]
-        });
-        let otMin = null;
-        if (asg) {
-          const tpl = await ShiftTemplate.findByPk(asg.shiftTemplateId || asg.shift_template_id);
-          const startAfter = Number(tpl?.overtimeStartMinutes || 0);
-          if (Number.isFinite(startAfter) && startAfter > 0 && payload.punchedInAt && payload.punchedOutAt) {
-            const diffMin = Math.floor((payload.punchedOutAt - payload.punchedInAt) / 60000);
-            if (diffMin > startAfter) otMin = diffMin - startAfter;
-            else otMin = 0;
-          }
-        }
-        if (otMin != null) {
-          payload.overtimeMinutes = otMin;
-          if (otMin > 0 && payload.status !== 'half_day' && payload.status !== 'leave' && payload.status !== 'absent') {
-            payload.status = 'overtime';
-          } else {
-            payload.overtimeMinutes = 0;
+        const orgAccount = await OrgAccount.findByPk(orgId);
+        const punchedInAt = payload.punchedInAt;
+        const punchedOutAt = payload.punchedOutAt;
+        if (punchedInAt && punchedOutAt) {
+          const totalWorkHours = Math.max(0, (new Date(punchedOutAt) - new Date(punchedInAt)) / 3600000);
+          const otResult = await calculateOvertime({
+            userId: uid,
+            orgAccountId: orgId,
+            date: dateIso,
+            punchedInAt,
+            punchedOutAt,
+            totalWorkHours
+          }, orgAccount);
+
+          payload.overtimeMinutes = otResult.overtimeMinutes;
+          payload.overtimeAmount = otResult.overtimeAmount;
+          payload.overtimeRuleId = otResult.overtimeRuleId;
+
+          // 2. Early Exit Calculation
+          const earlyExitService = require('../services/earlyExitService');
+          const eeResult = await earlyExitService.calculateEarlyExit({
+            userId: uid,
+            orgAccountId: orgId,
+            date: dateIso,
+            punchedOutAt
+          }, orgAccount);
+
+          payload.earlyExitMinutes = eeResult.earlyExitMinutes;
+          payload.earlyExitAmount = eeResult.earlyExitAmount;
+          payload.earlyExitRuleId = eeResult.earlyExitRuleId;
+
+          // 3. Late Punch-In Calculation (Bulk Sync)
+          const latePunchInService = require('../services/latePunchInService');
+          const lpResult = await latePunchInService.calculateLatePenalty({
+            userId: uid,
+            orgAccountId: orgId,
+            date: dateIso,
+            punchedInAt
+          }, orgAccount);
+
+          payload.latePunchInMinutes = lpResult.latePunchInMinutes;
+          payload.latePunchInAmount = lpResult.latePunchInAmount;
+          payload.latePunchInRuleId = lpResult.latePunchInRuleId;
+          payload.isLate = lpResult.isLate || false;
+
+          if (otResult.overtimeMinutes > 0 && !['half_day', 'leave', 'absent'].includes(payload.status)) {
+            payload.status = otResult.status || 'overtime';
           }
         } else {
           const provided = Array.isArray(body.rows) ? (body.rows.find(r => (r.userId === uid || r.userId === Number(uid)))?.overtimeMinutes) : body.overtimeMinutes;
-          if (payload.status === 'overtime' && Number.isFinite(Number(provided)) && Number(provided) >= 0) {
+          if (payload.status === 'overtime' && Number.isFinite(Number(provided))) {
             payload.overtimeMinutes = Number(provided);
           } else {
             payload.overtimeMinutes = 0;
+            payload.overtimeAmount = 0;
+            payload.overtimeRuleId = null;
+            payload.latePunchInMinutes = 0;
+            payload.latePunchInAmount = 0;
+            payload.latePunchInRuleId = null;
+            payload.isLate = false;
           }
         }
-      } catch (_) { /* ignore */ }
+      } catch (e) {
+        console.error('Bulk OT calculation error:', e);
+      }
 
       const [row, created] = await Attendance.findOrCreate({
         where: { userId: uid, date: dateIso },
@@ -21542,7 +21921,16 @@ router.get('/staff/:id/attendance-overview', async (req, res) => {
 
     // 1. Fetch data in parallel
     const [atts, leaves, hAssignment, wAssignment, automationRule, shiftAsg] = await Promise.all([
-      Attendance.findAll({ where: { userId, date: { [Op.between]: [startDateStr, endDateStr] } }, order: [['date', 'ASC']] }),
+      Attendance.findAll({
+        where: { userId, date: { [Op.between]: [startDateStr, endDateStr] } },
+        attributes: [
+          'id', 'userId', 'date', 'status', 'punchedInAt', 'punchedOutAt',
+          'breakTotalSeconds', 'overtimeMinutes', 'overtimeAmount',
+          'earlyExitMinutes', 'earlyExitAmount', 'breakDeductionAmount',
+          'excessBreakMinutes'
+        ],
+        order: [['date', 'ASC']]
+      }),
       LeaveRequest.findAll({ where: { userId, status: 'APPROVED', [Op.or]: [{ startDate: { [Op.between]: [startDateStr, endDateStr] } }, { endDate: { [Op.between]: [startDateStr, endDateStr] } }, { [Op.and]: [{ startDate: { [Op.lte]: startDateStr } }, { endDate: { [Op.gte]: endDateStr } }] }] } }),
       StaffHolidayAssignment.findOne({ where: { userId, effectiveFrom: { [Op.lte]: endDateStr }, [Op.or]: [{ effectiveTo: null }, { effectiveTo: { [Op.gte]: startDateStr } }] }, order: [['effectiveFrom', 'DESC']], include: [{ model: HolidayTemplate, as: 'template', include: [{ model: HolidayDate, as: 'holidays' }] }] }),
       StaffWeeklyOffAssignment.findOne({ where: { userId, effectiveFrom: { [Op.lte]: endDateStr }, [Op.or]: [{ effectiveTo: null }, { effectiveTo: { [Op.gte]: startDateStr } }] }, order: [['effectiveFrom', 'DESC']], include: [{ model: WeeklyOffTemplate, as: 'template' }] }),
@@ -21724,6 +22112,682 @@ router.get('/staff/:id/attendance-overview', async (req, res) => {
   } catch (error) {
     console.error('Attendance overview error:', error);
     res.status(500).json({ success: false, message: 'Failed to generate attendance overview' });
+  }
+});
+
+
+// Overtime Automation Rules
+router.get('/settings/overtime-rules', async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
+    const rules = await OvertimeRule.findAll({
+      where: { orgAccountId: orgId },
+      include: [{ model: StaffOvertimeAssignment, as: 'assignments', attributes: ['id'] }],
+      order: [['createdAt', 'DESC']]
+    });
+
+    // Attach count for UI
+    const result = rules.map(r => ({
+      ...r.toJSON(),
+      assignedCount: r.assignments?.length || 0
+    }));
+
+    return res.json({ success: true, rules: result });
+  } catch (error) {
+    console.error('Failed to load overtime rules:', error);
+    return res.status(500).json({ success: false, message: 'Failed to load overtime rules' });
+  }
+});
+
+router.post('/settings/overtime-rules', async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
+    const { name, calculationType, rewardType, thresholds, giveHalfDayOvertime, halfDayThresholdMinutes, giveFullDayOvertime, fullDayThresholdMinutes } = req.body;
+
+    const rule = await OvertimeRule.create({
+      orgAccountId: orgId,
+      name,
+      calculationType,
+      rewardType,
+      thresholds,
+      giveHalfDayOvertime,
+      halfDayThresholdMinutes,
+      giveFullDayOvertime,
+      fullDayThresholdMinutes
+    });
+
+    // Automatically set as active rule for the organization
+    await OrgAccount.update({ overtimeRuleId: rule.id }, { where: { id: orgId } });
+
+    return res.json({ success: true, rule });
+  } catch (error) {
+    return res.status(500).json({ success: false, message: 'Failed to create overtime rule' });
+  }
+});
+
+router.put('/settings/overtime-rules/:id', async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
+    const rule = await OvertimeRule.findOne({ where: { id: req.params.id, orgAccountId: orgId } });
+    if (!rule) return res.status(404).json({ success: false, message: 'Rule not found' });
+
+    await rule.update(req.body);
+
+    // Ensure OrgAccount is linked (in case it wasn't or multiple rules exist)
+    await OrgAccount.update({ overtimeRuleId: rule.id }, { where: { id: orgId } });
+
+    return res.json({ success: true, rule });
+  } catch (error) {
+    return res.status(500).json({ success: false, message: 'Failed to update overtime rule' });
+  }
+});
+
+router.delete('/settings/overtime-rules/:id', async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
+    const rule = await OvertimeRule.findOne({ where: { id: req.params.id, orgAccountId: orgId } });
+    if (!rule) return res.status(404).json({ success: false, message: 'Rule not found' });
+
+    await rule.destroy();
+    return res.json({ success: true, message: 'Rule deleted' });
+  } catch (error) {
+    return res.status(500).json({ success: false, message: 'Failed to delete overtime rule' });
+  }
+});
+
+router.get('/settings/overtime-rules/:id/assignments', async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
+    const assignments = await StaffOvertimeAssignment.findAll({
+      where: { overtimeRuleId: req.params.id, orgAccountId: orgId },
+      include: [
+        {
+          model: User,
+          as: 'user',
+          attributes: ['id', 'phone'],
+          include: [{ model: StaffProfile, as: 'profile', attributes: ['name', 'staffId', 'department', 'designation'] }]
+        }
+      ]
+    });
+    return res.json({ success: true, assignments });
+  } catch (error) {
+    return res.status(500).json({ success: false, message: 'Failed to load assignments' });
+  }
+});
+
+router.post('/settings/overtime-rules/:id/assign', async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
+    const { userIds, effectiveFrom, effectiveTo } = req.body;
+    const ruleId = req.params.id;
+
+    if (!userIds || !Array.isArray(userIds)) return res.status(400).json({ success: false, message: 'userIds array is required' });
+
+    const records = userIds.map(userId => ({
+      userId,
+      overtimeRuleId: ruleId,
+      orgAccountId: orgId,
+      effectiveFrom: effectiveFrom || new Date().toISOString().split('T')[0],
+      effectiveTo
+    }));
+
+    // Remove existing assignments for these users to prevent duplicates (if logic dictates)
+    await StaffOvertimeAssignment.destroy({ where: { userId: userIds, orgAccountId: orgId } });
+
+    await StaffOvertimeAssignment.bulkCreate(records);
+    return res.json({ success: true, message: 'Staff assigned successfully' });
+  } catch (error) {
+    return res.status(500).json({ success: false, message: 'Failed to assign staff' });
+  }
+});
+
+router.delete('/settings/overtime-rules/assignments/:id', async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
+    const assignment = await StaffOvertimeAssignment.findOne({ where: { id: req.params.id, orgAccountId: orgId } });
+    if (!assignment) return res.status(404).json({ success: false, message: 'Assignment not found' });
+
+    await assignment.destroy();
+    return res.json({ success: true, message: 'Staff unassigned successfully' });
+  } catch (error) {
+    return res.status(500).json({ success: false, message: 'Failed to unassign staff' });
+  }
+});
+
+// Early Overtime Automation Rules
+router.get('/settings/early-overtime-rules', async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
+    const { EarlyOvertimeRule, StaffEarlyOvertimeAssignment } = require('../models');
+    const rules = await EarlyOvertimeRule.findAll({ where: { orgAccountId: orgId } });
+
+    // Attach assignment counts
+    const countResults = await StaffEarlyOvertimeAssignment.findAll({
+      where: { orgAccountId: orgId },
+      attributes: ['earlyOvertimeRuleId', [require('sequelize').fn('COUNT', 'id'), 'count']],
+      group: ['earlyOvertimeRuleId']
+    });
+
+    const countMap = {};
+    countResults.forEach(c => {
+      const rid = c.earlyOvertimeRuleId || c.getDataValue('earlyOvertimeRuleId');
+      const countVal = c.get('count') || c.getDataValue('count') || 0;
+      countMap[rid] = parseInt(countVal);
+    });
+
+    const plainRules = rules.map(r => ({
+      ...r.toJSON(),
+      assignedCount: countMap[r.id] || 0
+    }));
+
+    return res.json({ success: true, rules: plainRules });
+  } catch (error) {
+    console.error('Fetch early overtime rules error:', error);
+    return res.status(500).json({ success: false, message: 'Failed to fetch rules' });
+  }
+});
+
+router.post('/settings/early-overtime-rules', async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
+    const { EarlyOvertimeRule } = require('../models');
+    const { name, active, thresholds, giveHalfDayEarlyOvertime, halfDayThresholdMinutes, giveFullDayEarlyOvertime, fullDayThresholdMinutes } = req.body;
+
+    const rule = await EarlyOvertimeRule.create({
+      orgAccountId: orgId,
+      name,
+      active: active !== undefined ? active : true,
+      thresholds,
+      giveHalfDayEarlyOvertime,
+      halfDayThresholdMinutes,
+      giveFullDayEarlyOvertime,
+      fullDayThresholdMinutes
+    });
+
+    return res.json({ success: true, rule });
+  } catch (error) {
+    console.error('Create early overtime rule error:', error);
+    return res.status(500).json({ success: false, message: 'Failed to create rule' });
+  }
+});
+
+router.put('/settings/early-overtime-rules/:id', async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
+    const { EarlyOvertimeRule } = require('../models');
+    const rule = await EarlyOvertimeRule.findOne({ where: { id: req.params.id, orgAccountId: orgId } });
+    if (!rule) return res.status(404).json({ success: false, message: 'Rule not found' });
+
+    await rule.update(req.body);
+    return res.json({ success: true, rule });
+  } catch (error) {
+    console.error('Update early overtime rule error:', error);
+    return res.status(500).json({ success: false, message: 'Failed to update rule' });
+  }
+});
+
+router.delete('/settings/early-overtime-rules/:id', async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
+    const { EarlyOvertimeRule, StaffEarlyOvertimeAssignment } = require('../models');
+    const rule = await EarlyOvertimeRule.findOne({ where: { id: req.params.id, orgAccountId: orgId } });
+    if (!rule) return res.status(404).json({ success: false, message: 'Rule not found' });
+
+    await StaffEarlyOvertimeAssignment.destroy({ where: { earlyOvertimeRuleId: rule.id } });
+    await rule.destroy();
+    return res.json({ success: true, message: 'Rule deleted' });
+  } catch (error) {
+    console.error('Delete early overtime rule error:', error);
+    return res.status(500).json({ success: false, message: 'Failed to delete rule' });
+  }
+});
+
+router.get('/settings/early-overtime-rules/:id/assignments', async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
+    const { StaffEarlyOvertimeAssignment, User, StaffProfile } = require('../models');
+    const assignments = await StaffEarlyOvertimeAssignment.findAll({
+      where: { earlyOvertimeRuleId: req.params.id, orgAccountId: orgId },
+      include: [
+        { model: User, as: 'user', include: [{ model: StaffProfile, as: 'profile' }] }
+      ]
+    });
+    return res.json({ success: true, assignments });
+  } catch (error) {
+    console.error('Fetch early overtime assignments error:', error);
+    return res.status(500).json({ success: false, message: 'Failed to fetch assignments' });
+  }
+});
+
+router.post('/settings/early-overtime-rules/:id/assign', async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
+    const { StaffEarlyOvertimeAssignment } = require('../models');
+    const { userIds, effectiveFrom, effectiveTo } = req.body;
+
+    if (!userIds || !Array.isArray(userIds)) return res.status(400).json({ success: false, message: 'Invalid staff IDs' });
+
+    const records = userIds.map(userId => ({
+      userId,
+      orgAccountId: orgId,
+      earlyOvertimeRuleId: req.params.id,
+      effectiveFrom: effectiveFrom || require('dayjs')().format('YYYY-MM-DD'),
+      effectiveTo
+    }));
+
+    await StaffEarlyOvertimeAssignment.destroy({ where: { userId: userIds, orgAccountId: orgId } });
+    await StaffEarlyOvertimeAssignment.bulkCreate(records);
+    return res.json({ success: true, message: 'Staff assigned successfully' });
+  } catch (error) {
+    console.error('Assign early overtime staff error:', error);
+    return res.status(500).json({ success: false, message: 'Failed to assign staff' });
+  }
+});
+
+router.delete('/settings/early-overtime-rules/assignments/:id', async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
+    const { StaffEarlyOvertimeAssignment } = require('../models');
+    const assignment = await StaffEarlyOvertimeAssignment.findOne({ where: { id: req.params.id, orgAccountId: orgId } });
+    if (!assignment) return res.status(404).json({ success: false, message: 'Assignment not found' });
+
+    await assignment.destroy();
+    return res.json({ success: true, message: 'Staff unassigned successfully' });
+  } catch (error) {
+    console.error('Unassign early overtime staff error:', error);
+    return res.status(500).json({ success: false, message: 'Failed to unassign staff' });
+  }
+});
+
+// Early Exit Automation Rules
+router.get('/settings/early-exit-rules', async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
+    const { EarlyExitRule, StaffEarlyExitAssignment } = require('../models');
+    const rules = await EarlyExitRule.findAll({ where: { orgAccountId: orgId } });
+
+    // Attach assignment counts
+    const counts = await StaffEarlyExitAssignment.findAll({
+      where: { orgAccountId: orgId },
+      attributes: ['earlyExitRuleId', [require('sequelize').fn('COUNT', 'id'), 'count']],
+      group: ['earlyExitRuleId']
+    });
+
+    const countMap = {};
+    counts.forEach(c => { countMap[c.earlyExitRuleId || c.getDataValue('earlyExitRuleId')] = parseInt(c.get('count') || c.getDataValue('count') || 0); });
+
+    const plainRules = rules.map(r => ({
+      ...r.toJSON(),
+      assignedCount: countMap[r.id] || 0
+    }));
+
+    return res.json({ success: true, rules: plainRules });
+  } catch (error) {
+    return res.status(500).json({ success: false, message: 'Failed to fetch rules' });
+  }
+});
+
+router.post('/settings/early-exit-rules', async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
+    const { EarlyExitRule } = require('../models');
+    const rule = await EarlyExitRule.create({ ...req.body, orgAccountId: orgId });
+    return res.json({ success: true, rule });
+  } catch (error) {
+    return res.status(500).json({ success: false, message: 'Failed to create rule' });
+  }
+});
+
+router.put('/settings/early-exit-rules/:id', async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
+    const { EarlyExitRule } = require('../models');
+    const rule = await EarlyExitRule.findOne({ where: { id: req.params.id, orgAccountId: orgId } });
+    if (!rule) return res.status(404).json({ success: false, message: 'Rule not found' });
+
+    await rule.update(req.body);
+    return res.json({ success: true, rule });
+  } catch (error) {
+    return res.status(500).json({ success: false, message: 'Failed to update rule' });
+  }
+});
+
+router.delete('/settings/early-exit-rules/:id', async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
+    const { EarlyExitRule, StaffEarlyExitAssignment } = require('../models');
+    const rule = await EarlyExitRule.findOne({ where: { id: req.params.id, orgAccountId: orgId } });
+    if (!rule) return res.status(404).json({ success: false, message: 'Rule not found' });
+
+    await StaffEarlyExitAssignment.destroy({ where: { earlyExitRuleId: rule.id } });
+    await rule.destroy();
+    return res.json({ success: true, message: 'Rule deleted successfully' });
+  } catch (error) {
+    return res.status(500).json({ success: false, message: 'Failed to delete rule' });
+  }
+});
+
+router.get('/settings/early-exit-rules/:id/assignments', async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
+    const { StaffEarlyExitAssignment, User, StaffProfile } = require('../models');
+    const assignments = await StaffEarlyExitAssignment.findAll({
+      where: { earlyExitRuleId: req.params.id, orgAccountId: orgId },
+      include: [
+        { model: User, as: 'user', include: [{ model: StaffProfile, as: 'profile' }] }
+      ]
+    });
+    return res.json({ success: true, assignments });
+  } catch (error) {
+    return res.status(500).json({ success: false, message: 'Failed to fetch assignments' });
+  }
+});
+
+router.post('/settings/early-exit-rules/:id/assign', async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
+    const { StaffEarlyExitAssignment } = require('../models');
+    const { userIds, effectiveFrom = require('dayjs')().format('YYYY-MM-DD'), effectiveTo = null } = req.body;
+
+    if (!userIds || !Array.isArray(userIds)) return res.status(400).json({ success: false, message: 'Invalid staff IDs' });
+
+    const records = userIds.map(userId => ({
+      userId,
+      orgAccountId: orgId,
+      earlyExitRuleId: req.params.id,
+      effectiveFrom,
+      effectiveTo
+    }));
+
+    // Remove existing assignments for these users to prevent duplicates
+    await StaffEarlyExitAssignment.destroy({ where: { userId: userIds, orgAccountId: orgId } });
+
+    await StaffEarlyExitAssignment.bulkCreate(records);
+    return res.json({ success: true, message: 'Staff assigned successfully' });
+  } catch (error) {
+    return res.status(500).json({ success: false, message: 'Failed to assign staff' });
+  }
+});
+
+router.delete('/settings/early-exit-rules/assignments/:id', async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
+    const { StaffEarlyExitAssignment } = require('../models');
+    const assignment = await StaffEarlyExitAssignment.findOne({ where: { id: req.params.id, orgAccountId: orgId } });
+    if (!assignment) return res.status(404).json({ success: false, message: 'Assignment not found' });
+
+    await assignment.destroy();
+    return res.json({ success: true, message: 'Staff unassigned successfully' });
+  } catch (error) {
+    return res.status(500).json({ success: false, message: 'Failed to unassign staff' });
+  }
+});
+
+// Break Automation Rules
+router.get('/settings/break-rules', async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
+    const { BreakRule, StaffBreakAssignment } = require('../models');
+    const rules = await BreakRule.findAll({ where: { orgAccountId: orgId } });
+
+    // Attach assignment counts
+    const counts = await StaffBreakAssignment.findAll({
+      where: { orgAccountId: orgId },
+      attributes: ['breakRuleId', [require('sequelize').fn('COUNT', 'id'), 'count']],
+      group: ['breakRuleId']
+    });
+
+    const countMap = {};
+    counts.forEach(c => { countMap[c.breakRuleId || c.getDataValue('breakRuleId')] = parseInt(c.get('count') || c.getDataValue('count') || 0); });
+
+    const plainRules = rules.map(r => ({
+      ...r.toJSON(),
+      assignedCount: countMap[r.id] || 0
+    }));
+
+    return res.json({ success: true, rules: plainRules });
+  } catch (error) {
+    return res.status(500).json({ success: false, message: 'Failed to fetch rules' });
+  }
+});
+
+router.post('/settings/break-rules', async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
+    const { BreakRule } = require('../models');
+    const rule = await BreakRule.create({ ...req.body, orgAccountId: orgId });
+    return res.json({ success: true, rule });
+  } catch (error) {
+    return res.status(500).json({ success: false, message: 'Failed to create rule' });
+  }
+});
+
+router.put('/settings/break-rules/:id', async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
+    const { BreakRule } = require('../models');
+    const rule = await BreakRule.findOne({ where: { id: req.params.id, orgAccountId: orgId } });
+    if (!rule) return res.status(404).json({ success: false, message: 'Rule not found' });
+
+    await rule.update(req.body);
+    return res.json({ success: true, rule });
+  } catch (error) {
+    return res.status(500).json({ success: false, message: 'Failed to update rule' });
+  }
+});
+
+router.delete('/settings/break-rules/:id', async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
+    const { BreakRule, StaffBreakAssignment } = require('../models');
+    const rule = await BreakRule.findOne({ where: { id: req.params.id, orgAccountId: orgId } });
+    if (!rule) return res.status(404).json({ success: false, message: 'Rule not found' });
+
+    await StaffBreakAssignment.destroy({ where: { breakRuleId: rule.id } });
+    await rule.destroy();
+    return res.json({ success: true, message: 'Rule deleted successfully' });
+  } catch (error) {
+    return res.status(500).json({ success: false, message: 'Failed to delete rule' });
+  }
+});
+
+router.get('/settings/break-rules/:id/assignments', async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
+    const { StaffBreakAssignment, User, StaffProfile } = require('../models');
+    const assignments = await StaffBreakAssignment.findAll({
+      where: { breakRuleId: req.params.id, orgAccountId: orgId },
+      include: [
+        { model: User, as: 'user', include: [{ model: StaffProfile, as: 'profile' }] }
+      ]
+    });
+    return res.json({ success: true, assignments });
+  } catch (error) {
+    return res.status(500).json({ success: false, message: 'Failed to fetch assignments' });
+  }
+});
+
+router.post('/settings/break-rules/:id/assign', async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
+    const { StaffBreakAssignment } = require('../models');
+    const { userIds, effectiveFrom = require('dayjs')().format('YYYY-MM-DD'), effectiveTo = null } = req.body;
+
+    if (!userIds || !Array.isArray(userIds)) return res.status(400).json({ success: false, message: 'Invalid staff IDs' });
+
+    const records = userIds.map(userId => ({
+      userId,
+      orgAccountId: orgId,
+      breakRuleId: req.params.id,
+      effectiveFrom,
+      effectiveTo
+    }));
+
+    // Remove existing assignments for these users to prevent duplicates
+    await StaffBreakAssignment.destroy({ where: { userId: userIds, orgAccountId: orgId } });
+
+    await StaffBreakAssignment.bulkCreate(records);
+    return res.json({ success: true, message: 'Staff assigned successfully' });
+  } catch (error) {
+    return res.status(500).json({ success: false, message: 'Failed to assign staff' });
+  }
+});
+
+router.delete('/settings/break-rules/assignments/:id', async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
+    const { StaffBreakAssignment } = require('../models');
+    const assignment = await StaffBreakAssignment.findOne({ where: { id: req.params.id, orgAccountId: orgId } });
+    if (!assignment) return res.status(404).json({ success: false, message: 'Assignment not found' });
+
+    await assignment.destroy();
+    return res.json({ success: true, message: 'Staff unassigned successfully' });
+  } catch (error) {
+    return res.status(500).json({ success: false, message: 'Failed to unassign staff' });
+  }
+});
+
+// Late Punch-In Automation Rules
+router.get('/settings/late-punchin-rules', async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
+    const { LatePunchInRule, StaffLatePunchInAssignment } = require('../models');
+    const rules = await LatePunchInRule.findAll({ where: { orgAccountId: orgId } });
+
+    // Attach assignment counts
+    const countResults = await StaffLatePunchInAssignment.findAll({
+      where: { orgAccountId: orgId },
+      attributes: ['latePunchInRuleId', [require('sequelize').fn('COUNT', 'id'), 'count']],
+      group: ['latePunchInRuleId']
+    });
+
+    const countMap = {};
+    countResults.forEach(c => {
+      const rid = c.latePunchInRuleId || c.getDataValue('latePunchInRuleId');
+      const countVal = c.get('count') || c.getDataValue('count') || 0;
+      countMap[rid] = parseInt(countVal);
+    });
+
+    const plainRules = rules.map(r => ({
+      ...r.toJSON(),
+      assignedCount: countMap[r.id] || 0
+    }));
+
+    return res.json({ success: true, rules: plainRules });
+  } catch (error) {
+    console.error('Fetch late punch-in rules error:', error);
+    return res.status(500).json({ success: false, message: 'Failed to fetch rules' });
+  }
+});
+
+router.post('/settings/late-punchin-rules', async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
+    const { LatePunchInRule } = require('../models');
+    const { name, active, thresholds, penaltyType } = req.body;
+
+    const rule = await LatePunchInRule.create({
+      orgAccountId: orgId,
+      name,
+      active: active !== undefined ? active : true,
+      penaltyType: penaltyType || 'SLABS',
+      thresholds
+    });
+
+    return res.json({ success: true, rule });
+  } catch (error) {
+    console.error('Create late punch-in rule error:', error);
+    return res.status(500).json({ success: false, message: 'Failed to create rule' });
+  }
+});
+
+router.put('/settings/late-punchin-rules/:id', async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
+    const { LatePunchInRule } = require('../models');
+    const rule = await LatePunchInRule.findOne({ where: { id: req.params.id, orgAccountId: orgId } });
+    if (!rule) return res.status(404).json({ success: false, message: 'Rule not found' });
+
+    await rule.update(req.body);
+    return res.json({ success: true, rule });
+  } catch (error) {
+    console.error('Update late punch-in rule error:', error);
+    return res.status(500).json({ success: false, message: 'Failed to update rule' });
+  }
+});
+
+router.delete('/settings/late-punchin-rules/:id', async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
+    const { LatePunchInRule, StaffLatePunchInAssignment } = require('../models');
+    const rule = await LatePunchInRule.findOne({ where: { id: req.params.id, orgAccountId: orgId } });
+    if (!rule) return res.status(404).json({ success: false, message: 'Rule not found' });
+
+    await StaffLatePunchInAssignment.destroy({ where: { latePunchInRuleId: rule.id } });
+    await rule.destroy();
+    return res.json({ success: true, message: 'Rule deleted successfully' });
+  } catch (error) {
+    console.error('Delete late punch-in rule error:', error);
+    return res.status(500).json({ success: false, message: 'Failed to delete rule' });
+  }
+});
+
+router.get('/settings/late-punchin-rules/:id/assignments', async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
+    const { StaffLatePunchInAssignment, User, StaffProfile } = require('../models');
+    const assignments = await StaffLatePunchInAssignment.findAll({
+      where: { latePunchInRuleId: req.params.id, orgAccountId: orgId },
+      include: [
+        { model: User, as: 'user', include: [{ model: StaffProfile, as: 'profile' }] }
+      ]
+    });
+    return res.json({ success: true, assignments });
+  } catch (error) {
+    console.error('Fetch late punch-in assignments error:', error);
+    return res.status(500).json({ success: false, message: 'Failed to fetch assignments' });
+  }
+});
+
+router.post('/settings/late-punchin-rules/:id/assign', async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
+    const { StaffLatePunchInAssignment } = require('../models');
+    const { userIds, effectiveFrom = require('dayjs')().format('YYYY-MM-DD'), effectiveTo = null } = req.body;
+
+    if (!userIds || !Array.isArray(userIds)) return res.status(400).json({ success: false, message: 'Invalid staff IDs' });
+
+    const records = userIds.map(userId => ({
+      userId,
+      orgAccountId: orgId,
+      latePunchInRuleId: req.params.id,
+      effectiveFrom,
+      effectiveTo
+    }));
+
+    // Remove existing assignments for these users to prevent duplicates across different rules
+    await StaffLatePunchInAssignment.destroy({ where: { userId: userIds, orgAccountId: orgId } });
+
+    await StaffLatePunchInAssignment.bulkCreate(records);
+    return res.json({ success: true, message: 'Staff assigned successfully' });
+  } catch (error) {
+    console.error('Assign late punch-in staff error:', error);
+    return res.status(500).json({ success: false, message: 'Failed to assign staff' });
+  }
+});
+
+router.delete('/settings/late-punchin-rules/assignments/:id', async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
+    const { StaffLatePunchInAssignment } = require('../models');
+    const assignment = await StaffLatePunchInAssignment.findOne({ where: { id: req.params.id, orgAccountId: orgId } });
+    if (!assignment) return res.status(404).json({ success: false, message: 'Assignment not found' });
+
+    await assignment.destroy();
+    return res.json({ success: true, message: 'Staff unassigned successfully' });
+  } catch (error) {
+    console.error('Unassign late punch-in staff error:', error);
+    return res.status(500).json({ success: false, message: 'Failed to unassign staff' });
   }
 });
 
