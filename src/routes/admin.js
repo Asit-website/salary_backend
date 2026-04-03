@@ -706,13 +706,7 @@ router.get('/payroll/:cycleId/export', async (req, res) => {
         overtimeMinutes,
         Number(overtimeRate.toFixed(2)),
         overtimePay,
-        ...sortedEarnings.map(k => {
-          // If the key is basic_salary, show the fixed amount from user profile
-          if (k.toLowerCase() === 'basic_salary' || k.toLowerCase() === 'basicsalary') {
-            return u.basicSalary || 0;
-          }
-          return e[k] || 0;
-        }),
+        ...sortedEarnings.map(k => e[k] || 0),
         ...sortedIncentives.map(k => i[k] || 0),
         ...sortedDeductions.map(k => d[k] || 0),
         Number(t.totalEarnings || 0),
