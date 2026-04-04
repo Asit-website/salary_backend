@@ -482,12 +482,9 @@ router.get('/status', async (req, res) => {
     const otData = await calculateOvertime({ ...record.toJSON(), totalWorkHours: workSeconds / 3600 }, orgAccount, now);
     overtimeSeconds = (otData.overtimeMinutes || 0) * 60;
     overtimeAmount = otData.overtimeAmount || 0;
-  } else if (assignedShift && Number.isFinite(Number(assignedShift.overtimeStartMinutes))) {
-    // Fallback if no record but shift has basic OT threshold
-    const totalWorkMinutes = Math.floor(workSeconds / 60);
-    if (totalWorkMinutes > assignedShift.overtimeStartMinutes) {
-      overtimeSeconds = (totalWorkMinutes - assignedShift.overtimeStartMinutes) * 60;
-    }
+  } else {
+    // If no record, we no longer do basic shift-level OT fallback.
+    overtimeSeconds = 0;
   }
 
   // Use the stored status from database if available, otherwise calculate
@@ -497,9 +494,7 @@ router.get('/status', async (req, res) => {
   if (!record?.status && record?.punchedInAt) {
     const totalWorkMinutes = Math.floor(workSeconds / 60);
     if (assignedShift) {
-      if (Number.isFinite(Number(assignedShift.overtimeStartMinutes)) && totalWorkMinutes > assignedShift.overtimeStartMinutes) {
-        dayStatus = 'OVERTIME';
-      } else if (Number.isFinite(Number(assignedShift.halfDayThresholdMinutes)) && totalWorkMinutes < assignedShift.halfDayThresholdMinutes) {
+       if (Number.isFinite(Number(assignedShift.halfDayThresholdMinutes)) && totalWorkMinutes < assignedShift.halfDayThresholdMinutes) {
         dayStatus = (key === todayKey() && !record.punchedOutAt) ? 'PRESENT' : 'HALF_DAY';
       } else {
         dayStatus = 'PRESENT';
@@ -750,9 +745,7 @@ router.get('/history', async (req, res) => {
         } else {
           // Calculate status based on shift rules for history consistency
           if (shiftTpl) {
-            if (Number.isFinite(Number(shiftTpl.overtimeStartMinutes)) && totalWorkMinutes > shiftTpl.overtimeStartMinutes) {
-              dayStatus = 'OVERTIME';
-            } else if (Number.isFinite(Number(shiftTpl.halfDayThresholdMinutes)) && totalWorkMinutes < shiftTpl.halfDayThresholdMinutes) {
+            if (Number.isFinite(Number(shiftTpl.halfDayThresholdMinutes)) && totalWorkMinutes < shiftTpl.halfDayThresholdMinutes) {
               dayStatus = (key === todayStr && !record.punchedOutAt) ? 'PRESENT' : 'HALF_DAY';
             } else {
               dayStatus = 'PRESENT';

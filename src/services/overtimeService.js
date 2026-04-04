@@ -43,9 +43,9 @@ async function getEffectiveShiftTemplate(userId, dateKey) {
       if (tpl) return tpl;
     }
     return null;
-  } catch (e) { 
+  } catch (e) {
     console.error('[OvertimeService] Error getting shift template:', e.message);
-    return null; 
+    return null;
   }
 }
 
@@ -63,12 +63,12 @@ async function getOvertimeMinutes(attendance, rule, shiftTemplate) {
 
   if (attendance.punchedOutAt && shiftTemplate && shiftTemplate.endTime) {
     const punchOut = new Date(attendance.punchedOutAt);
-    
+
     // Timezone safe extraction (IST - Asia/Kolkata)
     const istStr = punchOut.toLocaleString('en-US', { timeZone: 'Asia/Kolkata', hour12: false });
     const localMatch = istStr.match(/(\d{1,2}):(\d{2}):(\d{2})/);
     let punchOutSec = 0;
-    
+
     if (localMatch) {
       const ph = parseInt(localMatch[1]);
       const pm = parseInt(localMatch[2]);
@@ -78,7 +78,7 @@ async function getOvertimeMinutes(attendance, rule, shiftTemplate) {
       // Fallback to local system time if formatter fails
       punchOutSec = punchOut.getHours() * 3600 + punchOut.getMinutes() * 60 + punchOut.getSeconds();
     }
-    
+
     const [eh, em, es] = shiftTemplate.endTime.split(':').map(Number);
     const shiftEndSec = (eh * 3600 + em * 60 + (es || 0));
 
@@ -112,7 +112,7 @@ async function calculateOvertime(params, orgAccountArg, nowArg, daysInMonthArg =
   const attendance = (params.toJSON ? params.toJSON() : params);
   const totalWorkMinutes = Math.floor((attendance.totalWorkHours || 0) * 60);
   const now = nowArg || new Date();
-  
+
   // Ensure we have numbers for IDs
   const userId = attendance.userId ? Number(attendance.userId) : null;
   const orgAccountId = attendance.orgAccountId ? Number(attendance.orgAccountId) : (params.orgId ? Number(params.orgId) : null);
@@ -131,38 +131,31 @@ async function calculateOvertime(params, orgAccountArg, nowArg, daysInMonthArg =
 
   // 1. Resolve effective Shift Template
   const shiftTemplate = await getEffectiveShiftTemplate(userId, dateKey);
-  
+
   // 2. Resolve Automation Rule (Assignment > Org Default)
   const { Op } = require('sequelize');
   const assignment = await StaffOvertimeAssignment.findOne({
-    where: { 
-      userId, 
+    where: {
+      userId,
       orgAccountId,
       effectiveFrom: { [Op.lte]: dateKey }
     },
     order: [['effectiveFrom', 'DESC'], ['id', 'DESC']]
   });
 
-  const ruleId = assignment ? assignment.overtimeRuleId : (orgAccount && orgAccount.overtimeRuleId);
+  const ruleId = assignment ? assignment.overtimeRuleId : null;
   console.log(`[OvertimeService] User: ${userId}, Date: ${dateKey}. Assignment Found: ${!!assignment}, RuleID: ${ruleId}`);
 
   let finalRule = ruleId ? await OvertimeRule.findByPk(ruleId) : null;
   let thresholds = [];
 
   if (!finalRule) {
-    // If no rule assigned, and no automation rule exists, we can still do basic Shift OT
-    if (orgAccount && orgAccount.manualOvertimeAllowed && shiftTemplate) {
-      console.log(`[OvertimeService] No automation rule for user ${userId}. Falling back to basic shift OT.`);
-      finalRule = {
-        id: null,
-        calculationType: 'SHIFT_END',
-        thresholds: [{ minMinutes: shiftTemplate.overtimeStartMinutes, rewardValue: 0, rewardType: 'MULTIPLIER' }],
-        toJSON: () => ({ calculationType: 'SHIFT_END' })
+      return { 
+        overtimeMinutes: 0, 
+        overtimeAmount: 0, 
+        overtimeRuleId: null, 
+        status: (totalWorkMinutes < (shiftTemplate?.halfDayThresholdMinutes || 240)) ? 'half_day' : 'present' 
       };
-      thresholds = finalRule.thresholds;
-    } else {
-      return { overtimeMinutes: 0, overtimeAmount: 0, overtimeRuleId: null, status: 'present' };
-    }
   } else {
     // Parse thresholds from the actual rule
     thresholds = finalRule.thresholds || [];
@@ -174,9 +167,9 @@ async function calculateOvertime(params, orgAccountArg, nowArg, daysInMonthArg =
   const overtimeMinutes = await getOvertimeMinutes(attendance, { ...(finalRule.toJSON ? finalRule.toJSON() : finalRule), thresholds }, shiftTemplate);
 
   if (overtimeMinutes <= 0) {
-    return { 
-      overtimeMinutes: 0, 
-      overtimeAmount: 0, 
+    return {
+      overtimeMinutes: 0,
+      overtimeAmount: 0,
       overtimeRuleId: (finalRule && finalRule.id) || null,
       status: (attendance.totalWorkHours * 60 < (shiftTemplate?.halfDayThresholdMinutes || 240)) ? 'half_day' : 'present'
     };
@@ -201,7 +194,7 @@ async function calculateOvertime(params, orgAccountArg, nowArg, daysInMonthArg =
     const baseSalary = Number(user?.basicSalary || 0) + Number(user?.da || 0);
     const daysInMonth = daysInMonthArg || 30; // Standard month units
     const hourlySalary = daysInMonth > 0 ? (baseSalary / (daysInMonth * 8)) : 0;
-    
+
     // If salary is missing, we can't calculate a multiplier amount, but we should log it
     if (hourlySalary <= 0) {
       console.log(`[OvertimeService] Warning: Salary Multiplier rule used for user ${userId} but no base salary found (Found: ${baseSalary}).`);
@@ -218,17 +211,17 @@ async function calculateOvertime(params, orgAccountArg, nowArg, daysInMonthArg =
   if (finalRule && finalRule.id) {
     if (finalRule.giveHalfDayOvertime && finalRule.halfDayThresholdMinutes) {
       if (totalWorkMinutes >= finalRule.halfDayThresholdMinutes) {
-          const user = await User.findByPk(userId);
-          const dailyRate = (Number(user?.grossSalary || 0)) / (daysInMonthArg || 30);
-          overtimeAmount += (dailyRate / 2); 
+        const user = await User.findByPk(userId);
+        const dailyRate = (Number(user?.grossSalary || 0)) / (daysInMonthArg || 30);
+        overtimeAmount += (dailyRate / 2);
       }
     }
 
     if (finalRule.giveFullDayOvertime && finalRule.fullDayThresholdMinutes) {
       if (totalWorkMinutes >= finalRule.fullDayThresholdMinutes) {
-          const user = await User.findByPk(userId);
-          const dailyRate = (Number(user?.grossSalary || 0)) / (daysInMonthArg || 30);
-          overtimeAmount += dailyRate;
+        const user = await User.findByPk(userId);
+        const dailyRate = (Number(user?.grossSalary || 0)) / (daysInMonthArg || 30);
+        overtimeAmount += dailyRate;
       }
     }
   }
