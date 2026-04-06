@@ -106,6 +106,9 @@ const defineEarlyOvertimeRule = require('./EarlyOvertimeRule');
 const defineStaffEarlyOvertimeAssignment = require('./StaffEarlyOvertimeAssignment');
 const defineLatePunchInRule = require('./LatePunchInRule');
 const defineStaffLatePunchInAssignment = require('./StaffLatePunchInAssignment');
+const defineJobPosting = require('./JobPosting');
+const defineCandidate = require('./Candidate');
+const defineInterview = require('./Interview');
 
 
 
@@ -216,6 +219,9 @@ const EarlyOvertimeRule = defineEarlyOvertimeRule(sequelize);
 const StaffEarlyOvertimeAssignment = defineStaffEarlyOvertimeAssignment(sequelize);
 const LatePunchInRule = defineLatePunchInRule(sequelize);
 const StaffLatePunchInAssignment = defineStaffLatePunchInAssignment(sequelize);
+const JobPosting = defineJobPosting(sequelize);
+const Candidate = defineCandidate(sequelize);
+const Interview = defineInterview(sequelize);
 
 
 
@@ -693,6 +699,25 @@ StaffLatePunchInAssignment.belongsTo(User, { foreignKey: 'userId', as: 'user' })
 LatePunchInRule.hasMany(StaffLatePunchInAssignment, { foreignKey: 'latePunchInRuleId', as: 'assignments' });
 StaffLatePunchInAssignment.belongsTo(LatePunchInRule, { foreignKey: 'latePunchInRuleId', as: 'rule' });
 
+// Recruitment / ATS associations
+OrgAccount.hasMany(JobPosting, { foreignKey: 'orgAccountId', as: 'jobPostings' });
+JobPosting.belongsTo(OrgAccount, { foreignKey: 'orgAccountId', as: 'orgAccount' });
+
+User.hasMany(JobPosting, { foreignKey: 'createdBy', as: 'createdJobs' });
+JobPosting.belongsTo(User, { foreignKey: 'createdBy', as: 'creator' });
+
+JobPosting.hasMany(Candidate, { foreignKey: 'jobId', as: 'applicants' });
+Candidate.belongsTo(JobPosting, { foreignKey: 'jobId', as: 'job' });
+
+OrgAccount.hasMany(Candidate, { foreignKey: 'orgAccountId', as: 'candidates' });
+Candidate.belongsTo(OrgAccount, { foreignKey: 'orgAccountId', as: 'orgAccount' });
+
+Candidate.hasMany(Interview, { foreignKey: 'candidateId', as: 'interviews' });
+Interview.belongsTo(Candidate, { foreignKey: 'candidateId', as: 'candidate' });
+
+User.hasMany(Interview, { foreignKey: 'interviewerId', as: 'scheduledInterviews' });
+Interview.belongsTo(User, { foreignKey: 'interviewerId', as: 'interviewer' });
+
 module.exports = {
   sequelize,
   User,
@@ -795,10 +820,12 @@ module.exports = {
   StaffOvertimeAssignment,
   EarlyExitRule,
   StaffEarlyExitAssignment,
-  BreakRule,
   StaffBreakAssignment,
   EarlyOvertimeRule,
   StaffEarlyOvertimeAssignment,
   LatePunchInRule,
   StaffLatePunchInAssignment,
+  JobPosting,
+  Candidate,
+  Interview,
 };
