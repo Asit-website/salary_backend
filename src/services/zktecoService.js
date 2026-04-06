@@ -130,6 +130,10 @@ class ZktecoService {
         let breakDeductionAmount = 0;
         let breakRuleId = null;
         let excessBreakMinutes = 0;
+        let latePunchInMinutes = 0;
+        let latePunchInAmount = 0;
+        let latePunchInRuleId = null;
+        let isLate = false;
         let status = 'PRESENT';
 
         // Fetch Org ID to get rules
@@ -200,6 +204,7 @@ class ZktecoService {
             latePunchInMinutes = lpResult.latePunchInMinutes;
             latePunchInAmount = lpResult.latePunchInAmount;
             latePunchInRuleId = lpResult.latePunchInRuleId;
+            isLate = lpResult.isLate || (latePunchInMinutes > 0);
 
             breakDeductionAmount = breakResult.breakDeductionAmount;
             breakRuleId = breakResult.breakRuleId;
@@ -226,6 +231,7 @@ class ZktecoService {
             latePunchInMinutes,
             latePunchInAmount,
             latePunchInRuleId,
+            isLate,
             status,
             latitude: dayPunches[0].latitude,
             longitude: dayPunches[0].longitude,
@@ -302,19 +308,19 @@ class ZktecoService {
                 return;
             }
 
-            console.log(`[ZktecoSync] ${transactions.length} transactions fetched. Processing...`);
+            console.log(`[ZktecoSync] ${transactions.length} total transactions fetched from API.`);
 
             // Group transactions by staff (emp_code)
             const staffGroups = {};
             transactions.forEach(t => {
-                const code = t.emp_code;
+                const code = String(t.emp_code).trim().toLowerCase();
                 if (!staffGroups[code]) staffGroups[code] = [];
                 staffGroups[code].push(t);
             });
 
             // Fetch staff mappings
             const empCodes = Object.keys(staffGroups);
-            console.log(`[ZktecoSync] Emp codes from ZKTeco: ${JSON.stringify(empCodes)} (Org ${orgId})`);
+            console.log(`[ZktecoSync] Unique Emp Codes found in transactions:`, empCodes);
 
             const staffProfiles = await StaffProfile.findAll({
                 where: { staffId: empCodes, orgAccountId: orgId }
@@ -323,48 +329,66 @@ class ZktecoService {
             console.log(`[ZktecoSync] Found ${staffProfiles.length} matching staff profiles`);
             staffProfiles.forEach(p => console.log(`[ZktecoSync]  staffId="${p.staffId}" -> userId=${p.userId}`));
 
-            const staffMap = new Map(staffProfiles.map(p => [String(p.staffId), p.userId]));
+            const staffMap = new Map();
+            staffProfiles.forEach(p => {
+                if (p.staffId) {
+                    staffMap.set(String(p.staffId).trim().toLowerCase(), p.userId);
+                }
+            });
+
+            console.log(`[ZktecoSync] Staff Map size: ${staffMap.size}`);
 
             for (const [empCode, punches] of Object.entries(staffGroups)) {
-                const userId = staffMap.get(String(empCode));
+                const userId = staffMap.get(String(empCode).trim().toLowerCase());
                 if (!userId) {
-                    console.log(`[ZktecoSync] No staff mapping for emp_code: "${empCode}" (Org ${orgId}). Check that staffId "${empCode}" exists in staff_profiles with org_account_id=${orgId}`);
+                    console.log(`[ZktecoSync] SKIP: No matching StaffProfile for emp_code "${empCode}" (Org ${orgId})`);
                     continue;
                 }
 
+                console.log(`[ZktecoSync] MATCH: emp_code "${empCode}" -> userId ${userId}. Calculating details with ${punches.length} punches.`);
                 const res = await this.calculateDetails(userId, punches, dateStr);
-                if (!res) continue;
+                
+                if (!res) {
+                    console.log(`[ZktecoSync] FAIL: calculateDetails returned null for userId ${userId}`);
+                    continue;
+                }
 
                 // Sync with Attendance table
-                await Attendance.upsert({
-                    userId,
-                    date: dateStr,
-                    orgAccountId: orgId,
-                    punchedInAt: res.punchedInAt,
-                    punchedOutAt: res.punchedOutAt,
-                    totalWorkHours: res.totalWorkHours,
-                    breakTotalSeconds: res.breakTotalSeconds,
-                    overtimeMinutes: res.overtimeMinutes,
-                    overtimeAmount: res.overtimeAmount,
-                    overtimeRuleId: res.overtimeRuleId,
-                    earlyExitMinutes: res.earlyExitMinutes,
-                    earlyExitAmount: res.earlyExitAmount,
-                    earlyExitRuleId: res.earlyExitRuleId,
-                    latePunchInMinutes: res.latePunchInMinutes,
-                    latePunchInAmount: res.latePunchInAmount,
-                    latePunchInRuleId: res.latePunchInRuleId,
-                    breakDeductionAmount: res.breakDeductionAmount,
-                    breakRuleId: res.breakRuleId,
-                    excessBreakMinutes: res.excessBreakMinutes,
-                    status: res.status,
-                    source: 'biometric',
-                    latitude: res.latitude,
-                    longitude: res.longitude,
-                    address: res.address,
-                    punchOutLatitude: res.punchOutLatitude,
-                    punchOutLongitude: res.punchOutLongitude,
-                    punchOutAddress: res.punchOutAddress,
-                });
+                try {
+                    await Attendance.upsert({
+                        userId,
+                        date: dateStr,
+                        orgAccountId: orgId,
+                        punchedInAt: res.punchedInAt,
+                        punchedOutAt: res.punchedOutAt,
+                        totalWorkHours: res.totalWorkHours,
+                        breakTotalSeconds: res.breakTotalSeconds,
+                        overtimeMinutes: res.overtimeMinutes,
+                        overtimeAmount: res.overtimeAmount,
+                        overtimeRuleId: res.overtimeRuleId,
+                        earlyExitMinutes: res.earlyExitMinutes,
+                        earlyExitAmount: res.earlyExitAmount,
+                        earlyExitRuleId: res.earlyExitRuleId,
+                        latePunchInMinutes: res.latePunchInMinutes,
+                        latePunchInAmount: res.latePunchInAmount,
+                        latePunchInRuleId: res.latePunchInRuleId,
+                        isLate: res.isLate || false,
+                        breakDeductionAmount: res.breakDeductionAmount,
+                        breakRuleId: res.breakRuleId,
+                        excessBreakMinutes: res.excessBreakMinutes,
+                        status: res.status,
+                        source: 'biometric',
+                        latitude: res.latitude,
+                        longitude: res.longitude,
+                        address: res.address,
+                        punchOutLatitude: res.punchOutLatitude,
+                        punchOutLongitude: res.punchOutLongitude,
+                        punchOutAddress: res.punchOutAddress,
+                    });
+                    console.log(`[ZktecoSync] SUCCESS: Saved attendance for userId ${userId} on ${dateStr}`);
+                } catch (upsertError) {
+                    console.error(`[ZktecoSync] DB ERROR for userId ${userId}:`, upsertError.message);
+                }
             }
 
             console.log(`[ZktecoSync] Completed sync for Org: ${orgId}`);
