@@ -2,6 +2,7 @@ const cron = require('node-cron');
 const { checkSubscriptionExpiryReminders } = require('./subscriptionExpiryReminder');
 const { scheduleZktecoSync, runZktecoSyncAllOrgs } = require('./zktecoSync');
 const { checkMissingAttendanceAndNotify } = require('./attendanceReminder');
+const { processMailQueue } = require('./mailCampaignJob');
 
 // Schedule the subscription expiry reminder job to run daily at 9:00 AM
 const scheduleSubscriptionExpiryReminders = () => {
@@ -23,6 +24,15 @@ const scheduleAttendanceReminders = () => {
   console.log('📅 Missing attendance reminder job scheduled to run daily at 9:30 AM');
 };
 
+// Schedule bulk mail processing to run every minute
+const scheduleBulkMailJob = () => {
+  cron.schedule('* * * * *', async () => {
+    // console.log('⏰ Running scheduled bulk mail processing...');
+    await processMailQueue();
+  });
+  console.log('📅 Bulk mail processing job scheduled to run every 1 minute');
+};
+
 // Also provide a manual trigger function for testing
 const runSubscriptionExpiryCheck = async () => {
   console.log('🔧 Manually triggering subscription expiry reminder check...');
@@ -40,5 +50,6 @@ module.exports = {
   scheduleZktecoSync,
   runZktecoSyncAllOrgs,
   scheduleAttendanceReminders,
-  runAttendanceReminderManual
+  runAttendanceReminderManual,
+  scheduleBulkMailJob
 };

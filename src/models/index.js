@@ -109,6 +109,8 @@ const defineStaffLatePunchInAssignment = require('./StaffLatePunchInAssignment')
 const defineJobPosting = require('./JobPosting');
 const defineCandidate = require('./Candidate');
 const defineInterview = require('./Interview');
+const defineMailCampaign = require('./MailCampaign');
+const defineMailQueue = require('./MailQueue');
 
 
 
@@ -222,6 +224,8 @@ const StaffLatePunchInAssignment = defineStaffLatePunchInAssignment(sequelize);
 const JobPosting = defineJobPosting(sequelize);
 const Candidate = defineCandidate(sequelize);
 const Interview = defineInterview(sequelize);
+const MailCampaign = defineMailCampaign(sequelize);
+const MailQueue = defineMailQueue(sequelize);
 
 
 
@@ -436,6 +440,11 @@ OrgAccount.hasMany(Subscription, { foreignKey: 'orgAccountId', as: 'subscription
 Subscription.belongsTo(OrgAccount, { foreignKey: 'orgAccountId', as: 'orgAccount' });
 Plan.hasMany(Subscription, { foreignKey: 'planId', as: 'subscriptions' });
 Subscription.belongsTo(Plan, { foreignKey: 'planId', as: 'plan' });
+
+// Mail Campaign associations
+MailCampaign.hasMany(MailQueue, { foreignKey: 'campaignId', as: 'queueItems' });
+MailQueue.belongsTo(MailCampaign, { foreignKey: 'campaignId', as: 'campaign' });
+MailCampaign.belongsTo(User, { foreignKey: 'createdBy', as: 'creator' });
 
 // Role / Permission associations
 OrgAccount.hasMany(Role, { foreignKey: 'orgAccountId', as: 'roles' });
@@ -706,17 +715,17 @@ JobPosting.belongsTo(OrgAccount, { foreignKey: 'orgAccountId', as: 'orgAccount' 
 User.hasMany(JobPosting, { foreignKey: 'createdBy', as: 'createdJobs' });
 JobPosting.belongsTo(User, { foreignKey: 'createdBy', as: 'creator' });
 
-JobPosting.hasMany(Candidate, { foreignKey: 'jobId', as: 'applicants' });
-Candidate.belongsTo(JobPosting, { foreignKey: 'jobId', as: 'job' });
+JobPosting.hasMany(Candidate, { foreignKey: 'jobId', as: 'Applicants' });
+Candidate.belongsTo(JobPosting, { foreignKey: 'jobId', as: 'Job' });
 
 OrgAccount.hasMany(Candidate, { foreignKey: 'orgAccountId', as: 'candidates' });
 Candidate.belongsTo(OrgAccount, { foreignKey: 'orgAccountId', as: 'orgAccount' });
 
 Candidate.hasMany(Interview, { foreignKey: 'candidateId', as: 'interviews' });
-Interview.belongsTo(Candidate, { foreignKey: 'candidateId', as: 'candidate' });
+Interview.belongsTo(Candidate, { foreignKey: 'candidateId', as: 'Candidate' });
 
 User.hasMany(Interview, { foreignKey: 'interviewerId', as: 'scheduledInterviews' });
-Interview.belongsTo(User, { foreignKey: 'interviewerId', as: 'interviewer' });
+Interview.belongsTo(User, { foreignKey: 'interviewerId', as: 'Interviewer' });
 
 module.exports = {
   sequelize,
@@ -820,6 +829,7 @@ module.exports = {
   StaffOvertimeAssignment,
   EarlyExitRule,
   StaffEarlyExitAssignment,
+  BreakRule,
   StaffBreakAssignment,
   EarlyOvertimeRule,
   StaffEarlyOvertimeAssignment,
@@ -828,4 +838,6 @@ module.exports = {
   JobPosting,
   Candidate,
   Interview,
+  MailCampaign,
+  MailQueue
 };

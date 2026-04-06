@@ -32,6 +32,8 @@ const rosterRoutes = require('./src/routes/roster');
 const aiRoutes = require('./src/routes/ai');
 const channelPartnerRoutes = require('./src/routes/channelPartner');
 const { verifyEmailConfig } = require('./src/services/emailService');
+const superadminMailRoutes = require('./src/routes/superadminMail');
+const recruitmentRoutes = require('./src/routes/recruitment');
 
 
 
@@ -40,6 +42,7 @@ const { tenantEnforce } = require('./src/middleware/tenant');
 const { scheduleSubscriptionSweep } = require('./src/jobs/subscriptionSweep');
 const { scheduleSubscriptionExpiryReminders, scheduleZktecoSync, scheduleAttendanceReminders } = require('./src/jobs');
 const { ensureCollectionExists } = require('./src/services/awsService');
+const { scheduleBulkMailJob } = require('./src/jobs');
 
 const app = express();
 
@@ -107,10 +110,12 @@ app.use('/admin/sales-incentives', salesIncentiveRoutes);
 
 app.use('/admin/user-access', userAccessRoutes);
 app.use('/admin/task-management', taskManagementRoutes);
+app.use('/admin/recruitment', recruitmentRoutes);
 app.use('/channel-partner', channelPartnerRoutes);
 app.use(rosterRoutes);
 app.use('/admin/ai', aiRoutes);
 app.use('/admin', adminRoutes);
+app.use('/superadmin/mail', superadminMailRoutes);
 app.use('/superadmin', superadminRoutes);
 app.use('/attendance', attendanceRoutes);
 app.use('/sales', salesRoutes);
@@ -161,6 +166,9 @@ initDb()
 
     // Start Attendance Missing Reminder job
     try { scheduleAttendanceReminders(); } catch (_) { }
+
+    // Start Bulk Mailing job (1-minute interval)
+    try { scheduleBulkMailJob(); } catch (_) { }
     // app.listen(port, () => {
     //   console.log(`Backend running on http://localhost:${port}`);
     // });

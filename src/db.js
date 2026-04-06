@@ -1,9 +1,13 @@
 const bcrypt = require('bcryptjs');
 
-const { sequelize, User, StaffProfile } = require('./models');
+const { sequelize, User, StaffProfile, MailCampaign, MailQueue } = require('./models');
 
 async function initDb() {
   await sequelize.authenticate();
+
+  // Sync mailing models to create tables if they don't exist
+  await MailCampaign.sync({ alter: true });
+  await MailQueue.sync({ alter: true });
 
   // Ensure face_id column exists
   try {

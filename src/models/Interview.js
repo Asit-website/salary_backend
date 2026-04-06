@@ -27,7 +27,13 @@ module.exports = (sequelize) => {
         defaultValue: 'SCHEDULED' 
       },
       notes: { type: DataTypes.TEXT, allowNull: true },
-      feedback: { type: DataTypes.TEXT, allowNull: true }
+      feedback: { type: DataTypes.TEXT, allowNull: true },
+      orgAccountId: { 
+        type: DataTypes.BIGINT.UNSIGNED, 
+        allowNull: false, 
+        field: 'org_account_id',
+        references: { model: 'org_accounts', key: 'id' }
+      }
     },
     {
       tableName: 'interviews',
