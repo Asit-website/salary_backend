@@ -73,7 +73,9 @@ class LatePunchInService {
 
     // 2. Identify Shift Start Time
     const shift = await this.getEffectiveShiftTemplate(userId, dateKey);
-    if (!shift || !shift.startTime) {
+    
+    // Explicitly skip for Open Shifts (only total work hours defined, no fixed start/end)
+    if (!shift || shift.shiftType === 'open' || !shift.startTime) {
       return { latePunchInMinutes: 0, latePunchInAmount: 0, latePunchInRuleId: finalRule.id };
     }
 

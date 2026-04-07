@@ -75,7 +75,9 @@ class EarlyExitService {
 
     // 2. Identify Shift End Time
     const shift = await this.getEffectiveShiftTemplate(userId, dateKey);
-    if (!shift || !shift.endTime) {
+    
+    // Explicitly skip for Open Shifts (no fixed start/end times, early exit doesn't apply)
+    if (!shift || shift.shiftType === 'open' || !shift.endTime) {
       return { earlyExitMinutes: 0, earlyExitAmount: 0, earlyExitRuleId: finalRule.id };
     }
 
