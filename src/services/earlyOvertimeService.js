@@ -49,7 +49,8 @@ async function getEffectiveShiftTemplate(userId, dateKey) {
  * Helper to find minutes worked before shift start.
  */
 async function getEarlyOvertimeMinutes(attendance, rule, shiftTemplate) {
-  if (!attendance.punchedInAt || !shiftTemplate || !shiftTemplate.startTime) {
+  // Explicitly skip for Open Shifts (no fixed start time, early OT doesn't apply)
+  if (!attendance.punchedInAt || !shiftTemplate || shiftTemplate.shiftType === 'open' || !shiftTemplate.startTime) {
     return 0;
   }
 

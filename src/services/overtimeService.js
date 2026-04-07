@@ -53,8 +53,33 @@ async function getEffectiveShiftTemplate(userId, dateKey) {
  * Helper to find minutes exceeding the threshold based on Calculation Type
  */
 async function getOvertimeMinutes(attendance, rule, shiftTemplate) {
-  const totalWorkMinutes = Math.floor(attendance.totalWorkHours * 60);
-  const baseThreshold = (rule.thresholds && rule.thresholds.length > 0) ? rule.thresholds[0].minMinutes : 0;
+  const totalWorkMinutes = Math.floor((attendance.totalWorkHours || 0) * 60);
+
+  // 1. Resolve Threshold (Rule > ShiftTemplate > Calculated Shift Time)
+  let baseThreshold = (rule.thresholds && rule.thresholds.length > 0) ? rule.thresholds[0].minMinutes : 0;
+
+  // FALLBACK: If rule threshold is 0/missing, use Shift Template's required work minutes
+  // REINFORCEMENT: For calculation types that depend on shift boundaries, 
+  // ensure the threshold is at least the shift duration to avoid "ghost" overtime.
+  if (shiftTemplate) {
+    let shiftWorkMins = 0;
+    if (shiftTemplate.workMinutes) {
+      shiftWorkMins = shiftTemplate.workMinutes;
+    } else if (shiftTemplate.startTime && shiftTemplate.endTime) {
+      const [sh, sm] = shiftTemplate.startTime.split(':').map(Number);
+      const [eh, em] = shiftTemplate.endTime.split(':').map(Number);
+      let startMin = sh * 60 + sm;
+      let endMin = eh * 60 + em;
+      if (endMin <= startMin) endMin += 1440; // overnight shift
+      shiftWorkMins = endMin - startMin;
+    }
+
+    // If the rule threshold is missing OR smaller than the shift duration, 
+    // we use the shift duration as the baseline payability threshold.
+    if (!baseThreshold || (shiftWorkMins > 0 && baseThreshold < shiftWorkMins)) {
+      baseThreshold = shiftWorkMins;
+    }
+  }
 
   let overtimeByPeriod = 0;
   let overtimeByShift = 0;
@@ -150,12 +175,12 @@ async function calculateOvertime(params, orgAccountArg, nowArg, daysInMonthArg =
   let thresholds = [];
 
   if (!finalRule) {
-      return { 
-        overtimeMinutes: 0, 
-        overtimeAmount: 0, 
-        overtimeRuleId: null, 
-        status: (totalWorkMinutes < (shiftTemplate?.halfDayThresholdMinutes || 240)) ? 'half_day' : 'present' 
-      };
+    return {
+      overtimeMinutes: 0,
+      overtimeAmount: 0,
+      overtimeRuleId: null,
+      status: (totalWorkMinutes < (shiftTemplate?.halfDayThresholdMinutes || 240)) ? 'half_day' : 'present'
+    };
   } else {
     // Parse thresholds from the actual rule
     thresholds = finalRule.thresholds || [];
