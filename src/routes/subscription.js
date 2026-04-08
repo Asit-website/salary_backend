@@ -39,6 +39,8 @@ router.post('/plans', authRequired, requireRole('superadmin'), async (req, res) 
       aiReportsEnabled,
       aiAssistantEnabled,
       taskManagementEnabled,
+      rosterEnabled,
+      recruitmentEnabled,
       features
     } = req.body;
 
@@ -58,6 +60,8 @@ router.post('/plans', authRequired, requireRole('superadmin'), async (req, res) 
       aiReportsEnabled,
       aiAssistantEnabled,
       taskManagementEnabled,
+      rosterEnabled,
+      recruitmentEnabled,
       active: true
     });
 
@@ -91,6 +95,8 @@ router.put('/plans/:id', authRequired, requireRole('superadmin'), async (req, re
       aiReportsEnabled,
       aiAssistantEnabled,
       taskManagementEnabled,
+      rosterEnabled,
+      recruitmentEnabled,
       features,
       active
     } = req.body;
@@ -109,6 +115,8 @@ router.put('/plans/:id', authRequired, requireRole('superadmin'), async (req, re
       aiReportsEnabled,
       aiAssistantEnabled,
       taskManagementEnabled,
+      rosterEnabled,
+      recruitmentEnabled,
       features,
       active
     });
@@ -150,7 +158,9 @@ router.post('/assign-subscription', authRequired, requireRole('superadmin'), asy
       performanceEnabled: plan.performanceEnabled,
       aiReportsEnabled: plan.aiReportsEnabled,
       aiAssistantEnabled: plan.aiAssistantEnabled,
-      taskManagementEnabled: plan.taskManagementEnabled
+      taskManagementEnabled: plan.taskManagementEnabled,
+      rosterEnabled: plan.rosterEnabled,
+      recruitmentEnabled: plan.recruitmentEnabled
     });
 
     // Get updated subscription with plan
@@ -274,6 +284,8 @@ router.get('/subscription-info', authRequired, tenantEnforce, async (req, res) =
       aiReportsEnabled: !!subscription.aiReportsEnabled,
       aiAssistantEnabled: !!subscription.aiAssistantEnabled,
       taskManagementEnabled: !!subscription.taskManagementEnabled,
+      rosterEnabled: !!subscription.rosterEnabled,
+      recruitmentEnabled: !!subscription.recruitmentEnabled,
       maxGeolocationStaff: subscription.maxGeolocationStaff !== null ? subscription.maxGeolocationStaff : (subscription.meta?.maxGeolocationStaff || subscription.plan.maxGeolocationStaff),
       subscriptionStatus: subscription.status
     };

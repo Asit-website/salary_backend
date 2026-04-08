@@ -26,6 +26,8 @@ module.exports = (sequelize) => {
         allowNull: false, 
         defaultValue: 'SCHEDULED' 
       },
+      score: { type: DataTypes.INTEGER, allowNull: true, defaultValue: 0 },
+      roundName: { type: DataTypes.STRING(100), allowNull: true, defaultValue: 'Initial Round', field: 'round_name' },
       notes: { type: DataTypes.TEXT, allowNull: true },
       feedback: { type: DataTypes.TEXT, allowNull: true },
       orgAccountId: { 

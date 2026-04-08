@@ -24,6 +24,8 @@ module.exports = (sequelize) => {
       currentCtc: { type: DataTypes.STRING(50), allowNull: true, field: 'current_ctc' },
       expectedCtc: { type: DataTypes.STRING(50), allowNull: true, field: 'expected_ctc' },
       noticePeriod: { type: DataTypes.STRING(50), allowNull: true, field: 'notice_period' },
+      rating: { type: DataTypes.INTEGER, allowNull: true, defaultValue: 0 },
+      source: { type: DataTypes.STRING(100), allowNull: true },
       notes: { type: DataTypes.TEXT, allowNull: true },
       orgAccountId: { 
         type: DataTypes.BIGINT.UNSIGNED, 
