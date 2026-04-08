@@ -1,13 +1,19 @@
 const bcrypt = require('bcryptjs');
 
-const { sequelize, User, StaffProfile, MailCampaign, MailQueue } = require('./models');
+const { sequelize, User, StaffProfile, MailCampaign, MailQueue, JobPosting, Candidate, Interview } = require('./models');
 
 async function initDb() {
   await sequelize.authenticate();
 
-  // Sync mailing models to create tables if they don't exist
+  // Sync models to create/update tables
   await MailCampaign.sync({ alter: true });
   await MailQueue.sync({ alter: true });
+  await JobPosting.sync({ alter: true });
+  await Candidate.sync({ alter: true });
+  await Interview.sync({ alter: true });
+  const { Plan, Subscription } = require('./models');
+  await Plan.sync({ alter: true });
+  await Subscription.sync({ alter: true });
 
   // Ensure face_id column exists
   try {

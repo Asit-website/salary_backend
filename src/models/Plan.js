@@ -73,6 +73,18 @@ module.exports = (sequelize) => {
         defaultValue: false,
         field: 'task_management_enabled'
       },
+      rosterEnabled: {
+        type: DataTypes.BOOLEAN,
+        allowNull: false,
+        defaultValue: false,
+        field: 'roster_enabled'
+      },
+      recruitmentEnabled: {
+        type: DataTypes.BOOLEAN,
+        allowNull: false,
+        defaultValue: false,
+        field: 'recruitment_enabled'
+      },
       features: { type: DataTypes.JSON, allowNull: true },
       active: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: true },
     },

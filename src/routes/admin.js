@@ -737,7 +737,7 @@ router.get('/payroll/monthly-summary-excel', async (req, res) => {
     const { PayrollCycle, PayrollLine, User, StaffProfile, OrgAccount } = require('../models');
 
     const monthKey = req.query.monthKey;
-    const groupBy = req.query.groupBy || 'designation'; // 'designation' or 'department'
+    const groupBy = req.query.groupBy || 'designation';
     if (!monthKey) return res.status(400).json({ success: false, message: 'monthKey is required' });
 
     const cycle = await PayrollCycle.findOne({ where: { monthKey, orgAccountId: orgId } });
@@ -758,85 +758,94 @@ router.get('/payroll/monthly-summary-excel', async (req, res) => {
     const [year, month] = cycle.monthKey.split('-').map(Number);
     const monthName = new Date(year, month - 1, 1).toLocaleString('en-IN', { month: 'long', year: 'numeric' });
 
-    const workbook = new exceljs.Workbook();
-    const worksheet = workbook.addWorksheet('Monthly Summary');
+    // Dynamic Columns Detection
+    const earningKeys = new Set();
+    const deductionKeys = new Set();
+    const penaltyKeys = new Set();
+    const incentiveKeys = new Set();
 
+    lines.forEach(line => {
+      const e = typeof line.earnings === 'string' ? JSON.parse(line.earnings) : (line.earnings || {});
+      const d = typeof line.deductions === 'string' ? JSON.parse(line.deductions) : (line.deductions || {});
+      const s = typeof line.attendanceSummary === 'string' ? JSON.parse(line.attendanceSummary) : (line.attendanceSummary || {});
+      const i = typeof line.incentives === 'string' ? JSON.parse(line.incentives) : (line.incentives || {});
 
-    // Company Header
-    worksheet.getRow(1).height = 30;
-    worksheet.mergeCells('A1:Q1');
-    const companyCell = worksheet.getCell('A1');
-    companyCell.value = org ? org.name.toUpperCase() : 'ORGANIZATION';
-    companyCell.font = { bold: true, size: 16 };
-    companyCell.alignment = { horizontal: 'center', vertical: 'middle' };
+      Object.keys(e).forEach(k => { if (Number(e[k])) earningKeys.add(k); });
+      Object.keys(d).forEach(k => { if (Number(d[k])) deductionKeys.add(k); });
+      Object.keys(i).forEach(k => { if (Number(i[k])) incentiveKeys.add(k); });
 
-    worksheet.getRow(2).height = 20;
-    worksheet.mergeCells('A2:Q2');
-    const addrCell = worksheet.getCell('A2');
-    addrCell.value = org ? (org.address || '') : '';
-    addrCell.font = { size: 11 };
-    addrCell.alignment = { horizontal: 'center', vertical: 'middle' };
+      if (Number(s.latePunchInAmount)) penaltyKeys.add('latePunchInAmount');
+      if (Number(s.earlyExitAmount)) penaltyKeys.add('earlyExitAmount');
+      if (Number(s.breakDeductionAmount)) penaltyKeys.add('breakDeductionAmount');
+      if (Number(s.overtimePay)) earningKeys.add('overtimePay');
+      if (Number(s.earlyOvertimePay)) earningKeys.add('earlyOvertimePay');
+    });
 
-    worksheet.mergeCells('A3:Q3');
-    const titleCell = worksheet.getCell('A3');
-    const typeLabel = groupBy === 'department' ? 'DEPARTMENT' : 'DESIGNATION';
-    titleCell.value = `Monthly Summary (${typeLabel} WISE) for the Month of ${monthName.toUpperCase()}`;
-    titleCell.font = { bold: true, size: 11 };
-    titleCell.alignment = { horizontal: 'center' };
+    const labelMap = {
+      basic_salary: 'BASIC', da: 'Dearness Allow.', hra: 'House rent Allow.', medical_allowance: 'Medical Allowance',
+      conveyance: 'Conveyance', conveyance_allowance: 'Conveyance', other_allowance: 'Other Allowance',
+      overtimePay: 'OT PAY', earlyOvertimePay: 'Early OT', special_allowance: 'Special Allowance', travel_allowance: 'Travel Allowance',
+      pf: 'P.F.', esi: 'E.S.I.', ptax: 'P.Tax', professional_tax: 'P.Tax', tds: 'T.D.S.', loan_advance: 'Loan/Advance',
+      advance: 'Loan/Advance', latePunchInAmount: 'PUNCHIN PEN', earlyExitAmount: 'EXIT PEN', breakDeductionAmount: 'BREAK PEN'
+    };
 
-    // Multi-level headers
-    worksheet.getRow(4).values = []; // Empty row for labels
-    worksheet.mergeCells('C4:I4');
-    const earnHeader = worksheet.getCell('C4');
-    earnHeader.value = 'E A R N I N G S';
-    earnHeader.font = { bold: true };
-    earnHeader.alignment = { horizontal: 'center' };
-    earnHeader.border = { top: { style: 'thin' }, left: { style: 'thin' }, bottom: { style: 'thin' }, right: { style: 'thin' } };
+    const dEarnings = [...earningKeys].map(k => ({ key: k, label: labelMap[k] || k.replace(/_/g, ' ').toUpperCase() }));
+    const dIncentives = [...incentiveKeys].map(k => ({ key: k, label: k.replace(/_/g, ' ').toUpperCase() }));
+    const dDeductions = [...deductionKeys, ...penaltyKeys].map(k => ({ key: k, label: labelMap[k] || k.replace(/_/g, ' ').toUpperCase() }));
 
-    worksheet.mergeCells('K4:O4');
-    const dedHeader = worksheet.getCell('K4');
-    dedHeader.value = 'D E D U C T I O N S';
-    dedHeader.font = { bold: true };
-    dedHeader.alignment = { horizontal: 'center' };
-    dedHeader.border = { top: { style: 'thin' }, left: { style: 'thin' }, bottom: { style: 'thin' }, right: { style: 'thin' } };
-
-    // Define columns structure without assigning to worksheet.columns (to avoid Row 1 overwrite)
-    const labelHeader = groupBy === 'department' ? 'Department' : 'Designation';
     const cols = [
       { header: 'SL', width: 5 },
-      { header: labelHeader, width: 25 },
-      { header: 'BASIC', width: 12 },
-      { header: 'Dearness Allow.', width: 12 },
-      { header: 'House rent Allow.', width: 12 },
-      { header: 'Over Time', width: 10 },
-      { header: 'Medical Allowance', width: 12 },
-      { header: 'Other Allowance', width: 12 },
-      { header: 'Conveyance', width: 12 },
+      { header: groupBy === 'department' ? 'Department' : 'Designation', width: 25 },
+      ...dEarnings.map(e => ({ header: e.label, width: 12 })),
+      ...dIncentives.map(i => ({ header: i.label, width: 12 })),
       { header: 'Gross Pay', width: 12 },
-      { header: 'P.F.', width: 10 },
-      { header: 'E.S.I.', width: 10 },
-      { header: 'P.Tax', width: 10 },
-      { header: 'T.D.S.', width: 10 },
-      { header: 'Loan/Advance', width: 12 },
+      ...dDeductions.map(d => ({ header: d.label, width: 12 })),
       { header: 'Total Deduction', width: 15 },
       { header: 'Net Pay', width: 15 },
     ];
 
-    // Set column widths manually
-    cols.forEach((c, idx) => {
-      worksheet.getColumn(idx + 1).width = c.width;
-    });
+    const workbook = new exceljs.Workbook();
+    const worksheet = workbook.addWorksheet('Monthly Summary');
+    worksheet.views = [{ showGridLines: false }];
 
-    // Actual column headers row (Row 5)
+    // Headers
+    worksheet.mergeCells(1, 1, 1, cols.length);
+    const companyCell = worksheet.getCell(1, 1);
+    companyCell.value = org ? org.name.toUpperCase() : 'ORGANIZATION';
+    companyCell.font = { bold: true, size: 16 };
+    companyCell.alignment = { horizontal: 'center' };
+
+    worksheet.mergeCells(3, 1, 3, cols.length);
+    const titleCell = worksheet.getCell(3, 1);
+    titleCell.value = `Monthly Summary (${groupBy.toUpperCase()} WISE) for the Month of ${monthName.toUpperCase()}`;
+    titleCell.font = { bold: true };
+    titleCell.alignment = { horizontal: 'center' };
+
+    // Grouping labels Row 4
+    const eStart = 3;
+    const eEnd = eStart + dEarnings.length + dIncentives.length - 1;
+    if (eEnd >= eStart) {
+      worksheet.mergeCells(4, eStart, 4, eEnd);
+      const eH = worksheet.getCell(4, eStart); eH.value = 'E A R N I N G S'; eH.alignment = { horizontal: 'center', vertical: 'middle' }; eH.font = { bold: true };
+      eH.border = { top: { style: 'thin' }, left: { style: 'thin' }, bottom: { style: 'thin' }, right: { style: 'thin' } };
+    }
+    const dStart = eEnd + 2;
+    const dEnd = dStart + dDeductions.length - 1;
+    if (dEnd >= dStart) {
+      worksheet.mergeCells(4, dStart, 4, dEnd);
+      const dH = worksheet.getCell(4, dStart); dH.value = 'D E D U C T I O N S'; dH.alignment = { horizontal: 'center', vertical: 'middle' }; dH.font = { bold: true };
+      dH.border = { top: { style: 'thin' }, left: { style: 'thin' }, bottom: { style: 'thin' }, right: { style: 'thin' } };
+    }
+
     const headerRow = worksheet.getRow(5);
     headerRow.values = cols.map(c => c.header);
     headerRow.font = { bold: true };
+    cols.forEach((c, idx) => worksheet.getColumn(idx + 1).width = c.width);
     headerRow.eachCell(cell => {
       cell.border = { top: { style: 'thin' }, left: { style: 'thin' }, bottom: { style: 'thin' }, right: { style: 'thin' } };
       cell.alignment = { horizontal: 'center', vertical: 'middle' };
     });
 
-    // Group and aggregate data
     const grouped = {};
     lines.forEach(line => {
       const u = userMap.get(line.userId);
@@ -845,72 +854,57 @@ router.get('/payroll/monthly-summary-excel', async (req, res) => {
       const e = typeof line.earnings === 'string' ? JSON.parse(line.earnings) : (line.earnings || {});
       const d = typeof line.deductions === 'string' ? JSON.parse(line.deductions) : (line.deductions || {});
       const s = typeof line.attendanceSummary === 'string' ? JSON.parse(line.attendanceSummary) : (line.attendanceSummary || {});
+      const i = typeof line.incentives === 'string' ? JSON.parse(line.incentives) : (line.incentives || {});
       const t = typeof line.totals === 'string' ? JSON.parse(line.totals) : (line.totals || {});
 
       if (!grouped[groupVal]) {
-        grouped[groupVal] = {
-          e_basic: 0, e_da: 0, e_hra: 0, e_ot: 0, e_medical: 0, e_other: 0, e_conveyance: 0, grossPay: 0,
-          d_pf: 0, d_esi: 0, d_ptax: 0, d_tds: 0, d_loan: 0, totalDeduction: 0, netPay: 0
-        };
+        grouped[groupVal] = { grossPay: 0, totalDeduction: 0, netPay: 0, e_sums: {}, d_sums: {}, i_sums: {} };
+        dEarnings.forEach(dk => grouped[groupVal].e_sums[dk.key] = 0);
+        dDeductions.forEach(dk => grouped[groupVal].d_sums[dk.key] = 0);
+        dIncentives.forEach(dk => grouped[groupVal].i_sums[dk.key] = 0);
       }
 
       const g = grouped[groupVal];
-      g.e_basic += Number(e.basic_salary || 0);
-      g.e_da += Number(e.da || 0);
-      g.e_hra += Number(e.hra || 0);
-      g.e_ot += Number(s.overtimePay || e.overtime_pay || 0);
-      g.e_medical += Number(e.medical_allowance || 0);
-      g.e_other += Number(e.other_allowance || 0);
-      g.e_conveyance += Number(e.conveyance || e.conveyance_allowance || 0);
+      dEarnings.forEach(dk => {
+        if (dk.key === 'overtimePay' || dk.key === 'earlyOvertimePay') g.e_sums[dk.key] += Number(s[dk.key] || 0);
+        else g.e_sums[dk.key] += Number(e[dk.key] || 0);
+      });
+      dIncentives.forEach(dk => g.i_sums[dk.key] += Number(i[dk.key] || 0));
+      dDeductions.forEach(dk => {
+        if (penaltyKeys.has(dk.key)) g.d_sums[dk.key] += Number(s[dk.key] || 0);
+        else g.d_sums[dk.key] += Number(d[dk.key] || 0);
+      });
       g.grossPay += Number(t.grossSalary || 0);
-      g.d_pf += Number(d.pf || 0);
-      g.d_esi += Number(d.esi || 0);
-      g.d_ptax += Number(d.ptax || 0);
-      g.d_tds += Number(d.tds || 0);
-      g.d_loan += Number(d.loan_advance || 0);
       g.totalDeduction += Number(t.totalDeductions || 0);
       g.netPay += Number(t.netSalary || 0);
     });
 
     let sl = 1;
-    let currentRow = 6;
-    const grandTotals = Array(15).fill(0); // For e_basic till netPay
+    const grandTotals = Array(cols.length - 2).fill(0);
+    for (const [label, data] of Object.entries(grouped)) {
+      const vals = [sl++, label.toUpperCase()];
+      dEarnings.forEach(dk => vals.push(data.e_sums[dk.key]));
+      dIncentives.forEach(dk => vals.push(data.i_sums[dk.key]));
+      vals.push(data.grossPay);
+      dDeductions.forEach(dk => vals.push(data.d_sums[dk.key]));
+      vals.push(data.totalDeduction, data.netPay);
 
-    for (const [label, totals] of Object.entries(grouped)) {
-      const rowValues = [
-        sl++,
-        label.toUpperCase(),
-        totals.e_basic, totals.e_da, totals.e_hra, totals.e_ot, totals.e_medical, totals.e_other, totals.e_conveyance,
-        totals.grossPay, totals.d_pf, totals.d_esi, totals.d_ptax, totals.d_tds, totals.d_loan, totals.totalDeduction, totals.netPay
-      ];
-      const row = worksheet.addRow(rowValues);
-      row.eachCell(cell => {
-        cell.border = { top: { style: 'thin' }, left: { style: 'thin' }, bottom: { style: 'thin' }, right: { style: 'thin' } };
-      });
-
-      // Update grand totals
-      const numericPart = rowValues.slice(2);
-      numericPart.forEach((val, idx) => grandTotals[idx] += val);
-      currentRow++;
+      const row = worksheet.addRow(vals);
+      row.eachCell(cell => cell.border = { top: { style: 'thin' }, left: { style: 'thin' }, bottom: { style: 'thin' }, right: { style: 'thin' } });
+      vals.slice(2).forEach((v, idx) => grandTotals[idx] += v);
     }
 
-    // Grand Total Row
-    const totalRowValues = [null, 'Grand Total', ...grandTotals];
-    const totalRow = worksheet.addRow(totalRowValues);
-    totalRow.font = { bold: true };
-    totalRow.eachCell(cell => {
-      cell.border = { top: { style: 'thin' }, left: { style: 'thin' }, bottom: { style: 'thin' }, right: { style: 'thin' } };
-    });
+    const ftRow = worksheet.addRow([null, 'Grand Total', ...grandTotals]);
+    ftRow.font = { bold: true };
+    ftRow.eachCell(cell => cell.border = { top: { style: 'thin' }, left: { style: 'thin' }, bottom: { style: 'thin' }, right: { style: 'thin' } });
 
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
     res.setHeader('Content-Disposition', `attachment; filename=Monthly-Summary-${cycle.monthKey}.xlsx`);
-
     await workbook.xlsx.write(res);
     res.end();
-
   } catch (e) {
     console.error('Monthly summary export error:', e);
-    return res.status(500).json({ success: false, message: 'Failed to export monthly summary', error: e.message });
+    return res.status(500).json({ success: false, message: 'Export failed' });
   }
 });
 
@@ -963,88 +957,114 @@ router.get('/payroll/:cycleId/salary-register-excel', async (req, res) => {
     const userMap = new Map(users.map(u => [u.id, u]));
     const [year, month] = cycle.monthKey.split('-').map(Number);
     const monthName = new Date(year, month - 1, 1).toLocaleString('en-IN', { month: 'long', year: 'numeric' });
-    const groupBy = req.query.groupBy || 'department'; // 'designation' or 'department'
+    const groupBy = req.query.groupBy || 'department';
 
-    const workbook = new exceljs.Workbook();
-    const worksheet = workbook.addWorksheet('Salary Register');
+    // Dynamic Columns Detection
+    const earningKeys = new Set();
+    const deductionKeys = new Set();
+    const penaltyKeys = new Set();
+    const incentiveKeys = new Set();
 
-    // Define columns
-    const columns = [
+    lines.forEach(line => {
+      const e = typeof line.earnings === 'string' ? JSON.parse(line.earnings) : (line.earnings || {});
+      const d = typeof line.deductions === 'string' ? JSON.parse(line.deductions) : (line.deductions || {});
+      const s = typeof line.attendanceSummary === 'string' ? JSON.parse(line.attendanceSummary) : (line.attendanceSummary || {});
+      const i = typeof line.incentives === 'string' ? JSON.parse(line.incentives) : (line.incentives || {});
+
+      Object.keys(e).forEach(k => { if (Number(e[k])) earningKeys.add(k); });
+      Object.keys(d).forEach(k => { if (Number(d[k])) deductionKeys.add(k); });
+      Object.keys(i).forEach(k => incentiveKeys.add(k));
+
+      if (Number(s.latePunchInAmount)) penaltyKeys.add('latePunchInAmount');
+      if (Number(s.earlyExitAmount)) penaltyKeys.add('earlyExitAmount');
+      if (Number(s.breakDeductionAmount)) penaltyKeys.add('breakDeductionAmount');
+      if (Number(s.overtimePay)) earningKeys.add('overtimePay');
+      if (Number(s.earlyOvertimePay)) earningKeys.add('earlyOvertimePay');
+    });
+
+    const labelMap = {
+      basic_salary: 'BASIC', da: 'Dearness Allow.', hra: 'House rent Allow.', medical_allowance: 'Medical Allowance',
+      conveyance: 'Conveyance', conveyance_allowance: 'Conveyance', other_allowance: 'Other Allowance',
+      overtimePay: 'OT PAY', overtime_pay: 'OT PAY', earlyOvertimePay: 'Early OT', 
+      special_allowance: 'Special Allowance', travel_allowance: 'Travel Allowance',
+      pf: 'P.F.', esi: 'E.S.I.', ptax: 'P.Tax', professional_tax: 'P.Tax', tds: 'T.D.S.', loan_advance: 'Loan/Advance',
+      advance: 'Loan/Advance', latePunchInAmount: 'PUNCHIN PEN', earlyExitAmount: 'EXIT PEN', breakDeductionAmount: 'BREAK PEN'
+    };
+
+    const dE = [...earningKeys].map(k => ({ key: k, label: labelMap[k] || k.replace(/_/g, ' ').toUpperCase() }));
+    const dD = [...deductionKeys, ...penaltyKeys].map(k => ({ key: k, label: labelMap[k] || k.replace(/_/g, ' ').toUpperCase() }));
+    const dI = [...incentiveKeys].map(k => ({ key: k, label: k.replace(/_/g, ' ').toUpperCase() }));
+
+    // Deduplicate labels if any (e.g. Overtime Pay from multiple keys)
+    const uniqueLabels = (arr) => {
+      const seen = new Set();
+      return arr.filter(item => {
+        if (seen.has(item.label)) return false;
+        seen.add(item.label);
+        return true;
+      });
+    };
+    const fdE = uniqueLabels(dE);
+    const fdD = uniqueLabels(dD);
+
+    const cols = [
       { header: 'SL', key: 'sl', width: 5 },
       { header: 'Name of Employee', key: 'name', width: 25 },
-      { header: 'Work days', key: 'workDays', width: 8 },
-      { header: 'Paid Sun', key: 'paidSun', width: 8 },
-      { header: 'Paid Holi', key: 'paidHoli', width: 8 },
-      { header: 'Absent', key: 'absent', width: 8 },
+      { header: 'Work days', key: 'workDays', width: 10 },
+      { header: 'Paid Sun', key: 'paidSun', width: 10 },
+      { header: 'Paid Holi', key: 'paidHoli', width: 10 },
+      { header: 'Absent', key: 'absent', width: 10 },
       { header: 'Total pay day', key: 'totalPayDay', width: 12 },
       { header: 'Basic Rate', key: 'basicRate', width: 12 },
-      // EARNINGS
-      { header: 'BASIC', key: 'e_basic', width: 10 },
-      { header: 'Dearness Allow.', key: 'e_da', width: 12 },
-      { header: 'House rent Allow.', key: 'e_hra', width: 12 },
-      { header: 'Over Time', key: 'e_ot', width: 10 },
-      { header: 'Medical Allowance', key: 'e_medical', width: 12 },
-      { header: 'Other Allowance', key: 'e_other', width: 12 },
-      { header: 'Conveyance', key: 'e_conveyance', width: 12 },
+      ...fdE.map(e => ({ header: e.label, key: `e_${e.key}`, width: 12 })),
+      ...dI.map(i => ({ header: i.label, key: `i_${i.key}`, width: 12 })),
       { header: 'Gross Pay', key: 'grossPay', width: 12 },
-      // DEDUCTIONS
-      { header: 'P.F.', key: 'd_pf', width: 10 },
-      { header: 'E.S.I.', key: 'd_esi', width: 10 },
-      { header: 'P.Tax', key: 'd_ptax', width: 10 },
-      { header: 'T.D.S.', key: 'd_tds', width: 10 },
-      { header: 'Loan/Advance', key: 'd_loan', width: 12 },
+      ...fdD.map(d => ({ header: d.label, key: `d_${d.key}`, width: 12 })),
       { header: 'Total Deduction', key: 'totalDeduction', width: 15 },
       { header: 'Net Pay', key: 'netPay', width: 15 },
       { header: 'Signature/Date', key: 'signature', width: 20 },
     ];
 
-    worksheet.columns = columns;
+    const workbook = new exceljs.Workbook();
+    const worksheet = workbook.addWorksheet('Salary Register');
+    worksheet.columns = cols; // CRITICAL: Map rowData to columns
+    worksheet.views = [{ showGridLines: false }];
 
     // Company Header
-    worksheet.mergeCells('A1:X1');
-    const companyCell = worksheet.getCell('A1');
-    companyCell.value = org.name.toUpperCase();
-    companyCell.font = { bold: true, size: 14 };
-    companyCell.alignment = { horizontal: 'center' };
+    worksheet.mergeCells(1, 1, 1, cols.length);
+    const companyCell = worksheet.getCell(1, 1);
+    companyCell.value = org.name.toUpperCase(); companyCell.font = { bold: true, size: 14 }; companyCell.alignment = { horizontal: 'center' };
 
-    worksheet.mergeCells('A2:X2');
-    const addressCell = worksheet.getCell('A2');
-    addressCell.value = org.address || '';
-    addressCell.alignment = { horizontal: 'center' };
+    worksheet.mergeCells(2, 1, 2, cols.length);
+    const addressCell = worksheet.getCell(2, 1); addressCell.value = org.address || ''; addressCell.alignment = { horizontal: 'center' };
 
-    worksheet.mergeCells('A3:X3');
-    const titleCell = worksheet.getCell('A3');
-    titleCell.value = `Pay Register for the Month of ${monthName.toUpperCase()}`;
-    titleCell.font = { bold: true };
-    titleCell.alignment = { horizontal: 'center' };
+    worksheet.mergeCells(3, 1, 3, cols.length);
+    const titleCell = worksheet.getCell(3, 1); titleCell.value = `Pay Register for the Month of ${monthName.toUpperCase()}`; titleCell.font = { bold: true }; titleCell.alignment = { horizontal: 'center' };
 
-    // Group Headers (Earnings / Deductions)
-    worksheet.mergeCells('I4:P4');
-    const earningsLabel = worksheet.getCell('I4');
-    earningsLabel.value = 'E A R N I N G S';
-    earningsLabel.alignment = { horizontal: 'center' };
-    earningsLabel.font = { bold: true };
+    // Group Headers (Earnings / Deductions) Row 4
+    const eStart = 9;
+    const eEnd = eStart + fdE.length + dI.length - 1;
+    if (eEnd >= eStart) {
+      worksheet.mergeCells(4, eStart, 4, eEnd);
+      const eH = worksheet.getCell(4, eStart); eH.value = 'E A R N I N G S'; eH.alignment = { horizontal: 'center', vertical: 'middle' }; eH.font = { bold: true };
+      eH.border = { top: { style: 'thin' }, left: { style: 'thin' }, bottom: { style: 'thin' }, right: { style: 'thin' } };
+    }
+    const dStart = eEnd + 2;
+    const dEnd = dStart + fdD.length - 1;
+    if (dEnd >= dStart) {
+      worksheet.mergeCells(4, dStart, 4, dEnd);
+      const dH = worksheet.getCell(4, dStart); dH.value = 'D E D U C T I O N S'; dH.alignment = { horizontal: 'center', vertical: 'middle' }; dH.font = { bold: true };
+      dH.border = { top: { style: 'thin' }, left: { style: 'thin' }, bottom: { style: 'thin' }, right: { style: 'thin' } };
+    }
 
-    worksheet.mergeCells('Q4:V4');
-    const deductionsLabel = worksheet.getCell('Q4');
-    deductionsLabel.value = 'D E D U C T I O N S';
-    deductionsLabel.alignment = { horizontal: 'center' };
-    deductionsLabel.font = { bold: true };
-
-    // Header Row (Row 5)
     const headerRow = worksheet.getRow(5);
-    headerRow.values = columns.map(c => c.header);
+    headerRow.values = cols.map(c => c.header);
     headerRow.font = { bold: true };
     headerRow.eachCell(cell => {
-      cell.border = {
-        top: { style: 'thin' },
-        left: { style: 'thin' },
-        bottom: { style: 'thin' },
-        right: { style: 'thin' }
-      };
+      cell.border = { top: { style: 'thin' }, left: { style: 'thin' }, bottom: { style: 'thin' }, right: { style: 'thin' } };
+      cell.alignment = { horizontal: 'center', vertical: 'middle' };
     });
 
-    // Group by designation
     const grouped = {};
     lines.forEach(line => {
       const u = userMap.get(line.userId);
@@ -1054,22 +1074,23 @@ router.get('/payroll/:cycleId/salary-register-excel', async (req, res) => {
     });
 
     let sl = 1;
-    let currentRow = 6;
-    const grandTotals = {
-      e_basic: 0, e_da: 0, e_hra: 0, e_ot: 0, e_medical: 0, e_other: 0, e_conveyance: 0, grossPay: 0,
-      d_pf: 0, d_esi: 0, d_ptax: 0, d_tds: 0, d_loan: 0, totalDeduction: 0, netPay: 0, basicRate: 0
-    };
+    let currRow = 6;
+    const grandTotals = { basicRate: 0, grossPay: 0, totalDeduction: 0, netPay: 0, e: {}, d: {}, i: {} };
+    fdE.forEach(dk => grandTotals.e[dk.key] = 0);
+    fdD.forEach(dk => grandTotals.d[dk.key] = 0);
+    dI.forEach(dk => grandTotals.i[dk.key] = 0);
 
     for (const [groupVal, groupLines] of Object.entries(grouped)) {
-      const subTotals = {
-        e_basic: 0, e_da: 0, e_hra: 0, e_ot: 0, e_medical: 0, e_other: 0, e_conveyance: 0, grossPay: 0,
-        d_pf: 0, d_esi: 0, d_ptax: 0, d_tds: 0, d_loan: 0, totalDeduction: 0, netPay: 0
-      };
+      const subTotals = { basicRate: 0, grossPay: 0, totalDeduction: 0, netPay: 0, e: {}, d: {}, i: {} };
+      fdE.forEach(dk => subTotals.e[dk.key] = 0);
+      fdD.forEach(dk => subTotals.d[dk.key] = 0);
+      dI.forEach(dk => subTotals.i[dk.key] = 0);
 
       groupLines.forEach(line => {
         const u = userMap.get(line.userId);
         const e = typeof line.earnings === 'string' ? JSON.parse(line.earnings) : (line.earnings || {});
         const d = typeof line.deductions === 'string' ? JSON.parse(line.deductions) : (line.deductions || {});
+        const i = typeof line.incentives === 'string' ? JSON.parse(line.incentives) : (line.incentives || {});
         const s = typeof line.attendanceSummary === 'string' ? JSON.parse(line.attendanceSummary) : (line.attendanceSummary || {});
         const t = typeof line.totals === 'string' ? JSON.parse(line.totals) : (line.totals || {});
 
@@ -1082,121 +1103,74 @@ router.get('/payroll/:cycleId/salary-register-excel', async (req, res) => {
           absent: Number(s.absent || 0),
           totalPayDay: Number(s.present || 0) + Number(s.weeklyOff || 0) + Number(s.holidays || 0) + Number(s.half || 0) * 0.5,
           basicRate: Number(u?.basicSalary || 0),
-          e_basic: Number(e.basic_salary || 0),
-          e_da: Number(e.da || 0),
-          e_hra: Number(e.hra || 0),
-          e_ot: Number(s.overtimePay || e.overtime_pay || 0),
-          e_medical: Number(e.medical_allowance || 0),
-          e_other: Number(e.other_allowance || 0),
-          e_conveyance: Number(e.conveyance || e.conveyance_allowance || 0),
           grossPay: Number(t.grossSalary || 0),
-          d_pf: Number(d.pf || 0),
-          d_esi: Number(d.esi || 0),
-          d_ptax: Number(d.ptax || 0),
-          d_tds: Number(d.tds || 0),
-          d_loan: Number(d.loan_advance || 0),
           totalDeduction: Number(t.totalDeductions || 0),
           netPay: Number(t.netSalary || 0),
-          signature: line.paidAt
-            ? new Date(line.paidAt).toLocaleDateString('en-IN', { day: '2-digit', month: '2-digit', year: 'numeric' })
-            : (cycle.status === 'PAID' && cycle.paidAt
-              ? new Date(cycle.paidAt).toLocaleDateString('en-IN', { day: '2-digit', month: '2-digit', year: 'numeric' })
-              : '')
+          signature: line.paidAt ? new Date(line.paidAt).toLocaleDateString('en-IN', { day: '2-digit', month: '2-digit', year: 'numeric' }) : ''
         };
 
-        const row = worksheet.addRow(rowData);
-        row.eachCell(cell => {
-          cell.border = {
-            top: { style: 'thin' },
-            left: { style: 'thin' },
-            bottom: { style: 'thin' },
-            right: { style: 'thin' }
-          };
+        fdE.forEach(dk => {
+          const val = (dk.key === 'overtimePay' || dk.key === 'earlyOvertimePay' || dk.key === 'overtime_pay') ? Number(s[dk.key] || e[dk.key] || 0) : Number(e[dk.key] || 0);
+          rowData[`e_${dk.key}`] = val;
+          subTotals.e[dk.key] += val; grandTotals.e[dk.key] += val;
+        });
+        dI.forEach(dk => {
+          const val = Number(i[dk.key] || 0);
+          rowData[`i_${dk.key}`] = val;
+          subTotals.i[dk.key] += val; grandTotals.i[dk.key] += val;
+        });
+        fdD.forEach(dk => {
+          const val = penaltyKeys.has(dk.key) ? Number(s[dk.key] || 0) : Number(d[dk.key] || 0);
+          rowData[`d_${dk.key}`] = val;
+          subTotals.d[dk.key] += val; grandTotals.d[dk.key] += val;
         });
 
-        // Add to sub-totals
-        Object.keys(subTotals).forEach(key => subTotals[key] += rowData[key]);
-        // Add to grand-totals
-        Object.keys(grandTotals).forEach(key => grandTotals[key] += rowData[key]);
-        grandTotals.basicRate += rowData.basicRate;
+        subTotals.basicRate += rowData.basicRate; grandTotals.basicRate += rowData.basicRate;
+        subTotals.grossPay += rowData.grossPay; grandTotals.grossPay += rowData.grossPay;
+        subTotals.totalDeduction += rowData.totalDeduction; grandTotals.totalDeduction += rowData.totalDeduction;
+        subTotals.netPay += rowData.netPay; grandTotals.netPay += rowData.netPay;
 
-        currentRow++;
+        const row = worksheet.addRow(rowData);
+        row.eachCell(cell => cell.border = { top: { style: 'thin' }, left: { style: 'thin' }, bottom: { style: 'thin' }, right: { style: 'thin' } });
+        currRow++;
       });
 
-      // Write sub-total for this group (with Group Label at the bottom)
-      const subTotalRowId = currentRow;
-      worksheet.mergeCells(`A${subTotalRowId}:H${subTotalRowId}`);
-      const groupCell = worksheet.getCell(`A${subTotalRowId}`);
-      groupCell.value = groupVal.toUpperCase();
-      groupCell.font = { bold: true };
-      groupCell.alignment = { horizontal: 'center' };
-
-      const subRow = worksheet.getRow(subTotalRowId);
-      subRow.getCell('I').value = subTotals.e_basic;
-      subRow.getCell('J').value = subTotals.e_da;
-      subRow.getCell('K').value = subTotals.e_hra;
-      subRow.getCell('L').value = subTotals.e_ot;
-      subRow.getCell('M').value = subTotals.e_medical;
-      subRow.getCell('N').value = subTotals.e_other;
-      subRow.getCell('O').value = subTotals.e_conveyance;
-      subRow.getCell('P').value = subTotals.grossPay;
-      subRow.getCell('Q').value = subTotals.d_pf;
-      subRow.getCell('R').value = subTotals.d_esi;
-      subRow.getCell('S').value = subTotals.d_ptax;
-      subRow.getCell('T').value = subTotals.d_tds;
-      subRow.getCell('U').value = subTotals.d_loan;
-      subRow.getCell('V').value = subTotals.totalDeduction;
-      subRow.getCell('W').value = subTotals.netPay;
+      // Sub-total for group
+      worksheet.mergeCells(currRow, 1, currRow, 8);
+      const groupCell = worksheet.getCell(currRow, 1); groupCell.value = groupVal.toUpperCase(); groupCell.font = { bold: true }; groupCell.alignment = { horizontal: 'center' };
+      const subRow = worksheet.getRow(currRow);
+      let colIdx = 9;
+      fdE.forEach(dk => { subRow.getCell(colIdx++).value = subTotals.e[dk.key]; });
+      dI.forEach(dk => { subRow.getCell(colIdx++).value = subTotals.i[dk.key]; });
+      subRow.getCell(colIdx++).value = subTotals.grossPay;
+      fdD.forEach(dk => { subRow.getCell(colIdx++).value = subTotals.d[dk.key]; });
+      subRow.getCell(colIdx++).value = subTotals.totalDeduction;
+      subRow.getCell(colIdx++).value = subTotals.netPay;
       subRow.font = { bold: true };
-      subRow.eachCell(cell => {
-        cell.border = {
-          top: { style: 'thin' },
-          left: { style: 'thin' },
-          bottom: { style: 'thin' },
-          right: { style: 'thin' }
-        };
-      });
-      currentRow++;
+      subRow.eachCell(cell => cell.border = { top: { style: 'thin' }, left: { style: 'thin' }, bottom: { style: 'thin' }, right: { style: 'thin' } });
+      currRow++;
     }
 
     // Grand Total Row
-    const totalRow = worksheet.addRow({
-      name: 'Grand Total',
-      e_basic: grandTotals.e_basic,
-      e_da: grandTotals.e_da,
-      e_hra: grandTotals.e_hra,
-      e_ot: grandTotals.e_ot,
-      e_medical: grandTotals.e_medical,
-      e_other: grandTotals.e_other,
-      e_conveyance: grandTotals.e_conveyance,
-      grossPay: grandTotals.grossPay,
-      d_pf: grandTotals.d_pf,
-      d_esi: grandTotals.d_esi,
-      d_ptax: grandTotals.d_ptax,
-      d_tds: grandTotals.d_tds,
-      d_loan: grandTotals.d_loan,
-      totalDeduction: grandTotals.totalDeduction,
-      netPay: grandTotals.netPay,
-      basicRate: grandTotals.basicRate
-    });
-    totalRow.font = { bold: true };
-    totalRow.eachCell(cell => {
-      cell.border = {
-        top: { style: 'thin' },
-        left: { style: 'thin' },
-        bottom: { style: 'thick' },
-        right: { style: 'thin' }
-      };
-    });
+    const grandRowArr = [null, 'Grand Total', null, null, null, null, null, grandTotals.basicRate];
+    fdE.forEach(dk => grandRowArr.push(grandTotals.e[dk.key]));
+    dI.forEach(dk => grandRowArr.push(grandTotals.i[dk.key]));
+    grandRowArr.push(grandTotals.grossPay);
+    fdD.forEach(dk => grandRowArr.push(grandTotals.d[dk.key]));
+    grandRowArr.push(grandTotals.totalDeduction, grandTotals.netPay);
+
+    const grandRow = worksheet.addRow(grandRowArr);
+    grandRow.font = { bold: true };
+    grandRow.eachCell(cell => cell.border = { top: { style: 'thin' }, left: { style: 'thin' }, bottom: { style: 'thick' }, right: { style: 'thin' } });
 
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
     res.setHeader('Content-Disposition', `attachment; filename=Salary-Register-${cycle.monthKey}.xlsx`);
+
     await workbook.xlsx.write(res);
     return res.end();
-
   } catch (e) {
     console.error('Salary Register Excel error:', e);
-    return res.status(500).json({ success: false, message: 'Failed to export Salary Register', error: e.message });
+    return res.status(500).json({ success: false, message: 'Export failed' });
   }
 });
 

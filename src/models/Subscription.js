@@ -65,6 +65,18 @@ module.exports = (sequelize) => {
         allowNull: false,
         defaultValue: false,
         field: 'task_management_enabled'
+      },
+      rosterEnabled: {
+        type: DataTypes.BOOLEAN,
+        allowNull: false,
+        defaultValue: false,
+        field: 'roster_enabled'
+      },
+      recruitmentEnabled: {
+        type: DataTypes.BOOLEAN,
+        allowNull: false,
+        defaultValue: false,
+        field: 'recruitment_enabled'
       }
     },
     { tableName: 'subscriptions', underscored: true }
