@@ -346,7 +346,26 @@ class ZktecoService {
                 }
 
                 console.log(`[ZktecoSync] MATCH: emp_code "${empCode}" -> userId ${userId}. Calculating details with ${punches.length} punches.`);
-                const res = await this.calculateDetails(userId, punches, dateStr);
+
+                // Filter punches for 5-minute throttling (Deduplication)
+                const sortedPunches = punches.sort((a, b) => new Date(a.punch_time) - new Date(b.punch_time));
+                const filteredPunches = [];
+                let localLastPunchTime = null;
+
+                for (const p of sortedPunches) {
+                    const currentTime = new Date(p.punch_time);
+                    // If it's the first punch or >= 5 mins since the last KEPT punch
+                    if (!localLastPunchTime || (currentTime - localLastPunchTime) >= 5 * 60 * 1000) {
+                        filteredPunches.push(p);
+                        localLastPunchTime = currentTime;
+                    }
+                }
+
+                if (filteredPunches.length < punches.length) {
+                    console.log(`[ZktecoSync] Throttled ${punches.length - filteredPunches.length} duplicate/rapid punches for userId ${userId}.`);
+                }
+
+                const res = await this.calculateDetails(userId, filteredPunches, dateStr);
                 
                 if (!res) {
                     console.log(`[ZktecoSync] FAIL: calculateDetails returned null for userId ${userId}`);
