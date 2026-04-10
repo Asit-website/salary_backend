@@ -50,7 +50,21 @@ class LatePunchInService {
     const { userId, orgAccountId, date: dateKey, punchedInAt } = attendance;
     if (!punchedInAt) return { latePunchInMinutes: 0, latePunchInAmount: 0, latePunchInRuleId: null };
 
-    // 1. Resolve applicable Rule
+    // 1. Identify Shift Start Time (Always identify shift to get raw minutes)
+    const shift = await this.getEffectiveShiftTemplate(userId, dateKey);
+    let latePunchInMinutes = 0;
+
+    if (shift && shift.shiftType !== 'open' && shift.startTime) {
+      const [sh, sm, ss] = shift.startTime.split(':').map(Number);
+      const shiftStartTs = new Date(punchedInAt);
+      shiftStartTs.setHours(sh, sm, ss || 0, 0);
+
+      if (punchedInAt > shiftStartTs) {
+        latePunchInMinutes = Math.floor((punchedInAt - shiftStartTs) / 60000);
+      }
+    }
+
+    // 2. Resolve applicable Rule for penalty calculation
     let finalRule = null;
     const assignment = await StaffLatePunchInAssignment.findOne({
       where: {
@@ -67,33 +81,17 @@ class LatePunchInService {
       finalRule = assignment.rule;
     }
 
-    if (!finalRule || !finalRule.active) {
-      return { latePunchInMinutes: 0, latePunchInAmount: 0, latePunchInRuleId: null };
+    // If no rule or no lateness, return just the minutes (if any) and 0 penalty
+    if (!finalRule || !finalRule.active || latePunchInMinutes <= 0) {
+      return { 
+        latePunchInMinutes, 
+        latePunchInAmount: 0, 
+        latePunchInRuleId: finalRule?.id || null,
+        isLate: latePunchInMinutes > 0
+      };
     }
 
-    // 2. Identify Shift Start Time
-    const shift = await this.getEffectiveShiftTemplate(userId, dateKey);
-    
-    // Explicitly skip for Open Shifts (only total work hours defined, no fixed start/end)
-    if (!shift || shift.shiftType === 'open' || !shift.startTime) {
-      return { latePunchInMinutes: 0, latePunchInAmount: 0, latePunchInRuleId: finalRule.id };
-    }
-
-    // 3. Calculate Late Minutes
-    const [sh, sm, ss] = shift.startTime.split(':').map(Number);
-    const shiftStartTs = new Date(punchedInAt);
-    shiftStartTs.setHours(sh, sm, ss || 0, 0);
-
-    let latePunchInMinutes = 0;
-    if (punchedInAt > shiftStartTs) {
-      latePunchInMinutes = Math.floor((punchedInAt - shiftStartTs) / 60000);
-    }
-
-    if (latePunchInMinutes <= 0) {
-      return { latePunchInMinutes: 0, latePunchInAmount: 0, latePunchInRuleId: finalRule.id };
-    }
-
-    // 4. Calculate Deduction Amount
+    // 3. Calculate Deduction Amount (Only if rule exists and late)
     let deductionAmount = 0;
     const user = await User.findByPk(userId);
     const baseSalary = Number(user?.grossSalary || user?.basicSalary || 0) + (user?.grossSalary ? 0 : Number(user?.da || 0));

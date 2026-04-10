@@ -111,6 +111,11 @@ const defineCandidate = require('./Candidate');
 const defineInterview = require('./Interview');
 const defineMailCampaign = require('./MailCampaign');
 const defineMailQueue = require('./MailQueue');
+const defineSocialPost = require('./SocialPost');
+const defineSocialLike = require('./SocialLike');
+const defineTenureBonusRule = require('./TenureBonusRule');
+const defineStaffTenureBonusAssignment = require('./StaffTenureBonusAssignment');
+const defineSocialComment = require('./SocialComment');
 
 
 
@@ -226,6 +231,11 @@ const Candidate = defineCandidate(sequelize);
 const Interview = defineInterview(sequelize);
 const MailCampaign = defineMailCampaign(sequelize);
 const MailQueue = defineMailQueue(sequelize);
+const SocialPost = defineSocialPost(sequelize);
+const SocialLike = defineSocialLike(sequelize);
+const SocialComment = defineSocialComment(sequelize);
+const TenureBonusRule = defineTenureBonusRule(sequelize);
+const StaffTenureBonusAssignment = defineStaffTenureBonusAssignment(sequelize);
 
 
 
@@ -727,6 +737,39 @@ Interview.belongsTo(Candidate, { foreignKey: 'candidateId', as: 'Candidate' });
 User.hasMany(Interview, { foreignKey: 'interviewerId', as: 'scheduledInterviews' });
 Interview.belongsTo(User, { foreignKey: 'interviewerId', as: 'Interviewer' });
 
+// Social Network associations
+OrgAccount.hasMany(SocialPost, { foreignKey: 'orgAccountId', as: 'posts' });
+SocialPost.belongsTo(OrgAccount, { foreignKey: 'orgAccountId', as: 'orgAccount' });
+
+User.hasMany(SocialPost, { foreignKey: 'userId', as: 'posts' });
+SocialPost.belongsTo(User, { foreignKey: 'userId', as: 'user' });
+
+SocialPost.hasMany(SocialLike, { foreignKey: 'postId', as: 'likes' });
+SocialLike.belongsTo(SocialPost, { foreignKey: 'postId', as: 'post' });
+
+User.hasMany(SocialLike, { foreignKey: 'userId', as: 'postLikes' });
+SocialLike.belongsTo(User, { foreignKey: 'userId', as: 'user' });
+
+SocialPost.hasMany(SocialComment, { foreignKey: 'postId', as: 'comments' });
+SocialComment.belongsTo(SocialPost, { foreignKey: 'postId', as: 'post' });
+
+User.hasMany(SocialComment, { foreignKey: 'userId', as: 'postComments' });
+SocialComment.belongsTo(User, { foreignKey: 'userId', as: 'user' });
+
+// Self-association for replies
+SocialComment.hasMany(SocialComment, { foreignKey: 'parentId', as: 'replies' });
+SocialComment.belongsTo(SocialComment, { foreignKey: 'parentId', as: 'parent' });
+
+// Tenure Bonus associations
+OrgAccount.hasMany(TenureBonusRule, { foreignKey: 'orgAccountId', as: 'tenureBonusRules' });
+TenureBonusRule.belongsTo(OrgAccount, { foreignKey: 'orgAccountId', as: 'orgAccount' });
+
+User.hasMany(StaffTenureBonusAssignment, { foreignKey: 'userId', as: 'tenureBonusAssignments' });
+StaffTenureBonusAssignment.belongsTo(User, { foreignKey: 'userId', as: 'user' });
+
+TenureBonusRule.hasMany(StaffTenureBonusAssignment, { foreignKey: 'tenureBonusRuleId', as: 'assignments' });
+StaffTenureBonusAssignment.belongsTo(TenureBonusRule, { foreignKey: 'tenureBonusRuleId', as: 'rule' });
+
 module.exports = {
   sequelize,
   User,
@@ -839,5 +882,10 @@ module.exports = {
   Candidate,
   Interview,
   MailCampaign,
-  MailQueue
+  MailQueue,
+  SocialPost,
+  SocialLike,
+  SocialComment,
+  TenureBonusRule,
+  StaffTenureBonusAssignment
 };

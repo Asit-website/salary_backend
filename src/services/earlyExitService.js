@@ -50,7 +50,29 @@ class EarlyExitService {
     const { userId, orgAccountId, date: dateKey, punchedOutAt } = attendance;
     if (!punchedOutAt) return { earlyExitMinutes: 0, earlyExitAmount: 0, earlyExitRuleId: null };
 
-    // 1. Resolve applicable Rule
+    // 1. Identify Shift End Time (Always identify shift to get raw minutes)
+    const shift = await this.getEffectiveShiftTemplate(userId, dateKey);
+    let earlyExitMinutes = 0;
+
+    if (shift && shift.shiftType !== 'open' && shift.endTime) {
+      const [eh, em, es] = shift.endTime.split(':').map(Number);
+      const shiftEndTs = new Date(punchedOutAt);
+      shiftEndTs.setHours(eh, em, es || 0, 0);
+
+      // Handle overnight shift if necessary (basic check)
+      const [sh, sm] = (shift.startTime || '00:00').split(':').map(Number);
+      if (sh > eh) {
+          // If start hour > end hour, shift ends next day. 
+          // However, for pure early exit calculation at punch out, 
+          // we usually compare against the current day's projected end.
+      }
+
+      if (punchedOutAt < shiftEndTs) {
+        earlyExitMinutes = Math.floor((shiftEndTs - punchedOutAt) / 60000);
+      }
+    }
+
+    // 2. Resolve applicable Rule for penalty calculation
     let finalRule = null;
     const assignment = await StaffEarlyExitAssignment.findOne({
       where: {
@@ -69,44 +91,16 @@ class EarlyExitService {
       finalRule = await EarlyExitRule.findByPk(orgAccount.earlyExitRuleId);
     }
 
-    if (!finalRule || !finalRule.active) {
-      return { earlyExitMinutes: 0, earlyExitAmount: 0, earlyExitRuleId: null };
+    // If no rule or no early exit, return just the minutes (if any) and 0 penalty
+    if (!finalRule || !finalRule.active || earlyExitMinutes <= 0) {
+      return { 
+        earlyExitMinutes, 
+        earlyExitAmount: 0, 
+        earlyExitRuleId: finalRule?.id || null 
+      };
     }
 
-    // 2. Identify Shift End Time
-    const shift = await this.getEffectiveShiftTemplate(userId, dateKey);
-    
-    // Explicitly skip for Open Shifts (no fixed start/end times, early exit doesn't apply)
-    if (!shift || shift.shiftType === 'open' || !shift.endTime) {
-      return { earlyExitMinutes: 0, earlyExitAmount: 0, earlyExitRuleId: finalRule.id };
-    }
-
-    // 3. Calculate Early Exit Minutes
-    // Convert punch-out and shift-end to minutes since start of day for comparison
-    const [eh, em, es] = shift.endTime.split(':').map(Number);
-    const shiftEndTs = new Date(punchedOutAt);
-    shiftEndTs.setHours(eh, em, es || 0, 0);
-
-    // Handle Night Shifts (if shift ends next day)
-    // Basic heuristic: if shift start is later than shift end, it probably ends next day
-    const [sh, sm] = (shift.startTime || '00:00').split(':').map(Number);
-    if (sh > eh) {
-      // Shift spans midnight. If punch-out is very early morning, shiftEnd stays same.
-      // If punch-out is late night, shiftEnd should be next day.
-      // For now, assume if punch out is after 12pm, it's the same day as shift start.
-      // This logic might need refinement based on exact shift boundaries.
-    }
-
-    let earlyExitMinutes = 0;
-    if (punchedOutAt < shiftEndTs) {
-      earlyExitMinutes = Math.floor((shiftEndTs - punchedOutAt) / 60000);
-    }
-
-    if (earlyExitMinutes <= 0) {
-      return { earlyExitMinutes: 0, earlyExitAmount: 0, earlyExitRuleId: finalRule.id };
-    }
-
-    // 4. Calculate Deduction Amount
+    // 3. Calculate Deduction Amount (Only if rule exists and early exit)
     let deductionAmount = 0;
     const user = await User.findByPk(userId);
     const baseSalary = Number(user?.grossSalary || user?.basicSalary || 0) + (user?.grossSalary ? 0 : Number(user?.da || 0));
@@ -141,7 +135,6 @@ class EarlyExitService {
           deductionAmount = rewardValue;
         } else if (rewardType === 'SALARY_MULTIPLIER') {
           const hourlySalary = baseSalary / (daysInMonth * 8);
-          // NEW FIXED SLAB LOGIC: Only multiply by the rewardValue (no actual hours)
           deductionAmount = hourlySalary * rewardValue;
         }
       }

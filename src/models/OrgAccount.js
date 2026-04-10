@@ -27,6 +27,7 @@ module.exports = (sequelize) => {
       earlyExitRuleId: { type: DataTypes.BIGINT.UNSIGNED, allowNull: true, field: 'early_exit_rule_id' },
       breakRuleId: { type: DataTypes.BIGINT.UNSIGNED, allowNull: true, field: 'break_rule_id' },
       earlyOvertimeRuleId: { type: DataTypes.BIGINT.UNSIGNED, allowNull: true, field: 'early_overtime_rule_id' },
+      communityEnabled: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: false, field: 'community_enabled' },
     },
     { tableName: 'org_accounts', underscored: true }
   );

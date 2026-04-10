@@ -41,13 +41,13 @@ router.get('/payslip', async (req, res) => {
       return res.status(400).json({ success: false, message: 'monthKey (YYYY-MM) required' });
     }
 
-    // 1. Check if persistent file exists
+    // 1. Check if persistent file exists (unless regeneration is requested)
+    const regenerate = req.query.regenerate === 'true';
     const cycle = await PayrollCycle.findOne({ where: { monthKey } });
-    if (cycle) {
+    if (cycle && !regenerate) {
       const line = await PayrollLine.findOne({ where: { cycleId: cycle.id, userId: req.user.id } });
       if (line && line.payslipPath) {
         // Resolve absolute path (stored as relative /uploads/...)
-        // Remove leading slash/backslash to ensure path.join treats it as relative
         const safeRelativePath = line.payslipPath.replace(/^[\/\\]/, '');
         const absolutePath = path.join(__dirname, '../../', safeRelativePath);
         if (fs.existsSync(absolutePath)) {
@@ -56,6 +56,9 @@ router.get('/payslip', async (req, res) => {
           return res.redirect(fullUrl);
         }
       }
+    } else if (cycle && regenerate) {
+      // Clear path so it generates fresh
+      await PayrollLine.update({ payslipPath: null }, { where: { cycleId: cycle.id, userId: req.user.id } });
     }
 
     // 2. Fallback: Generate on-the-fly
@@ -627,6 +630,34 @@ router.post('/expenses', upload.single('attachment'), async (req, res) => {
   } catch (e) {
     console.error('Create my expense error:', e);
     return res.status(500).json({ success: false, message: 'Failed to create expense claim' });
+  }
+});
+
+// Get earliest salary month for navigation limit
+router.get('/salary-history-range', async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const profile = await StaffProfile.findOne({ where: { userId } });
+    const joiningMonth = profile?.dateOfJoining ? profile.dateOfJoining.slice(0, 7) : null;
+
+    // Find earliest PayrollLine
+    const earliestLine = await PayrollLine.findOne({
+      where: { userId },
+      include: [{ model: PayrollCycle, as: 'cycle' }],
+      order: [[{ model: PayrollCycle, as: 'cycle' }, 'monthKey', 'ASC']]
+    });
+
+    const earliestManualMonth = earliestLine?.cycle?.monthKey || null;
+
+    let finalStart = joiningMonth;
+    if (earliestManualMonth && (!finalStart || earliestManualMonth < finalStart)) {
+      finalStart = earliestManualMonth;
+    }
+
+    return res.json({ success: true, earliestMonth: finalStart });
+  } catch (e) {
+    console.error('Earliest salary month error:', e);
+    return res.status(500).json({ success: false, message: 'Failed to find history range' });
   }
 });
 

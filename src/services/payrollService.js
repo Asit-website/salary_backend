@@ -9,7 +9,7 @@ const {
   Attendance, LeaveRequest, WeeklyOffTemplate, StaffWeeklyOffAssignment,
   HolidayTemplate, HolidayDate, StaffHolidayAssignment, PayrollCycle, PayrollLine,
   AppSetting, StaffLoan, OrgAccount, StaffSalesIncentive, SalesIncentiveRule,
-  AttendanceAutomationRule, LeaveEncashment, StaffAdvance
+  AttendanceAutomationRule, LeaveEncashment, StaffAdvance, TenureBonusRule, StaffTenureBonusAssignment
 } = require('../models');
 
 const categoryNames = {
@@ -27,6 +27,20 @@ function getMonthRange(monthKey) {
   const end = new Date(yy, mm, 0);
   const endKey = `${end.getFullYear()}-${String(end.getMonth() + 1).padStart(2, '0')}-${String(end.getDate()).padStart(2, '0')}`;
   return { yy, mm, start, end, endKey };
+}
+
+function calculateTenureMonths(joiningDate, targetMonthKey) {
+  if (!joiningDate) return 0;
+  const join = new Date(joiningDate);
+  const [targetYear, targetMonth] = targetMonthKey.split('-').map(Number);
+  // Target date is the last day of the payroll month for tenure completion check
+  const targetEnd = new Date(targetYear, targetMonth, 0);
+
+  let months = (targetEnd.getFullYear() - join.getFullYear()) * 12 + (targetEnd.getMonth() - join.getMonth());
+  if (targetEnd.getDate() < join.getDate()) {
+    months--;
+  }
+  return Math.max(0, months);
 }
 
 async function computeOvertimeMeta({ userId, monthKey, overtimeBaseSalary, orgAccount }) {
@@ -181,11 +195,6 @@ async function computeBreakMeta({ userId, monthKey, orgAccount }) {
 }
 
 async function computeLatePenaltyMeta({ userId, monthKey, orgAccount, baseSalary }) {
-  const fs = require('fs');
-  const log = (msg) => fs.appendFileSync('payroll_debug.log', `[${new Date().toISOString()}] [User ${userId}] ${msg}\n`);
-
-  log(`Entering computeLatePenaltyMeta. Month: ${monthKey}, baseSalary: ${baseSalary}`);
-
   const { start, endKey, end } = getMonthRange(monthKey);
   const daysInMonth = Number(end.getDate() || 30);
   const dailySalary = baseSalary / daysInMonth;
@@ -197,110 +206,39 @@ async function computeLatePenaltyMeta({ userId, monthKey, orgAccount, baseSalary
     order: [['date', 'ASC']]
   });
 
-  log(`Found ${rows.length} attendance records for the month.`);
-
   let totalLateMinutes = 0;
   let totalLatePenalty = 0;
   let lateCount = 0;
   let totalLateDays = 0;
 
-  // 2. Resolve the applicable rule (Assignment-based primary)
-  const { StaffLatePunchInAssignment, LatePunchInRule } = require('../models');
-  const targetOrgId = orgAccount?.id || (typeof orgAccount === 'object' ? orgAccount.id : orgAccount);
+  const latePunchInService = require('./latePunchInService');
 
-  const assignment = await StaffLatePunchInAssignment.findOne({
-    where: {
-      userId,
-      orgAccountId: targetOrgId,
-      effectiveFrom: { [Op.lte]: endKey },
-      [Op.or]: [{ effectiveTo: null }, { effectiveTo: { [Op.gte]: start } }]
-    },
-    order: [['effectiveFrom', 'DESC']],
-    include: [{ model: LatePunchInRule, as: 'rule' }]
-  });
+  for (const row of rows) {
+    if (!row.punchedInAt) continue;
 
-  const rule = (assignment && assignment.rule && assignment.rule.active) ? assignment.rule : null;
-  log(`Rule resolving for user. Assignment ID: ${assignment?.id || 'None'}, Rule ID: ${rule?.id || 'None'}, Rule Active: ${rule?.active || 'N/A'}`);
+    // Evaluate lateness and penalty via service
+    const lpResult = await latePunchInService.calculateLatePenalty(row, orgAccount, row.punchedInAt, daysInMonth);
+    
+    const rowLateMinutes = lpResult.latePunchInMinutes || 0;
+    const rowLateAmount = lpResult.latePunchInAmount || 0;
 
-  if (rule) {
-    const latePunchInService = require('./latePunchInService');
-
-    for (const row of rows) {
-      // Unified property access (Seq instance vs Raw/Plain)
-      const getVal = (obj, prop, field) => obj[prop] !== undefined ? obj[prop] : (obj.getDataValue ? obj.getDataValue(field) : obj[field]);
-
-      let rowLateMinutes = Number(getVal(row, 'latePunchInMinutes', 'late_punchin_minutes') || 0);
-      let rowLateAmount = Number(getVal(row, 'latePunchInAmount', 'late_punchin_amount') || 0);
-      let rowIsLate = getVal(row, 'isLate', 'is_late') || (row.status === 'late') || (rowLateMinutes > 0);
-
-      // Robust check: If rule is active but data is zero/missing, compute it on-the-fly
-      if ((rowLateMinutes <= 0 || rowLateAmount <= 0) && row.punchedInAt) {
-        const lpResult = await latePunchInService.calculateLatePenalty(row, orgAccount, row.punchedInAt, daysInMonth);
-        rowLateMinutes = lpResult.latePunchInMinutes;
-        rowLateAmount = lpResult.latePunchInAmount;
-        rowIsLate = (rowLateMinutes > 0);
-
-        if (lpResult.tier) {
-          totalLateDays += Number(lpResult.tier.deduction || 0);
-        }
-      } else if (rowLateAmount > 0) {
-        // If amount is already there but days are missing, try to resolve days from rule
-        let thresholds = rule.thresholds;
-        if (typeof thresholds === 'string') { try { thresholds = JSON.parse(thresholds); } catch (e) { thresholds = []; } }
-
-        const tier = (Array.isArray(thresholds)) ? thresholds.find(t => rowLateMinutes >= Number(t.minMinutes) && rowLateMinutes <= Number(t.maxMinutes)) : null;
-        if (tier && (tier.deduction || tier.value)) {
-          totalLateDays += Number(tier.deduction || (rule.penaltyType === 'HALF_DAY' ? 0.5 : (rule.penaltyType === 'FULL_DAY' ? 1.0 : 0)));
-        } else if (dailySalary > 0) {
-          // Fallback to salary estimation
-          totalLateDays += (rowLateAmount / dailySalary);
-        }
-      }
-
-      if (!rowIsLate || rowLateMinutes <= 0) continue;
-
-      totalLateMinutes += rowLateMinutes;
+    // 1. Unconditionally increment frequency if late
+    if (rowLateMinutes > 0) {
       lateCount += 1;
-      totalLatePenalty += rowLateAmount;
+      totalLateMinutes += rowLateMinutes;
     }
-  } else {
-    // B. Legacy Global Logic (Fallback)
-    const { AttendanceAutomationRule } = require('../models');
-    const penaltyRule = await AttendanceAutomationRule.findOne({
-      where: { key: 'late_punchin_penalty', orgAccountId: orgAccount.id, active: true }
-    });
 
-    if (penaltyRule) {
-      let config = penaltyRule.config;
-      if (typeof config === 'string') { try { config = JSON.parse(config); } catch (e) { config = {}; } }
-      if (config.active !== false) {
-        let tiers = config.tiers || [{
-          minMinutes: Number(config.lateMinutes || 15),
-          maxMinutes: 9999,
-          deduction: Number(config.deduction || 1),
-          frequency: Number(config.threshold || 3)
-        }];
-        const tierCounts = new Array(tiers.length).fill(0);
-        for (const row of rows) {
-          const rowIsLate = row.isLate || row.getDataValue('is_late') || (row.status === 'late');
-          const rowLateMinutes = Number(row.latePunchInMinutes || row.getDataValue('late_punchin_minutes') || 0);
-          if (!rowIsLate || rowLateMinutes <= 0) continue;
-          totalLateMinutes += rowLateMinutes;
-          lateCount += 1;
+    // 2. Aggregate penalty details only if a rule was involved (or amount returned)
+    if (rowLateAmount > 0) {
+      totalLatePenalty += rowLateAmount;
+      
+      const rule = lpResult.rule;
+      const tier = lpResult.tier;
 
-          for (let i = 0; i < tiers.length; i++) {
-            const t = tiers[i];
-            if (rowLateMinutes >= Number(t.minMinutes) && rowLateMinutes <= Number(t.maxMinutes)) {
-              tierCounts[i]++;
-              if (Number(t.frequency) > 0 && tierCounts[i] % Number(t.frequency) === 0) {
-                const dedVal = Number(t.deduction || 0);
-                totalLatePenalty += (dailySalary * dedVal);
-                totalLateDays += dedVal;
-              }
-              break;
-            }
-          }
-        }
+      if (tier && (tier.deduction || tier.value)) {
+        totalLateDays += Number(tier.deduction || (rule?.penaltyType === 'HALF_DAY' ? 0.5 : (rule?.penaltyType === 'FULL_DAY' ? 1.0 : 0)));
+      } else if (dailySalary > 0) {
+        totalLateDays += (rowLateAmount / dailySalary);
       }
     }
   }
@@ -470,17 +408,36 @@ async function calculateSalary(userId, monthKey) {
         lateCount: Number(lp.lateCount || 0),
       };
 
-      const te = Object.values(earnings || {}).reduce((s, v) => s + (Number(v) || 0), 0);
-      const ti = Object.values(incentives || {}).reduce((s, v) => s + (Number(v) || 0), 0);
-      const td = Object.values(deductions || {}).reduce((s, v) => s + (Number(v) || 0), 0);
-      totalsObj = {
-        ...(totalsObj || {}),
-        totalEarnings: te,
-        totalIncentives: ti,
-        totalDeductions: td,
-        grossSalary: te + ti,
-        netSalary: te + ti - td,
-      };
+      // Preserve manual totals if they exist and earnings/deductions are missing or zeroed out (prevents zeroing out historical entries)
+      const hasDetailedData = Object.values(earnings || {}).some(v => Number(v) > 0) || Object.values(deductions || {}).some(v => Number(v) > 0);
+      const isManualWithTotals = line.isManual && totalsObj?.netSalary > 0 && !hasDetailedData;
+
+      if (isManualWithTotals) {
+        // Backfill a basic row so it shows up in PDFs/UI as a non-zero total
+        const manualNet = Number(totalsObj.netSalary || 0);
+        earnings = { BASIC_SALARY: manualNet };
+        deductions = {};
+        totalsObj = {
+          ...totalsObj,
+          totalEarnings: manualNet,
+          totalIncentives: 0,
+          totalDeductions: 0,
+          grossSalary: manualNet,
+          netSalary: manualNet,
+        };
+      } else {
+        const te = Object.values(earnings || {}).reduce((s, v) => s + (Number(v) || 0), 0);
+        const ti = Object.values(incentives || {}).reduce((s, v) => s + (Number(v) || 0), 0);
+        const td = Object.values(deductions || {}).reduce((s, v) => s + (Number(v) || 0), 0);
+        totalsObj = {
+          ...(totalsObj || {}),
+          totalEarnings: te,
+          totalIncentives: ti,
+          totalDeductions: td,
+          grossSalary: te + ti,
+          netSalary: te + ti - td,
+        };
+      }
     } catch (_) { /* non-fatal */ }
 
     return {
@@ -930,6 +887,46 @@ async function calculateSalary(userId, monthKey) {
   // Break penalties
   if (breakMeta.breakPenalty > 0) {
     finalDeductions.break_penalty = (finalDeductions.break_penalty || 0) + breakMeta.breakPenalty;
+  }
+
+  // 3. APPLY TENURE BONUS (Only if live compute and month matches)
+  try {
+    const assignment = await StaffTenureBonusAssignment.findOne({
+      where: {
+        userId: u.id,
+        effectiveFrom: { [Op.lte]: endKey }
+      },
+      include: [{ model: TenureBonusRule, as: 'rule' }],
+      order: [['effectiveFrom', 'DESC']]
+    });
+
+    if (assignment && assignment.rule && assignment.rule.active && String(assignment.rule.paymentMonth) === String(monthKey)) {
+      const bRule = assignment.rule;
+      const bConfig = Array.isArray(bRule.config) ? bRule.config : (typeof bRule.config === 'string' ? JSON.parse(bRule.config) : []);
+      
+      const p = u.profile ? (typeof u.profile.get === 'function' ? u.profile.get({ plain: true }) : u.profile) : {};
+      const joiningDate = p.dateOfJoining || p.date_of_joining;
+
+      if (joiningDate) {
+        const tenureMonths = calculateTenureMonths(joiningDate, monthKey);
+        
+        // Find matching rule from config array
+        const matchedBracket = bConfig.find(r => tenureMonths >= Number(r.min || 0) && tenureMonths <= Number(r.max || 999));
+        
+        if (matchedBracket && Number(matchedBracket.percent) > 0) {
+          const grossSalary_pre = sumObj(finalEarnings) + sumObj(finalIncentives);
+          const bonusAmt = Math.round(grossSalary_pre * (Number(matchedBracket.percent) / 100));
+          if (bonusAmt > 0) {
+            finalEarnings.TENURE_BONUS = bonusAmt;
+            try {
+              require('fs').appendFileSync('payroll_debug.log', `[Bonus] User ${u.id}: Rule=${bRule.name}, Tenure=${tenureMonths}mo, Bracket=${matchedBracket.percent}%, Bonus=${bonusAmt}\n`);
+            } catch (_) { }
+          }
+        }
+      }
+    }
+  } catch (e) {
+    console.error(`[Payroll-Bonus] Failed to calculate bonus: ${e.message}`);
   }
 
   const _totalEarnings = sumObj(finalEarnings);
