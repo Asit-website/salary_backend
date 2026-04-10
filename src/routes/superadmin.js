@@ -48,7 +48,7 @@ router.post('/plans', async (req, res) => {
     const {
       code, name, periodDays, price, features, active,
       expenseEnabled, payrollEnabled, performanceEnabled, aiReportsEnabled, aiAssistantEnabled, taskManagementEnabled,
-      rosterEnabled, recruitmentEnabled
+      rosterEnabled, recruitmentEnabled, communityEnabled
     } = req.body || {};
     if (!code || !name || !periodDays) {
       return res.status(400).json({ success: false, message: 'code, name, periodDays required' });
@@ -68,6 +68,7 @@ router.post('/plans', async (req, res) => {
       taskManagementEnabled: !!taskManagementEnabled,
       rosterEnabled: !!rosterEnabled,
       recruitmentEnabled: !!recruitmentEnabled,
+      communityEnabled: !!communityEnabled,
     });
     return res.json({ success: true, plan: row });
   } catch (e) {
@@ -82,7 +83,7 @@ router.put('/plans/:id', async (req, res) => {
     const {
       code, name, periodDays, price, features, active,
       expenseEnabled, payrollEnabled, performanceEnabled, aiReportsEnabled, aiAssistantEnabled, taskManagementEnabled,
-      rosterEnabled, recruitmentEnabled
+      rosterEnabled, recruitmentEnabled, communityEnabled
     } = req.body || {};
     await row.update({
       ...(code !== undefined ? { code: String(code).toUpperCase() } : {}),
@@ -99,6 +100,7 @@ router.put('/plans/:id', async (req, res) => {
       ...(taskManagementEnabled !== undefined ? { taskManagementEnabled: !!taskManagementEnabled } : {}),
       ...(rosterEnabled !== undefined ? { rosterEnabled: !!rosterEnabled } : {}),
       ...(recruitmentEnabled !== undefined ? { recruitmentEnabled: !!recruitmentEnabled } : {}),
+      ...(communityEnabled !== undefined ? { communityEnabled: !!communityEnabled } : {}),
     });
     return res.json({ success: true, plan: row });
   } catch (e) {
@@ -534,7 +536,7 @@ router.post('/clients/:id/subscription', async (req, res) => {
       planId, planCode, startAt, staffLimit, maxGeolocationStaff,
       salesEnabled, geolocationEnabled, expenseEnabled,
       payrollEnabled, performanceEnabled, aiReportsEnabled, aiAssistantEnabled, taskManagementEnabled,
-      rosterEnabled, recruitmentEnabled
+      rosterEnabled, recruitmentEnabled, communityEnabled
     } = req.body || {};
 
     // Check if client has an active subscription that hasn't expired
@@ -634,6 +636,10 @@ router.post('/clients/:id/subscription', async (req, res) => {
           updateData.recruitmentEnabled = !!recruitmentEnabled;
           messageArr.push(`Recruitment module ${recruitmentEnabled ? 'enabled' : 'disabled'}`);
         }
+        if (communityEnabled !== undefined && !!communityEnabled !== existingSubscription.communityEnabled) {
+          updateData.communityEnabled = !!communityEnabled;
+          messageArr.push(`Community module ${communityEnabled ? 'enabled' : 'disabled'}`);
+        }
 
         if (Object.keys(updateData).length > 0) {
           await existingSubscription.update(updateData);
@@ -673,7 +679,8 @@ router.post('/clients/:id/subscription', async (req, res) => {
       aiAssistantEnabled,
       taskManagementEnabled,
       rosterEnabled,
-      recruitmentEnabled
+      recruitmentEnabled,
+      communityEnabled
     });
 
     const sub = await Subscription.create({
@@ -694,6 +701,7 @@ router.post('/clients/:id/subscription', async (req, res) => {
       taskManagementEnabled: taskManagementEnabled !== undefined ? !!taskManagementEnabled : (plan.taskManagementEnabled || false),
       rosterEnabled: rosterEnabled !== undefined ? !!rosterEnabled : (plan.rosterEnabled || false),
       recruitmentEnabled: recruitmentEnabled !== undefined ? !!recruitmentEnabled : (plan.recruitmentEnabled || false),
+      communityEnabled: communityEnabled !== undefined ? !!communityEnabled : (plan.communityEnabled || false),
     });
     console.log('Subscription created successfully:', sub.id);
 

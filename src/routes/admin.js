@@ -1815,6 +1815,57 @@ router.get('/payroll', requireRole(['admin', 'staff']), async (req, res) => {
 
 });
 
+router.post('/payroll/manual-historical', requireRole(['admin']), async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
+    const { PayrollCycle, PayrollLine } = require('../models');
+    const { staffId, monthKey, netAmount } = req.body;
+
+    if (!staffId || !monthKey || netAmount === undefined) {
+      return res.status(400).json({ success: false, message: 'staffId, monthKey, and netAmount required' });
+    }
+
+    if (!/^\d{4}-\d{2}$/.test(monthKey)) {
+      return res.status(400).json({ success: false, message: 'Invalid monthKey format (YYYY-MM)' });
+    }
+
+    // 1. Find or create Cycle
+    let cycle = await PayrollCycle.findOne({ where: { monthKey, orgAccountId: orgId } });
+    if (!cycle) {
+      // For historical records, we default status to PAID if we are adding a line with a paid amount
+      cycle = await PayrollCycle.create({ monthKey, status: 'PAID', orgAccountId: orgId, paidAt: new Date() });
+    }
+
+    // 2. Find or create Line
+    let line = await PayrollLine.findOne({ where: { cycleId: cycle.id, userId: Number(staffId) } });
+    const lineData = {
+      cycleId: cycle.id,
+      userId: Number(staffId),
+      isManual: true,
+      status: 'INCLUDED',
+      paidAt: new Date(),
+      paidAmount: Number(netAmount),
+      totals: {
+        totalEarnings: Number(netAmount),
+        totalDeductions: 0,
+        gross: Number(netAmount),
+        netSalary: Number(netAmount)
+      },
+      remarks: 'Manual historical entry'
+    };
+
+    if (line) {
+      await line.update(lineData);
+    } else {
+      line = await PayrollLine.create(lineData);
+    }
+
+    return res.json({ success: true, line });
+  } catch (e) {
+    console.error('Manual historical payroll error:', e);
+    return res.status(500).json({ success: false, message: 'Failed to save historical payroll', error: e.message });
+  }
+});
 
 
 // Get user's payroll payment status (user-accessible)
@@ -2429,6 +2480,7 @@ router.post('/payroll/:cycleId/compute', async (req, res) => {
       let lateCount = 0;
       let latePenaltyDays = 0;
       let latePenaltyAmount = 0;
+      let totalLatePunchInMinutes = 0;
 
       try {
         // Resolve Shift Template once (fallback to profile if no specific assignment)
@@ -2462,12 +2514,6 @@ router.post('/payroll/:cycleId/compute', async (req, res) => {
             // A. PRIORITIZE STORED VALUES (from ai_processor or manual edit)
             const storedAmt = Number(a.latePunchInAmount || a.late_punchin_amount || 0);
             const storedMins = Number(a.latePunchInMinutes || a.late_punchin_minutes || 0);
-            if (storedAmt > 0) {
-              lateCount++;
-              latePenaltyAmount += storedAmt;
-              log(`[Late-Dbg] Day ${dayKey}: Using Stored Amt ${storedAmt}`);
-              continue;
-            }
 
             // B. RESOLVE RULE FOR THIS DAY
             const dayAsg = latePunchInAssignments.find(asg => {
@@ -2486,6 +2532,16 @@ router.post('/payroll/:cycleId/compute', async (req, res) => {
 
             if (diffMin <= 0) continue;
 
+            // 1. Unconditionally track frequency and minutes
+            lateCount++;
+            totalLatePunchInMinutes += diffMin;
+
+            if (storedAmt > 0) {
+              latePenaltyAmount += storedAmt;
+              log(`[Late-Dbg] Day ${dayKey}: Using Stored Amt ${storedAmt}`);
+              continue;
+            }
+
             if (activeRule && activeRule.active) {
               // Assignment-based Rule
               let thresholds = activeRule.thresholds;
@@ -2500,14 +2556,12 @@ router.post('/payroll/:cycleId/compute', async (req, res) => {
                   const t = thresholds[i];
                   if (diffMin >= Number(t.minMinutes) && diffMin <= Number(t.maxMinutes)) {
                     rc.counts[i]++;
-                    lateCount++;
                     break;
                   }
                 }
               } else {
                 const tBase = thresholds.filter(x => diffMin >= Number(x.minMinutes)).sort((a,b) => Number(b.minMinutes)-Number(a.minMinutes))[0];
                 if (tBase) {
-                  lateCount++;
                   if (pType === 'FIXED_AMOUNT') latePenaltyAmount += Number(tBase.value || 0);
                   else if (pType === 'FIXED_AMOUNT_PER_HOUR') latePenaltyAmount += Number(tBase.value || 0) * Math.ceil(diffMin / 60);
                   else if (pType === 'HALF_DAY') { latePenaltyDays += 0.5; if (dailySalary > 0) latePenaltyAmount += (0.5 * dailySalary); }
@@ -2521,7 +2575,6 @@ router.post('/payroll/:cycleId/compute', async (req, res) => {
                 const t = lateTiers[i];
                 if (diffMin >= Number(t.minMinutes) && diffMin <= Number(t.maxMinutes)) {
                   tierCounts[i]++;
-                  lateCount++;
                   break;
                 }
               }
@@ -2549,6 +2602,7 @@ router.post('/payroll/:cycleId/compute', async (req, res) => {
 
           log(`[Late-Dbg] User ${u.id} Final: LateCount=${lateCount}, Amt=${latePenaltyAmount}, Days=${latePenaltyDays}`);
         }
+
       } catch (err) {
         console.error(`Error in per-day lateness calculation for staff ${u.id}:`, err);
       }
@@ -2770,6 +2824,7 @@ router.post('/payroll/:cycleId/compute', async (req, res) => {
         earlyOvertimeMinutes: totalEarlyOvertimeMinutes,
         earlyOvertimePay: totalEarlyOvertimeAmount,
         lateCount,
+        latePunchInMinutes: totalLatePunchInMinutes,
         latePenaltyDays,
         latePenalty: latePenaltyAmount,
         latePunchInPenalty: latePenaltyAmount,
@@ -7318,519 +7373,15 @@ function computeItemAmount(item, ctx) {
 
     }
 
-
-
-    // Fallback/override: map explicit salaryValues from request regardless of template
-
-    const ev = (salaryValues && salaryValues.earnings) || {};
-
-    const dv = (salaryValues && salaryValues.deductions) || {};
-
-    const num = (v) => (v === undefined || v === null || v === '' ? 0 : parseFloat(v));
-
-
-
-    // Known earnings keys
-
-    const earningKeys = [
-
-      'basic_salary',
-
-      'hra',
-
-      'da',
-
-      'special_allowance',
-
-      'conveyance_allowance',
-
-      'medical_allowance',
-
-      'telephone_allowance',
-
-      'other_allowances'
-
-    ];
-
-    let totalEarningsFallback = 0;
-
-    earningKeys.forEach(k => {
-
-      if (ev[k] !== undefined) {
-
-        userData[k] = num(ev[k]);
-
-      }
-
-      if (userData[k] !== undefined) {
-
-        totalEarningsFallback += num(userData[k]);
-
-      }
-
-    });
-
-
-
-    // Update staff salaryValues JSON (merge with existing, accept arrays or objects, coerce to numbers)
-
-    router.put('/staff/:id/salary', async (req, res) => {
-
-      try {
-
-        const { id } = req.params;
-
-        const { salaryValues } = req.body || {};
-
-        if (!salaryValues || typeof salaryValues !== 'object') {
-
-          return res.status(400).json({ success: false, message: 'salaryValues object required' });
-
-        }
-
-        const user = await User.findByPk(id);
-
-        if (!user || user.role !== 'staff') {
-
-          return res.status(404).json({ success: false, message: 'Staff not found' });
-
-        }
-
-
-
-        // Parse existing JSON if string
-
-        let current = user.salaryValues || user.salary_values || {};
-
-        const tryParse = (v) => {
-
-          if (typeof v !== 'string') return v;
-
-          try { const p = JSON.parse(v); return p; } catch { return v; }
-
-        };
-
-        current = tryParse(current);
-
-        // Handle double-encoded case: string that parses to a JSON string again
-
-        if (typeof current === 'string') {
-
-          current = tryParse(current);
-
-        }
-
-        if (!current || typeof current !== 'object') current = {};
-
-        const isEmptyObj = (o) => !o || Object.keys(o).length === 0;
-
-        if (isEmptyObj(current) || (isEmptyObj(current.earnings) && isEmptyObj(current.deductions) && isEmptyObj(current.incentives))) {
-
-          // Build baseline from numeric columns
-
-          const baseE = {
-
-            basic_salary: Number(user.basicSalary || user.basic_salary || 0),
-
-            hra: Number(user.hra || user.hra_amount || 0),
-
-            da: Number(user.da || user.da_amount || 0),
-
-            special_allowance: Number(user.specialAllowance || user.special_allowance || 0),
-
-            conveyance_allowance: Number(user.conveyanceAllowance || user.conveyance_allowance || 0),
-
-            medical_allowance: Number(user.medicalAllowance || user.medical_allowance || 0),
-
-            telephone_allowance: Number(user.telephoneAllowance || user.telephone_allowance || 0),
-
-            other_allowances: Number(user.otherAllowances || user.other_allowances || 0),
-
-          };
-
-          const baseD = {
-
-            provident_fund: Number(user.pfDeduction || user.provident_fund || 0),
-
-            esi: Number(user.esiDeduction || user.esi || 0),
-
-            professional_tax: Number(user.professionalTax || user.professional_tax || 0),
-
-            income_tax: Number(user.tdsDeduction || user.income_tax || 0),
-
-            loan_deduction: Number(user.loanDeduction || user.loan_deduction || 0),
-
-            other_deductions: Number(user.otherDeductions || user.other_deductions || 0),
-
-          };
-
-          current = { earnings: baseE, incentives: {}, deductions: baseD };
-
-        }
-
-
-
-        // Normalize incoming format: allow arrays [{name,amount}] or objects {key:value}
-
-        const normalize = (src) => {
-
-          if (Array.isArray(src)) {
-
-            const out = {};
-
-            src.forEach((it) => {
-
-              const k = (it?.name || it?.key || '').toString().trim();
-
-              if (!k) return;
-
-              const n = it?.amount ?? it?.valueNumber ?? it?.value;
-
-              const v = n === undefined || n === null || n === '' ? 0 : parseFloat(n);
-
-              out[k] = Number.isFinite(v) ? v : 0;
-
-            });
-
-            return out;
-
-          }
-
-          if (src && typeof src === 'object') {
-
-            const out = {};
-
-            Object.keys(src).forEach((k) => {
-
-              const n = src[k];
-
-              const v = n === undefined || n === null || n === '' ? 0 : parseFloat(n);
-
-              out[k] = Number.isFinite(v) ? v : 0;
-
-            });
-
-            return out;
-
-          }
-
-          return {};
-
-        };
-
-
-
-        const incomingE = normalize(salaryValues.earnings || {});
-
-        const incomingD = normalize(salaryValues.deductions || {});
-
-
-
-        // Merge: preserve existing keys not sent in payload, override those provided
-
-        const merged = {
-
-          earnings: { ...(current.earnings || {}), ...incomingE },
-
-          deductions: { ...(current.deductions || {}), ...incomingD },
-
-        };
-
-
-
-        await user.update({ salaryValues: merged, salary_values: merged });
-
-        return res.json({ success: true, user: { id: user.id, salaryValues: merged } });
-
-      } catch (e) {
-
-        console.error('Update staff salaryValues error:', e);
-
-        return res.status(500).json({ success: false, message: 'Failed to update salary values' });
-
-      }
-
-    });
-
-
-
-    // Activate/Deactivate using query param id
-
-    router.put('/staff/active', async (req, res) => {
-
-      try {
-
-        const id = Number(req.query?.id);
-
-        const { active } = req.body || {};
-
-        if (!Number.isFinite(id)) {
-
-          return res.status(400).json({ success: false, message: 'id required' });
-
-        }
-
-        if (typeof active !== 'boolean') {
-
-          return res.status(400).json({ success: false, message: 'active boolean required' });
-
-        }
-
-        const user = await User.findByPk(id);
-
-        if (!user || user.role !== 'staff') {
-
-          return res.status(404).json({ success: false, message: 'Staff not found' });
-
-        }
-
-        await user.update({ active });
-
-        return res.json({ success: true, active: user.active });
-
-      } catch (e) {
-
-        console.error('Toggle staff active (query) error:', e);
-
-        return res.status(500).json({ success: false, message: 'Failed to update status' });
-
-      }
-
-    });
-
-
-
-    // Activate/Deactivate a staff user
-
-    router.put('/staff/:id/active', async (req, res) => {
-
-      try {
-
-        const id = req.params.id;
-
-        const { active } = req.body || {};
-
-        if (typeof active !== 'boolean') {
-
-          return res.status(400).json({ success: false, message: 'active boolean required' });
-
-        }
-
-        const user = await User.findByPk(id);
-
-        if (!user || user.role !== 'staff') {
-
-          return res.status(404).json({ success: false, message: 'Staff not found' });
-
-        }
-
-        await user.update({ active });
-
-        return res.json({ success: true, active: user.active });
-
-      } catch (e) {
-
-        console.error('Toggle staff active error:', e);
-
-        return res.status(500).json({ success: false, message: 'Failed to update status' });
-
-      }
-
-    });
-
-
-
-    // Alternate month attendance endpoint using query params
-
-    router.get('/attendance/month', async (req, res) => {
-
-      try {
-
-        const { staffId, month } = req.query || {};
-
-        if (!staffId) return res.status(400).json({ success: false, message: 'staffId required' });
-
-        if (!month || !/^\d{4}-\d{2}$/.test(String(month))) {
-
-          return res.status(400).json({ success: false, message: 'month (YYYY-MM) required' });
-
-        }
-
-        const user = await User.findByPk(Number(staffId));
-
-        if (!user || user.role !== 'staff') {
-
-          return res.status(404).json({ success: false, message: 'Staff not found' });
-
-        }
-
-
-
-        const first = new Date(`${month}-01T00:00:00.000Z`);
-
-        const last = new Date(first);
-
-        last.setMonth(first.getMonth() + 1);
-
-        last.setDate(0);
-
-        const fromDate = `${month}-01`;
-
-        const toDate = `${last.getFullYear()}-${String(last.getMonth() + 1).padStart(2, '0')}-${String(last.getDate()).padStart(2, '0')}`;
-
-
-
-        const rows = await Attendance.findAll({
-
-          where: { userId: Number(staffId), date: { [Op.between]: [fromDate, toDate] } },
-
-          order: [['date', 'ASC']],
-
-          include: [
-
-            { model: User, as: 'user', attributes: ['id'], include: [{ model: StaffProfile, as: 'profile', attributes: ['name', 'staffId', 'department'] }] }
-
-          ]
-
-        });
-
-
-
-        const toTime = (dt) => (dt ? new Date(dt).toTimeString().slice(0, 8) : null);
-
-        const data = rows.map(r => {
-
-          let status = r.status || 'absent';
-
-          const isLeave = Number(r.breakTotalSeconds) === -1;
-
-          const isHalfSentinel = Number(r.breakTotalSeconds) === -2;
-
-          if (isLeave) status = 'leave';
-
-          else if (isHalfSentinel) status = 'half_day';
-
-          else if (r.punchedInAt && r.punchedOutAt) {
-
-            const durMs = new Date(r.punchedOutAt) - new Date(r.punchedInAt);
-            const durH = durMs / (1000 * 60 * 60);
-            status = durH >= 4 ? 'present' : 'half_day';
-          } else if (r.punchedInAt || r.punchedOutAt) {
-            status = r.punchedOutAt ? 'half_day' : 'present';
-          }
-          return {
-            id: r.id,
-            date: r.date,
-            checkIn: toTime(r.punchedInAt),
-            checkOut: toTime(r.punchedOutAt),
-            status,
-            punchInPhotoUrl: r.punchInPhotoUrl,
-            punchOutPhotoUrl: r.punchOutPhotoUrl,
-            user: { name: r.user?.profile?.name || null },
-            staffProfile: { staffId: r.user?.profile?.staffId || null, department: r.user?.profile?.department || null }
-          };
-        });
-
-        return res.json({ success: true, data });
-      } catch (e) {
-        console.error('Attendance month error:', e);
-        return res.status(500).json({ success: false, message: 'Failed to load attendance' });
-      }
-    });
-    // Month-wise attendance for a staff member (org-scoped)
-    router.get('/staff/:id/attendance', async (req, res) => {
-      try {
-        const orgId = requireOrg(req, res); if (!orgId) return;
-        const { id } = req.params;
-        const { month } = req.query; // YYYY-MM
-        if (!month || !/^\d{4}-\d{2}$/.test(String(month))) {
-          return res.status(400).json({ success: false, message: 'month (YYYY-MM) required' });
-        }
-        const user = await User.findOne({ where: { id: Number(id), orgAccountId: orgId, role: 'staff' } });
-        if (!user) {
-          return res.status(404).json({ success: false, message: 'Staff not found' });
-        }
-
-        const first = new Date(`${month}-01T00:00:00.000Z`);
-        const last = new Date(first);
-        last.setMonth(first.getMonth() + 1);
-        last.setDate(0); // last day of previous month after increment
-        const fromDate = `${month}-01`;
-        const toDate = `${last.getFullYear()}-${String(last.getMonth() + 1).padStart(2, '0')}-${String(last.getDate()).padStart(2, '0')}`;
-
-        const rows = await Attendance.findAll({
-          where: { userId: Number(id), date: { [Op.between]: [fromDate, toDate] } },
-          order: [['date', 'ASC']],
-          include: [
-            { model: User, as: 'user', attributes: ['id'], include: [{ model: StaffProfile, as: 'profile', attributes: ['name', 'staffId', 'department'] }] }
-          ]
-        });
-
-        const toTime = (dt) => (dt ? new Date(dt).toTimeString().slice(0, 8) : null);
-        const data = rows.map(r => {
-          let status = String(r.status || '').toLowerCase();
-          if (Number(r.breakTotalSeconds) === -1) status = 'leave';
-          else if (Number(r.breakTotalSeconds) === -2) status = 'half_day';
-          else if (!r.status) {
-            if (r.punchedInAt && r.punchedOutAt) {
-              const durMs = new Date(r.punchedOutAt) - new Date(r.punchedInAt);
-              const durH = durMs / (1000 * 60 * 60);
-              status = durH >= 4 ? 'present' : 'half_day';
-            } else if (r.punchedInAt || r.punchedOutAt) {
-              status = r.punchedOutAt ? 'half_day' : 'present';
-            } else {
-              status = 'absent';
-            }
-          }
-          return {
-            id: r.id,
-            date: r.date,
-            checkIn: toTime(r.punchedInAt),
-            checkOut: toTime(r.punchedOutAt),
-            status,
-            user: { name: r.user?.profile?.name || null },
-            staffProfile: { staffId: r.user?.profile?.staffId || null, department: r.user?.profile?.department || null }
-          };
-        });
-
-        return res.json({ success: true, data });
-      } catch (e) {
-        console.error('Staff month attendance error:', e);
-        return res.status(500).json({ success: false, message: 'Failed to load attendance' });
-      }
-    });
-
-    // Known deductions keys
-    const deductionKeys = [
-      'provident_fund',
-      'esi',
-      'professional_tax',
-      'income_tax',
-      'loan_deduction',
-      'other_deductions'
-    ];
-    let totalDeductionsFallback = 0;
-    deductionKeys.forEach(k => {
-      if (dv[k] !== undefined) {
-        userData[k] = num(dv[k]);
-      }
-      if (userData[k] !== undefined) {
-        totalDeductionsFallback += num(userData[k]);
-      }
-    });
-
-    // Apply totals if not set by template logic
-    if (userData.total_earnings === undefined) userData.total_earnings = totalEarningsFallback;
-    if (userData.total_deductions === undefined) userData.total_deductions = totalDeductionsFallback;
-    const grossSalaryFallback = num(userData.total_earnings) + num(userData.total_incentives || 0);
-    const netSalaryFallback = grossSalaryFallback - num(userData.total_deductions);
-    if (userData.gross_salary === undefined) userData.gross_salary = grossSalaryFallback;
-    if (userData.net_salary === undefined) userData.net_salary = netSalaryFallback;
-    if (!userData.salary_last_calculated) userData.salary_last_calculated = new Date();
     amt = (baseVal * val) / 100;
+
   } else {
+
     amt = val;
+
   }
+
+
 
   // caps / mins
   if (Number.isFinite(item?.capAmount)) amt = Math.min(amt, Number(item.capAmount));
@@ -7913,6 +7464,227 @@ function computePayableDays(settings, year, month /* 1-12 */) {
       return dim;
   }
 }
+
+const numHelper = (v) => (v === undefined || v === null || v === '' ? 0 : parseFloat(v));
+
+// Staff Salary & Attendance Routes
+router.put('/staff/:id/salary', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { salaryValues } = req.body || {};
+    if (!salaryValues || typeof salaryValues !== 'object') {
+      return res.status(400).json({ success: false, message: 'salaryValues object required' });
+    }
+    const user = await User.findByPk(id);
+    if (!user || user.role !== 'staff') {
+      return res.status(404).json({ success: false, message: 'Staff not found' });
+    }
+    let current = user.salaryValues || user.salary_values || {};
+    const tryParse = (v) => {
+      if (typeof v !== 'string') return v;
+      try { return JSON.parse(v); } catch { return v; }
+    };
+    current = tryParse(current);
+    if (typeof current === 'string') current = tryParse(current);
+    if (!current || typeof current !== 'object') current = {};
+
+    const isEmptyObj = (o) => !o || Object.keys(o).length === 0;
+    if (isEmptyObj(current) || (isEmptyObj(current.earnings) && isEmptyObj(current.deductions) && isEmptyObj(current.incentives))) {
+      const baseE = {
+        basic_salary: Number(user.basicSalary || user.basic_salary || 0),
+        hra: Number(user.hra || user.hra_amount || 0),
+        da: Number(user.da || user.da_amount || 0),
+        special_allowance: Number(user.specialAllowance || user.special_allowance || 0),
+        conveyance_allowance: Number(user.conveyanceAllowance || user.conveyance_allowance || 0),
+        medical_allowance: Number(user.medicalAllowance || user.medical_allowance || 0),
+        telephone_allowance: Number(user.telephoneAllowance || user.telephone_allowance || 0),
+        other_allowances: Number(user.otherAllowances || user.other_allowances || 0),
+      };
+      const baseD = {
+        provident_fund: Number(user.pfDeduction || user.provident_fund || 0),
+        esi: Number(user.esiDeduction || user.esi || 0),
+        professional_tax: Number(user.professionalTax || user.professional_tax || 0),
+        income_tax: Number(user.tdsDeduction || user.income_tax || 0),
+        loan_deduction: Number(user.loanDeduction || user.loan_deduction || 0),
+        other_deductions: Number(user.otherDeductions || user.other_deductions || 0),
+      };
+      current = { earnings: baseE, incentives: {}, deductions: baseD };
+    }
+
+    const normalize = (src) => {
+      if (Array.isArray(src)) {
+        const out = {};
+        src.forEach((it) => {
+          const k = (it?.name || it?.key || '').toString().trim();
+          if (!k) return;
+          const n = it?.amount ?? it?.valueNumber ?? it?.value;
+          const v = n === undefined || n === null || n === '' ? 0 : parseFloat(n);
+          out[k] = Number.isFinite(v) ? v : 0;
+        });
+        return out;
+      }
+      if (src && typeof src === 'object') {
+        const out = {};
+        Object.keys(src).forEach((k) => {
+          const n = src[k];
+          const v = n === undefined || n === null || n === '' ? 0 : parseFloat(n);
+          out[k] = Number.isFinite(v) ? v : 0;
+        });
+        return out;
+      }
+      return {};
+    };
+
+    const incomingE = normalize(salaryValues.earnings || {});
+    const incomingD = normalize(salaryValues.deductions || {});
+    const merged = {
+      earnings: { ...(current.earnings || {}), ...incomingE },
+      deductions: { ...(current.deductions || {}), ...incomingD },
+    };
+    await user.update({ salaryValues: merged, salary_values: merged });
+    return res.json({ success: true, user: { id: user.id, salaryValues: merged } });
+  } catch (e) {
+    console.error('Update staff salaryValues error:', e);
+    return res.status(500).json({ success: false, message: 'Failed to update salary values' });
+  }
+});
+
+router.put('/staff/active', async (req, res) => {
+  try {
+    const id = Number(req.query?.id);
+    const { active } = req.body || {};
+    if (!Number.isFinite(id)) return res.status(400).json({ success: false, message: 'id required' });
+    if (typeof active !== 'boolean') return res.status(400).json({ success: false, message: 'active boolean required' });
+    const user = await User.findByPk(id);
+    if (!user || user.role !== 'staff') return res.status(404).json({ success: false, message: 'Staff not found' });
+    await user.update({ active });
+    return res.json({ success: true, active: user.active });
+  } catch (e) {
+    console.error('Toggle staff active (query) error:', e);
+    return res.status(500).json({ success: false, message: 'Failed to update status' });
+  }
+});
+
+router.put('/staff/:id/active', async (req, res) => {
+  try {
+    const id = req.params.id;
+    const { active } = req.body || {};
+    if (typeof active !== 'boolean') return res.status(400).json({ success: false, message: 'active boolean required' });
+    const user = await User.findByPk(id);
+    if (!user || user.role !== 'staff') return res.status(404).json({ success: false, message: 'Staff not found' });
+    await user.update({ active });
+    return res.json({ success: true, active: user.active });
+  } catch (e) {
+    console.error('Toggle staff active error:', e);
+    return res.status(500).json({ success: false, message: 'Failed to update status' });
+  }
+});
+
+router.get('/attendance/month', async (req, res) => {
+  try {
+    const { staffId, month } = req.query || {};
+    if (!staffId) return res.status(400).json({ success: false, message: 'staffId required' });
+    if (!month || !/^\d{4}-\d{2}$/.test(String(month))) return res.status(400).json({ success: false, message: 'month (YYYY-MM) required' });
+    const user = await User.findByPk(Number(staffId));
+    if (!user || user.role !== 'staff') return res.status(404).json({ success: false, message: 'Staff not found' });
+
+    const first = new Date(`${month}-01T00:00:00.000Z`);
+    const last = new Date(first);
+    last.setMonth(first.getMonth() + 1);
+    last.setDate(0);
+    const fromDate = `${month}-01`;
+    const toDate = `${last.getFullYear()}-${String(last.getMonth() + 1).padStart(2, '0')}-${String(last.getDate()).padStart(2, '0')}`;
+
+    const rows = await Attendance.findAll({
+      where: { userId: Number(staffId), date: { [Op.between]: [fromDate, toDate] } },
+      order: [['date', 'ASC']],
+      include: [{ model: User, as: 'user', attributes: ['id'], include: [{ model: StaffProfile, as: 'profile', attributes: ['name', 'staffId', 'department'] }] }]
+    });
+
+    const toTime = (dt) => (dt ? new Date(dt).toTimeString().slice(0, 8) : null);
+    const data = rows.map(r => {
+      let status = r.status || 'absent';
+      if (Number(r.breakTotalSeconds) === -1) status = 'leave';
+      else if (Number(r.breakTotalSeconds) === -2) status = 'half_day';
+      else if (r.punchedInAt && r.punchedOutAt) {
+        const durMs = new Date(r.punchedOutAt) - new Date(r.punchedInAt);
+        status = (durMs / (1000 * 60 * 60)) >= 4 ? 'present' : 'half_day';
+      } else if (r.punchedInAt || r.punchedOutAt) {
+        status = r.punchedOutAt ? 'half_day' : 'present';
+      }
+      return {
+        id: r.id, date: r.date, checkIn: toTime(r.punchedInAt), checkOut: toTime(r.punchedOutAt), status,
+        punchInPhotoUrl: r.punchInPhotoUrl, punchOutPhotoUrl: r.punchOutPhotoUrl,
+        user: { name: r.user?.profile?.name || null },
+        staffProfile: { staffId: r.user?.profile?.staffId || null, department: r.user?.profile?.department || null },
+        latePunchInMinutes: r.latePunchInMinutes, latePunchInAmount: r.latePunchInAmount,
+        earlyExitMinutes: r.earlyExitMinutes, earlyExitAmount: r.earlyExitAmount,
+        excessBreakMinutes: r.excessBreakMinutes, breakDeductionAmount: r.breakDeductionAmount,
+        overtimeMinutes: r.overtimeMinutes, overtimeAmount: r.overtimeAmount,
+        earlyOvertimeMinutes: r.earlyOvertimeMinutes, earlyOvertimeAmount: r.earlyOvertimeAmount,
+      };
+    });
+    return res.json({ success: true, data });
+  } catch (e) {
+    console.error('Attendance month error:', e);
+    return res.status(500).json({ success: false, message: 'Failed to load attendance' });
+  }
+});
+
+router.get('/staff/:id/attendance', async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
+    const { id } = req.params;
+    const { month } = req.query;
+    if (!month || !/^\d{4}-\d{2}$/.test(String(month))) return res.status(400).json({ success: false, message: 'month (YYYY-MM) required' });
+    const user = await User.findOne({ where: { id: Number(id), orgAccountId: orgId, role: 'staff' } });
+    if (!user) return res.status(404).json({ success: false, message: 'Staff not found' });
+
+    const first = new Date(`${month}-01T00:00:00.000Z`);
+    const last = new Date(first);
+    last.setMonth(first.getMonth() + 1);
+    last.setDate(0);
+    const fromDate = `${month}-01`;
+    const toDate = `${last.getFullYear()}-${String(last.getMonth() + 1).padStart(2, '0')}-${String(last.getDate()).padStart(2, '0')}`;
+
+    const rows = await Attendance.findAll({
+      where: { userId: Number(id), date: { [Op.between]: [fromDate, toDate] } },
+      order: [['date', 'ASC']],
+      include: [{ model: User, as: 'user', attributes: ['id'], include: [{ model: StaffProfile, as: 'profile', attributes: ['name', 'staffId', 'department'] }] }]
+    });
+
+    const toTime = (dt) => (dt ? new Date(dt).toTimeString().slice(0, 8) : null);
+    const data = rows.map(r => {
+      let status = String(r.status || '').toLowerCase();
+      if (Number(r.breakTotalSeconds) === -1) status = 'leave';
+      else if (Number(r.breakTotalSeconds) === -2) status = 'half_day';
+      else if (!r.status) {
+        if (r.punchedInAt && r.punchedOutAt) {
+          const durMs = new Date(r.punchedOutAt) - new Date(r.punchedInAt);
+          status = (durMs / (1000 * 60 * 60)) >= 4 ? 'present' : 'half_day';
+        } else if (r.punchedInAt || r.punchedOutAt) {
+          status = r.punchedOutAt ? 'half_day' : 'present';
+        } else {
+          status = 'absent';
+        }
+      }
+      return {
+        id: r.id, date: r.date, checkIn: toTime(r.punchedInAt), checkOut: toTime(r.punchedOutAt), status,
+        user: { name: r.user?.profile?.name || null },
+        staffProfile: { staffId: r.user?.profile?.staffId || null, department: r.user?.profile?.department || null },
+        latePunchInMinutes: r.latePunchInMinutes, latePunchInAmount: r.latePunchInAmount,
+        earlyExitMinutes: r.earlyExitMinutes, earlyExitAmount: r.earlyExitAmount,
+        excessBreakMinutes: r.excessBreakMinutes, breakDeductionAmount: r.breakDeductionAmount,
+        overtimeMinutes: r.overtimeMinutes, overtimeAmount: r.overtimeAmount,
+        earlyOvertimeMinutes: r.earlyOvertimeMinutes, earlyOvertimeAmount: r.earlyOvertimeAmount,
+      };
+    });
+    return res.json({ success: true, data });
+  } catch (e) {
+    console.error('Staff month attendance error:', e);
+    return res.status(500).json({ success: false, message: 'Failed to load attendance' });
+  }
+});
 
 router.get('/settings/work-hours', async (req, res) => {
   try {
@@ -9830,6 +9602,8 @@ router.get('/staff/:id', async (req, res) => {
         id: user.id,
         phone: user.phone,
         active: user.active,
+        createdAt: user.createdAt,
+        created_at: user.createdAt,
         salaryTemplateId: user.salaryTemplateId,
         salaryValues: pickSalaryValues(user),
         // Provide snake_case fields for Admin UI fallback parsing
@@ -9851,6 +9625,7 @@ router.get('/staff/:id', async (req, res) => {
         education: user.profile?.education || null,
         experience: user.profile?.experience || null,
         profile: user.profile || null,
+        dateOfJoining: user.profile?.dateOfJoining || null,
         shiftTemplate: shiftTemplate ? {
           id: shiftTemplate.id,
           name: shiftTemplate.name,
@@ -10044,25 +9819,46 @@ router.get('/attendance', async (req, res) => {
       let isLate = false;
       let latePenaltyText = null;
       let latePunchInMinutes = 0;
-      if (r.punchedInAt && (status === 'present' || status === 'half_day' || status === 'overtime')) {
+      let earlyExitMinutes = 0;
+
+      const isPresentLike = (status === 'present' || status === 'half_day' || status === 'overtime');
+
+      if (r.punchedInAt && isPresentLike) {
         const dayShiftAsg = shiftAssignments.find(asg => asg.userId === r.userId && r.date >= asg.effectiveFrom && (!asg.effectiveTo || r.date <= asg.effectiveTo));
         let shiftTpl = dayShiftAsg?.template || (r.user?.shiftTemplateId ? shiftTemplateMap[r.user.shiftTemplateId] : null);
         if (!shiftTpl && r.user?.profile?.shiftSelection) {
           shiftTpl = shiftTemplateMap[Number(r.user.profile.shiftSelection)];
         }
 
-        if (shiftTpl?.startTime) {
-          const punchIn = new Date(r.punchedInAt);
-          const istDate = new Date(punchIn.getTime() + (5.5 * 3600 * 1000));
-          const punchInSec = istDate.getUTCHours() * 3600 + istDate.getUTCMinutes() * 60 + istDate.getUTCSeconds();
-          const [sh, sm, ss] = shiftTpl.startTime.split(':').map(Number);
-          const shiftStartSec = sh * 3600 + sm * 60 + (ss || 0);
+        if (shiftTpl) {
+          // Late Calculation (Unconditional)
+          if (shiftTpl.startTime) {
+            const punchIn = new Date(r.punchedInAt);
+            const istDate = new Date(punchIn.getTime() + (5.5 * 3600 * 1000));
+            const punchInSec = istDate.getUTCHours() * 3600 + istDate.getUTCMinutes() * 60 + istDate.getUTCSeconds();
+            const [sh, sm, ss] = shiftTpl.startTime.split(':').map(Number);
+            const shiftStartSec = sh * 3600 + sm * 60 + (ss || 0);
 
-          if (punchInSec > shiftStartSec) {
-            const rawLateMins = Math.floor((punchInSec - shiftStartSec) / 60);
-            
-            // Per-user rule assignment (Primary & Absolute)
-            // Use String() for safe comparison of DATEONLY and IDs
+            if (punchInSec > shiftStartSec) {
+              latePunchInMinutes = Math.floor((punchInSec - shiftStartSec) / 60);
+            }
+          }
+
+          // Early Exit Calculation (Unconditional, on the fly for reporting)
+          if (shiftTpl.endTime && r.punchedOutAt) {
+            const punchOut = new Date(r.punchedOutAt);
+            const istDateOut = new Date(punchOut.getTime() + (5.5 * 3600 * 1000));
+            const punchOutSec = istDateOut.getUTCHours() * 3600 + istDateOut.getUTCMinutes() * 60 + istDateOut.getUTCSeconds();
+            const [eh, em, es] = shiftTpl.endTime.split(':').map(Number);
+            const shiftEndSec = eh * 3600 + em * 60 + (es || 0);
+
+            if (punchOutSec < shiftEndSec) {
+                earlyExitMinutes = Math.floor((shiftEndSec - punchOutSec) / 60);
+            }
+          }
+
+          // Penalty Resolution (Conditional)
+          if (latePunchInMinutes > 0) {
             const userLateAsg = latePunchInAssignments.find(asg => 
               String(asg.userId) === String(r.userId) && 
               String(r.date) >= String(asg.effectiveFrom) && 
@@ -10071,7 +9867,6 @@ router.get('/attendance', async (req, res) => {
             const activeRule = userLateAsg?.rule;
 
             if (activeRule && activeRule.active) {
-              latePunchInMinutes = rawLateMins;
               const pType = activeRule.penaltyType || 'SLABS';
               let thresholds = activeRule.thresholds || [];
               if (typeof thresholds === 'string') {
@@ -10115,23 +9910,13 @@ router.get('/attendance', async (req, res) => {
                   latePenaltyText = `-1.0 Day Penalty (${latePunchInMinutes} min late)`;
                 }
               }
-            } else if (lateRuleActive) {
-              // Fallback to global rule ONLY IF global automation is enabled AND no personal rule was found
-              // (If personal rule was null, we treat as 'No Rule' for this user)
-              if (!userLateAsg) {
-                 latePunchInMinutes = 0;
-              } else {
-                 // Even if assignment exists, if global is active, we might show minutes?
-                 // User said: "jisko assign hai usko ana chaye". 
-                 // This implies if NOT assigned, don't show.
-                 latePunchInMinutes = 0;
-              }
-            } else {
-              latePunchInMinutes = 0;
+            } else if (lateRuleActive && !userLateAsg) {
+               // Global fallback penalty check if needed (current logic mostly uses per-user assignment)
             }
           }
         }
       }
+
 
       // Flatten permissions across all roles
       const perms = new Set();
@@ -10180,7 +9965,7 @@ router.get('/attendance', async (req, res) => {
         punchOutAddress: r.punchOutAddress,
         punchInPhotoUrl: r.punchInPhotoUrl,
         punchOutPhotoUrl: r.punchOutPhotoUrl,
-        earlyExitMinutes: Number(r.earlyExitMinutes || 0),
+        earlyExitMinutes: Number(earlyExitMinutes || r.earlyExitMinutes || 0),
         earlyExitAmount: Number(r.earlyExitAmount || 0),
         earlyOvertimeMinutes: Number(r.earlyOvertimeMinutes || 0),
         earlyOvertimeAmount: Number(r.earlyOvertimeAmount || 0),
@@ -17333,6 +17118,15 @@ router.get('/reports/monthly-attendance', async (req, res) => {
           cell.font = { size: 8 };
           cell.alignment = { horizontal: 'center' };
 
+          // Highlight Weekly Off columns
+          if (checkIsWeeklyOff(staff.id, dStr)) {
+            cell.fill = {
+              type: 'pattern',
+              pattern: 'solid',
+              fgColor: { argb: 'FFFFF2CC' }
+            };
+          }
+
           if (h === 'Status') {
             if (att) {
               const statusCode = toStatusCode(att) || 'P';
@@ -17793,9 +17587,11 @@ router.get('/reports/org-attendance-matrix', async (req, res) => {
       return null;
     };
 
+    const details = {};
     staffList.forEach((s) => {
       matrix[s.id] = {};
-      summary[s.id] = { halfDays: 0, overtimeMinutes: 0, lateDays: 0, penaltyDays: 0 };
+      summary[s.id] = { halfDays: 0, overtimeMinutes: 0, lateDays: 0, penaltyDays: 0, lateMinutes: 0 };
+      details[s.id] = {};
     });
 
     // Helper to format date as YYYY-MM-DD in local time
@@ -17816,37 +17612,49 @@ router.get('/reports/org-attendance-matrix', async (req, res) => {
         const d = new Date(startDate.getFullYear(), startDate.getMonth(), i);
         const dateKey = formatLocalISO(d);
         const record = attendanceData.find(a => a.userId === staff.id && a.date === dateKey);
+        
+        // Initialize daily details
+        details[staff.id][dateKey] = { late: 0, ot: 0, status: '-' };
 
         if (record) {
           const statusCode = toStatusCode(record) || 'P';
           const otMin = Math.max(0, Number(record.overtimeMinutes || 0) || 0);
+          details[staff.id][dateKey].status = statusCode;
+          details[staff.id][dateKey].ot = otMin;
+
           if (statusCode === 'HD') summary[staff.id].halfDays += 1;
           if (otMin > 0) summary[staff.id].overtimeMinutes += otMin;
 
           let lateIndicator = '';
-          if (lateRuleActive) {
-            const s = statusCode.toLowerCase();
-            const isPresentLike = s === 'p' || s === 'hd' || s === 'overtime' || (!s && record.punchedInAt);
+          const s = statusCode.toLowerCase();
+          const isPresentLike = s === 'p' || s === 'hd' || s === 'overtime' || (!s && (record.punchedInAt || record.checkIn));
 
-            if (isPresentLike) {
-              const dayShiftAsg = shiftAssignments
-                .filter(asg => asg.userId === staff.id && dateKey >= asg.effectiveFrom && (!asg.effectiveTo || dateKey <= asg.effectiveTo))
-                .sort((a, b) => b.effectiveFrom.localeCompare(a.effectiveFrom))[0];
+          if (isPresentLike) {
+            const dayShiftAsg = shiftAssignments
+              .filter(asg => asg.userId === staff.id && dateKey >= asg.effectiveFrom && (!asg.effectiveTo || dateKey <= asg.effectiveTo))
+              .sort((a, b) => b.effectiveFrom.localeCompare(a.effectiveFrom))[0];
 
-              let shiftTpl = dayShiftAsg?.template || staff.shiftTemplate;
-              if (!shiftTpl && staff.profile?.shiftSelection) {
-                shiftTpl = shiftTemplateMap[Number(staff.profile.shiftSelection)];
-              }
-              if (shiftTpl?.startTime && record.punchedInAt) {
-                const punchIn = new Date(record.punchedInAt);
-                const istDate = new Date(punchIn.getTime() + (5.5 * 3600 * 1000));
-                const punchInSec = istDate.getUTCHours() * 3600 + istDate.getUTCMinutes() * 60 + istDate.getUTCSeconds();
+            let shiftTpl = dayShiftAsg?.template || staff.shiftTemplate;
+            if (!shiftTpl && staff.profile?.shiftSelection) {
+              shiftTpl = shiftTemplateMap[Number(staff.profile.shiftSelection)];
+            }
+            
+            // Late Punch In Minutes (Unconditional)
+            if (shiftTpl?.startTime && (record.punchedInAt || record.checkIn)) {
+              const punchInRaw = record.punchedInAt || (record.date + ' ' + record.checkIn);
+              const punchIn = new Date(punchInRaw);
+              const istDate = new Date(punchIn.getTime() + (5.5 * 3600 * 1000));
+              const punchInSec = istDate.getUTCHours() * 3600 + istDate.getUTCMinutes() * 60 + istDate.getUTCSeconds();
 
-                const [sh, sm, ss] = shiftTpl.startTime.split(':').map(Number);
-                const shiftStartSec = sh * 3600 + sm * 60 + (ss || 0);
+              const [sh, sm, ss] = shiftTpl.startTime.split(':').map(Number);
+              const shiftStartSec = sh * 3600 + sm * 60 + (ss || 0);
 
-                if (punchInSec > shiftStartSec) {
-                  const lateMins = Math.floor((punchInSec - shiftStartSec) / 60);
+              if (punchInSec > shiftStartSec) {
+                const lateMins = Math.floor((punchInSec - shiftStartSec) / 60);
+                summary[staff.id].lateMinutes += lateMins;
+                details[staff.id][dateKey].late = lateMins;
+                
+                if (lateRuleActive) {
                   for (let tIdx = 0; tIdx < lateTiers.length; tIdx++) {
                     const tier = lateTiers[tIdx];
                     if (lateMins >= Number(tier.minMinutes) && lateMins <= Number(tier.maxMinutes)) {
@@ -17881,6 +17689,7 @@ router.get('/reports/org-attendance-matrix', async (req, res) => {
 
           if (isHoliday) {
             matrix[staff.id][dateKey] = 'H';
+            details[staff.id][dateKey].status = 'H';
             continue;
           }
 
@@ -17910,6 +17719,7 @@ router.get('/reports/org-attendance-matrix', async (req, res) => {
           }
 
           matrix[staff.id][dateKey] = isWO ? 'WO' : '-';
+          details[staff.id][dateKey].status = isWO ? 'WO' : '-';
         }
       }
     });
@@ -17929,6 +17739,7 @@ router.get('/reports/org-attendance-matrix', async (req, res) => {
       }
       columns.push({ header: 'Half Days', key: 'halfDays', width: 12 });
       columns.push({ header: 'OT (Min)', key: 'overtimeMinutes', width: 12 });
+      columns.push({ header: 'Late By (Min)', key: 'lateMinutes', width: 15 });
       columns.push({ header: 'Late Days', key: 'lateDays', width: 12 });
       columns.push({ header: 'Penalty Days', key: 'penaltyDays', width: 12 });
       worksheet.columns = columns;
@@ -17939,6 +17750,7 @@ router.get('/reports/org-attendance-matrix', async (req, res) => {
           staffName: staff.profile?.name || 'N/A',
           halfDays: summary[staff.id]?.halfDays || 0,
           overtimeMinutes: summary[staff.id]?.overtimeMinutes || 0,
+          lateMinutes: summary[staff.id]?.lateMinutes || 0,
           lateDays: summary[staff.id]?.lateDays || 0,
           penaltyDays: summary[staff.id]?.penaltyDays || 0
         };
@@ -17971,7 +17783,7 @@ router.get('/reports/org-attendance-matrix', async (req, res) => {
 
     return res.json({
       success: true,
-      data: { staffList, matrix, summary, daysInMonth, startDate },
+      data: { staffList, matrix, summary, details, daysInMonth, startDate },
       legend: {
         P: 'Present',
         A: 'Absent',

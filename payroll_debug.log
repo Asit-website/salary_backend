@@ -959,3 +959,490 @@
 [2026-04-08T08:22:26.477Z] [Late-Dbg] User 64 Final: LateCount=0, Amt=0, Days=0
 [2026-04-08T08:22:26.554Z] [Late-Dbg] User 65 Final: LateCount=0, Amt=0, Days=0
 [2026-04-08T08:22:26.634Z] [Late-Dbg] User 68 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T06:28:11.777Z] [Late-Dbg] User 57 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T06:28:12.099Z] [Late-Dbg] User 58 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T06:28:12.181Z] [Late-Dbg] Day 2026-04-06: Using Stored Amt 30
+[2026-04-09T06:28:12.182Z] [Late-Dbg] User 59 Final: LateCount=1, Amt=30, Days=0
+[2026-04-09T06:28:12.400Z] [Late-Dbg] User 60 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T06:28:12.481Z] [Late-Dbg] User 61 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T06:28:12.717Z] [Late-Dbg] User 62 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T06:28:12.859Z] [Late-Dbg] Day 2026-04-07: Using Stored Amt 1000
+[2026-04-09T06:28:12.907Z] [Late-Dbg] User 63 Final: LateCount=1, Amt=1000, Days=0
+[2026-04-09T06:28:13.197Z] [Late-Dbg] User 64 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T06:28:13.367Z] [Late-Dbg] User 65 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T06:28:13.482Z] [Late-Dbg] User 68 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T06:29:42.942Z] [Late-Dbg] User 57 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T06:29:43.137Z] [Late-Dbg] User 58 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T06:29:43.204Z] [Late-Dbg] Day 2026-04-06: Using Stored Amt 30
+[2026-04-09T06:29:43.205Z] [Late-Dbg] User 59 Final: LateCount=1, Amt=30, Days=0
+[2026-04-09T06:29:43.282Z] [Late-Dbg] User 60 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T06:29:43.325Z] [Late-Dbg] User 61 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T06:29:43.443Z] [Late-Dbg] User 62 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T06:29:43.536Z] [Late-Dbg] Day 2026-04-07: Using Stored Amt 1000
+[2026-04-09T06:29:43.541Z] [Late-Dbg] User 63 Final: LateCount=1, Amt=1000, Days=0
+[2026-04-09T06:29:43.671Z] [Late-Dbg] User 64 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T06:29:43.793Z] [Late-Dbg] User 65 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T06:29:43.902Z] [Late-Dbg] User 68 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T06:43:04.316Z] [Late-Dbg] User 57 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T06:43:04.527Z] [Late-Dbg] User 58 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T06:43:04.587Z] [Late-Dbg] Day 2026-04-06: Using Stored Amt 30
+[2026-04-09T06:43:04.588Z] [Late-Dbg] User 59 Final: LateCount=1, Amt=30, Days=0
+[2026-04-09T06:43:04.706Z] [Late-Dbg] User 60 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T06:43:04.744Z] [Late-Dbg] User 61 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T06:43:04.859Z] [Late-Dbg] User 62 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T06:43:04.953Z] [Late-Dbg] Day 2026-04-07: Using Stored Amt 1000
+[2026-04-09T06:43:04.967Z] [Late-Dbg] User 63 Final: LateCount=1, Amt=1000, Days=0
+[2026-04-09T06:43:05.050Z] [Late-Dbg] User 64 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T06:43:05.112Z] [Late-Dbg] User 65 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T06:43:05.212Z] [Late-Dbg] User 68 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T06:43:07.156Z] [User 59] Entering computeLatePenaltyMeta. Month: 2026-04, baseSalary: 2333.3333333333335
+[2026-04-09T06:43:07.174Z] [User 59] Found 2 attendance records for the month.
+[2026-04-09T06:43:07.186Z] [User 59] Rule resolving for user. Assignment ID: 3, Rule ID: 1, Rule Active: true
+[2026-04-09T06:43:07.199Z] [User 59] calculateSalary (Existing): lpResult: {"latePunchInMinutes":32,"latePunchInPenalty":30,"latePenaltyDays":0.5,"lateCount":1}
+[2026-04-09T07:39:05.151Z] [Late-Dbg] User 57 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T07:39:05.381Z] [Late-Dbg] User 58 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T07:39:05.464Z] [Late-Dbg] Day 2026-04-06: Using Stored Amt 30
+[2026-04-09T07:39:05.465Z] [Late-Dbg] User 59 Final: LateCount=1, Amt=30, Days=0
+[2026-04-09T07:39:05.557Z] [Late-Dbg] User 60 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T07:39:05.610Z] [Late-Dbg] User 61 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T07:39:05.747Z] [Late-Dbg] User 62 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T07:39:05.880Z] [Late-Dbg] Day 2026-04-07: Using Stored Amt 1000
+[2026-04-09T07:39:05.893Z] [Late-Dbg] User 63 Final: LateCount=1, Amt=1000, Days=0
+[2026-04-09T07:39:06.118Z] [Late-Dbg] User 64 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T07:39:06.490Z] [Late-Dbg] User 65 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T07:39:06.594Z] [Late-Dbg] User 68 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T07:39:49.420Z] [Late-Dbg] User 57 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T07:39:49.717Z] [Late-Dbg] User 58 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T07:39:49.780Z] [Late-Dbg] Day 2026-04-06: Using Stored Amt 30
+[2026-04-09T07:39:49.781Z] [Late-Dbg] User 59 Final: LateCount=1, Amt=30, Days=0
+[2026-04-09T07:39:49.914Z] [Late-Dbg] User 60 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T07:39:49.979Z] [Late-Dbg] User 61 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T07:39:50.130Z] [Late-Dbg] User 62 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T07:39:50.217Z] [Late-Dbg] Day 2026-04-07: Using Stored Amt 1000
+[2026-04-09T07:39:50.218Z] [Late-Dbg] User 63 Final: LateCount=1, Amt=1000, Days=0
+[2026-04-09T07:39:50.542Z] [Late-Dbg] User 64 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T07:39:50.690Z] [Late-Dbg] User 65 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T07:39:50.794Z] [Late-Dbg] User 68 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T07:41:05.986Z] [Late-Dbg] User 57 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T07:41:06.191Z] [Late-Dbg] User 58 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T07:41:06.261Z] [Late-Dbg] Day 2026-04-06: Using Stored Amt 30
+[2026-04-09T07:41:06.262Z] [Late-Dbg] User 59 Final: LateCount=1, Amt=30, Days=0
+[2026-04-09T07:41:06.356Z] [Late-Dbg] User 60 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T07:41:06.397Z] [Late-Dbg] User 61 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T07:41:06.529Z] [Late-Dbg] User 62 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T07:41:06.627Z] [Late-Dbg] Day 2026-04-07: Using Stored Amt 1000
+[2026-04-09T07:41:06.631Z] [Late-Dbg] User 63 Final: LateCount=1, Amt=1000, Days=0
+[2026-04-09T07:41:06.746Z] [Late-Dbg] User 64 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T07:41:06.826Z] [Late-Dbg] User 65 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T07:41:06.914Z] [Late-Dbg] User 68 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T07:46:15.938Z] [Late-Dbg] User 57 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T07:46:16.083Z] [Late-Dbg] User 58 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T07:46:16.131Z] [Late-Dbg] Day 2026-04-06: Using Stored Amt 30
+[2026-04-09T07:46:16.132Z] [Late-Dbg] User 59 Final: LateCount=1, Amt=30, Days=0
+[2026-04-09T07:46:16.298Z] [Late-Dbg] User 60 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T07:46:16.381Z] [Late-Dbg] User 61 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T07:46:16.983Z] [Late-Dbg] User 62 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T07:46:17.108Z] [Late-Dbg] Day 2026-04-07: Using Stored Amt 1000
+[2026-04-09T07:46:17.111Z] [Late-Dbg] User 63 Final: LateCount=1, Amt=1000, Days=0
+[2026-04-09T07:46:17.265Z] [Late-Dbg] User 64 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T07:46:17.340Z] [Late-Dbg] User 65 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T07:46:17.798Z] [Late-Dbg] User 68 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T07:48:21.642Z] [Late-Dbg] User 57 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T07:48:21.794Z] [Late-Dbg] User 58 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T07:48:21.860Z] [Late-Dbg] Day 2026-04-06: Using Stored Amt 30
+[2026-04-09T07:48:21.862Z] [Late-Dbg] User 59 Final: LateCount=1, Amt=30, Days=0
+[2026-04-09T07:48:22.019Z] [Late-Dbg] User 60 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T07:48:22.075Z] [Late-Dbg] User 61 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T07:48:22.219Z] [Late-Dbg] User 62 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T07:48:22.328Z] [Late-Dbg] Day 2026-04-07: Using Stored Amt 1000
+[2026-04-09T07:48:22.329Z] [Late-Dbg] User 63 Final: LateCount=1, Amt=1000, Days=0
+[2026-04-09T07:48:22.451Z] [Late-Dbg] User 64 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T07:48:22.523Z] [Late-Dbg] User 65 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T07:48:22.624Z] [Late-Dbg] User 68 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T07:48:33.027Z] [Late-Dbg] User 57 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T07:48:33.367Z] [Late-Dbg] User 58 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T07:48:33.690Z] [Late-Dbg] Day 2026-04-06: Using Stored Amt 30
+[2026-04-09T07:48:33.692Z] [Late-Dbg] User 59 Final: LateCount=1, Amt=30, Days=0
+[2026-04-09T07:48:33.929Z] [Late-Dbg] User 60 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T07:48:33.985Z] [Late-Dbg] User 61 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T07:48:34.249Z] [Late-Dbg] User 62 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T07:48:34.516Z] [Late-Dbg] Day 2026-04-07: Using Stored Amt 1000
+[2026-04-09T07:48:34.517Z] [Late-Dbg] User 63 Final: LateCount=1, Amt=1000, Days=0
+[2026-04-09T07:48:34.959Z] [Late-Dbg] User 64 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T07:48:35.053Z] [Late-Dbg] User 65 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T07:48:35.154Z] [Late-Dbg] User 68 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T07:50:29.306Z] [Late-Dbg] User 57 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T07:50:29.528Z] [Late-Dbg] User 58 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T07:50:29.620Z] [Late-Dbg] Day 2026-04-06: Using Stored Amt 30
+[2026-04-09T07:50:29.621Z] [Late-Dbg] User 59 Final: LateCount=1, Amt=30, Days=0
+[2026-04-09T07:50:29.756Z] [Late-Dbg] User 60 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T07:50:29.801Z] [Late-Dbg] User 61 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T07:50:29.917Z] [Late-Dbg] User 62 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T07:50:30.059Z] [Late-Dbg] Day 2026-04-07: Using Stored Amt 1000
+[2026-04-09T07:50:30.059Z] [Late-Dbg] User 63 Final: LateCount=1, Amt=1000, Days=0
+[2026-04-09T07:50:30.436Z] [Late-Dbg] User 64 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T07:50:30.510Z] [Late-Dbg] User 65 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T07:50:30.609Z] [Late-Dbg] User 68 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T08:05:57.495Z] [Late-Dbg] User 57 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T08:05:57.711Z] [Late-Dbg] User 58 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T08:05:57.850Z] [Late-Dbg] Day 2026-04-06: Using Stored Amt 30
+[2026-04-09T08:05:57.850Z] [Late-Dbg] User 59 Final: LateCount=1, Amt=30, Days=0
+[2026-04-09T08:05:57.953Z] [Late-Dbg] User 60 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T08:05:58.017Z] [Late-Dbg] User 61 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T08:05:58.147Z] [Late-Dbg] User 62 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T08:05:58.313Z] [Late-Dbg] Day 2026-04-07: Using Stored Amt 1000
+[2026-04-09T08:05:58.315Z] [Late-Dbg] User 63 Final: LateCount=1, Amt=1000, Days=0
+[2026-04-09T08:05:58.403Z] [Late-Dbg] User 64 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T08:05:58.483Z] [Late-Dbg] User 65 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T08:05:58.597Z] [Late-Dbg] User 68 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T08:12:33.558Z] [Late-Dbg] User 57 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T08:12:34.304Z] [Late-Dbg] User 58 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T08:12:34.440Z] [Late-Dbg] Day 2026-04-06: Using Stored Amt 30
+[2026-04-09T08:12:34.441Z] [Late-Dbg] User 59 Final: LateCount=1, Amt=30, Days=0
+[2026-04-09T08:12:34.666Z] [Late-Dbg] User 60 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T08:12:34.749Z] [Late-Dbg] User 61 Final: LateCount=2, Amt=0, Days=0
+[2026-04-09T08:12:34.975Z] [Late-Dbg] User 62 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T08:12:35.137Z] [Late-Dbg] Day 2026-04-07: Using Stored Amt 1000
+[2026-04-09T08:12:35.139Z] [Late-Dbg] User 63 Final: LateCount=2, Amt=1000, Days=0
+[2026-04-09T08:12:35.276Z] [Late-Dbg] User 64 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T08:12:35.387Z] [Late-Dbg] User 65 Final: LateCount=2, Amt=0, Days=0
+[2026-04-09T08:12:35.523Z] [Late-Dbg] User 68 Final: LateCount=1, Amt=0, Days=0
+[2026-04-09T08:21:51.579Z] [User 65] calculateSalary (Existing): lpResult: {"latePunchInMinutes":90,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":2}
+[2026-04-09T09:32:03.300Z] [Late-Dbg] User 57 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T09:32:03.597Z] [Late-Dbg] User 58 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T09:32:03.678Z] [Late-Dbg] Day 2026-04-06: Using Stored Amt 30
+[2026-04-09T09:32:03.679Z] [Late-Dbg] User 59 Final: LateCount=1, Amt=30, Days=0
+[2026-04-09T09:32:03.837Z] [Late-Dbg] User 60 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T09:32:03.905Z] [Late-Dbg] User 61 Final: LateCount=2, Amt=0, Days=0
+[2026-04-09T09:32:04.111Z] [Late-Dbg] User 62 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T09:32:04.281Z] [Late-Dbg] Day 2026-04-07: Using Stored Amt 1000
+[2026-04-09T09:32:04.288Z] [Late-Dbg] User 63 Final: LateCount=2, Amt=1000, Days=0
+[2026-04-09T09:32:04.479Z] [Late-Dbg] User 64 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T09:32:04.609Z] [Late-Dbg] User 65 Final: LateCount=2, Amt=0, Days=0
+[2026-04-09T09:32:04.765Z] [Late-Dbg] User 68 Final: LateCount=1, Amt=0, Days=0
+[2026-04-09T09:54:27.429Z] [Late-Dbg] User 57 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T09:54:29.394Z] [Late-Dbg] User 58 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T09:54:29.454Z] [Late-Dbg] Day 2026-04-06: Using Stored Amt 30
+[2026-04-09T09:54:29.454Z] [Late-Dbg] User 59 Final: LateCount=1, Amt=30, Days=0
+[2026-04-09T09:54:29.635Z] [Late-Dbg] User 60 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T09:54:29.806Z] [Late-Dbg] User 61 Final: LateCount=2, Amt=0, Days=0
+[2026-04-09T09:54:30.395Z] [Late-Dbg] User 62 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T09:54:30.588Z] [Late-Dbg] Day 2026-04-07: Using Stored Amt 1000
+[2026-04-09T09:54:30.603Z] [Late-Dbg] User 63 Final: LateCount=2, Amt=1000, Days=0
+[2026-04-09T09:54:30.803Z] [Late-Dbg] User 64 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T09:54:30.914Z] [Late-Dbg] User 65 Final: LateCount=2, Amt=0, Days=0
+[2026-04-09T09:54:31.164Z] [Late-Dbg] User 68 Final: LateCount=1, Amt=0, Days=0
+[2026-04-09T10:03:05.286Z] [Late-Dbg] User 57 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T10:03:05.973Z] [Late-Dbg] User 58 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T10:03:06.036Z] [Late-Dbg] Day 2026-04-06: Using Stored Amt 30
+[2026-04-09T10:03:06.036Z] [Late-Dbg] User 59 Final: LateCount=1, Amt=30, Days=0
+[2026-04-09T10:03:06.153Z] [Late-Dbg] User 60 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T10:03:06.204Z] [Late-Dbg] User 61 Final: LateCount=2, Amt=0, Days=0
+[2026-04-09T10:03:06.336Z] [Late-Dbg] User 62 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T10:03:06.452Z] [Late-Dbg] Day 2026-04-07: Using Stored Amt 1000
+[2026-04-09T10:03:06.454Z] [Late-Dbg] User 63 Final: LateCount=2, Amt=1000, Days=0
+[2026-04-09T10:03:06.550Z] [Late-Dbg] User 64 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T10:03:06.631Z] [Late-Dbg] User 65 Final: LateCount=2, Amt=0, Days=0
+[2026-04-09T10:03:06.770Z] [Late-Dbg] User 68 Final: LateCount=1, Amt=0, Days=0
+[2026-04-09T10:03:10.071Z] [Late-Dbg] User 57 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T10:03:10.288Z] [Late-Dbg] User 58 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T10:03:10.362Z] [Late-Dbg] Day 2026-04-06: Using Stored Amt 30
+[2026-04-09T10:03:10.363Z] [Late-Dbg] User 59 Final: LateCount=1, Amt=30, Days=0
+[2026-04-09T10:03:10.495Z] [Late-Dbg] User 60 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T10:03:10.570Z] [Late-Dbg] User 61 Final: LateCount=2, Amt=0, Days=0
+[2026-04-09T10:03:10.732Z] [Late-Dbg] User 62 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T10:03:10.839Z] [Late-Dbg] Day 2026-04-07: Using Stored Amt 1000
+[2026-04-09T10:03:10.840Z] [Late-Dbg] User 63 Final: LateCount=2, Amt=1000, Days=0
+[2026-04-09T10:03:10.957Z] [Late-Dbg] User 64 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T10:03:11.034Z] [Late-Dbg] User 65 Final: LateCount=2, Amt=0, Days=0
+[2026-04-09T10:03:11.123Z] [Late-Dbg] User 68 Final: LateCount=1, Amt=0, Days=0
+[2026-04-09T10:18:42.014Z] [Late-Dbg] User 57 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T10:18:42.210Z] [Late-Dbg] User 58 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T10:18:42.254Z] [Late-Dbg] Day 2026-04-06: Using Stored Amt 30
+[2026-04-09T10:18:42.255Z] [Late-Dbg] User 59 Final: LateCount=1, Amt=30, Days=0
+[2026-04-09T10:18:42.338Z] [Late-Dbg] User 60 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T10:18:42.388Z] [Late-Dbg] User 61 Final: LateCount=2, Amt=0, Days=0
+[2026-04-09T10:18:42.502Z] [Late-Dbg] User 62 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T10:18:42.596Z] [Late-Dbg] Day 2026-04-07: Using Stored Amt 1000
+[2026-04-09T10:18:42.597Z] [Late-Dbg] User 63 Final: LateCount=2, Amt=1000, Days=0
+[2026-04-09T10:18:42.693Z] [Late-Dbg] User 64 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T10:18:42.744Z] [Late-Dbg] User 65 Final: LateCount=2, Amt=0, Days=0
+[2026-04-09T10:18:42.811Z] [Late-Dbg] User 68 Final: LateCount=1, Amt=0, Days=0
+[2026-04-09T10:23:54.344Z] [Late-Dbg] User 57 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T10:23:54.506Z] [Late-Dbg] User 58 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T10:23:54.592Z] [Late-Dbg] Day 2026-04-06: Using Stored Amt 30
+[2026-04-09T10:23:54.593Z] [Late-Dbg] User 59 Final: LateCount=1, Amt=30, Days=0
+[2026-04-09T10:23:54.693Z] [Late-Dbg] User 60 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T10:23:54.736Z] [Late-Dbg] User 61 Final: LateCount=2, Amt=0, Days=0
+[2026-04-09T10:23:54.835Z] [Late-Dbg] User 62 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T10:23:54.929Z] [Late-Dbg] Day 2026-04-07: Using Stored Amt 1000
+[2026-04-09T10:23:54.931Z] [Late-Dbg] User 63 Final: LateCount=2, Amt=1000, Days=0
+[2026-04-09T10:23:55.001Z] [Late-Dbg] User 64 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T10:23:55.059Z] [Late-Dbg] Day 2026-04-09: Matched Rule 1 Fixed, Amt: 30
+[2026-04-09T10:23:55.060Z] [Late-Dbg] User 65 Final: LateCount=2, Amt=30, Days=0
+[2026-04-09T10:23:55.176Z] [Late-Dbg] User 68 Final: LateCount=1, Amt=0, Days=0
+[2026-04-09T10:24:31.727Z] [Late-Dbg] User 57 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T10:24:31.857Z] [Late-Dbg] User 58 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T10:24:31.905Z] [Late-Dbg] Day 2026-04-06: Using Stored Amt 30
+[2026-04-09T10:24:31.906Z] [Late-Dbg] User 59 Final: LateCount=1, Amt=30, Days=0
+[2026-04-09T10:24:32.024Z] [Late-Dbg] User 60 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T10:24:32.106Z] [Late-Dbg] User 61 Final: LateCount=2, Amt=0, Days=0
+[2026-04-09T10:24:32.257Z] [Late-Dbg] User 62 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T10:24:32.385Z] [Late-Dbg] Day 2026-04-07: Using Stored Amt 1000
+[2026-04-09T10:24:32.387Z] [Late-Dbg] User 63 Final: LateCount=2, Amt=1000, Days=0
+[2026-04-09T10:24:32.586Z] [Late-Dbg] User 64 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T10:24:32.651Z] [Late-Dbg] Day 2026-04-09: Using Stored Amt 30
+[2026-04-09T10:24:32.652Z] [Late-Dbg] User 65 Final: LateCount=2, Amt=30, Days=0
+[2026-04-09T10:24:32.932Z] [Late-Dbg] User 68 Final: LateCount=1, Amt=0, Days=0
+[2026-04-09T10:25:33.144Z] [Late-Dbg] User 57 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T10:25:33.265Z] [Late-Dbg] User 58 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T10:25:33.328Z] [Late-Dbg] Day 2026-04-06: Using Stored Amt 30
+[2026-04-09T10:25:33.329Z] [Late-Dbg] User 59 Final: LateCount=1, Amt=30, Days=0
+[2026-04-09T10:25:33.441Z] [Late-Dbg] User 60 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T10:25:33.516Z] [Late-Dbg] User 61 Final: LateCount=2, Amt=0, Days=0
+[2026-04-09T10:25:33.952Z] [Late-Dbg] User 62 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T10:25:34.026Z] [Late-Dbg] Day 2026-04-07: Using Stored Amt 1000
+[2026-04-09T10:25:34.027Z] [Late-Dbg] User 63 Final: LateCount=2, Amt=1000, Days=0
+[2026-04-09T10:25:34.102Z] [Late-Dbg] User 64 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T10:25:34.857Z] [Late-Dbg] Day 2026-04-09: Using Stored Amt 30
+[2026-04-09T10:25:34.858Z] [Late-Dbg] User 65 Final: LateCount=2, Amt=30, Days=0
+[2026-04-09T10:25:34.970Z] [Late-Dbg] User 68 Final: LateCount=1, Amt=0, Days=0
+[2026-04-09T10:36:30.259Z] [Late-Dbg] User 57 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T10:36:30.481Z] [Late-Dbg] User 58 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T10:36:30.531Z] [Late-Dbg] Day 2026-04-06: Using Stored Amt 30
+[2026-04-09T10:36:30.531Z] [Late-Dbg] User 59 Final: LateCount=1, Amt=30, Days=0
+[2026-04-09T10:36:30.608Z] [Late-Dbg] User 60 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T10:36:30.645Z] [Late-Dbg] User 61 Final: LateCount=2, Amt=0, Days=0
+[2026-04-09T10:36:30.736Z] [Late-Dbg] User 62 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T10:36:30.819Z] [Late-Dbg] Day 2026-04-07: Using Stored Amt 1000
+[2026-04-09T10:36:30.821Z] [Late-Dbg] User 63 Final: LateCount=2, Amt=1000, Days=0
+[2026-04-09T10:36:30.895Z] [Late-Dbg] User 64 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T10:36:30.977Z] [Late-Dbg] Day 2026-04-09: Using Stored Amt 30
+[2026-04-09T10:36:31.008Z] [Late-Dbg] User 65 Final: LateCount=2, Amt=30, Days=0
+[2026-04-09T10:36:31.139Z] [Late-Dbg] User 68 Final: LateCount=1, Amt=0, Days=0
+[2026-04-09T10:37:58.444Z] [Late-Dbg] User 57 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T10:37:58.559Z] [Late-Dbg] User 58 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T10:37:58.618Z] [Late-Dbg] Day 2026-04-06: Using Stored Amt 30
+[2026-04-09T10:37:58.619Z] [Late-Dbg] User 59 Final: LateCount=1, Amt=30, Days=0
+[2026-04-09T10:37:58.892Z] [Late-Dbg] User 60 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T10:37:58.981Z] [Late-Dbg] User 61 Final: LateCount=2, Amt=0, Days=0
+[2026-04-09T10:37:59.157Z] [Late-Dbg] User 62 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T10:37:59.400Z] [Late-Dbg] Day 2026-04-07: Using Stored Amt 1000
+[2026-04-09T10:37:59.402Z] [Late-Dbg] User 63 Final: LateCount=2, Amt=1000, Days=0
+[2026-04-09T10:37:59.494Z] [Late-Dbg] User 64 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T10:38:00.278Z] [Late-Dbg] Day 2026-04-09: Using Stored Amt 30
+[2026-04-09T10:38:00.279Z] [Late-Dbg] User 65 Final: LateCount=2, Amt=30, Days=0
+[2026-04-09T10:38:00.360Z] [Late-Dbg] User 68 Final: LateCount=1, Amt=0, Days=0
+[2026-04-09T10:38:09.462Z] [Late-Dbg] User 57 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T10:38:10.557Z] [Late-Dbg] User 58 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T10:38:10.622Z] [Late-Dbg] Day 2026-04-06: Using Stored Amt 30
+[2026-04-09T10:38:10.623Z] [Late-Dbg] User 59 Final: LateCount=1, Amt=30, Days=0
+[2026-04-09T10:38:10.706Z] [Late-Dbg] User 60 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T10:38:10.742Z] [Late-Dbg] User 61 Final: LateCount=2, Amt=0, Days=0
+[2026-04-09T10:38:11.381Z] [Late-Dbg] User 62 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T10:38:11.945Z] [Late-Dbg] Day 2026-04-07: Using Stored Amt 1000
+[2026-04-09T10:38:11.946Z] [Late-Dbg] User 63 Final: LateCount=2, Amt=1000, Days=0
+[2026-04-09T10:38:12.059Z] [Late-Dbg] User 64 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T10:38:12.113Z] [Late-Dbg] Day 2026-04-09: Using Stored Amt 30
+[2026-04-09T10:38:12.114Z] [Late-Dbg] User 65 Final: LateCount=2, Amt=30, Days=0
+[2026-04-09T10:38:12.215Z] [Late-Dbg] User 68 Final: LateCount=1, Amt=0, Days=0
+[2026-04-09T10:44:24.956Z] [Late-Dbg] User 57 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T10:44:25.233Z] [Late-Dbg] User 58 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T10:44:25.286Z] [Late-Dbg] Day 2026-04-06: Using Stored Amt 30
+[2026-04-09T10:44:25.286Z] [Late-Dbg] User 59 Final: LateCount=1, Amt=30, Days=0
+[2026-04-09T10:44:25.405Z] [Late-Dbg] User 60 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T10:44:25.471Z] [Late-Dbg] User 61 Final: LateCount=2, Amt=0, Days=0
+[2026-04-09T10:44:25.741Z] [Late-Dbg] User 62 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T10:44:25.846Z] [Late-Dbg] Day 2026-04-07: Using Stored Amt 1000
+[2026-04-09T10:44:25.904Z] [Late-Dbg] User 63 Final: LateCount=2, Amt=1000, Days=0
+[2026-04-09T10:44:26.023Z] [Late-Dbg] User 64 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T10:44:26.080Z] [Late-Dbg] Day 2026-04-09: Using Stored Amt 30
+[2026-04-09T10:44:26.081Z] [Late-Dbg] User 65 Final: LateCount=2, Amt=30, Days=0
+[2026-04-09T10:44:26.163Z] [Late-Dbg] User 68 Final: LateCount=1, Amt=0, Days=0
+[2026-04-09T10:45:08.049Z] [Late-Dbg] User 57 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T10:45:08.214Z] [Late-Dbg] User 58 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T10:45:08.268Z] [Late-Dbg] Day 2026-04-06: Using Stored Amt 30
+[2026-04-09T10:45:08.268Z] [Late-Dbg] User 59 Final: LateCount=1, Amt=30, Days=0
+[2026-04-09T10:45:08.684Z] [Late-Dbg] User 60 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T10:45:08.737Z] [Late-Dbg] User 61 Final: LateCount=2, Amt=0, Days=0
+[2026-04-09T10:45:08.853Z] [Late-Dbg] User 62 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T10:45:08.974Z] [Late-Dbg] Day 2026-04-07: Using Stored Amt 1000
+[2026-04-09T10:45:08.975Z] [Late-Dbg] User 63 Final: LateCount=2, Amt=1000, Days=0
+[2026-04-09T10:45:09.097Z] [Late-Dbg] User 64 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T10:45:09.188Z] [Late-Dbg] Day 2026-04-09: Using Stored Amt 30
+[2026-04-09T10:45:09.189Z] [Late-Dbg] User 65 Final: LateCount=2, Amt=30, Days=0
+[2026-04-09T10:45:09.299Z] [Late-Dbg] User 68 Final: LateCount=1, Amt=0, Days=0
+[2026-04-09T10:49:26.625Z] [Late-Dbg] User 57 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T10:49:26.757Z] [Late-Dbg] User 58 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T10:49:26.808Z] [Late-Dbg] Day 2026-04-06: Using Stored Amt 30
+[2026-04-09T10:49:26.809Z] [Late-Dbg] User 59 Final: LateCount=1, Amt=30, Days=0
+[2026-04-09T10:49:26.943Z] [Late-Dbg] User 60 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T10:49:26.993Z] [Late-Dbg] User 61 Final: LateCount=2, Amt=0, Days=0
+[2026-04-09T10:49:27.177Z] [Late-Dbg] User 62 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T10:49:27.376Z] [Late-Dbg] Day 2026-04-07: Using Stored Amt 1000
+[2026-04-09T10:49:27.378Z] [Late-Dbg] User 63 Final: LateCount=2, Amt=1000, Days=0
+[2026-04-09T10:49:27.459Z] [Late-Dbg] User 64 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T10:49:27.504Z] [Late-Dbg] Day 2026-04-09: Using Stored Amt 30
+[2026-04-09T10:49:27.505Z] [Late-Dbg] User 65 Final: LateCount=2, Amt=30, Days=0
+[2026-04-09T10:49:27.597Z] [Late-Dbg] User 68 Final: LateCount=1, Amt=0, Days=0
+[2026-04-09T11:14:55.543Z] [Late-Dbg] User 57 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T11:14:55.639Z] [Late-Dbg] User 58 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T11:14:55.720Z] [Late-Dbg] User 59 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T11:14:55.842Z] [Late-Dbg] User 60 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T11:14:55.951Z] [Late-Dbg] User 61 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T11:14:56.065Z] [Late-Dbg] User 62 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T11:14:56.151Z] [Late-Dbg] User 63 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T11:14:56.207Z] [Late-Dbg] User 64 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T11:14:56.257Z] [Late-Dbg] User 65 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T11:14:56.391Z] [Late-Dbg] User 68 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T11:32:38.755Z] [Late-Dbg] User 57 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T11:32:38.825Z] [Late-Dbg] User 58 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T11:32:38.892Z] [Late-Dbg] User 59 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T11:32:38.956Z] [Late-Dbg] User 60 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T11:32:39.035Z] [Late-Dbg] User 61 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T11:32:39.098Z] [Late-Dbg] User 62 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T11:32:39.156Z] [Late-Dbg] User 63 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T11:32:39.205Z] [Late-Dbg] User 64 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T11:32:39.260Z] [Late-Dbg] User 65 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T11:32:39.347Z] [Late-Dbg] User 68 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T12:15:34.980Z] [Late-Dbg] User 57 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T12:15:35.200Z] [Late-Dbg] User 58 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T12:15:35.253Z] [Late-Dbg] Day 2026-04-06: Using Stored Amt 30
+[2026-04-09T12:15:35.255Z] [Late-Dbg] User 59 Final: LateCount=1, Amt=30, Days=0
+[2026-04-09T12:15:35.365Z] [Late-Dbg] User 60 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T12:15:35.430Z] [Late-Dbg] User 61 Final: LateCount=2, Amt=0, Days=0
+[2026-04-09T12:15:35.567Z] [Late-Dbg] User 62 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T12:15:35.662Z] [Late-Dbg] Day 2026-04-07: Using Stored Amt 1000
+[2026-04-09T12:15:35.673Z] [Late-Dbg] User 63 Final: LateCount=2, Amt=1000, Days=0
+[2026-04-09T12:15:36.189Z] [Late-Dbg] User 64 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T12:15:36.299Z] [Late-Dbg] Day 2026-04-09: Using Stored Amt 30
+[2026-04-09T12:15:36.300Z] [Late-Dbg] User 65 Final: LateCount=2, Amt=30, Days=0
+[2026-04-09T12:15:36.444Z] [Late-Dbg] User 68 Final: LateCount=1, Amt=0, Days=0
+[2026-04-09T12:22:11.505Z] [User 65] calculateSalary (Existing): lpResult: {"latePunchInMinutes":90,"latePunchInPenalty":30,"latePenaltyDays":0.5,"lateCount":2}
+[2026-04-09T12:22:30.012Z] [User 65] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0}
+[2026-04-09T12:22:30.640Z] [User 65] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0}
+[2026-04-09T12:22:34.667Z] [User 65] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0}
+[2026-04-09T12:22:36.396Z] [User 65] calculateSalary (Existing): lpResult: {"latePunchInMinutes":90,"latePunchInPenalty":30,"latePenaltyDays":0.5,"lateCount":2}
+[2026-04-09T12:22:38.049Z] [User 65] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0}
+[2026-04-09T12:22:38.236Z] [User 65] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0}
+[2026-04-09T12:22:43.165Z] [User 65] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0}
+[2026-04-09T12:22:43.716Z] [User 65] calculateSalary (Existing): lpResult: {"latePunchInMinutes":90,"latePunchInPenalty":30,"latePenaltyDays":0.5,"lateCount":2}
+[2026-04-09T12:23:42.820Z] [User 68] calculateSalary (Existing): lpResult: {"latePunchInMinutes":60,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":1}
+[2026-04-09T12:30:27.454Z] [User 68] calculateSalary (Existing): lpResult: {"latePunchInMinutes":60,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":1}
+[2026-04-09T12:30:41.793Z] [User 68] calculateSalary (Existing): lpResult: {"latePunchInMinutes":60,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":1}
+[2026-04-09T12:30:43.499Z] [User 68] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0}
+[2026-04-09T12:30:46.009Z] [User 68] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0}
+[2026-04-09T12:30:48.693Z] [User 68] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0}
+[2026-04-09T12:30:50.636Z] [User 68] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0}
+[2026-04-09T12:31:14.980Z] [User 68] calculateSalary (Live): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0}
+[2026-04-09T12:31:15.758Z] [User 68] calculateSalary (Live): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0}
+[2026-04-09T12:31:55.818Z] [User 68] calculateSalary (Existing): lpResult: {"latePunchInMinutes":60,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":1}
+[2026-04-09T12:31:57.668Z] [User 68] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0}
+[2026-04-09T12:31:58.444Z] [User 68] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0}
+[2026-04-09T12:31:59.084Z] [User 68] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0}
+[2026-04-09T12:32:00.282Z] [User 68] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0}
+[2026-04-09T12:32:00.749Z] [User 68] calculateSalary (Live): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0}
+[2026-04-09T12:32:01.452Z] [User 68] calculateSalary (Live): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0}
+[2026-04-09T12:32:01.678Z] [User 68] calculateSalary (Live): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0}
+[2026-04-09T12:32:02.051Z] [User 68] calculateSalary (Live): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0}
+[2026-04-09T12:32:02.161Z] [User 68] calculateSalary (Live): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0}
+[2026-04-09T12:32:02.281Z] [User 68] calculateSalary (Live): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0}
+[2026-04-09T12:32:02.475Z] [User 68] calculateSalary (Live): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0}
+[2026-04-09T12:32:02.637Z] [User 68] calculateSalary (Live): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0}
+[2026-04-09T12:32:04.438Z] [User 68] calculateSalary (Live): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0}
+[2026-04-09T12:32:04.584Z] [User 68] calculateSalary (Live): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0}
+[2026-04-09T12:32:04.797Z] [User 68] calculateSalary (Live): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0}
+[2026-04-09T12:32:04.972Z] [User 68] calculateSalary (Live): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0}
+[2026-04-09T12:32:05.142Z] [User 68] calculateSalary (Live): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0}
+[2026-04-09T12:32:05.353Z] [User 68] calculateSalary (Live): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0}
+[2026-04-09T12:32:05.556Z] [User 68] calculateSalary (Live): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0}
+[2026-04-09T12:32:05.714Z] [User 68] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0}
+[2026-04-09T12:32:05.939Z] [User 68] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0}
+[2026-04-09T12:32:06.139Z] [User 68] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0}
+[2026-04-09T12:32:06.329Z] [User 68] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0}
+[2026-04-09T12:32:06.558Z] [User 68] calculateSalary (Existing): lpResult: {"latePunchInMinutes":60,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":1}
+[2026-04-09T12:32:51.271Z] [User 68] calculateSalary (Existing): lpResult: {"latePunchInMinutes":60,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":1}
+[2026-04-09T12:32:52.730Z] [User 68] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0}
+[2026-04-09T12:32:54.712Z] [User 68] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0}
+[2026-04-09T12:33:03.202Z] [User 68] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0}
+[2026-04-09T12:48:02.391Z] [User 68] calculateSalary (Existing): lpResult: {"latePunchInMinutes":60,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":1}
+[2026-04-09T12:48:04.699Z] [User 68] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0}
+[2026-04-09T12:48:43.331Z] [User 68] calculateSalary (Existing): lpResult: {"latePunchInMinutes":60,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":1}
+[2026-04-09T12:49:03.273Z] [User 68] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0}
+[2026-04-09T12:49:12.340Z] [User 68] calculateSalary (Existing): lpResult: {"latePunchInMinutes":60,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":1}
+[2026-04-09T12:49:17.856Z] [User 68] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0}
+[2026-04-09T12:49:18.256Z] [User 68] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0}
+[2026-04-09T12:49:18.913Z] [User 68] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0}
+[2026-04-09T12:49:19.595Z] [User 68] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0}
+[2026-04-09T12:49:37.123Z] [User 68] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0}
+[2026-04-09T12:49:37.275Z] [User 68] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0}
+[2026-04-09T12:49:37.494Z] [User 68] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0}
+[2026-04-09T12:49:38.157Z] [User 68] calculateSalary (Existing): lpResult: {"latePunchInMinutes":60,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":1}
+[2026-04-09T12:51:00.175Z] [User 68] calculateSalary (Existing): lpResult: {"latePunchInMinutes":60,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":1}
+[2026-04-09T12:51:03.121Z] [User 68] calculateSalary (Existing): lpResult: {"latePunchInMinutes":60,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":1}
+[2026-04-09T12:51:06.760Z] [User 68] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0}
+[2026-04-09T12:51:06.851Z] [User 68] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0}
+[2026-04-09T12:51:11.032Z] [User 68] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0}
+[2026-04-09T12:51:14.584Z] [User 68] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0}
+[2026-04-09T12:51:15.333Z] [User 68] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0}
+[2026-04-09T12:51:40.760Z] [User 63] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0}
+[2026-04-09T12:52:22.414Z] [User 58] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0}
+[2026-04-09T12:52:37.993Z] [User 63] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0}
+[2026-04-09T12:53:58.084Z] [User 61] calculateSalary (Existing): lpResult: {"latePunchInMinutes":180,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":2}
+[2026-04-09T12:55:06.810Z] [User 64] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0}
+[2026-04-09T13:00:23.967Z] [Late-Dbg] User 57 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T13:00:24.170Z] [Late-Dbg] User 58 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T13:00:24.264Z] [Late-Dbg] Day 2026-04-06: Using Stored Amt 30
+[2026-04-09T13:00:24.265Z] [Late-Dbg] User 59 Final: LateCount=1, Amt=30, Days=0
+[2026-04-09T13:00:24.435Z] [Late-Dbg] User 61 Final: LateCount=2, Amt=0, Days=0
+[2026-04-09T13:00:24.728Z] [Late-Dbg] User 62 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T13:00:24.885Z] [Late-Dbg] Day 2026-04-07: Using Stored Amt 1000
+[2026-04-09T13:00:24.888Z] [Late-Dbg] User 63 Final: LateCount=2, Amt=1000, Days=0
+[2026-04-09T13:00:25.009Z] [Late-Dbg] User 64 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T13:00:25.118Z] [Late-Dbg] Day 2026-04-09: Using Stored Amt 30
+[2026-04-09T13:00:25.119Z] [Late-Dbg] User 65 Final: LateCount=2, Amt=30, Days=0
+[2026-04-09T13:00:25.211Z] [Late-Dbg] User 68 Final: LateCount=1, Amt=0, Days=0
+[2026-04-09T13:00:25.292Z] [Late-Dbg] User 69 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T13:01:27.862Z] [User 69] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0}
+[2026-04-09T13:01:51.588Z] [User 68] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0}
+[2026-04-09T13:11:13.225Z] [Late-Dbg] User 57 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T13:11:13.327Z] [Late-Dbg] User 58 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T13:11:13.389Z] [Late-Dbg] User 59 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T13:11:13.433Z] [Late-Dbg] User 61 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T13:11:13.481Z] [Late-Dbg] User 62 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T13:11:13.538Z] [Late-Dbg] User 63 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T13:11:13.565Z] [Late-Dbg] User 64 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T13:11:13.646Z] [Late-Dbg] User 65 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T13:11:13.753Z] [Late-Dbg] User 68 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T13:11:13.791Z] [Late-Dbg] User 69 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T13:11:30.095Z] [User 63] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0}
+[2026-04-09T13:18:55.691Z] [User 63] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0}
+[2026-04-09T13:20:42.901Z] [Late-Dbg] User 57 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T13:20:43.018Z] [Late-Dbg] User 58 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T13:20:43.057Z] [Late-Dbg] User 59 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T13:20:43.134Z] [Late-Dbg] User 61 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T13:20:43.214Z] [Late-Dbg] User 62 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T13:20:43.304Z] [Late-Dbg] User 63 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T13:20:43.366Z] [Late-Dbg] User 64 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T13:20:43.405Z] [Late-Dbg] User 65 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T13:20:43.508Z] [Late-Dbg] User 68 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T13:20:43.543Z] [Late-Dbg] User 69 Final: LateCount=0, Amt=0, Days=0
+[2026-04-09T13:20:47.651Z] [User 68] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0}
+[2026-04-09T13:21:12.101Z] [User 63] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0}
+[2026-04-09T13:21:35.350Z] [User 69] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0}
+[2026-04-09T13:21:43.471Z] [User 69] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0}
+[2026-04-09T13:22:18.688Z] [User 69] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0}
+[2026-04-09T13:22:21.001Z] [User 69] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0}
+[2026-04-10T05:40:40.173Z] [Late-Dbg] User 57 Final: LateCount=0, Amt=0, Days=0
+[2026-04-10T05:40:40.941Z] [Late-Dbg] User 58 Final: LateCount=0, Amt=0, Days=0
+[2026-04-10T05:40:41.124Z] [Late-Dbg] Day 2026-04-06: Using Stored Amt 30
+[2026-04-10T05:40:41.124Z] [Late-Dbg] User 59 Final: LateCount=1, Amt=30, Days=0
+[2026-04-10T05:40:41.550Z] [Late-Dbg] User 61 Final: LateCount=2, Amt=0, Days=0
+[2026-04-10T05:40:41.801Z] [Late-Dbg] User 62 Final: LateCount=0, Amt=0, Days=0
+[2026-04-10T05:40:42.254Z] [Late-Dbg] Day 2026-04-07: Using Stored Amt 1000
+[2026-04-10T05:40:42.291Z] [Late-Dbg] User 63 Final: LateCount=2, Amt=1000, Days=0
+[2026-04-10T05:40:42.970Z] [Late-Dbg] User 64 Final: LateCount=0, Amt=0, Days=0
+[2026-04-10T05:40:43.121Z] [Late-Dbg] Day 2026-04-09: Using Stored Amt 30
+[2026-04-10T05:40:43.121Z] [Late-Dbg] User 65 Final: LateCount=2, Amt=30, Days=0
+[2026-04-10T05:40:43.527Z] [Late-Dbg] User 68 Final: LateCount=1, Amt=0, Days=0
+[2026-04-10T05:40:43.735Z] [Late-Dbg] User 69 Final: LateCount=0, Amt=0, Days=0

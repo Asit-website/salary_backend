@@ -811,20 +811,35 @@ router.get('/history', async (req, res) => {
       let lateAmt = Number(record?.latePunchInAmount || 0);
       let lateMins = Number(record?.latePunchInMinutes || 0);
 
-      if (hasLateRule) {
-        if (lateAmt > 0) {
-          lateReason = `Late Penalty: ₹${lateAmt} (${lateMins} min)`;
-          summary.lateCount++;
-          // latePenaltyDays is a legacy field for 'penalty days' vs money. 
-          // For backwards compatibility in the summary object, we keep it 0 or add a new summary field.
-        } else if (isLateThisDay) {
-          lateReason = `Late arrival (${lateMins} min)`;
-          summary.lateCount++;
-        }
-      } else {
-        isLateThisDay = false;
-        lateAmt = 0;
-        lateMins = 0;
+      // Robustness: If lateMins is 0 but we have a shift and a punch-in, calculate it on-the-fly
+      if (lateMins === 0 && record?.punchedInAt && shiftTpl?.startTime && !isAdminLeave && !isAdminHalf) {
+        try {
+          const [sh, sm, ss] = shiftTpl.startTime.split(':').map(Number);
+          const inAt = new Date(record.punchedInAt);
+          // Create a comparison date for shift start on the same day as the punch-in
+          const shiftStart = new Date(inAt);
+          shiftStart.setHours(sh, sm, ss || 0, 0);
+
+          if (inAt > shiftStart) {
+            const diff = Math.floor((inAt.getTime() - shiftStart.getTime()) / 60000);
+            if (diff > 0) {
+              lateMins = diff;
+              isLateThisDay = true;
+            }
+          }
+        } catch (_) { /* ignore errors in dynamic calculation */ }
+      }
+
+      // Even if no rule assigned, we want to show late status and minutes on mobile
+      if (lateAmt > 0) {
+        lateReason = `Late Penalty: ₹${lateAmt} (${lateMins} min)`;
+      } else if (isLateThisDay || lateMins > 0) {
+        lateReason = `Late arrival (${lateMins} min)`;
+        isLateThisDay = true; // ensure flag is set if minutes exists
+      }
+
+      if (isLateThisDay) {
+        summary.lateCount++;
       }
 
       if (dayStatus === 'PRESENT') summary.present += 1;

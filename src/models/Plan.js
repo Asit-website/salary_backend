@@ -85,6 +85,12 @@ module.exports = (sequelize) => {
         defaultValue: false,
         field: 'recruitment_enabled'
       },
+      communityEnabled: {
+        type: DataTypes.BOOLEAN,
+        allowNull: false,
+        defaultValue: false,
+        field: 'community_enabled'
+      },
       features: { type: DataTypes.JSON, allowNull: true },
       active: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: true },
     },

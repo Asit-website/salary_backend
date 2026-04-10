@@ -41,6 +41,7 @@ router.post('/plans', authRequired, requireRole('superadmin'), async (req, res) 
       taskManagementEnabled,
       rosterEnabled,
       recruitmentEnabled,
+      communityEnabled,
       features
     } = req.body;
 
@@ -62,6 +63,7 @@ router.post('/plans', authRequired, requireRole('superadmin'), async (req, res) 
       taskManagementEnabled,
       rosterEnabled,
       recruitmentEnabled,
+      communityEnabled,
       active: true
     });
 
@@ -97,6 +99,7 @@ router.put('/plans/:id', authRequired, requireRole('superadmin'), async (req, re
       taskManagementEnabled,
       rosterEnabled,
       recruitmentEnabled,
+      communityEnabled,
       features,
       active
     } = req.body;
@@ -117,6 +120,7 @@ router.put('/plans/:id', authRequired, requireRole('superadmin'), async (req, re
       taskManagementEnabled,
       rosterEnabled,
       recruitmentEnabled,
+      communityEnabled,
       features,
       active
     });
@@ -160,7 +164,8 @@ router.post('/assign-subscription', authRequired, requireRole('superadmin'), asy
       aiAssistantEnabled: plan.aiAssistantEnabled,
       taskManagementEnabled: plan.taskManagementEnabled,
       rosterEnabled: plan.rosterEnabled,
-      recruitmentEnabled: plan.recruitmentEnabled
+      recruitmentEnabled: plan.recruitmentEnabled,
+      communityEnabled: plan.communityEnabled
     });
 
     // Get updated subscription with plan
@@ -286,6 +291,7 @@ router.get('/subscription-info', authRequired, tenantEnforce, async (req, res) =
       taskManagementEnabled: !!subscription.taskManagementEnabled,
       rosterEnabled: !!subscription.rosterEnabled,
       recruitmentEnabled: !!subscription.recruitmentEnabled,
+      communityEnabled: !!subscription.communityEnabled,
       maxGeolocationStaff: subscription.maxGeolocationStaff !== null ? subscription.maxGeolocationStaff : (subscription.meta?.maxGeolocationStaff || subscription.plan.maxGeolocationStaff),
       subscriptionStatus: subscription.status
     };
