@@ -113,6 +113,8 @@ const defineMailCampaign = require('./MailCampaign');
 const defineMailQueue = require('./MailQueue');
 const defineSocialPost = require('./SocialPost');
 const defineSocialLike = require('./SocialLike');
+const defineTenureBonusRule = require('./TenureBonusRule');
+const defineStaffTenureBonusAssignment = require('./StaffTenureBonusAssignment');
 const defineSocialComment = require('./SocialComment');
 
 
@@ -232,6 +234,8 @@ const MailQueue = defineMailQueue(sequelize);
 const SocialPost = defineSocialPost(sequelize);
 const SocialLike = defineSocialLike(sequelize);
 const SocialComment = defineSocialComment(sequelize);
+const TenureBonusRule = defineTenureBonusRule(sequelize);
+const StaffTenureBonusAssignment = defineStaffTenureBonusAssignment(sequelize);
 
 
 
@@ -756,6 +760,16 @@ SocialComment.belongsTo(User, { foreignKey: 'userId', as: 'user' });
 SocialComment.hasMany(SocialComment, { foreignKey: 'parentId', as: 'replies' });
 SocialComment.belongsTo(SocialComment, { foreignKey: 'parentId', as: 'parent' });
 
+// Tenure Bonus associations
+OrgAccount.hasMany(TenureBonusRule, { foreignKey: 'orgAccountId', as: 'tenureBonusRules' });
+TenureBonusRule.belongsTo(OrgAccount, { foreignKey: 'orgAccountId', as: 'orgAccount' });
+
+User.hasMany(StaffTenureBonusAssignment, { foreignKey: 'userId', as: 'tenureBonusAssignments' });
+StaffTenureBonusAssignment.belongsTo(User, { foreignKey: 'userId', as: 'user' });
+
+TenureBonusRule.hasMany(StaffTenureBonusAssignment, { foreignKey: 'tenureBonusRuleId', as: 'assignments' });
+StaffTenureBonusAssignment.belongsTo(TenureBonusRule, { foreignKey: 'tenureBonusRuleId', as: 'rule' });
+
 module.exports = {
   sequelize,
   User,
@@ -871,5 +885,7 @@ module.exports = {
   MailQueue,
   SocialPost,
   SocialLike,
-  SocialComment
+  SocialComment,
+  TenureBonusRule,
+  StaffTenureBonusAssignment
 };

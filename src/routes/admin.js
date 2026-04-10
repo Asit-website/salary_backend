@@ -19,7 +19,7 @@ function getCellValue(cell) {
 
 
 
-const { sequelize, User, StaffProfile, Role, Permission, AppSetting, DocumentType, ShiftTemplate, ShiftBreak, ShiftRotationalSlot, StaffShiftAssignment, SalaryAccess, AttendanceTemplate, StaffAttendanceAssignment, SalaryTemplate, StaffSalaryAssignment, Site, WorkUnit, Route, RouteStop, StaffRouteAssignment, SiteCheckpoint, PatrolLog, LeaveTemplate, LeaveTemplateCategory, StaffLeaveAssignment, LeaveBalance, LeaveRequest, AIAnomaly, ReliabilityScore, SalaryForecast, Attendance, Client, AssignedJob, SalesTarget, HolidayTemplate, HolidayDate, StaffHolidayAssignment, WeeklyOffTemplate, StaffWeeklyOffAssignment, Subscription, Plan, SalesVisit, Asset, AssetAssignment, AssetMaintenance, StaffLoan, StaffAdvance, OrderProduct, StaffOrderProduct, AttendanceAutomationRule, StaffGeofenceAssignment, GeofenceTemplate, GeofenceSite, DeviceInfo, Appraisal, Rating, OrgAccount, OvertimeRule, StaffOvertimeAssignment, EarlyExitRule, StaffEarlyExitAssignment, LatePunchInRule, StaffLatePunchInAssignment } = require('../models');
+const { sequelize, User, StaffProfile, Role, Permission, AppSetting, DocumentType, ShiftTemplate, ShiftBreak, ShiftRotationalSlot, StaffShiftAssignment, SalaryAccess, AttendanceTemplate, StaffAttendanceAssignment, SalaryTemplate, StaffSalaryAssignment, Site, WorkUnit, Route, RouteStop, StaffRouteAssignment, SiteCheckpoint, PatrolLog, LeaveTemplate, LeaveTemplateCategory, StaffLeaveAssignment, LeaveBalance, LeaveRequest, AIAnomaly, ReliabilityScore, SalaryForecast, Attendance, Client, AssignedJob, SalesTarget, HolidayTemplate, HolidayDate, StaffHolidayAssignment, WeeklyOffTemplate, StaffWeeklyOffAssignment, Subscription, Plan, SalesVisit, Asset, AssetAssignment, AssetMaintenance, StaffLoan, StaffAdvance, OrderProduct, StaffOrderProduct, AttendanceAutomationRule, StaffGeofenceAssignment, GeofenceTemplate, GeofenceSite, DeviceInfo, Appraisal, Rating, OrgAccount, OvertimeRule, StaffOvertimeAssignment, EarlyExitRule, StaffEarlyExitAssignment, LatePunchInRule, StaffLatePunchInAssignment, TenureBonusRule, StaffTenureBonusAssignment } = require('../models');
 
 const multer = require('multer');
 
@@ -1944,7 +1944,7 @@ router.post('/payroll/:cycleId/compute', async (req, res) => {
   try {
     const orgId = requireOrg(req, res); if (!orgId) return;
 
-    const { PayrollCycle, PayrollLine, User, Attendance, LeaveRequest, StaffLoan, StaffAdvance, ExpenseClaim, LeaveEncashment, SalaryTemplate, EarlyExitRule, StaffEarlyExitAssignment, OrgAccount, StaffLatePunchInAssignment, LatePunchInRule, AttendanceAutomationRule } = require('../models');
+    const { PayrollCycle, PayrollLine, User, Attendance, LeaveRequest, StaffLoan, StaffAdvance, ExpenseClaim, LeaveEncashment, SalaryTemplate, EarlyExitRule, StaffEarlyExitAssignment, OrgAccount, StaffLatePunchInAssignment, LatePunchInRule, AttendanceAutomationRule, TenureBonusRule, StaffTenureBonusAssignment } = require('../models');
 
     const cycleId = Number(req.params.cycleId);
 
@@ -1969,12 +1969,18 @@ router.post('/payroll/:cycleId/compute', async (req, res) => {
     if (staffId) {
       staff = await User.findAll({
         where: { id: staffId, role: 'staff', active: true, orgAccountId: orgId },
-        include: [{ model: SalaryTemplate, as: 'salaryTemplate' }]
+        include: [
+          { model: SalaryTemplate, as: 'salaryTemplate' },
+          { model: StaffProfile, as: 'profile' }
+        ]
       });
     } else {
       staff = await User.findAll({
         where: { role: 'staff', active: true, orgAccountId: orgId },
-        include: [{ model: SalaryTemplate, as: 'salaryTemplate' }]
+        include: [
+          { model: SalaryTemplate, as: 'salaryTemplate' },
+          { model: StaffProfile, as: 'profile' }
+        ]
       });
     }
 
@@ -2805,6 +2811,86 @@ router.post('/payroll/:cycleId/compute', async (req, res) => {
         finalD.break_penalty = (finalD.break_penalty || 0) + totalBreakPenaltyAmount;
       }
 
+      // 3. APPLY TENURE BONUS (Direct injection as requested)
+      let tenureBonusMeta = null;
+      try {
+        const assignment = await StaffTenureBonusAssignment.findOne({
+          where: {
+            userId: u.id,
+            effectiveFrom: { [Op.lte]: endKey }
+          },
+          include: [{ model: TenureBonusRule, as: 'rule' }],
+          order: [['effectiveFrom', 'DESC']]
+        });
+
+        if (assignment && assignment.rule && assignment.rule.active && String(assignment.rule.paymentMonth) === String(monthKey)) {
+          const bRule = assignment.rule;
+          const bConfig = Array.isArray(bRule.config) ? bRule.config : (typeof bRule.config === 'string' ? JSON.parse(bRule.config) : []);
+          
+          const p = u.profile ? (typeof u.profile.get === 'function' ? u.profile.get({ plain: true }) : u.profile) : {};
+          const joiningDate = p.dateOfJoining || p.date_of_joining;
+
+          if (joiningDate) {
+            // Local Tenure Calculation Logic
+            const _join = new Date(joiningDate);
+            const [_tYear, _tMonth] = monthKey.split('-').map(Number);
+            const _targetEnd = new Date(_tYear, _tMonth, 0);
+            let tenureMonths = (_targetEnd.getFullYear() - _join.getFullYear()) * 12 + (_targetEnd.getMonth() - _join.getMonth());
+            if (_targetEnd.getDate() < _join.getDate()) {
+              tenureMonths--;
+            }
+            tenureMonths = Math.max(0, tenureMonths);
+            
+            // Find matching rule from config array
+            const matchedBracket = bConfig.find(r => tenureMonths >= Number(r.min || 0) && tenureMonths <= Number(r.max || 999));
+            
+            const _sumObj = (o) => Object.values(o || {}).reduce((s, v) => s + (Number(v) || 0), 0);
+            if (matchedBracket && Number(matchedBracket.percent) > 0) {
+              const grossSalary_pre = _sumObj(finalE) + _sumObj(finalI);
+              const bonusAmt = Math.round(grossSalary_pre * (Number(matchedBracket.percent) / 100));
+              if (bonusAmt > 0) {
+                finalE.TENURE_BONUS = bonusAmt;
+                tenureBonusMeta = {
+                    amount: bonusAmt,
+                    tenureMonths,
+                    bracketPercent: Number(matchedBracket.percent),
+                    bracketMin: Number(matchedBracket.min),
+                    bracketMax: Number(matchedBracket.max),
+                    ruleName: bRule.name
+                };
+                try {
+                  require('fs').appendFileSync('payroll_debug.log', `[Admin-Bonus] SUCCESS: User ${u.id}, Rule=${bRule.name}, Joining=${joiningDate}, Tenure=${tenureMonths}mo, Bracket=${matchedBracket.percent}%, Bonus=${bonusAmt}\n`);
+                } catch (_) { }
+              } else {
+                try {
+                  require('fs').appendFileSync('payroll_debug.log', `[Admin-Bonus] SKIP: User ${u.id}, Bonus calculated as 0. Gross_pre=${grossSalary_pre}\n`);
+                } catch (_) { }
+              }
+            } else {
+              try {
+                require('fs').appendFileSync('payroll_debug.log', `[Admin-Bonus] SKIP: User ${u.id}, No bracket matched for tenure ${tenureMonths}mo\n`);
+              } catch (_) { }
+            }
+          } else {
+            try {
+              require('fs').appendFileSync('payroll_debug.log', `[Admin-Bonus] SKIP: User ${u.id}, Joining Date missing even with profile include\n`);
+            } catch (_) { }
+          }
+        } else {
+            // Log only if assignment was found but rule/month didn't match
+            if (assignment) {
+               try {
+                 require('fs').appendFileSync('payroll_debug.log', `[Admin-Bonus] SKIP: User ${u.id}, Rule Active=${assignment.rule?.active}, RuleMonth=${assignment.rule?.paymentMonth}, TargetMonth=${monthKey}\n`);
+               } catch (_) { }
+            }
+        }
+      } catch (e) {
+        console.error(`[Admin-Payroll-Bonus] Failed to calculate bonus for staff ${u.id}: ${e.message}`);
+        try {
+          require('fs').appendFileSync('payroll_debug.log', `[Admin-Bonus] ERROR: User ${u.id}, ${e.message}\n`);
+        } catch (_) { }
+      }
+
       // Sum pro-rated components for totals to ensure consistency
       const sumObj = (obj) => Object.values(obj || {}).reduce((s, v) => s + (Number(v) || 0), 0);
 
@@ -2832,6 +2918,7 @@ router.post('/payroll/:cycleId/compute', async (req, res) => {
         earlyExitPenalty: totalEarlyExitAmount,
         breakPenalty: totalBreakPenaltyAmount,
         excessBreakMinutes: totalExcessBreakMinutes,
+        tenureBonus: tenureBonusMeta,
         netSalary: Math.max(0, netSalary),
       };
       const totals = { totalEarnings, totalIncentives, totalDeductions, grossSalary, netSalary, ratio };
@@ -8969,6 +9056,138 @@ router.put('/settings/automation-rules', async (req, res) => {
   }
 });
 
+// Tenure-based Bonus Rules CRUD
+router.get('/settings/bonus-rules', async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
+    const rules = await TenureBonusRule.findAll({ where: { orgAccountId: orgId }, order: [['createdAt', 'DESC']] });
+    return res.json({ success: true, rules });
+  } catch (e) {
+    return res.status(500).json({ success: false, message: 'Failed to load bonus rules' });
+  }
+});
+
+router.post('/settings/bonus-rules', async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
+    const { name, paymentMonth, config, active } = req.body;
+    if (!name) return res.status(400).json({ success: false, message: 'Name is required' });
+
+    const rule = await TenureBonusRule.create({
+      name,
+      paymentMonth: paymentMonth || null,
+      config: Array.isArray(config) ? config : [],
+      active: active === undefined ? true : !!active,
+      orgAccountId: orgId
+    });
+
+    return res.json({ success: true, rule });
+  } catch (e) {
+    return res.status(500).json({ success: false, message: 'Failed to create bonus rule' });
+  }
+});
+
+router.put('/settings/bonus-rules/:id', async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
+    const id = Number(req.params.id);
+    const rule = await TenureBonusRule.findOne({ where: { id, orgAccountId: orgId } });
+    if (!rule) return res.status(404).json({ success: false, message: 'Bonus rule not found' });
+
+    await rule.update({
+      name: req.body.name !== undefined ? req.body.name : rule.name,
+      paymentMonth: req.body.paymentMonth !== undefined ? req.body.paymentMonth : rule.paymentMonth,
+      config: req.body.config !== undefined ? (Array.isArray(req.body.config) ? req.body.config : []) : rule.config,
+      active: req.body.active !== undefined ? !!req.body.active : rule.active
+    });
+
+    return res.json({ success: true, rule });
+  } catch (e) {
+    return res.status(500).json({ success: false, message: 'Failed to update bonus rule' });
+  }
+});
+
+router.delete('/settings/bonus-rules/:id', async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
+    const id = Number(req.params.id);
+    const rule = await TenureBonusRule.findOne({ where: { id, orgAccountId: orgId } });
+    if (!rule) return res.status(404).json({ success: false, message: 'Bonus rule not found' });
+
+    await rule.destroy();
+    return res.json({ success: true, message: 'Bonus rule deleted' });
+  } catch (e) {
+    return res.status(500).json({ success: false, message: 'Failed to delete bonus rule' });
+  }
+});
+
+// Staff Tenure Bonus Assignments
+router.get('/settings/bonus-assignments', async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
+    const assignments = await StaffTenureBonusAssignment.findAll({
+      include: [
+        { 
+          model: User, 
+          as: 'user', 
+          where: { orgAccountId: orgId },
+          include: [{ model: StaffProfile, as: 'profile' }]
+        },
+        { model: TenureBonusRule, as: 'rule' }
+      ]
+    });
+    return res.json({ success: true, assignments });
+  } catch (e) {
+    return res.status(500).json({ success: false, message: 'Failed to load bonus assignments' });
+  }
+});
+
+router.post('/settings/bonus-assign', async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
+    const { userId, tenureBonusRuleId, effectiveFrom, effectiveTo } = req.body;
+    
+    if (!userId || !tenureBonusRuleId || !effectiveFrom) {
+      return res.status(400).json({ success: false, message: 'userId, tenureBonusRuleId, and effectiveFrom are required' });
+    }
+
+    const user = await User.findOne({ where: { id: userId, orgAccountId: orgId } });
+    if (!user) return res.status(404).json({ success: false, message: 'User not found' });
+
+    const rule = await TenureBonusRule.findOne({ where: { id: tenureBonusRuleId, orgAccountId: orgId } });
+    if (!rule) return res.status(404).json({ success: false, message: 'Bonus rule not found' });
+
+    const assignment = await StaffTenureBonusAssignment.create({
+      userId,
+      tenureBonusRuleId,
+      effectiveFrom: String(effectiveFrom).slice(0, 10),
+      effectiveTo: effectiveTo ? String(effectiveTo).slice(0, 10) : null
+    });
+
+    return res.json({ success: true, assignment });
+  } catch (e) {
+    return res.status(500).json({ success: false, message: 'Failed to assign bonus' });
+  }
+});
+
+router.delete('/settings/bonus-assignments/:id', async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
+    const id = Number(req.params.id);
+    const assignment = await StaffTenureBonusAssignment.findOne({
+      include: [{ model: User, as: 'user', where: { orgAccountId: orgId } }],
+      where: { id }
+    });
+    
+    if (!assignment) return res.status(404).json({ success: false, message: 'Assignment not found' });
+
+    await assignment.destroy();
+    return res.json({ success: true, message: 'Assignment deleted' });
+  } catch (e) {
+    return res.status(500).json({ success: false, message: 'Failed to delete assignment' });
+  }
+});
+
 // Helper: compute payable days for a given month using saved settings (org-scoped)
 router.get('/salary/payable-days', async (req, res) => {
   try {
@@ -9027,6 +9246,28 @@ router.get('/shifts/templates', async (req, res) => {
     });
   } catch (e) {
     return res.status(500).json({ success: false, message: 'Failed to load shift templates' });
+  }
+});
+
+router.get('/org/staff', async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
+    const staff = await User.findAll({
+      where: { role: 'staff', orgAccountId: orgId },
+      include: [{ model: StaffProfile, as: 'profile' }],
+      order: [['createdAt', 'DESC']]
+    });
+
+    const rows = staff.map((u) => ({
+      userId: u.id,
+      staffId: u.profile?.staffId || null,
+      name: u.profile?.name || u.name || null,
+      phone: u.phone,
+      active: !!u.active
+    }));
+    return res.json({ success: true, staff: rows });
+  } catch (e) {
+    return res.status(500).json({ success: false, message: 'Failed to load staff list' });
   }
 });
 
@@ -22530,6 +22771,45 @@ router.post('/settings/late-punchin-rules/:id/assign', async (req, res) => {
   } catch (error) {
     console.error('Assign late punch-in staff error:', error);
     return res.status(500).json({ success: false, message: 'Failed to assign staff' });
+  }
+});
+
+// Tenure Bonus Settings
+router.get('/settings/bonus', async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
+    const row = await AppSetting.findOne({ where: { key: 'bonus_settings', orgAccountId: orgId } });
+    const settings = row && row.value ? JSON.parse(row.value) : { active: false, paymentMonth: dayjs().format('YYYY-MM'), rules: [] };
+    return res.json({ success: true, settings });
+  } catch (error) {
+    console.error('Fetch bonus settings error:', error);
+    return res.status(500).json({ success: false, message: 'Failed to fetch bonus settings' });
+  }
+});
+
+router.put('/settings/bonus', async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
+    const payload = req.body || {};
+    
+    // Validation
+    if (payload.paymentMonth && !/^\d{4}-\d{2}$/.test(payload.paymentMonth)) {
+        return res.status(400).json({ success: false, message: 'Invalid paymentMonth format (YYYY-MM)' });
+    }
+
+    const [row, created] = await AppSetting.findOrCreate({
+      where: { key: 'bonus_settings', orgAccountId: orgId },
+      defaults: { value: JSON.stringify(payload) }
+    });
+
+    if (!created) {
+      await row.update({ value: JSON.stringify(payload) });
+    }
+
+    return res.json({ success: true, message: 'Bonus settings saved' });
+  } catch (error) {
+    console.error('Update bonus settings error:', error);
+    return res.status(500).json({ success: false, message: 'Failed to update bonus settings' });
   }
 });
 

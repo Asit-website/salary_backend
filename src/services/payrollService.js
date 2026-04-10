@@ -9,7 +9,7 @@ const {
   Attendance, LeaveRequest, WeeklyOffTemplate, StaffWeeklyOffAssignment,
   HolidayTemplate, HolidayDate, StaffHolidayAssignment, PayrollCycle, PayrollLine,
   AppSetting, StaffLoan, OrgAccount, StaffSalesIncentive, SalesIncentiveRule,
-  AttendanceAutomationRule, LeaveEncashment, StaffAdvance
+  AttendanceAutomationRule, LeaveEncashment, StaffAdvance, TenureBonusRule, StaffTenureBonusAssignment
 } = require('../models');
 
 const categoryNames = {
@@ -27,6 +27,20 @@ function getMonthRange(monthKey) {
   const end = new Date(yy, mm, 0);
   const endKey = `${end.getFullYear()}-${String(end.getMonth() + 1).padStart(2, '0')}-${String(end.getDate()).padStart(2, '0')}`;
   return { yy, mm, start, end, endKey };
+}
+
+function calculateTenureMonths(joiningDate, targetMonthKey) {
+  if (!joiningDate) return 0;
+  const join = new Date(joiningDate);
+  const [targetYear, targetMonth] = targetMonthKey.split('-').map(Number);
+  // Target date is the last day of the payroll month for tenure completion check
+  const targetEnd = new Date(targetYear, targetMonth, 0);
+
+  let months = (targetEnd.getFullYear() - join.getFullYear()) * 12 + (targetEnd.getMonth() - join.getMonth());
+  if (targetEnd.getDate() < join.getDate()) {
+    months--;
+  }
+  return Math.max(0, months);
 }
 
 async function computeOvertimeMeta({ userId, monthKey, overtimeBaseSalary, orgAccount }) {
@@ -873,6 +887,46 @@ async function calculateSalary(userId, monthKey) {
   // Break penalties
   if (breakMeta.breakPenalty > 0) {
     finalDeductions.break_penalty = (finalDeductions.break_penalty || 0) + breakMeta.breakPenalty;
+  }
+
+  // 3. APPLY TENURE BONUS (Only if live compute and month matches)
+  try {
+    const assignment = await StaffTenureBonusAssignment.findOne({
+      where: {
+        userId: u.id,
+        effectiveFrom: { [Op.lte]: endKey }
+      },
+      include: [{ model: TenureBonusRule, as: 'rule' }],
+      order: [['effectiveFrom', 'DESC']]
+    });
+
+    if (assignment && assignment.rule && assignment.rule.active && String(assignment.rule.paymentMonth) === String(monthKey)) {
+      const bRule = assignment.rule;
+      const bConfig = Array.isArray(bRule.config) ? bRule.config : (typeof bRule.config === 'string' ? JSON.parse(bRule.config) : []);
+      
+      const p = u.profile ? (typeof u.profile.get === 'function' ? u.profile.get({ plain: true }) : u.profile) : {};
+      const joiningDate = p.dateOfJoining || p.date_of_joining;
+
+      if (joiningDate) {
+        const tenureMonths = calculateTenureMonths(joiningDate, monthKey);
+        
+        // Find matching rule from config array
+        const matchedBracket = bConfig.find(r => tenureMonths >= Number(r.min || 0) && tenureMonths <= Number(r.max || 999));
+        
+        if (matchedBracket && Number(matchedBracket.percent) > 0) {
+          const grossSalary_pre = sumObj(finalEarnings) + sumObj(finalIncentives);
+          const bonusAmt = Math.round(grossSalary_pre * (Number(matchedBracket.percent) / 100));
+          if (bonusAmt > 0) {
+            finalEarnings.TENURE_BONUS = bonusAmt;
+            try {
+              require('fs').appendFileSync('payroll_debug.log', `[Bonus] User ${u.id}: Rule=${bRule.name}, Tenure=${tenureMonths}mo, Bracket=${matchedBracket.percent}%, Bonus=${bonusAmt}\n`);
+            } catch (_) { }
+          }
+        }
+      }
+    }
+  } catch (e) {
+    console.error(`[Payroll-Bonus] Failed to calculate bonus: ${e.message}`);
   }
 
   const _totalEarnings = sumObj(finalEarnings);

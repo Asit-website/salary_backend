@@ -1,5 +1,6 @@
 const { Attendance, StaffProfile, AttendanceAutomationRule, sequelize, OrgAccount } = require('../models');
 const axios = require('axios');
+const dayjs = require('dayjs');
 const { Op } = require('sequelize');
 const overtimeService = require('./overtimeService');
 const earlyExitService = require('./earlyExitService');
@@ -348,21 +349,32 @@ class ZktecoService {
                 console.log(`[ZktecoSync] MATCH: emp_code "${empCode}" -> userId ${userId}. Calculating details with ${punches.length} punches.`);
 
                 // Filter punches for 5-minute throttling (Deduplication)
-                const sortedPunches = punches.sort((a, b) => new Date(a.punch_time) - new Date(b.punch_time));
+                // Logic: Keep first punch, skip any within 5 mins of the last accepted punch.
+                const parseTime = (str) => {
+                    const d = dayjs(str);
+                    return d.isValid() ? d.toDate() : new Date(str);
+                };
+
+                const sortedPunches = punches.sort((a, b) => parseTime(a.punch_time) - parseTime(b.punch_time));
                 const filteredPunches = [];
                 let localLastPunchTime = null;
 
                 for (const p of sortedPunches) {
-                    const currentTime = new Date(p.punch_time);
-                    // If it's the first punch or >= 5 mins since the last KEPT punch
-                    if (!localLastPunchTime || (currentTime - localLastPunchTime) >= 5 * 60 * 1000) {
+                    const punchTime = parseTime(p.punch_time);
+                    const punchTimeMs = punchTime.getTime();
+
+                    if (!localLastPunchTime || (punchTimeMs - localLastPunchTime.getTime()) >= 5 * 60 * 1000) {
                         filteredPunches.push(p);
-                        localLastPunchTime = currentTime;
+                        localLastPunchTime = punchTime;
+                    } else {
+                        // Log skipped punch for monitoring
+                        const diffSecs = Math.round((punchTimeMs - localLastPunchTime.getTime()) / 1000);
+                        console.log(`[ZktecoSync] THROT: Ignoring punch at ${p.punch_time} for userId ${userId} (Only ${diffSecs}s since last accepted punch)`);
                     }
                 }
 
                 if (filteredPunches.length < punches.length) {
-                    console.log(`[ZktecoSync] Throttled ${punches.length - filteredPunches.length} duplicate/rapid punches for userId ${userId}.`);
+                    console.log(`[ZktecoSync] Throttled ${punches.length - filteredPunches.length} duplicate/rapid punches for userId ${userId}. Final count: ${filteredPunches.length}`);
                 }
 
                 const res = await this.calculateDetails(userId, filteredPunches, dateStr);
