@@ -718,6 +718,8 @@ router.get('/history', async (req, res) => {
       const isRosterWO = rosterEntry?.status === 'WEEKLY_OFF';
       const isRosterHoliday = rosterEntry?.status === 'HOLIDAY';
 
+      const shiftTpl = await getEffectiveShiftTemplate(userId, key);
+
       if (record?.punchedInAt && !isAdminLeave && !isAdminHalf) {
         const inAt = new Date(record.punchedInAt);
         const outAt = record.punchedOutAt ? new Date(record.punchedOutAt) : (key === todayStr ? now : inAt);
@@ -732,7 +734,6 @@ router.get('/history', async (req, res) => {
           maxBreakMinutes,
           effectiveHoursRule
         });
-        const shiftTpl = await getEffectiveShiftTemplate(userId, key);
         const totalWorkMinutes = Math.floor(workingSeconds / 60);
 
         const { calculateOvertime } = require('../services/overtimeService');
