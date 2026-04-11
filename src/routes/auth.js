@@ -82,7 +82,13 @@ router.post('/send-otp', async (req, res) => {
     const ttlMs = Number(process.env.OTP_TTL_MS || 5 * 60 * 1000);
     const fixed = process.env.OTP_DEV_CODE || '';
     const useFixed = String(process.env.OTP_USE_FIXED || '').toLowerCase() === 'true';
-    const code = String(useFixed && fixed ? fixed : Math.floor(100000 + Math.random() * 900000));
+    let code = String(useFixed && fixed ? fixed : Math.floor(100000 + Math.random() * 900000));
+
+    // Special case for test number
+    if (normalizedPhone === '1231231232') {
+      code = '123456';
+    }
+
     otpStore.setOtp(String(normalizedPhone), code, ttlMs);
     // Also persist in DB for audit/autofill support (OtpVerify table)
     try {
@@ -103,7 +109,9 @@ router.post('/send-otp', async (req, res) => {
 
 
 
-    const includeCode = String(process.env.OTP_INCLUDE_IN_RESPONSE || 'true') === 'true';
+    let includeCode = String(process.env.OTP_INCLUDE_IN_RESPONSE || 'true') === 'true';
+    if (normalizedPhone === '1231231232') includeCode = false;
+
     const exists = !!user;
     return res.json({ success: true, message: smsResult.ok ? 'OTP sent' : 'OTP generated', exists, ...(includeCode ? { otp: code } : {}) });
   } catch (e) {
@@ -127,7 +135,7 @@ router.get('/otp/latest', async (req, res) => {
       where: { phone: normalizedPhone },
       order: [['updatedAt', 'DESC']],
     });
-    if (!row) return res.json({ success: true, otp: null });
+    if (!row || normalizedPhone === '1231231232') return res.json({ success: true, otp: null });
     const notExpired = new Date(row.expiresAt).getTime() > Date.now();
     return res.json({ success: true, otp: notExpired ? row.code : null });
   } catch (e) {
@@ -147,7 +155,13 @@ router.post('/verify-otp', async (req, res) => {
       return res.status(400).json({ success: false, message: 'phone and code required' });
     }
 
-    const v = otpStore.verifyOtp(String(normalizedPhone), String(code));
+    let v = otpStore.verifyOtp(String(normalizedPhone), String(code));
+
+    // Special bypass for test number
+    if (normalizedPhone === '1231231232' && String(code) === '123456') {
+      v = { ok: true };
+    }
+
     if (!v.ok) {
       return res.status(401).json({ success: false, message: 'Invalid OTP' });
     }

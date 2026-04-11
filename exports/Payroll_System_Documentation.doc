@@ -1,0 +1,285 @@
+
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+        <meta charset="UTF-8">
+        <title>Technical Documentation - Payroll System</title>
+        <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+        <style>
+            body {
+                font-family: 'Segoe UI', Arial, sans-serif;
+                line-height: 1.6;
+                color: #333;
+                max-width: 900px;
+                margin: 0 auto;
+                padding: 40px;
+            }
+            h1 { color: #2c3e50; border-bottom: 2px solid #3498db; padding-bottom: 10px; text-align: center; }
+            h2 { color: #2980b9; margin-top: 30px; border-left: 5px solid #3498db; padding-left: 15px; }
+            h3 { color: #16a085; }
+            pre { background: #f4f4f4; padding: 15px; border-radius: 5px; overflow-x: auto; }
+            code { background: #f4f4f4; padding: 2px 5px; border-radius: 3px; font-family: monospace; }
+            table { width: 100%; border-collapse: collapse; margin: 20px 0; }
+            th, td { border: 1px solid #ddd; padding: 12px; text-align: left; }
+            th { background-color: #f2f2f2; }
+            .note { background-color: #e7f3fe; border-left: 6px solid #2196F3; padding: 10px 20px; margin: 15px 0; }
+            blockquote { background: #f9f9f9; border-left: 10px solid #ccc; margin: 1.5em 10px; padding: 0.5em 10px; }
+            @media print { .page-break { page-break-before: always; } }
+            /* Mermaid styling */
+            .mermaid { display: flex; justify-content: center; margin: 20px 0; }
+        </style>
+    </head>
+    <body>
+        <h1>Thinktech Attendance - Payroll System Documentation</h1>
+<p>This document provide a detailed technical overview of the Payroll System implemented in the Thinktech Attendance platform.</p>
+<h2>1. System Overview</h2>
+<p>The Payroll system is an automated engine that synchronizes attendance data, organizational policies, and statutory compliance rules to derive accurate employee compensation.</p>
+<pre><code class="language-mermaid">graph TD
+    A[Staff Attendance] --&gt;|Daily Sync| B(Rule Engine)
+    C[Salary Templates] --&gt;|Structure| B
+    D[Staff Assignments] --&gt;|Custom Rules| B
+    B --&gt; E{Payroll Process}
+    E --&gt;|Compute| F[Draft Payroll Line]
+    F --&gt;|Verify| G[Final Payment]
+    G --&gt;|Generate| H[Payslips &amp; Reports]
+</code></pre>
+<hr>
+<p>The payroll system is designed to automate salary calculations based on attendance records, shift schedules, and organizational policies. It supports two main modes:</p>
+<ul>
+<li><strong>Live Compute (Projected)</strong>: Real-time salary estimation for the current month.</li>
+<li><strong>Generated Records (Historical)</strong>: Locked-in payroll cycles for past months, stored as snapshots to ensure data integrity and persistence for payslip generation.</li>
+</ul>
+<hr>
+<h2>2. Entity Relationship Diagram (ERD)</h2>
+<p>The following diagram illustrates the core models involved in the payroll process.</p>
+<pre><code class="language-mermaid">erDiagram
+    ORG_ACCOUNT ||--o{ PAYROLL_CYCLE : &quot;manages&quot;
+    ORG_ACCOUNT ||--o{ USER : &quot;has&quot;
+    PAYROLL_CYCLE ||--o{ PAYROLL_LINE : &quot;contains&quot;
+    USER ||--o{ PAYROLL_LINE : &quot;has&quot;
+    USER ||--o{ ATTENDANCE : &quot;generates&quot;
+    USER ||--o{ LEAVE_REQUEST : &quot;applies&quot;
+    USER ||--o{ STAFF_LOAN : &quot;repays&quot;
+    USER ||--o{ STAFF_ADVANCE : &quot;deducts&quot;
+    USER }|--|| SALARY_TEMPLATE : &quot;assigned&quot;
+    SALARY_TEMPLATE ||--o{ STAFF_SALARY_ASSIGNMENT : &quot;defined in&quot;
+</code></pre>
+<h3>Key Models Descriptions:</h3>
+<ul>
+<li><strong>PayrollCycle</strong>: Represents a specific month’s payroll (e.g., <code>2024-03</code>). Tracks status (<code>DRAFT</code>, <code>PAID</code>) and payment dates.</li>
+<li><strong>PayrollLine</strong>: A snapshot of a specific user&#39;s salary metadata for a cycle. Stores earnings, deductions, incentives, and attendance summaries as JSON blobs.</li>
+<li><strong>SalaryTemplate</strong>: Defines the structure of earnings and deductions (e.g., Basic = 50% of Gross, PF = 12% of Basic).</li>
+<li><strong>Attendance</strong>: The source of truth for working days, overtime, and penalty minutes.</li>
+<li><strong>StaffLoan / StaffAdvance</strong>: Specific financial deductions applied during the calculation phase.</li>
+</ul>
+<hr>
+<h2>3. Salary Calculation Flow</h2>
+<p>The calculation logic is centralized in <code>backend/src/services/payrollService.js</code>.</p>
+<pre><code class="language-mermaid">graph TD
+    A[Start Computation] --&gt; B{Cycle Locked?}
+    B -- Yes --&gt; C[Load Data from PayrollLine Snapshot]
+    B -- No --&gt; D[Fetch Base Salary from User Profile]
+    D --&gt; E[Calculate Payable Days from Attendance]
+    E --&gt; F[Calculate Automated Penalties]
+    F --&gt; G[Process Loans &amp; Advances]
+    G --&gt; H[Process Incentives &amp; Expenses]
+    H --&gt; I[Apply Pro-rating Ratio]
+    I --&gt; J[Store/Update PayrollLine Snapshot]
+    J --&gt; K[End / Generate PDF]
+</code></pre>
+<h3>Logic Steps:</h3>
+<ol>
+<li><strong>Payable Days Calculation</strong>:<ul>
+<li><code>Payable Units = Present Days + (Half Days * 0.5) + Paid Leave + Weekly Offs + Holidays</code>.</li>
+<li><code>Ratio = Payable Units / Total Days in Month</code>.</li>
+</ul>
+</li>
+<li><strong>Automated Penalties</strong>:<ul>
+<li><strong>Late Punch-In</strong>: Based on <code>LatePunchInRule</code>, deducts a fixed amount or daily salary percentage if frequency exceeds threshold.</li>
+<li><strong>Early Exit</strong>: Based on <code>EarlyExitRule</code>, applies penalties for leaving before shift completion.</li>
+<li><strong>Break Penalty</strong>: Penalizes excess break duration beyond allowed limits.</li>
+</ul>
+</li>
+<li><strong>Pro-rating Earnings</strong>:<ul>
+<li>Fixed earnings (HRA, Conveyance) are multiplied by the <code>Ratio</code>.</li>
+<li>Variable earnings (Overtime, Early OT) are added as absolute values.</li>
+</ul>
+</li>
+</ol>
+<hr>
+<h2>4. API Reference</h2>
+<h3>Cycle Management</h3>
+<ul>
+<li><code>GET /admin/payroll?monthKey=YYYY-MM</code>: Fetch all payroll lines for a specific month.</li>
+<li><code>POST /admin/payroll/:cycleId/compute</code>: Trigger a full re-computation of all staff in the cycle.</li>
+<li><code>POST /admin/payroll/manual-historical</code>: Manually add a historical record (bypass auto-calc).</li>
+</ul>
+<h3>Payments</h3>
+<ul>
+<li><code>POST /admin/payroll/:cycleId/lines/mark-paid</code>: Bulk update selected lines to <code>PAID</code> status.</li>
+<li><code>POST /admin/payroll/:cycleId/mark-paid</code>: Update the entire cycle status to <code>PAID</code>.</li>
+</ul>
+<h3>Exports</h3>
+<ul>
+<li><code>GET /admin/payroll/:cycleId/export</code>: Download cycle data as CSV.</li>
+<li><code>GET /admin/payroll/:cycleId/salary-register-excel</code>: Detailed Excel report with group-wise (Dept/Designation) totals.</li>
+<li><code>GET /admin/payroll/monthly-summary-excel</code>: High-level summary report.</li>
+</ul>
+<hr>
+<h2>5. Automated Penalty Logic Details</h2>
+<h3>Late Punch-In Penalty</h3>
+<table>
+<thead>
+<tr>
+<th align="left">Feature</th>
+<th align="left">Implementation</th>
+</tr>
+</thead>
+<tbody><tr>
+<td align="left"><strong>Detection</strong></td>
+<td align="left">Compares <code>punchedInAt</code> with <code>assignedShift.startTime</code> + buffer.</td>
+</tr>
+<tr>
+<td align="left"><strong>Tiers</strong></td>
+<td align="left">Configured in <code>AttendanceAutomationRule</code>. Multiple frequency tiers supported (e.g., 3rd late in month = 0.5 day deduction).</td>
+</tr>
+<tr>
+<td align="left"><strong>Execution</strong></td>
+<td align="left">Calculated during <code>computeLatePenaltyMeta</code> in <code>payrollService.js</code>.</td>
+</tr>
+</tbody></table>
+<h3>Early Exit Penalty</h3>
+<ul>
+<li>Triggers if <code>punchedOutAt</code> is significantly earlier than <code>assignedShift.endTime</code>.</li>
+<li>Grace periods and specific penalty amounts/days can be set per org.</li>
+</ul>
+<hr>
+<h2>6. Financial Adjustments</h2>
+<h3>Loans (EMI)</h3>
+<ul>
+<li>Deduction is applied automatically if the current <code>monthKey</code> is within the loan&#39;s tenure range.</li>
+<li><code>Total Loan EMI = Sum(Active Loans EMI where Month is within Start + Tenure)</code>.</li>
+</ul>
+<h3>Advances</h3>
+<ul>
+<li>Single-month deductions or split-month deductions.</li>
+<li>Deducted from the Net Salary after all other earnings/deductions are calculated.</li>
+</ul>
+<h3>Expense Reimbursements</h3>
+<ul>
+<li>Fetches all <code>ExpenseClaim</code> records with <code>status: &#39;settled&#39;</code> for the month.</li>
+<li>Added as absolute earnings (Tax-free by default).</li>
+</ul>
+<hr>
+<h2>7. Automation Rules Engine</h2>
+<p>The system uses a flexible rules engine to handle attendance-based earnings and deductions. Rules are assigned via <strong>Assignments</strong> (User-level) or <strong>Org-level Defaults</strong>.</p>
+<pre><code class="language-mermaid">flowchart LR
+    subgraph Input
+    A[Punch In]
+    B[Punch Out]
+    C[Break Duration]
+    end
+
+    subgraph Logic
+    D{Shift Check}
+    E[Late Rule]
+    F[Early Exit Rule]
+    G[Break Rule]
+    H[OT Rule]
+    end
+
+    subgraph Impact
+    I[Penalty Deduction]
+    J[Overtime Reward]
+    end
+
+    A &amp; B &amp; C --&gt; D
+    D --&gt; E &amp; F &amp; G &amp; H
+    E &amp; F &amp; G --&gt; I
+    H --&gt; J
+</code></pre>
+<h3>7.1 Late Punch-In Penalty (LatePunchInRule)</h3>
+<ul>
+<li><strong>Logic</strong>: Compares <code>punchedInAt</code> against the assigned <code>shift.startTime</code> plus a buffer.</li>
+<li><strong>Deduction Types</strong>:<ul>
+<li><code>SLABS</code>: Tiered deductions based on minutes late (e.g., 1-15 mins = X deduction, 16-30 mins = Y). Supports frequency (e.g., 3rd time in a month applies a deduction).</li>
+<li><code>FIXED_AMOUNT</code>: A flat penalty if the threshold is crossed.</li>
+<li><code>HALF_DAY</code> / <code>FULL_DAY</code>: Deducts partial or entire daily salary.</li>
+<li><code>SALARY_MULTIPLIER</code>: Deducts based on an hourly rate multiplier (Hourly Rate = Daily Salary / 8).</li>
+</ul>
+</li>
+<li><strong>Service</strong>: Managed by <code>latePunchInService.js</code>.</li>
+</ul>
+<h3>7.2 Early Exit Penalty (EarlyExitRule)</h3>
+<ul>
+<li><strong>Logic</strong>: Triggers if <code>punchedOutAt</code> is earlier than the assigned <code>shift.endTime</code>.</li>
+<li><strong>Key Features</strong>:<ul>
+<li><strong>Thresholds</strong>: Defined in minutes (e.g., leaving 30 mins early triggers a penalty).</li>
+<li><strong>Deductions</strong>: Can be configured as <code>FIXED_AMOUNT</code> or <code>SALARY_MULTIPLIER</code>.</li>
+<li><strong>Half/Full Day Overrides</strong>: Higher priority flags that deduct 0.5 or 1 day salary if the early exit duration exceeds specific thresholds.</li>
+</ul>
+</li>
+<li><strong>Service</strong>: Managed by <code>earlyExitService.js</code>.</li>
+</ul>
+<h3>7.3 Break Management (BreakRule)</h3>
+<ul>
+<li><strong>Logic</strong>: Monitors the total duration spent on &quot;Break&quot; status during a shift.</li>
+<li><strong>Calculation</strong>:<ul>
+<li><code>Excess Minutes = Total Break Minutes - Allowed Threshold</code>.</li>
+<li>Penalty is applied based on the highest applicable threshold tier.</li>
+</ul>
+</li>
+<li><strong>Supported Deductions</strong>: <code>FIXED_AMOUNT</code>, <code>SALARY_MULTIPLIER</code> (Hourly rate x Multiplier), or Half/Full Day deductions.</li>
+<li><strong>Service</strong>: Managed by <code>breakService.js</code>.</li>
+</ul>
+<h3>7.4 Overtime Logic (OvertimeRule)</h3>
+<ul>
+<li><strong>Calculation Types</strong>:<ul>
+<li><code>POST_PAYABLE_HOURS</code>: Overtime starts after total work hours exceed a threshold (e.g., 9 hours).</li>
+<li><code>SHIFT_END</code>: Overtime starts from the moment the assigned shift ends.</li>
+<li><code>POST_AND_END</code>: Requires BOTH total hours met AND shift boundary crossed.</li>
+</ul>
+</li>
+<li><strong>Reward Mechanics</strong>:<ul>
+<li>Supports tiered value (e.g., first 2 hours at 1.5x, then 2.0x).</li>
+<li>Reward can be <code>FIXED_AMOUNT_PER_HOUR</code> or <code>SALARY_MULTIPLIER</code> (Hourly Rate x Multiplier).</li>
+</ul>
+</li>
+<li><strong>Service</strong>: Managed by <code>overtimeService.js</code>.</li>
+</ul>
+<h3>7.5 Early Overtime (EarlyOvertimeRule)</h3>
+<ul>
+<li><strong>Logic</strong>: Rewards work performed before the assigned <code>shift.startTime</code>.</li>
+<li><strong>Calculation</strong>: <code>Shift Start - Punch In Time</code>.</li>
+<li><strong>Eligibility</strong>: Only counts if the early work exceeds a minimum threshold (e.g., must come at least 30 mins early to count).</li>
+<li><strong>Reward</strong>: Same tiered structure as standard Overtime.</li>
+<li><strong>Service</strong>: Managed by <code>earlyOvertimeService.js</code>.</li>
+</ul>
+<h3>7.6 Tenure Bonus System (TenureBonusRule)</h3>
+<ul>
+<li><strong>Logic</strong>: Automated loyalty rewards based on the employee&#39;s <code>date_of_joining</code>.</li>
+<li><strong>Brackets</strong>: Configured as JSON ranges (e.g., 12-24 months = 5% of Basic, 24-36 months = 10%).</li>
+<li><strong>Execution</strong>: The <code>payrollService.js</code> calculates tenure months as of the target month end and applies the corresponding percentage bracket to the current month&#39;s base earnings.</li>
+<li><strong>Earning Type</strong>: Added to the payslip as <code>TENURE_BONUS</code>.</li>
+</ul>
+<hr>
+<blockquote>
+<p>[!NOTE]
+All automated calculations use <strong>(Basic Salary + DA)</strong> as the standard <code>Base Salary</code> for hourly rate derivations unless specified otherwise in the Salary Template.</p>
+</blockquote>
+
+        <script>
+            mermaid.initialize({ startOnLoad: true, theme: 'default' });
+            // Look for pre code blocks with mermaid language and convert them
+            document.querySelectorAll('pre code.language-mermaid').forEach(el => {
+                const graphDef = el.textContent;
+                const parent = el.parentElement;
+                const div = document.createElement('div');
+                div.className = 'mermaid';
+                div.textContent = graphDef;
+                parent.replaceWith(div);
+            });
+        </script>
+    </body>
+    </html>
+    

@@ -11,7 +11,7 @@ function authRequired(req, res, next) {
     }
 
     if (!token) {
-      return res.status(401).json({ success: false, message: 'Missing token' });
+      return res.status(401).json({ success: false, message: 'Missing token due to lags of internet or not properly authorized' });
     }
 
     const secret = process.env.JWT_SECRET || 'dev_secret_change_me';

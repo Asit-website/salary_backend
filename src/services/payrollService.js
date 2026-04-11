@@ -218,7 +218,7 @@ async function computeLatePenaltyMeta({ userId, monthKey, orgAccount, baseSalary
 
     // Evaluate lateness and penalty via service
     const lpResult = await latePunchInService.calculateLatePenalty(row, orgAccount, row.punchedInAt, daysInMonth);
-    
+
     const rowLateMinutes = lpResult.latePunchInMinutes || 0;
     const rowLateAmount = lpResult.latePunchInAmount || 0;
 
@@ -231,7 +231,7 @@ async function computeLatePenaltyMeta({ userId, monthKey, orgAccount, baseSalary
     // 2. Aggregate penalty details only if a rule was involved (or amount returned)
     if (rowLateAmount > 0) {
       totalLatePenalty += rowLateAmount;
-      
+
       const rule = lpResult.rule;
       const tier = lpResult.tier;
 
@@ -903,16 +903,16 @@ async function calculateSalary(userId, monthKey) {
     if (assignment && assignment.rule && assignment.rule.active && String(assignment.rule.paymentMonth) === String(monthKey)) {
       const bRule = assignment.rule;
       const bConfig = Array.isArray(bRule.config) ? bRule.config : (typeof bRule.config === 'string' ? JSON.parse(bRule.config) : []);
-      
+
       const p = u.profile ? (typeof u.profile.get === 'function' ? u.profile.get({ plain: true }) : u.profile) : {};
       const joiningDate = p.dateOfJoining || p.date_of_joining;
 
       if (joiningDate) {
         const tenureMonths = calculateTenureMonths(joiningDate, monthKey);
-        
+
         // Find matching rule from config array
         const matchedBracket = bConfig.find(r => tenureMonths >= Number(r.min || 0) && tenureMonths <= Number(r.max || 999));
-        
+
         if (matchedBracket && Number(matchedBracket.percent) > 0) {
           const grossSalary_pre = sumObj(finalEarnings) + sumObj(finalIncentives);
           const bonusAmt = Math.round(grossSalary_pre * (Number(matchedBracket.percent) / 100));
@@ -995,7 +995,7 @@ async function generatePayslipPDF(data, savePath = null) {
   const department = user.profile ? user.profile.department : (user.department || '-');
   const designation = user.profile ? user.profile.designation : (user.designation || '-');
 
-  let businessName = 'ThinkTech Solutions';
+  let businessName = 'Thinktech Software';
   let logoHtml = '';
 
   if (user.orgAccount) {

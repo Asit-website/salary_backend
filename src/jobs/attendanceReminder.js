@@ -98,7 +98,7 @@ async function checkMissingAttendanceAndNotify() {
                 if (fullPhone.length === 10) fullPhone = '91' + fullPhone;
 
                 if (fullPhone.length >= 10) {
-                    const smsText = `Hi ${name}, attendance for ${dateStr} is missing for ${bizName} - {org.name} - vetansutra.com ( Powered by Thinktech Software company)`;
+                    const smsText = `Hi ${name}, attendance for ${dateStr} is missing for ${bizName} - vetansutra.com ( Powered by Thinktech Software company)`;
                     const smsUrl = `http://182.18.162.128/api/mt/SendSMS?APIKEY=85I1g6L9hEeIntNZgQRrzA&senderid=VETANS&channel=Trans&DCS=0&flashsms=0&number=${fullPhone}&text=${encodeURIComponent(smsText)}&route=08`;
 
                     console.log(`[ATTENDANCE REMINDER] Sending SMS to ${fullPhone}: ${smsText}`);
