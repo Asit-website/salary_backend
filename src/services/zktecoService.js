@@ -93,7 +93,7 @@ class ZktecoService {
         if (dayPunches.length === 0) return null;
 
         const firstIn = dayPunches[0].punch_time;
-        const lastOut = dayPunches[dayPunches.length - 1].punch_time;
+        const lastOut = dayPunches.length > 1 ? dayPunches[dayPunches.length - 1].punch_time : null;
 
         let totalWorkSeconds = 0;
         let totalBreakSeconds = 0;
