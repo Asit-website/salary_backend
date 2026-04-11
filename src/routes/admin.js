@@ -985,7 +985,7 @@ router.get('/payroll/:cycleId/salary-register-excel', async (req, res) => {
     const labelMap = {
       basic_salary: 'BASIC', da: 'Dearness Allow.', hra: 'House rent Allow.', medical_allowance: 'Medical Allowance',
       conveyance: 'Conveyance', conveyance_allowance: 'Conveyance', other_allowance: 'Other Allowance',
-      overtimePay: 'OT PAY', overtime_pay: 'OT PAY', earlyOvertimePay: 'Early OT', 
+      overtimePay: 'OT PAY', overtime_pay: 'OT PAY', earlyOvertimePay: 'Early OT',
       special_allowance: 'Special Allowance', travel_allowance: 'Travel Allowance',
       pf: 'P.F.', esi: 'E.S.I.', ptax: 'P.Tax', professional_tax: 'P.Tax', tds: 'T.D.S.', loan_advance: 'Loan/Advance',
       advance: 'Loan/Advance', latePunchInAmount: 'PUNCHIN PEN', earlyExitAmount: 'EXIT PEN', breakDeductionAmount: 'BREAK PEN'
@@ -2506,7 +2506,7 @@ router.post('/payroll/:cycleId/compute', async (req, res) => {
 
           // We'll need a way to track SLABS/Tiers across the month even with per-day rules
           // Since rules are usually stable for a user, we use a map to cache thresholds/counts per RuleID
-          const ruleCounts = {}; 
+          const ruleCounts = {};
           const tierCounts = new Array(lateTiers.length).fill(0);
 
           for (const a of atts) {
@@ -2566,7 +2566,7 @@ router.post('/payroll/:cycleId/compute', async (req, res) => {
                   }
                 }
               } else {
-                const tBase = thresholds.filter(x => diffMin >= Number(x.minMinutes)).sort((a,b) => Number(b.minMinutes)-Number(a.minMinutes))[0];
+                const tBase = thresholds.filter(x => diffMin >= Number(x.minMinutes)).sort((a, b) => Number(b.minMinutes) - Number(a.minMinutes))[0];
                 if (tBase) {
                   if (pType === 'FIXED_AMOUNT') latePenaltyAmount += Number(tBase.value || 0);
                   else if (pType === 'FIXED_AMOUNT_PER_HOUR') latePenaltyAmount += Number(tBase.value || 0) * Math.ceil(diffMin / 60);
@@ -2826,7 +2826,7 @@ router.post('/payroll/:cycleId/compute', async (req, res) => {
         if (assignment && assignment.rule && assignment.rule.active && String(assignment.rule.paymentMonth) === String(monthKey)) {
           const bRule = assignment.rule;
           const bConfig = Array.isArray(bRule.config) ? bRule.config : (typeof bRule.config === 'string' ? JSON.parse(bRule.config) : []);
-          
+
           const p = u.profile ? (typeof u.profile.get === 'function' ? u.profile.get({ plain: true }) : u.profile) : {};
           const joiningDate = p.dateOfJoining || p.date_of_joining;
 
@@ -2840,10 +2840,10 @@ router.post('/payroll/:cycleId/compute', async (req, res) => {
               tenureMonths--;
             }
             tenureMonths = Math.max(0, tenureMonths);
-            
+
             // Find matching rule from config array
             const matchedBracket = bConfig.find(r => tenureMonths >= Number(r.min || 0) && tenureMonths <= Number(r.max || 999));
-            
+
             const _sumObj = (o) => Object.values(o || {}).reduce((s, v) => s + (Number(v) || 0), 0);
             if (matchedBracket && Number(matchedBracket.percent) > 0) {
               const grossSalary_pre = _sumObj(finalE) + _sumObj(finalI);
@@ -2851,12 +2851,12 @@ router.post('/payroll/:cycleId/compute', async (req, res) => {
               if (bonusAmt > 0) {
                 finalE.TENURE_BONUS = bonusAmt;
                 tenureBonusMeta = {
-                    amount: bonusAmt,
-                    tenureMonths,
-                    bracketPercent: Number(matchedBracket.percent),
-                    bracketMin: Number(matchedBracket.min),
-                    bracketMax: Number(matchedBracket.max),
-                    ruleName: bRule.name
+                  amount: bonusAmt,
+                  tenureMonths,
+                  bracketPercent: Number(matchedBracket.percent),
+                  bracketMin: Number(matchedBracket.min),
+                  bracketMax: Number(matchedBracket.max),
+                  ruleName: bRule.name
                 };
                 try {
                   require('fs').appendFileSync('payroll_debug.log', `[Admin-Bonus] SUCCESS: User ${u.id}, Rule=${bRule.name}, Joining=${joiningDate}, Tenure=${tenureMonths}mo, Bracket=${matchedBracket.percent}%, Bonus=${bonusAmt}\n`);
@@ -2877,12 +2877,12 @@ router.post('/payroll/:cycleId/compute', async (req, res) => {
             } catch (_) { }
           }
         } else {
-            // Log only if assignment was found but rule/month didn't match
-            if (assignment) {
-               try {
-                 require('fs').appendFileSync('payroll_debug.log', `[Admin-Bonus] SKIP: User ${u.id}, Rule Active=${assignment.rule?.active}, RuleMonth=${assignment.rule?.paymentMonth}, TargetMonth=${monthKey}\n`);
-               } catch (_) { }
-            }
+          // Log only if assignment was found but rule/month didn't match
+          if (assignment) {
+            try {
+              require('fs').appendFileSync('payroll_debug.log', `[Admin-Bonus] SKIP: User ${u.id}, Rule Active=${assignment.rule?.active}, RuleMonth=${assignment.rule?.paymentMonth}, TargetMonth=${monthKey}\n`);
+            } catch (_) { }
+          }
         }
       } catch (e) {
         console.error(`[Admin-Payroll-Bonus] Failed to calculate bonus for staff ${u.id}: ${e.message}`);
@@ -9127,9 +9127,9 @@ router.get('/settings/bonus-assignments', async (req, res) => {
     const orgId = requireOrg(req, res); if (!orgId) return;
     const assignments = await StaffTenureBonusAssignment.findAll({
       include: [
-        { 
-          model: User, 
-          as: 'user', 
+        {
+          model: User,
+          as: 'user',
           where: { orgAccountId: orgId },
           include: [{ model: StaffProfile, as: 'profile' }]
         },
@@ -9146,7 +9146,7 @@ router.post('/settings/bonus-assign', async (req, res) => {
   try {
     const orgId = requireOrg(req, res); if (!orgId) return;
     const { userId, tenureBonusRuleId, effectiveFrom, effectiveTo } = req.body;
-    
+
     if (!userId || !tenureBonusRuleId || !effectiveFrom) {
       return res.status(400).json({ success: false, message: 'userId, tenureBonusRuleId, and effectiveFrom are required' });
     }
@@ -9178,7 +9178,7 @@ router.delete('/settings/bonus-assignments/:id', async (req, res) => {
       include: [{ model: User, as: 'user', where: { orgAccountId: orgId } }],
       where: { id }
     });
-    
+
     if (!assignment) return res.status(404).json({ success: false, message: 'Assignment not found' });
 
     await assignment.destroy();
@@ -10094,15 +10094,15 @@ router.get('/attendance', async (req, res) => {
             const shiftEndSec = eh * 3600 + em * 60 + (es || 0);
 
             if (punchOutSec < shiftEndSec) {
-                earlyExitMinutes = Math.floor((shiftEndSec - punchOutSec) / 60);
+              earlyExitMinutes = Math.floor((shiftEndSec - punchOutSec) / 60);
             }
           }
 
           // Penalty Resolution (Conditional)
           if (latePunchInMinutes > 0) {
-            const userLateAsg = latePunchInAssignments.find(asg => 
-              String(asg.userId) === String(r.userId) && 
-              String(r.date) >= String(asg.effectiveFrom) && 
+            const userLateAsg = latePunchInAssignments.find(asg =>
+              String(asg.userId) === String(r.userId) &&
+              String(r.date) >= String(asg.effectiveFrom) &&
               (!asg.effectiveTo || String(r.date) <= String(asg.effectiveTo))
             );
             const activeRule = userLateAsg?.rule;
@@ -10152,7 +10152,7 @@ router.get('/attendance', async (req, res) => {
                 }
               }
             } else if (lateRuleActive && !userLateAsg) {
-               // Global fallback penalty check if needed (current logic mostly uses per-user assignment)
+              // Global fallback penalty check if needed (current logic mostly uses per-user assignment)
             }
           }
         }
@@ -11633,15 +11633,15 @@ router.post('/test-email', async (req, res) => {
 
         to: testEmail,
 
-        subject: 'Test Email - ThinkTech Solutions',
+        subject: 'Test Email - Thinktech Software',
 
-        text: `This is a simple test email from ThinkTech Solutions.
+        text: `This is a simple test email from Thinktech Software.
 
 
 
 Staff Name: Test User
 
-Organization: ThinkTech Solutions
+Organization: Thinktech Software
 
 Password: 123456
 
@@ -11671,7 +11671,7 @@ If you receive this email, the email system is working properly!`
 
         'Test User',
 
-        'ThinkTech Solutions',
+        'Thinktech Software',
 
         { password: '123456', staffId: 'TEST001' }
 
@@ -12264,7 +12264,7 @@ router.post('/staff', requireRole(['admin', 'staff']), async (req, res) => {
 
           name || 'Staff Member',
 
-          'ThinkTech Solutions',
+          'Thinktech Software',
 
           staffCredentials
 
@@ -12308,7 +12308,7 @@ router.post('/staff', requireRole(['admin', 'staff']), async (req, res) => {
 
         name || 'Staff Member',
 
-        'ThinkTech Solutions'
+        'Thinktech Software'
 
       );
 
@@ -17853,7 +17853,7 @@ router.get('/reports/org-attendance-matrix', async (req, res) => {
         const d = new Date(startDate.getFullYear(), startDate.getMonth(), i);
         const dateKey = formatLocalISO(d);
         const record = attendanceData.find(a => a.userId === staff.id && a.date === dateKey);
-        
+
         // Initialize daily details
         details[staff.id][dateKey] = { late: 0, ot: 0, status: '-' };
 
@@ -17879,7 +17879,7 @@ router.get('/reports/org-attendance-matrix', async (req, res) => {
             if (!shiftTpl && staff.profile?.shiftSelection) {
               shiftTpl = shiftTemplateMap[Number(staff.profile.shiftSelection)];
             }
-            
+
             // Late Punch In Minutes (Unconditional)
             if (shiftTpl?.startTime && (record.punchedInAt || record.checkIn)) {
               const punchInRaw = record.punchedInAt || (record.date + ' ' + record.checkIn);
@@ -17894,7 +17894,7 @@ router.get('/reports/org-attendance-matrix', async (req, res) => {
                 const lateMins = Math.floor((punchInSec - shiftStartSec) / 60);
                 summary[staff.id].lateMinutes += lateMins;
                 details[staff.id][dateKey].late = lateMins;
-                
+
                 if (lateRuleActive) {
                   for (let tIdx = 0; tIdx < lateTiers.length; tIdx++) {
                     const tier = lateTiers[tIdx];
@@ -22791,10 +22791,10 @@ router.put('/settings/bonus', async (req, res) => {
   try {
     const orgId = requireOrg(req, res); if (!orgId) return;
     const payload = req.body || {};
-    
+
     // Validation
     if (payload.paymentMonth && !/^\d{4}-\d{2}$/.test(payload.paymentMonth)) {
-        return res.status(400).json({ success: false, message: 'Invalid paymentMonth format (YYYY-MM)' });
+      return res.status(400).json({ success: false, message: 'Invalid paymentMonth format (YYYY-MM)' });
     }
 
     const [row, created] = await AppSetting.findOrCreate({

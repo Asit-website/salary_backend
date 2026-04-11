@@ -1,0 +1,127 @@
+
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+        <meta charset="UTF-8">
+        <title>User Manual - Payroll System</title>
+        <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+        <style>
+            body {
+                font-family: 'Segoe UI', Arial, sans-serif;
+                line-height: 1.6;
+                color: #333;
+                max-width: 900px;
+                margin: 0 auto;
+                padding: 40px;
+            }
+            h1 { color: #2c3e50; border-bottom: 2px solid #3498db; padding-bottom: 10px; text-align: center; }
+            h2 { color: #2980b9; margin-top: 30px; border-left: 5px solid #3498db; padding-left: 15px; }
+            h3 { color: #16a085; }
+            pre { background: #f4f4f4; padding: 15px; border-radius: 5px; overflow-x: auto; }
+            code { background: #f4f4f4; padding: 2px 5px; border-radius: 3px; font-family: monospace; }
+            table { width: 100%; border-collapse: collapse; margin: 20px 0; }
+            th, td { border: 1px solid #ddd; padding: 12px; text-align: left; }
+            th { background-color: #f2f2f2; }
+            .note { background-color: #e7f3fe; border-left: 6px solid #2196F3; padding: 10px 20px; margin: 15px 0; }
+            blockquote { background: #f9f9f9; border-left: 10px solid #ccc; margin: 1.5em 10px; padding: 0.5em 10px; }
+            @media print { .page-break { page-break-before: always; } }
+            /* Mermaid styling */
+            .mermaid { display: flex; justify-content: center; margin: 20px 0; }
+        </style>
+    </head>
+    <body>
+        <h1>Thinktech Attendance - Payroll User Manual (v1.0)</h1>
+<p>Welcome to the <strong>Payroll Management System</strong>. This guide will walk you through setting up, processing, and finalizing monthly payroll for your organization.</p>
+<hr>
+<h2>📅 Monthly Payroll Workflow</h2>
+<ol>
+<li><strong>Setup</strong>: Define Salary Templates and Automation Rules.</li>
+<li><strong>Assign</strong>: Link Staff members to their Templates and Rules.</li>
+<li><strong>Generate</strong>: Create a Monthly Cycle and click &quot;Compute&quot;.</li>
+<li><strong>Review</strong>: Verify attendance-based deductions and overtime rewards.</li>
+<li><strong>Finalize</strong>: Update status to &quot;PAID&quot; and export reports.</li>
+</ol>
+<hr>
+<h2>🛠️ Step 1: Configuration</h2>
+<h3>1.1 Managing Salary Templates</h3>
+<p>To define the standard earning/deduction structure:</p>
+<ol>
+<li>Navigate to <strong>Payroll &gt; Salary Templates</strong>.</li>
+<li>Click <strong>Create Template</strong>.</li>
+<li><strong>Earnings</strong>: Enter fixed components like Basic Salary, HRA, etc. (Set to 0 if amount varies per user).</li>
+<li><strong>Deductions</strong>: <ul>
+<li><strong>PF (Provident Fund)</strong>: Set Employee &amp; Employer contribution percentages (e.g., 12%).</li>
+<li><strong>ESI</strong>: Set percentages (e.g., 0.75% Employee, 3.25% Employer).</li>
+<li><strong>Professional Tax</strong>: Define slabs based on total earnings.</li>
+</ul>
+</li>
+<li>Save the template.</li>
+</ol>
+<h3>1.2 Automation Rules (Penalties &amp; Bonuses)</h3>
+<p>Control how attendance affects salary automatically:</p>
+<ol>
+<li>Go to <strong>Settings &gt; Automation Rules</strong>.</li>
+<li><strong>Late Punch-In</strong>: Set buffers (e.g., 15 mins grace) and penalty slabs (e.g., 3 lates = 0.5 day deduction).</li>
+<li><strong>Overtime</strong>: Choose calculation type (Post-Payable Hours or Shift-End) and multipliers.</li>
+<li><strong>Tenure Bonus</strong>: Define loyalty rewards for employees based on months completed.</li>
+</ol>
+<hr>
+<h2>⚡ Step 2: Monthly Processing</h2>
+<h3>2.1 Generating a Cycle</h3>
+<p>Each month requires a fresh &quot;Cycle&quot;:</p>
+<ol>
+<li>Navigate to <strong>Payroll &gt; Payroll Cycles</strong>.</li>
+<li>Click <strong>Generate Cycle</strong>.</li>
+<li>Select the <strong>Month</strong> and <strong>Year</strong>.</li>
+<li>The system will create draft salary lines for all active staff members.</li>
+</ol>
+<h3>2.2 Computing Net Salary</h3>
+<ol>
+<li>Open the Draft Cycle.</li>
+<li>Click the <strong>Compute All</strong> button.</li>
+<li><strong>The Magic Happens</strong>: The system fetches attendance for the entire month, checks against your Automation Rules, calculates taxes (ESI/PF/PT), and derives the <strong>Net Salary</strong>.</li>
+</ol>
+<hr>
+<h2>✅ Step 3: Review &amp; Disbursement</h2>
+<h3>3.1 Verifying Payroll Lines</h3>
+<p>Click on any staff member&#39;s name to see the breakdown:</p>
+<ul>
+<li><strong>Attendance Summary</strong>: Total present days, half-days, and unpaid leaves.</li>
+<li><strong>Rule Deductions</strong>: See exactly why a penalty was applied (e.g., &quot;Late 45 minutes&quot;).</li>
+<li><strong>Manual Adjustments</strong>: You can add one-time Bonuses or Deductions to a line before finalizing.</li>
+</ul>
+<h3>3.2 Marking as Paid</h3>
+<p>Once reviews are complete:</p>
+<ol>
+<li>In the Cycle view, select staff members.</li>
+<li>Click <strong>Update Status &gt; PAID</strong>.</li>
+<li>Enter payment mode (Bank Transfer, Cash, etc.) and date.</li>
+</ol>
+<hr>
+<h2>📊 Step 4: Exports &amp; Reports</h2>
+<ul>
+<li><strong>Payslips</strong>: Download professional PDF slips for individual staff.</li>
+<li><strong>Salary Register</strong>: Export a complete Excel/CSV file of the month&#39;s payroll for bank upload or accounting.</li>
+<li><strong>Statutory Reports</strong>: Separate views for PF/ESI contribution summaries.</li>
+</ul>
+<hr>
+<blockquote>
+<p>[!TIP]
+<strong>Pro Tip</strong>: Use the &quot;Regenerate&quot; button on an individual line if attendance records were updated late to refresh the math for that specific user.</p>
+</blockquote>
+
+        <script>
+            mermaid.initialize({ startOnLoad: true, theme: 'default' });
+            // Look for pre code blocks with mermaid language and convert them
+            document.querySelectorAll('pre code.language-mermaid').forEach(el => {
+                const graphDef = el.textContent;
+                const parent = el.parentElement;
+                const div = document.createElement('div');
+                div.className = 'mermaid';
+                div.textContent = graphDef;
+                parent.replaceWith(div);
+            });
+        </script>
+    </body>
+    </html>
+    
