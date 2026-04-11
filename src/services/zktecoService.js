@@ -158,6 +158,9 @@ class ZktecoService {
             overtimeAmount = otResult.overtimeAmount;
             overtimeRuleId = otResult.overtimeRuleId;
             if (otResult.status) status = otResult.status;
+            
+            // If single punch (no check-out), ensure it's marked as PRESENT initially
+            if (!lastOut && status !== 'LEAVE') status = 'PRESENT';
 
             // 1.5 Early Overtime Calculation
             const eotResult = await earlyOvertimeService.calculateEarlyOvertime({
