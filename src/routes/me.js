@@ -5,6 +5,7 @@ const fs = require('fs');
 const path = require('path');
 const { User, StaffProfile, StaffShiftAssignment, ShiftTemplate, SalaryAccess, StaffAttendanceAssignment, AttendanceTemplate, StaffSalaryAssignment, SalaryTemplate, PayrollCycle, PayrollLine, ExpenseClaim } = require('../models');
 const { authRequired } = require('../middleware/auth');
+const { tenantEnforce } = require('../middleware/tenant');
 const { upload } = require('../upload');
 const { calculateSalary, generatePayslipPDF } = require('../services/payrollService');
 const { enrollFace } = require('../services/awsService');
@@ -12,6 +13,7 @@ const { enrollFace } = require('../services/awsService');
 const router = express.Router();
 
 router.use(authRequired);
+router.use(tenantEnforce);
 
 // Attendance-aware salary compute for the logged-in user
 // Attendance-aware salary compute for the logged-in user

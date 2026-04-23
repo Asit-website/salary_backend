@@ -5,6 +5,7 @@ const puppeteer = require('puppeteer');
 const { User, StaffProfile, Attendance, LeaveRequest, AppSetting, AttendanceTemplate, StaffAttendanceAssignment, StaffShiftAssignment, ShiftTemplate, StaffHolidayAssignment, HolidayTemplate, HolidayDate, StaffGeofenceAssignment, GeofenceTemplate, GeofenceSite, LocationPing, DeviceInfo, WeeklyOffTemplate, StaffWeeklyOffAssignment, AttendanceAutomationRule, OrgAccount, StaffRoster, StaffLatePunchInAssignment, LatePunchInRule } = require('../models');
 const { authRequired } = require('../middleware/auth');
 const { requireRole } = require('../middleware/roles');
+const { tenantEnforce } = require('../middleware/tenant');
 const { upload } = require('../upload');
 const earlyOvertimeService = require('../services/earlyOvertimeService');
 const latePunchInService = require('../services/latePunchInService');
@@ -12,6 +13,7 @@ const latePunchInService = require('../services/latePunchInService');
 const router = express.Router();
 
 router.use(authRequired);
+router.use(tenantEnforce);
 router.use(requireRole(['staff']));
 
 function todayKey(d = new Date()) {
@@ -113,9 +115,14 @@ function parseMonth(monthStr) {
 }
 
 function isoDate(d) {
-  const yyyy = d.getFullYear();
-  const mm = String(d.getMonth() + 1).padStart(2, '0');
-  const dd = String(d.getDate()).padStart(2, '0');
+  if (typeof d === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(d.trim())) {
+    return d.trim();
+  }
+  const dt = d instanceof Date ? d : new Date(d);
+  if (Number.isNaN(dt.getTime())) return null;
+  const yyyy = dt.getUTCFullYear();
+  const mm = String(dt.getUTCMonth() + 1).padStart(2, '0');
+  const dd = String(dt.getUTCDate()).padStart(2, '0');
   return `${yyyy}-${mm}-${dd}`;
 }
 
@@ -477,7 +484,7 @@ router.get('/status', async (req, res) => {
 
   const { calculateOvertime } = require('../services/overtimeService');
   const orgAccount = await OrgAccount.findByPk(req.user.orgAccountId);
-  
+
   if (record?.punchedInAt) {
     const otData = await calculateOvertime({ ...record.toJSON(), totalWorkHours: workSeconds / 3600 }, orgAccount, now);
     overtimeSeconds = (otData.overtimeMinutes || 0) * 60;
@@ -494,7 +501,7 @@ router.get('/status', async (req, res) => {
   if (!record?.status && record?.punchedInAt) {
     const totalWorkMinutes = Math.floor(workSeconds / 60);
     if (assignedShift) {
-       if (Number.isFinite(Number(assignedShift.halfDayThresholdMinutes)) && totalWorkMinutes < assignedShift.halfDayThresholdMinutes) {
+      if (Number.isFinite(Number(assignedShift.halfDayThresholdMinutes)) && totalWorkMinutes < assignedShift.halfDayThresholdMinutes) {
         dayStatus = (key === todayKey() && !record.punchedOutAt) ? 'PRESENT' : 'HALF_DAY';
       } else {
         dayStatus = 'PRESENT';
@@ -605,7 +612,7 @@ router.get('/history', async (req, res) => {
       where: { userId, date: { [Op.between]: [startKey, endKey] } },
       order: [['date', 'ASC']],
     });
-    const attMap = new Map(attendanceRows.map((r) => [isoDate(new Date(r.date)), r]));
+    const attMap = new Map(attendanceRows.map((r) => [isoDate(r.date), r]));
 
     const leaveRows = await LeaveRequest.findAll({
       where: { userId, status: 'APPROVED', startDate: { [Op.lte]: endKey }, endDate: { [Op.gte]: startKey } },
@@ -643,11 +650,11 @@ router.get('/history', async (req, res) => {
 
     // Late Rule Assignment Check
     const userLateAsg = await StaffLatePunchInAssignment.findOne({
-      where: { 
-        userId, 
-        orgAccountId: req.user.orgAccountId, 
+      where: {
+        userId,
+        orgAccountId: req.user.orgAccountId,
         active: true,
-        effectiveFrom: { [Op.lte]: new Date().toISOString().split('T')[0] } 
+        effectiveFrom: { [Op.lte]: new Date().toISOString().split('T')[0] }
       },
       include: [{ model: LatePunchInRule, as: 'rule' }],
       order: [['effectiveFrom', 'DESC']]
@@ -1188,7 +1195,7 @@ router.post('/punch-out', upload.single('photo'), async (req, res) => {
     const { calculateOvertime } = require('../services/overtimeService');
     const earlyExitService = require('../services/earlyExitService');
     const orgAccount = await OrgAccount.findByPk(req.user.orgAccountId);
-    
+
     const daysInMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
 
     // 1. Overtime Calculation
@@ -1219,7 +1226,7 @@ router.post('/punch-out', upload.single('photo'), async (req, res) => {
     }
 
     const address = req.body?.address ? String(req.body.address) : null;
-    
+
     await record.update({
       punchedOutAt: now,
       punchOutPhotoUrl: photoUrl,

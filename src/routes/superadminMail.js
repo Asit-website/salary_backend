@@ -5,7 +5,23 @@ const { tenantEnforce } = require('../middleware/tenant');
 const multer = require('multer');
 const ExcelJS = require('exceljs');
 
-const upload = multer({ storage: multer.memoryStorage() });
+const path = require('path');
+const fs = require('fs');
+
+const storage = multer.diskStorage({
+  destination: (req, file, cb) => {
+    const dir = 'uploads/mail-attachments';
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    cb(null, dir);
+  },
+  filename: (req, file, cb) => {
+    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1e9);
+    cb(null, uniqueSuffix + path.extname(file.originalname));
+  },
+});
+
+const upload = multer({ storage: storage });
+const excelUpload = multer({ storage: multer.memoryStorage() });
 
 const { authRequired } = require('../middleware/auth');
 const { requireRole } = require('../middleware/roles');
@@ -15,32 +31,47 @@ router.use(authRequired);
 router.use(requireRole(['superadmin']));
 
 // Start a Mailing Campaign
-router.post('/campaign', async (req, res) => {
+router.post('/campaign', upload.single('attachment'), async (req, res) => {
   const t = await sequelize.transaction();
   try {
     const { subject, body, recipientType, customEmails } = req.body;
+    const attachment = req.file;
 
     // 1. Create the campaign record
     const campaign = await MailCampaign.create({
       subject,
       body,
       status: 'PENDING',
-      createdBy: req.user.id
+      createdBy: req.user.id,
+      attachmentPath: attachment ? attachment.path : null,
+      attachmentName: attachment ? attachment.originalname : null
     }, { transaction: t });
 
     let recipients = [];
 
     if (recipientType === 'all_clients') {
-      // Fetch all active client business emails
+      // Fetch all active client business emails and names
       const clients = await OrgAccount.findAll({
-        attributes: ['businessEmail'],
+        attributes: ['businessEmail', 'businessName'],
         where: { status: 'ACTIVE' }
       });
       recipients = clients
-        .map(c => c.businessEmail)
-        .filter(email => !!email && email.includes('@'));
-    } else if (recipientType === 'custom' && Array.isArray(customEmails)) {
-      recipients = customEmails.filter(email => !!email && email.includes('@'));
+        .filter(c => !!c.businessEmail && c.businessEmail.includes('@'))
+        .map(c => ({ email: c.businessEmail, name: c.businessName }));
+    } else if (recipientType === 'custom') {
+      let emails = customEmails;
+      if (typeof emails === 'string') {
+        try {
+          emails = JSON.parse(emails);
+        } catch (e) {
+          emails = emails.split(',').map(e => e.trim());
+        }
+      }
+      if (Array.isArray(emails)) {
+        recipients = emails
+          .filter(email => !!email && email.includes('@'))
+          .map(email => ({ email, name: null }));
+      }
     }
 
     if (recipients.length === 0) {
@@ -49,9 +80,10 @@ router.post('/campaign', async (req, res) => {
     }
 
     // 2. Populate the MailQueue
-    const queueRecords = recipients.map(email => ({
+    const queueRecords = recipients.map(r => ({
       campaignId: campaign.id,
-      recipientEmail: email,
+      recipientEmail: r.email,
+      recipientName: r.name,
       status: 'PENDING'
     }));
 
@@ -70,9 +102,12 @@ router.post('/campaign', async (req, res) => {
 });
 
 // Start a Mailing Campaign via Excel Upload
-router.post('/campaign/excel', upload.single('file'), async (req, res) => {
-  if (!req.file) {
-    return res.status(400).json({ success: false, message: 'No file uploaded' });
+router.post('/campaign/excel', upload.fields([{ name: 'file', maxCount: 1 }, { name: 'attachment', maxCount: 1 }]), async (req, res) => {
+  const excelFile = req.files['file'] ? req.files['file'][0] : null;
+  const attachment = req.files['attachment'] ? req.files['attachment'][0] : null;
+
+  if (!excelFile) {
+    return res.status(400).json({ success: false, message: 'No excel file uploaded' });
   }
 
   const t = await sequelize.transaction();
@@ -81,18 +116,16 @@ router.post('/campaign/excel', upload.single('file'), async (req, res) => {
     
     // Parse Excel or CSV
     const workbook = new ExcelJS.Workbook();
-    const isCsv = req.file.originalname.toLowerCase().endsWith('.csv') || req.file.mimetype === 'text/csv';
+    const isCsv = excelFile.originalname.toLowerCase().endsWith('.csv') || excelFile.mimetype === 'text/csv';
     
     if (isCsv) {
-      // Use node-csv or similar if buffer fails, but exceljs csv.load expects a string or stream often
-      // For simplicity with exceljs:
-      const csvString = req.file.buffer.toString();
+      const csvString = fs.readFileSync(excelFile.path, 'utf8');
       const stream = require('stream');
       const bufferStream = new stream.PassThrough();
       bufferStream.end(csvString);
       await workbook.csv.read(bufferStream);
     } else {
-      await workbook.xlsx.load(req.file.buffer);
+      await workbook.xlsx.readFile(excelFile.path);
     }
     
     const worksheet = workbook.getWorksheet(1);
@@ -145,7 +178,9 @@ router.post('/campaign/excel', upload.single('file'), async (req, res) => {
       body,
       status: 'PENDING',
       createdBy: req.user.id,
-      totalRecipients: uniqueRecipients.length
+      totalRecipients: uniqueRecipients.length,
+      attachmentPath: attachment ? attachment.path : null,
+      attachmentName: attachment ? attachment.originalname : null
     }, { transaction: t });
 
     // 4. Populate Queue
@@ -159,7 +194,13 @@ router.post('/campaign/excel', upload.single('file'), async (req, res) => {
     await MailQueue.bulkCreate(queueRecords, { transaction: t });
 
     await t.commit();
-    res.json({ success: true, campaignId: campaign.id, totalRecipients: recipients.length });
+    
+    // Clean up excel file
+    if (excelFile && fs.existsSync(excelFile.path)) {
+        fs.unlinkSync(excelFile.path);
+    }
+
+    res.json({ success: true, campaignId: campaign.id, totalRecipients: uniqueRecipients.length });
   } catch (error) {
     await t.rollback();
     console.error('Error processing Excel mail campaign:', error);
@@ -326,6 +367,51 @@ router.get('/campaign/:id/export', async (req, res) => {
     res.end();
   } catch (error) {
     res.status(500).send(error.message);
+  }
+});
+
+// Resend a past campaign
+router.post('/campaign/:id/resend', async (req, res) => {
+  const t = await sequelize.transaction();
+  try {
+    const { id } = req.params;
+    const originalCampaign = await MailCampaign.findByPk(id);
+    if (!originalCampaign) {
+      return res.status(404).json({ success: false, message: 'Original campaign not found' });
+    }
+
+    // 1. Create a new campaign record copied from the original
+    const newCampaign = await MailCampaign.create({
+      subject: originalCampaign.subject,
+      body: originalCampaign.body,
+      status: 'PENDING',
+      createdBy: req.user.id,
+      attachmentPath: originalCampaign.attachmentPath,
+      attachmentName: originalCampaign.attachmentName,
+      totalRecipients: originalCampaign.totalRecipients
+    }, { transaction: t });
+
+    // 2. Fetch original recipients
+    const originalRecipients = await MailQueue.findAll({
+      where: { campaignId: id }
+    });
+
+    // 3. Populate new MailQueue with the same recipients
+    const newQueueRecords = originalRecipients.map(r => ({
+      campaignId: newCampaign.id,
+      recipientEmail: r.recipientEmail,
+      recipientName: r.recipientName,
+      status: 'PENDING'
+    }));
+
+    await MailQueue.bulkCreate(newQueueRecords, { transaction: t });
+
+    await t.commit();
+    res.json({ success: true, campaignId: newCampaign.id, totalRecipients: newQueueRecords.length });
+  } catch (error) {
+    await t.rollback();
+    console.error('Error resending campaign:', error);
+    res.status(500).json({ success: false, message: error.message });
   }
 });
 

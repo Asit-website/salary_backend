@@ -17,7 +17,7 @@ module.exports = (sequelize) => {
         allowNull: true,
         field: 'channel_partner_id'
       },
-      phone: { type: DataTypes.STRING(20), allowNull: false, unique: true },
+      phone: { type: DataTypes.STRING(20), allowNull: false },
       passwordHash: {
         type: DataTypes.STRING(255),
         allowNull: false,

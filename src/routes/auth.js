@@ -155,29 +155,73 @@ router.post('/verify-otp', async (req, res) => {
       return res.status(400).json({ success: false, message: 'phone and code required' });
     }
 
-    let v = otpStore.verifyOtp(String(normalizedPhone), String(code));
+    const { orgId } = req.body || {};
+    const allUsers = await User.findAll({ 
+      where: { phone: String(normalizedPhone) },
+      include: [{ model: OrgAccount, as: 'orgAccount' }]
+    });
 
-    // Special bypass for test number
-    if (normalizedPhone === '1231231232' && String(code) === '123456') {
-      v = { ok: true };
-    }
-
+    // Validate OTP
+    let v = otpStore.verifyOtp(String(normalizedPhone), String(code), { keep: (!orgId && allUsers.length > 1) });
     if (!v.ok) {
-      return res.status(401).json({ success: false, message: 'Invalid OTP' });
-    }
-
-    // Mark consumed in DB for the latest matching code
-    try {
       const row = await OtpVerify.findOne({ where: { phone: normalizedPhone, code: String(code) }, order: [['createdAt', 'DESC']] });
-      if (row) await row.update({ consumedAt: new Date() });
-    } catch (e) {
-      // ignore
+      if (!row || row.consumedAt || (new Date() - new Date(row.createdAt)) > 10 * 60 * 1000) {
+        return res.status(400).json({ success: false, message: 'Invalid or expired OTP' });
+      }
+      if (!orgId && allUsers.length > 1) {
+        // Don't consume yet
+      } else {
+        await row.update({ consumedAt: new Date() });
+      }
     }
 
-    const user = await User.findOne({ where: { phone: String(normalizedPhone) } });
-    if (!user) {
+    if (allUsers.length === 0) {
       return res.json({ success: true, requireSignup: true, phone: normalizedPhone });
     }
+
+    let user;
+    if (allUsers.length === 1) {
+      user = allUsers[0];
+    } else {
+      // Multiple users found
+      if (!orgId) {
+        // Return unique list of organizations
+        const orgMap = new Map();
+        allUsers.forEach(u => {
+          if (!u.orgAccountId) return;
+          const key = `${u.orgAccountId}-${u.role}`;
+          if (!orgMap.has(key)) {
+            orgMap.set(key, {
+              id: u.orgAccountId,
+              name: u.orgAccount?.name || `Organization ${u.orgAccountId}`,
+              role: u.role
+            });
+          }
+        });
+
+        const selectableOrgs = Array.from(orgMap.values());
+        
+        // If there's a superadmin/partner without orgId, they should also be selectable
+        const others = allUsers.filter(u => !u.orgAccountId).map(u => ({
+          id: null,
+          name: u.role === 'superadmin' ? 'Super Admin Panel' : 'Channel Partner Panel',
+          role: u.role
+        }));
+
+        return res.json({ 
+          success: true, 
+          requireSelection: true, 
+          organizations: [...selectableOrgs, ...others] 
+        });
+      } else {
+        // Find the specific user for this org
+        user = allUsers.find(u => String(u.orgAccountId) === String(orgId) || (orgId === 'null' && !u.orgAccountId));
+        if (!user) {
+          return res.status(400).json({ success: false, message: 'Invalid organization selection' });
+        }
+      }
+    }
+
     if (user.active === false) {
       return res.status(403).json({ success: false, message: 'User disabled' });
     }
@@ -197,17 +241,18 @@ router.post('/verify-otp', async (req, res) => {
           include: [{ model: Plan, as: 'plan' }],
         });
         if (!sub || new Date(sub.endAt) < now) {
-          return res.status(402).json({ success: false, message: 'Subscription expired' });
+          return res.status(402).json({ success: false, message: 'your Plan Expired pls renew' });
         }
       } catch (_) { }
     }
 
     const profile = await StaffProfile.findOne({ where: { userId: user.id } });
     const name = profile?.name || null;
+    const staffId = profile?.staffId || null;
 
     const secret = process.env.JWT_SECRET || 'dev_secret_change_me';
     const token = jwt.sign(
-      { id: user.id, role: user.role, phone: user.phone, name, orgAccountId: user.orgAccountId, channelPartnerId: user.channelPartnerId },
+      { id: user.id, role: user.role, phone: user.phone, name, staffId, orgAccountId: user.orgAccountId, channelPartnerId: user.channelPartnerId },
       secret,
       { expiresIn: process.env.JWT_EXPIRES_IN || '7d' }
     );
@@ -215,7 +260,7 @@ router.post('/verify-otp', async (req, res) => {
     return res.json({
       success: true,
       token,
-      user: { id: user.id, role: user.role, phone: user.phone, name, orgAccountId: user.orgAccountId, channelPartnerId: user.channelPartnerId },
+      user: { id: user.id, role: user.role, phone: user.phone, name, staffId, orgAccountId: user.orgAccountId, channelPartnerId: user.channelPartnerId },
     });
   } catch (e) {
     return res.status(500).json({ success: false, message: 'Failed to verify OTP' });
@@ -255,17 +300,18 @@ router.post('/login', async (req, res) => {
           include: [{ model: Plan, as: 'plan' }],
         });
         if (!sub || new Date(sub.endAt) < now) {
-          return res.status(402).json({ success: false, message: 'Subscription expired' });
+          return res.status(402).json({ success: false, message: 'your Plan Expired pls renew' });
         }
       } catch (_) { }
     }
 
     const profile = await StaffProfile.findOne({ where: { userId: user.id } });
     const name = profile?.name || null;
+    const staffId = profile?.staffId || null;
 
     const secret = process.env.JWT_SECRET || 'dev_secret_change_me';
     const token = jwt.sign(
-      { id: user.id, role: user.role, phone: user.phone, name, orgAccountId: user.orgAccountId, channelPartnerId: user.channelPartnerId },
+      { id: user.id, role: user.role, phone: user.phone, name, staffId, orgAccountId: user.orgAccountId, channelPartnerId: user.channelPartnerId },
       secret,
       { expiresIn: process.env.JWT_EXPIRES_IN || '7d' }
     );
@@ -273,7 +319,7 @@ router.post('/login', async (req, res) => {
     return res.json({
       success: true,
       token,
-      user: { id: user.id, role: user.role, phone: user.phone, name, orgAccountId: user.orgAccountId, channelPartnerId: user.channelPartnerId },
+      user: { id: user.id, role: user.role, phone: user.phone, name, staffId, orgAccountId: user.orgAccountId, channelPartnerId: user.channelPartnerId },
     });
   } catch (e) {
     return res.status(500).json({ success: false, message: 'Login failed' });
@@ -294,16 +340,18 @@ router.post('/signup-admin', async (req, res) => {
 
     const normalizedPhone = normalizePhone(phone);
 
-    // Check if phone number already exists in either User or OrgAccount table
-    const existingUser = await User.findOne({ where: { phone: String(normalizedPhone) } });
-    const existingOrg = await OrgAccount.findOne({ where: { phone: String(normalizedPhone) } });
-
-    if (existingUser || existingOrg) {
+    // Check if phone number already exists as a staff member
+    const existingStaff = await User.findOne({ where: { phone: String(normalizedPhone), role: 'staff' } });
+    if (existingStaff) {
       return res.status(400).json({
         success: false,
-        message: 'Phone number already exists in the system'
+        message: 'Phone number is already registered as a staff member.'
       });
     }
+
+    // Note: We allow multiple ADMINS with same phone for DIFFERENT organizations.
+    // We will check if an admin already exists for THIS specific signup attempt (though signup creates a new org)
+    // Actually, we just need to ensure we don't block the signup if an admin exists for another org.
 
     await validateChannelPartnerMapping({ phone: normalizedPhone, channelPartnerId });
 

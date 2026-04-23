@@ -52,16 +52,16 @@ const sendWelcomeEmail = async (staffEmail, staffName, organizationName, staffCr
     console.log(`📧 Credentials: Password=${staffCredentials.password}, StaffID=${staffCredentials.staffId}`);
 
     const mailOptions = {
-      from: `"${emailFrom.name}" <${emailFrom.address}>`,
+      from: `"${organizationName}" <${emailFrom.address}>`,
       to: staffEmail,
-      subject: 'Welcome to Thinktech Software - Your Account Details',
+      subject: `Welcome to ${organizationName} - Your Account Details`,
       html: `
         <!DOCTYPE html>
         <html>
         <head>
           <meta charset="utf-8">
           <meta name="viewport" content="width=device-width, initial-scale=1.0">
-          <title>Welcome to Thinktech Software</title>
+          <title>Welcome to ${organizationName}</title>
           <style>
             body {
               font-family: 'Arial', sans-serif;
@@ -135,13 +135,13 @@ const sendWelcomeEmail = async (staffEmail, staffName, organizationName, staffCr
         <body>
           <div class="container">
             <div class="header">
-              <h1>Welcome to Thinktech Software</h1>
+              <h1>Welcome to ${organizationName}</h1>
             </div>
             
             <div class="content">
               <div class="welcome-message">
                 <p>Dear <strong>${staffName}</strong>,</p>
-                <p>We are delighted to welcome you to the Thinktech Software family! Your account has been successfully created in our attendance and payroll management system.</p>
+                <p>We are delighted to welcome you to the ${organizationName} family! Your account has been successfully created in our attendance and payroll management system.</p>
                 <p>Below are your login credentials for accessing the system:</p>
               </div>
               
@@ -186,14 +186,14 @@ const sendWelcomeEmail = async (staffEmail, staffName, organizationName, staffCr
                 <p>We look forward to working with you!</p>
                 
                 <p>Best regards,<br>
-                <strong>Thinktech Software Team</strong><br>
+                <strong>${organizationName} Team</strong><br>
                 HR Department</p>
               </div>
             </div>
             
             <div class="footer">
               <p>This is an automated message. Please do not reply to this email.</p>
-              <p>&copy; 2024 Thinktech Software. All rights reserved.</p>
+              <p>&copy; 2024 ${organizationName}. All rights reserved.</p>
             </div>
           </div>
         </body>
@@ -223,9 +223,9 @@ const sendAdminNotification = async (adminEmail, staffName, organizationName) =>
     console.log(`📧 Sending admin notification to: ${adminEmail}`);
 
     const mailOptions = {
-      from: `"${emailFrom.name}" <${emailFrom.address}>`,
+      from: `"${organizationName}" <${emailFrom.address}>`,
       to: adminEmail,
-      subject: 'New Staff Member Added - Thinktech Software',
+      subject: `New Staff Member Added - ${organizationName}`,
       html: `
         <!DOCTYPE html>
         <html>
@@ -297,12 +297,12 @@ const sendAdminNotification = async (adminEmail, staffName, organizationName) =>
               <p>Please ensure that the new staff member is properly onboarded and trained on how to use the system.</p>
               
               <p>Best regards,<br>
-              <strong>Thinktech Software Team</strong></p>
+              <strong>${organizationName} Team</strong></p>
             </div>
             
             <div class="footer">
               <p>This is an automated message. Please do not reply to this email.</p>
-              <p>&copy; 2024 Thinktech Software. All rights reserved.</p>
+              <p>&copy; 2024 ${organizationName}. All rights reserved.</p>
             </div>
           </div>
         </body>

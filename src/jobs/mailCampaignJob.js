@@ -1,5 +1,6 @@
 const { MailQueue, MailCampaign, sequelize } = require('../models');
 const nodemailer = require('nodemailer');
+const fs = require('fs');
 
 // Reuse existing SMTP configuration (assuming emailService export or similar)
 const emailConfig = {
@@ -41,15 +42,31 @@ const processMailQueue = async () => {
 
     // Insert tracking pixel
     const trackingUrl = `${process.env.BACKEND_URL || 'https://backend.vetansutra.com'}/superadmin/mail/track/${pendingMail.id}.gif`;
-    const bodyWithTracking = `${campaign.body}<img src="${trackingUrl}" width="1" height="1" style="display:none;" />`;
+    
+    // Placeholder replacement
+    let personalizedBody = campaign.body
+      .replace(/{{name}}/g, recipientName || 'Customer')
+      .replace(/{{email}}/g, recipientEmail);
 
-    // Send the email
-    await transporter.sendMail({
+    const bodyWithTracking = `${personalizedBody}<img src="${trackingUrl}" width="1" height="1" style="display:none;" />`;
+
+    const mailOptions = {
       from: `"${process.env.EMAIL_FROM_NAME || 'ThinkTech Software'}" <${process.env.EMAIL_FROM_ADDRESS || 'info@vetansutra.com'}>`,
       to: recipientName ? `${recipientName} <${recipientEmail}>` : recipientEmail,
-      subject: campaign.subject,
+      subject: campaign.subject.replace(/{{name}}/g, recipientName || 'Customer').replace(/{{email}}/g, recipientEmail),
       html: bodyWithTracking
-    });
+    };
+
+    // Add attachment if exists
+    if (campaign.attachmentPath && fs.existsSync(campaign.attachmentPath)) {
+      mailOptions.attachments = [{
+        filename: campaign.attachmentName || 'attachment',
+        path: campaign.attachmentPath
+      }];
+    }
+
+    // Send the email
+    await transporter.sendMail(mailOptions);
 
     // Mark as SENT
     await pendingMail.update({

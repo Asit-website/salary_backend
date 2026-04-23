@@ -212,42 +212,14 @@ async function computeLatePenaltyMeta({ userId, monthKey, orgAccount, baseSalary
   let totalLateDays = 0;
 
   const latePunchInService = require('./latePunchInService');
-
-  for (const row of rows) {
-    if (!row.punchedInAt) continue;
-
-    // Evaluate lateness and penalty via service
-    const lpResult = await latePunchInService.calculateLatePenalty(row, orgAccount, row.punchedInAt, daysInMonth);
-
-    const rowLateMinutes = lpResult.latePunchInMinutes || 0;
-    const rowLateAmount = lpResult.latePunchInAmount || 0;
-
-    // 1. Unconditionally increment frequency if late
-    if (rowLateMinutes > 0) {
-      lateCount += 1;
-      totalLateMinutes += rowLateMinutes;
-    }
-
-    // 2. Aggregate penalty details only if a rule was involved (or amount returned)
-    if (rowLateAmount > 0) {
-      totalLatePenalty += rowLateAmount;
-
-      const rule = lpResult.rule;
-      const tier = lpResult.tier;
-
-      if (tier && (tier.deduction || tier.value)) {
-        totalLateDays += Number(tier.deduction || (rule?.penaltyType === 'HALF_DAY' ? 0.5 : (rule?.penaltyType === 'FULL_DAY' ? 1.0 : 0)));
-      } else if (dailySalary > 0) {
-        totalLateDays += (rowLateAmount / dailySalary);
-      }
-    }
-  }
+  const lp = await latePunchInService.calculateMonthlyLateDetails(userId, orgAccount.id, monthKey, rows, dailySalary);
 
   return {
-    latePunchInMinutes: totalLateMinutes,
-    latePunchInPenalty: parseFloat(totalLatePenalty.toFixed(2)),
-    latePenaltyDays: parseFloat(totalLateDays.toFixed(2)),
-    lateCount
+    latePunchInMinutes: lp.lateCount > 0 ? lp.rows.reduce((sum, r) => sum + (r.latePunchInMinutes || 0), 0) : 0,
+    latePunchInPenalty: lp.totalPenalty,
+    latePenaltyDays: lp.totalDays,
+    lateCount: lp.lateCount,
+    lateDetails: lp.rows.filter(r => r.latePunchInMinutes > 0) // Optional: for debugging or extended response
   };
 }
 
@@ -390,7 +362,7 @@ async function calculateSalary(userId, monthKey) {
         deductions = { ...(deductions || {}), break_penalty: br.breakPenalty };
       }
 
-      if (lp.latePunchInPenalty > 0) {
+      if (lp.latePunchInPenalty > 0 && !Number(deductions?.late_punchin_penalty || 0)) {
         deductions = { ...(deductions || {}), late_punchin_penalty: lp.latePunchInPenalty };
       }
 

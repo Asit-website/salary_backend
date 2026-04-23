@@ -15,7 +15,7 @@ function setOtp(phone, code, ttlMs) {
   store.set(String(key), { code: String(code), expiresAt: nowMs() + ttlMs });
 }
 
-function verifyOtp(phone, code) {
+function verifyOtp(phone, code, options = {}) {
   const key = normalizePhone(phone);
   const rec = store.get(String(key));
   if (!rec) return { ok: false, reason: 'missing' };
@@ -24,7 +24,7 @@ function verifyOtp(phone, code) {
     return { ok: false, reason: 'expired' };
   }
   if (String(code) !== rec.code) return { ok: false, reason: 'invalid' };
-  store.delete(String(key));
+  if (!options.keep) store.delete(String(key));
   return { ok: true };
 }
 

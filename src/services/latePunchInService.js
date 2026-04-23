@@ -92,6 +92,9 @@ class LatePunchInService {
     }
 
     // 3. Calculate Deduction Amount (Only if rule exists and late)
+    const buffer = Number(finalRule?.bufferMinutes || 0);
+    const effectiveLateMinutes = Math.max(0, latePunchInMinutes - buffer);
+
     let deductionAmount = 0;
     const user = await User.findByPk(userId);
     const baseSalary = Number(user?.grossSalary || user?.basicSalary || 0) + (user?.grossSalary ? 0 : Number(user?.da || 0));
@@ -106,7 +109,7 @@ class LatePunchInService {
 
     let matchedTier = null;
     if (pType === 'SLABS') {
-        const tier = thresholds.find(t => latePunchInMinutes >= Number(t.minMinutes) && latePunchInMinutes <= Number(t.maxMinutes));
+        const tier = thresholds.find(t => effectiveLateMinutes >= Number(t.minMinutes) && effectiveLateMinutes <= Number(t.maxMinutes));
         if (tier) {
             matchedTier = tier;
             if (Number(tier.frequency || 0) === 1) {
@@ -114,32 +117,32 @@ class LatePunchInService {
             }
         }
     } else if (pType === 'FIXED_AMOUNT') {
-        const threshold = thresholds.find(t => latePunchInMinutes >= Number(t.minMinutes));
+        const threshold = thresholds.find(t => effectiveLateMinutes >= Number(t.minMinutes));
         if (threshold) {
             matchedTier = threshold;
             deductionAmount = Number(threshold.value || 0);
         }
     } else if (pType === 'FIXED_AMOUNT_PER_HOUR') {
-        const threshold = thresholds.find(t => latePunchInMinutes >= Number(t.minMinutes));
+        const threshold = thresholds.find(t => effectiveLateMinutes >= Number(t.minMinutes));
         if (threshold) {
             matchedTier = threshold;
-            const hours = Math.ceil(latePunchInMinutes / 60);
+            const hours = Math.ceil(effectiveLateMinutes / 60);
             deductionAmount = Number(threshold.value || 0) * hours;
         }
     } else if (pType === 'HALF_DAY') {
-        const threshold = thresholds.find(t => latePunchInMinutes >= Number(t.minMinutes));
+        const threshold = thresholds.find(t => effectiveLateMinutes >= Number(t.minMinutes));
         if (threshold) {
             matchedTier = threshold;
             deductionAmount = dailySalary / 2;
         }
     } else if (pType === 'FULL_DAY') {
-        const threshold = thresholds.find(t => latePunchInMinutes >= Number(t.minMinutes));
+        const threshold = thresholds.find(t => effectiveLateMinutes >= Number(t.minMinutes));
         if (threshold) {
             matchedTier = threshold;
             deductionAmount = dailySalary;
         }
     } else if (pType === 'SALARY_MULTIPLIER') {
-        const threshold = thresholds.find(t => latePunchInMinutes >= Number(t.minMinutes));
+        const threshold = thresholds.find(t => effectiveLateMinutes >= Number(t.minMinutes));
         if (threshold) {
             matchedTier = threshold;
             const hourlySalary = dailySalary / 8; // Assuming 8-hour workday
@@ -147,14 +150,103 @@ class LatePunchInService {
         }
     }
 
-    console.log(`[LatePunchInService] User: ${userId}, Late: ${latePunchInMinutes}m, Type: ${pType}, Amount: ${deductionAmount.toFixed(2)}`);
+    console.log(`[LatePunchInService] User: ${userId}, Raw Late: ${latePunchInMinutes}m, Buffer: ${buffer}m, Effective: ${effectiveLateMinutes}m, Type: ${pType}, Amount: ${deductionAmount.toFixed(2)}`);
 
     return {
       latePunchInMinutes,
+      effectiveLateMinutes,
+      bufferMinutes: buffer,
       latePunchInAmount: parseFloat(deductionAmount.toFixed(2)),
       latePunchInRuleId: finalRule.id,
       tier: matchedTier,
       rule: finalRule
+    };
+  }
+  /**
+   * Processes a month's worth of attendance for a user and calculates late penalties
+   * with occurrence tracking (e.g., "Every 3 times").
+   */
+  async calculateMonthlyLateDetails(userId, orgAccountId, monthKey, attendanceRows, dailySalary) {
+    if (!attendanceRows || attendanceRows.length === 0) {
+      return { rows: [], totalPenalty: 0, totalDays: 0, lateCount: 0 };
+    }
+
+    const rows = [...attendanceRows].sort((a, b) => new Date(a.date) - new Date(b.date));
+    let totalPenalty = 0;
+    let totalDays = 0;
+    let lateCount = 0;
+
+    // We track occurrences per unique Rule+Tier combination
+    const ruleOccurrences = {}; // { "ruleId_tierIndex": count }
+
+    for (const row of rows) {
+      // 1. Calculate raw penalty for this specific day
+      // We pass 30 as default daysInMonth, but we primarily care about the matched rule and tier
+      const lp = await this.calculateLatePenalty(row, { id: orgAccountId }, new Date(), 30);
+      
+      row.latePunchInMinutes = lp.latePunchInMinutes || 0;
+      row.latePunchInAmount = 0; // Default to 0, will set if threshold met
+      row.lateOccurrence = null;
+
+      if (row.latePunchInMinutes > 0) {
+        lateCount++;
+        
+        const rule = lp.rule;
+        const tier = lp.tier;
+
+        if (rule && tier) {
+          const frequency = Number(tier.frequency || 1);
+          const tierKey = `${rule.id}_${JSON.stringify(tier)}`; // Unique key for this specific threshold
+          
+          ruleOccurrences[tierKey] = (ruleOccurrences[tierKey] || 0) + 1;
+          const currentCount = ruleOccurrences[tierKey];
+          
+          // Set occurrence string (e.g., "1/3")
+          row.lateOccurrence = `${currentCount}/${frequency}`;
+
+          // Check if penalty triggers this time
+          if (currentCount % frequency === 0) {
+            let rowPenalty = 0;
+            let rowDays = 0;
+
+            const pType = rule.penaltyType || 'SLABS';
+            if (pType === 'SLABS') {
+              rowDays = Number(tier.deduction || 0);
+              rowPenalty = dailySalary * rowDays;
+            } else if (pType === 'FIXED_AMOUNT') {
+              rowPenalty = Number(tier.value || 0);
+              rowDays = dailySalary > 0 ? (rowPenalty / dailySalary) : 0;
+            } else if (pType === 'FIXED_AMOUNT_PER_HOUR') {
+              const hours = Math.ceil(row.latePunchInMinutes / 60);
+              rowPenalty = Number(tier.value || 0) * hours;
+              rowDays = dailySalary > 0 ? (rowPenalty / dailySalary) : 0;
+            } else if (pType === 'HALF_DAY') {
+              rowDays = 0.5;
+              rowPenalty = dailySalary * 0.5;
+            } else if (pType === 'FULL_DAY') {
+              rowDays = 1.0;
+              rowPenalty = dailySalary;
+            } else if (pType === 'SALARY_MULTIPLIER') {
+              const hourlySalary = dailySalary / 8;
+              rowPenalty = hourlySalary * Number(tier.value || 0);
+              rowDays = dailySalary > 0 ? (rowPenalty / dailySalary) : 0;
+            }
+
+            row.latePunchInAmount = parseFloat(rowPenalty.toFixed(2));
+            row.lateOccurrence += ' (Deducted)';
+            
+            totalPenalty += rowPenalty;
+            totalDays += rowDays;
+          }
+        }
+      }
+    }
+
+    return {
+      rows,
+      totalPenalty: parseFloat(totalPenalty.toFixed(2)),
+      totalDays: parseFloat(totalDays.toFixed(2)),
+      lateCount
     };
   }
 }

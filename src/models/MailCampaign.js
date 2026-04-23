@@ -29,6 +29,16 @@ module.exports = (sequelize) => {
         allowNull: true,
         field: 'created_by'
       },
+      attachmentPath: {
+        type: DataTypes.STRING(500),
+        allowNull: true,
+        field: 'attachment_path'
+      },
+      attachmentName: {
+        type: DataTypes.STRING(255),
+        allowNull: true,
+        field: 'attachment_name'
+      },
     },
     {
       tableName: 'mail_campaigns',

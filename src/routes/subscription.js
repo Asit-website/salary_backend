@@ -33,6 +33,7 @@ router.post('/plans', authRequired, requireRole('superadmin'), async (req, res) 
       price,
       salesEnabled,
       geolocationEnabled,
+      expenseEnabled,
       maxGeolocationStaff,
       payrollEnabled,
       performanceEnabled,
@@ -54,6 +55,7 @@ router.post('/plans', authRequired, requireRole('superadmin'), async (req, res) 
       price,
       salesEnabled,
       geolocationEnabled,
+      expenseEnabled,
       maxGeolocationStaff,
       features,
       payrollEnabled,
@@ -91,6 +93,7 @@ router.put('/plans/:id', authRequired, requireRole('superadmin'), async (req, re
       price,
       salesEnabled,
       geolocationEnabled,
+      expenseEnabled,
       maxGeolocationStaff,
       payrollEnabled,
       performanceEnabled,
@@ -112,6 +115,7 @@ router.put('/plans/:id', authRequired, requireRole('superadmin'), async (req, re
       price,
       salesEnabled,
       geolocationEnabled,
+      expenseEnabled,
       maxGeolocationStaff,
       payrollEnabled,
       performanceEnabled,
@@ -147,12 +151,28 @@ router.post('/assign-subscription', authRequired, requireRole('superadmin'), asy
       return res.status(404).json({ success: false, message: 'Plan not found' });
     }
 
-    // Create or update subscription
+    // Check for existing active subscription to queue the new one if needed
+    const lastActiveSubscription = await Subscription.findOne({
+      where: { orgAccountId, status: 'ACTIVE' },
+      order: [['endAt', 'DESC']]
+    });
+
+    let newStartAt = startAt ? new Date(startAt) : new Date();
+    
+    // If there's an existing plan that hasn't expired yet, queue the new one after it
+    if (lastActiveSubscription && new Date(lastActiveSubscription.endAt) > new Date()) {
+      newStartAt = new Date(new Date(lastActiveSubscription.endAt).getTime() + 1000); // 1 second after last one
+    }
+
+    const effectivePeriodDays = plan.periodDays || 30;
+    const newEndAt = endAt ? new Date(endAt) : new Date(newStartAt.getTime() + effectivePeriodDays * 24 * 60 * 60 * 1000);
+
+    // Create new subscription
     const subscription = await Subscription.create({
       orgAccountId,
       planId,
-      startAt: startAt || new Date(),
-      endAt: endAt || new Date(Date.now() + 30 * 24 * 60 * 60 * 1000), // 30 days from now
+      startAt: newStartAt,
+      endAt: newEndAt,
       status: 'ACTIVE',
       staffLimit: plan.staffLimit,
       salesEnabled: plan.salesEnabled,
@@ -165,7 +185,8 @@ router.post('/assign-subscription', authRequired, requireRole('superadmin'), asy
       taskManagementEnabled: plan.taskManagementEnabled,
       rosterEnabled: plan.rosterEnabled,
       recruitmentEnabled: plan.recruitmentEnabled,
-      communityEnabled: plan.communityEnabled
+      communityEnabled: plan.communityEnabled,
+      maxGeolocationStaff: plan.maxGeolocationStaff
     });
 
     // Get updated subscription with plan
@@ -251,14 +272,24 @@ router.get('/subscription-info', authRequired, tenantEnforce, async (req, res) =
       return res.status(403).json({ success: false, message: 'Organization context required' });
     }
 
-    const subscription = await Subscription.findOne({
+    const now = new Date();
+    const allActiveSubs = await Subscription.findAll({
       where: { orgAccountId, status: 'ACTIVE' },
-      order: [['endAt', 'DESC'], ['updatedAt', 'DESC']],
-      include: [{
-        model: Plan,
-        as: 'plan'
-      }]
+      order: [['endAt', 'DESC']],
+      include: [{ model: Plan, as: 'plan' }]
     });
+
+    // Find the one that is currently valid (most strict)
+    let subscription = allActiveSubs.find(s => {
+      const start = new Date(s.startAt);
+      const end = new Date(s.endAt);
+      return start <= now && end >= now;
+    });
+
+    // Fallback: If no strictly valid one, but we have ACTIVE ones, pick the latest
+    if (!subscription && allActiveSubs.length > 0) {
+      subscription = allActiveSubs[0];
+    }
 
     if (!subscription || !subscription.plan) {
       return res.status(404).json({

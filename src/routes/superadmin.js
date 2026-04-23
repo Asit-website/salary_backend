@@ -329,41 +329,44 @@ router.get('/clients/:id/plan-details', async (req, res) => {
   try {
     const clientId = req.params.id;
 
-    // Get latest subscription with plan details
-    const subscription = await Subscription.findOne({
-      where: { orgAccountId: clientId },
+    // Get all active/future subscriptions
+    const subscriptions = await Subscription.findAll({
+      where: { orgAccountId: clientId, status: 'ACTIVE' },
       include: [{
         model: Plan,
         as: 'plan'
       }],
-      order: [['endAt', 'DESC'], ['updatedAt', 'DESC']]
+      order: [['startAt', 'ASC']]
     });
 
-    if (!subscription) {
-      return res.json({
-        success: true,
-        planDetails: {
-          planName: null,
-          startDate: null,
-          endDate: null,
-          status: 'no_plan',
-          features: []
-        }
-      });
-    }
-
     const now = new Date();
-    const isExpired = new Date(subscription.endAt) < now;
 
-    return res.json({
-      success: true,
-      planDetails: {
-        planName: subscription.plan?.name || 'Unknown Plan',
-        startDate: subscription.startAt,
-        endDate: subscription.endAt,
-        status: isExpired ? 'expired' : 'active',
+    const formattedPlans = subscriptions.map(sub => {
+      const start = new Date(sub.startAt);
+      const end = new Date(sub.endAt);
+      
+      let status = 'active';
+      if (end < now) {
+        status = 'expired';
+      } else if (start > now) {
+        // If it starts in more than 24 hours, it's truly future
+        const diff = start.getTime() - now.getTime();
+        if (diff > 24 * 60 * 60 * 1000) {
+          status = 'future';
+        } else {
+          status = 'active'; // Bridge/Grace period
+        }
+      }
+
+      return {
+        id: sub.id,
+        planName: sub.plan?.name || 'Unknown Plan',
+        startDate: sub.startAt,
+        endDate: sub.endAt,
+        status,
+        staffLimit: sub.staffLimit || sub.plan?.staffLimit || 0,
         features: (() => {
-          const features = subscription.plan?.features || [];
+          const features = sub.plan?.features || [];
           if (Array.isArray(features)) return features;
           if (typeof features === 'string') {
             try {
@@ -374,9 +377,15 @@ router.get('/clients/:id/plan-details', async (req, res) => {
           }
           return [];
         })()
-      }
+      };
+    });
+
+    return res.json({
+      success: true,
+      plans: formattedPlans
     });
   } catch (e) {
+    console.error('Plan details error:', e);
     return res.status(500).json({ success: false, message: 'Failed to load plan details' });
   }
 });
@@ -390,17 +399,17 @@ router.post('/clients', async (req, res) => {
     } = req.body || {};
     if (!name) return res.status(400).json({ success: false, message: 'name required' });
 
-    // Check if phone number already exists in either OrgAccount or User table
     const normalizedPhone = normalizePhone(phone);
 
     if (normalizedPhone) {
-      const existingOrg = await OrgAccount.findOne({ where: { phone: normalizedPhone } });
-      const existingUser = await User.findOne({ where: { phone: String(normalizedPhone) } });
+      // We only block if the phone is already used by a STAFF member.
+      // Multiple organizations can share the same admin phone number.
+      const existingStaff = await User.findOne({ where: { phone: String(normalizedPhone), role: 'staff' } });
 
-      if (existingOrg || existingUser) {
+      if (existingStaff) {
         return res.status(400).json({
           success: false,
-          message: 'Phone number already exists in the system'
+          message: 'Phone number is already registered as a staff member.'
         });
       }
     }
@@ -427,11 +436,9 @@ router.post('/clients', async (req, res) => {
       extra: extra || null,
     });
 
-    // Auto-provision an admin user for OTP login using the provided phone (if any)
     try {
-      const normalizedPhone = phone ? String(phone).replace(/[^0-9]/g, '').slice(-10) : null;
       if (normalizedPhone) {
-        let admin = await User.findOne({ where: { phone: String(normalizedPhone) } });
+        let admin = await User.findOne({ where: { phone: String(normalizedPhone), orgAccountId: row.id } });
         if (!admin) {
           const hash = await bcrypt.hash('123456', 10);
           admin = await User.create({ role: 'admin', orgAccountId: row.id, phone: String(normalizedPhone), passwordHash: hash, active: true });
@@ -453,6 +460,7 @@ router.post('/clients', async (req, res) => {
     } catch (_) { }
     return res.json({ success: true, client: row });
   } catch (e) {
+    console.error('Error creating client:', e);
     if (e?.statusCode) {
       return res.status(e.statusCode).json({ success: false, message: e.message || 'Validation failed' });
     }
@@ -474,23 +482,31 @@ router.put('/clients/:id', async (req, res) => {
     const normalizedPhone = normalizePhone(phone);
 
     if (normalizedPhone) {
+      // Check for other organizations using the same phone
       const existingOrg = await OrgAccount.findOne({
         where: {
           phone: normalizedPhone,
-          id: { [Op.ne]: row.id } // Exclude current client
+          id: { [Op.ne]: row.id }
         }
       });
-      const existingUser = await User.findOne({ where: { phone: String(normalizedPhone) } });
+      
+      // We only block if the phone is already used by a STAFF member in ANY org.
+      const existingStaff = await User.findOne({ 
+        where: { 
+          phone: String(normalizedPhone), 
+          role: 'staff' 
+        } 
+      });
 
-      // Allow if same phone belongs to this client's own user (e.g., org admin created for this client)
-      const isUserFromSameClient = !!existingUser && Number(existingUser.orgAccountId || 0) === Number(row.id);
-
-      if (existingOrg || (existingUser && !isUserFromSameClient)) {
+      if (existingStaff) {
         return res.status(400).json({
           success: false,
-          message: 'Phone number already exists in the system'
+          message: 'Phone number is already registered as a staff member.'
         });
       }
+      
+      // Note: We no longer block if existingOrg exists, because multiple clients can share admin phone.
+      // But we might want to warn or just allow it. The user requested this.
     }
 
     if (phone !== undefined) {
@@ -539,18 +555,16 @@ router.post('/clients/:id/subscription', async (req, res) => {
       rosterEnabled, recruitmentEnabled, communityEnabled
     } = req.body || {};
 
-    // Check if client has an active subscription that hasn't expired
+    // Handle subscription queuing or updates
     const existingSubscription = await Subscription.findOne({
       where: { orgAccountId: org.id, status: 'ACTIVE' },
-      order: [['endAt', 'DESC'], ['updatedAt', 'DESC']]
+      order: [['endAt', 'DESC']]
     });
 
-    // Allow limit and feature updates even if subscription hasn't expired
-    if (existingSubscription && new Date(existingSubscription.endAt) > new Date()) {
-      // If updating limits or feature toggles on the SAME plan
-      const isUpdatingCurrentPlan = !planId || planId == existingSubscription.planId;
+    const isUpdatingCurrentPlan = existingSubscription && (!planId || planId == existingSubscription.planId) && (new Date(existingSubscription.endAt) > new Date());
 
-      if (isUpdatingCurrentPlan) {
+    if (isUpdatingCurrentPlan) {
+        // If updating limits or feature toggles on the SAME plan that hasn't expired
         const updateData = {};
         let messageArr = [];
 
@@ -559,24 +573,13 @@ router.post('/clients/:id/subscription', async (req, res) => {
           const newStart = new Date(startAt);
           const oldStart = new Date(existingSubscription.startAt);
 
-          console.log('--- DATE DEBUG ---');
-          console.log('Incoming startAt:', startAt);
-          console.log('Parsed New Start:', newStart.toString());
-          console.log('Old Start:', oldStart.toString());
-
-          // Check if difference is significant (e.g. > 12 hours to ignore minor timezone drifts)
+          // Check if difference is significant (> 12 hours)
           const diff = Math.abs(newStart.getTime() - oldStart.getTime());
-          console.log('Diff (ms):', diff);
-          console.log('Threshold:', 1000 * 60 * 60 * 12);
-
           if (diff > 1000 * 60 * 60 * 12) {
-            // Date has changed. We need to update Start AND End date.
-            // We need to fetch the plan to know the duration
             const currentPlan = await Plan.findByPk(existingSubscription.planId);
             if (currentPlan) {
               const newEnd = new Date(newStart);
               newEnd.setDate(newEnd.getDate() + Number(currentPlan.periodDays || 0));
-
               updateData.startAt = newStart;
               updateData.endAt = newEnd;
               messageArr.push(`Subscription period updated (${newStart.toLocaleDateString()} - ${newEnd.toLocaleDateString()})`);
@@ -645,15 +648,8 @@ router.post('/clients/:id/subscription', async (req, res) => {
           await existingSubscription.update(updateData);
           return res.json({ success: true, message: messageArr.join(', '), subscription: existingSubscription });
         } else {
-          // If no changes were actually made but it was a valid check, just return current
           return res.json({ success: true, message: 'Current subscription remains unchanged', subscription: existingSubscription });
         }
-      } else {
-        return res.status(400).json({
-          success: false,
-          message: 'Your old subscription is not expired yet. You can only increase staff limit or toggle features until it expires.'
-        });
-      }
     }
 
     let plan = null;

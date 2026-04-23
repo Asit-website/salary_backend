@@ -24,6 +24,38 @@ const {
 
 const router = express.Router();
 
+async function sendSmsViaGateway({ phoneE164, code, text }) {
+  try {
+    const API_URL = process.env.SMS_API_URL || 'http://182.18.162.128/api/mt/SendSMS';
+    const APIKEY = process.env.SMS_APIKEY || '';
+    const SENDERID = process.env.SMS_SENDERID || 'VETANS';
+    const ROUTE = process.env.SMS_ROUTE || '08';
+    const CHANNEL = 'Trans';
+    const DCS = '0';
+    const FLASH = '0';
+
+    if (!APIKEY) return { ok: false, reason: 'missing_apikey' };
+
+    const msgText = text || `Dear customer, the one time password to reset your password is ${code}. This OTP will expire in 5 minutes. Thinktech Software company`;
+
+    const url = new URL(API_URL);
+    url.searchParams.set('APIKEY', APIKEY);
+    url.searchParams.set('senderid', SENDERID);
+    url.searchParams.set('channel', CHANNEL);
+    url.searchParams.set('DCS', DCS);
+    url.searchParams.set('flashsms', FLASH);
+    url.searchParams.set('number', phoneE164);
+    url.searchParams.set('text', msgText);
+    url.searchParams.set('route', ROUTE);
+
+    const resp = await fetch(url.toString());
+    return { ok: resp.ok };
+  } catch (e) {
+    console.error('sendSmsViaGateway error:', e);
+    return { ok: false, error: String(e) };
+  }
+}
+
 function normalizePhone(phone) {
   const digits = String(phone || '').replace(/[^0-9]/g, '');
   if (!digits) return '';
