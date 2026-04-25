@@ -2498,12 +2498,12 @@ router.post('/payroll/:cycleId/compute', async (req, res) => {
       try {
         const latePunchInService = require('../services/latePunchInService');
         const lpResult = await latePunchInService.calculateMonthlyLateDetails(u.id, orgId, monthKey, atts, dailySalary);
-        
+
         lateCount = lpResult.lateCount;
         latePenaltyDays = lpResult.totalDays;
         latePenaltyAmount = lpResult.totalPenalty;
         totalLatePunchInMinutes = lpResult.rows.reduce((sum, r) => sum + (r.latePunchInMinutes || 0), 0);
-        
+
         log(`[Late-Dbg] User ${u.id} Final: LateCount=${lateCount}, Amt=${latePenaltyAmount}, Days=${latePenaltyDays}`);
       } catch (err) {
         console.error(`Error in per-day lateness calculation for staff ${u.id}:`, err);
@@ -7698,7 +7698,7 @@ router.get('/attendance/month', async (req, res) => {
         punchInPhotoUrl: r.punchInPhotoUrl, punchOutPhotoUrl: r.punchOutPhotoUrl,
         user: { name: r.user?.profile?.name || null },
         staffProfile: { staffId: r.user?.profile?.staffId || null, department: r.user?.profile?.department || null },
-        latePunchInMinutes: r.latePunchInMinutes, 
+        latePunchInMinutes: r.latePunchInMinutes,
         latePunchInAmount: r.latePunchInAmount,
         lateOccurrence: r.lateOccurrence,
         earlyExitMinutes: r.earlyExitMinutes, earlyExitAmount: r.earlyExitAmount,
@@ -7760,7 +7760,7 @@ router.get('/staff/:id/attendance', async (req, res) => {
         id: r.id, date: r.date, checkIn: toTime(r.punchedInAt), checkOut: toTime(r.punchedOutAt), status,
         user: { name: r.user?.profile?.name || null },
         staffProfile: { staffId: r.user?.profile?.staffId || null, department: r.user?.profile?.department || null },
-        latePunchInMinutes: r.latePunchInMinutes, 
+        latePunchInMinutes: r.latePunchInMinutes,
         latePunchInAmount: r.latePunchInAmount,
         lateOccurrence: r.lateOccurrence,
         earlyExitMinutes: r.earlyExitMinutes, earlyExitAmount: r.earlyExitAmount,
@@ -9021,6 +9021,70 @@ router.put('/settings/brand', async (req, res) => {
     return res.json({ success: true, brand: { displayName: created.displayName } });
   } catch (e) {
     return res.status(500).json({ success: false, message: 'Failed to save brand settings' });
+  }
+});
+
+// Kiosk Credentials settings
+router.get('/settings/kiosk', async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
+    const [userRow, passRow] = await Promise.all([
+      AppSetting.findOne({ where: { key: 'kiosk_username', orgAccountId: orgId } }),
+      AppSetting.findOne({ where: { key: 'kiosk_password', orgAccountId: orgId } }),
+    ]);
+    return res.json({
+      success: true,
+      username: userRow?.value || '',
+      passwordSet: !!passRow?.value,
+    });
+  } catch (e) {
+    return res.status(500).json({ success: false, message: 'Failed to load kiosk settings' });
+  }
+});
+
+router.put('/settings/kiosk', async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
+    const { username, password } = req.body;
+
+    if (username !== undefined) {
+      const uname = String(username || '').trim();
+      if (uname) {
+        // Check uniqueness across all orgs
+        const existing = await AppSetting.findOne({
+          where: {
+            key: 'kiosk_username',
+            value: uname,
+            orgAccountId: { [Op.ne]: orgId }
+          }
+        });
+        if (existing) {
+          return res.status(400).json({ success: false, message: 'Kiosk username already taken by another organization' });
+        }
+        
+        const [row] = await AppSetting.findOrCreate({ 
+          where: { key: 'kiosk_username', orgAccountId: orgId },
+          defaults: { value: uname, orgAccountId: orgId }
+        });
+        if (row.value !== uname) await row.update({ value: uname });
+      }
+    }
+
+    if (password !== undefined) {
+      const pwd = String(password || '').trim();
+      if (pwd) {
+        const [row] = await AppSetting.findOrCreate({ 
+          where: { key: 'kiosk_password', orgAccountId: orgId },
+          defaults: { value: pwd, orgAccountId: orgId }
+        });
+        if (row.value !== pwd) await row.update({ value: pwd });
+      }
+    }
+
+    return res.json({ success: true });
+  } catch (e) {
+    console.error('Save kiosk settings error:', e);
+    return res.status(500).json({ success: false, message: 'Failed to save kiosk settings' });
   }
 });
 
@@ -11849,22 +11913,17 @@ router.post('/staff', requireRole(['admin', 'staff']), async (req, res) => {
 
     }
 
-    const currentActiveStaff = await User.count({ where: { role: 'staff', orgAccountId: orgId, active: true } });
-
+    const currentActiveStaff = req.subscriptionInfo?.currentTotalStaff || 0;
     const staffLimit = req.subscriptionInfo?.staffLimit || 0;
 
-
-
     // Only block if the NEW staff is being added as ACTIVE
-
-    const isAddingActive = active !== false; 
-
-
+    const isAddingActive = active !== false;
 
     if (isAddingActive && staffLimit > 0 && currentActiveStaff >= staffLimit) {
-
-      return res.status(403).json({ success: false, message: `Staff limit reached (${staffLimit}). Cannot add more active staff. Upgrade plan or deactivate existing staff.` });
-
+      return res.status(403).json({
+        success: false,
+        message: `Total staff limit across all your organizations reached (${staffLimit}). Cannot add more active staff. Upgrade plan or deactivate existing staff.`
+      });
     }
 
 
@@ -12579,12 +12638,12 @@ router.put('/staff/:id', requireRole(['admin', 'staff']), async (req, res) => {
     // RESTRICTION: Check limit if toggling from Inactive to Active
     if (active === true && staff.active === false) {
       const staffLimit = req.subscriptionInfo?.staffLimit || 0;
-      const currentActiveStaff = await User.count({ where: { role: 'staff', orgAccountId: orgId, active: true } });
+      const currentActiveStaff = req.subscriptionInfo?.currentTotalStaff || 0;
 
       if (staffLimit > 0 && currentActiveStaff >= staffLimit) {
-        return res.status(403).json({ 
-          success: false, 
-          message: `Cannot activate staff. Staff limit reached (${staffLimit}). Please upgrade your plan or deactivate another staff member first.` 
+        return res.status(403).json({
+          success: false,
+          message: `Total staff limit across all your organizations reached (${staffLimit}). Please upgrade your plan or deactivate another staff member first.`
         });
       }
     }
@@ -12838,7 +12897,7 @@ router.get('/dashboard', async (req, res) => {
 
     // Calculate Daily Wages Payout (Sum of daily rate for staff present today)
     const daysInMonth = new Date(new Date().getFullYear(), new Date().getMonth() + 1, 0).getDate();
-    
+
     const presentStaffIds = (await Attendance.findAll({
       where: {
         date: today,
@@ -12865,7 +12924,7 @@ router.get('/dashboard', async (req, res) => {
         presentToday,
         lateArrivals,
         leaveToday,
-        absentToday: totalStaff - presentToday,
+        absentToday: Math.max(0, activeStaff - presentToday),
         totalSalary: expectedMonthlyPayout,
         expectedMonthlyPayout,
         dailyWagesPayout: Number(dailyWagesPayout.toFixed(2)),
@@ -12993,7 +13052,7 @@ router.get('/dashboard/stats', async (req, res) => {
 
     // Calculate Daily Wages Payout (Sum of daily rate for staff present today)
     const daysInMonth = new Date(new Date().getFullYear(), new Date().getMonth() + 1, 0).getDate();
-    
+
     const presentStaffIds = (await Attendance.findAll({
       where: {
         date: today,
@@ -13029,7 +13088,7 @@ router.get('/dashboard/stats', async (req, res) => {
 
         leaveToday,
 
-        absentToday: totalStaff - presentToday,
+        absentToday: Math.max(0, activeStaff - presentToday - leaveToday),
 
         totalSalary: expectedMonthlyPayout,
         expectedMonthlyPayout,
@@ -18258,7 +18317,7 @@ router.get('/reports/comparison', async (req, res) => {
             staffName: staff.profile?.name || staff.phone || 'N/A',
             staffId: staff.profile?.staffId || '-',
             department: staff.profile?.department || '-',
-            
+
             salary: {
               lastMonth: Number(lastTotals.netSalary || 0),
               currentMonth: Number(currTotals.netSalary || 0),
@@ -18462,7 +18521,7 @@ router.get('/reports/late-penalty-analysis', async (req, res) => {
 
         for (const att of attendances) {
           if (!att.punchedInAt) continue;
-          
+
           const result = await latePunchInService.calculateLatePenalty(att, { id: orgId }, att.punchedInAt, daysInMonth);
           if (result.latePunchInMinutes > 0) {
             lateInstances++;

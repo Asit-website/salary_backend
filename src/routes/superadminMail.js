@@ -113,11 +113,11 @@ router.post('/campaign/excel', upload.fields([{ name: 'file', maxCount: 1 }, { n
   const t = await sequelize.transaction();
   try {
     const { subject, body } = req.body;
-    
+
     // Parse Excel or CSV
     const workbook = new ExcelJS.Workbook();
     const isCsv = excelFile.originalname.toLowerCase().endsWith('.csv') || excelFile.mimetype === 'text/csv';
-    
+
     if (isCsv) {
       const csvString = fs.readFileSync(excelFile.path, 'utf8');
       const stream = require('stream');
@@ -127,9 +127,9 @@ router.post('/campaign/excel', upload.fields([{ name: 'file', maxCount: 1 }, { n
     } else {
       await workbook.xlsx.readFile(excelFile.path);
     }
-    
+
     const worksheet = workbook.getWorksheet(1);
-    
+
     let recipients = [];
     let emailColIndex = -1;
     let nameColIndex = -1;
@@ -154,7 +154,7 @@ router.post('/campaign/excel', upload.fields([{ name: 'file', maxCount: 1 }, { n
       if (rowNumber === 1) return; // Skip header
       const email = String(row.getCell(emailColIndex).value || '').trim();
       const name = nameColIndex !== -1 ? String(row.getCell(nameColIndex).value || '').trim() : null;
-      
+
       if (email && email.includes('@')) {
         recipients.push({ email, name });
       }
@@ -163,7 +163,7 @@ router.post('/campaign/excel', upload.fields([{ name: 'file', maxCount: 1 }, { n
     // Deduplicate by email
     const uniqueMap = new Map();
     recipients.forEach(r => {
-        if (!uniqueMap.has(r.email)) uniqueMap.set(r.email, r.name);
+      if (!uniqueMap.has(r.email)) uniqueMap.set(r.email, r.name);
     });
     const uniqueRecipients = Array.from(uniqueMap.entries()).map(([email, name]) => ({ email, name }));
 
@@ -194,10 +194,10 @@ router.post('/campaign/excel', upload.fields([{ name: 'file', maxCount: 1 }, { n
     await MailQueue.bulkCreate(queueRecords, { transaction: t });
 
     await t.commit();
-    
+
     // Clean up excel file
     if (excelFile && fs.existsSync(excelFile.path)) {
-        fs.unlinkSync(excelFile.path);
+      fs.unlinkSync(excelFile.path);
     }
 
     res.json({ success: true, campaignId: campaign.id, totalRecipients: uniqueRecipients.length });
@@ -246,7 +246,7 @@ router.get('/track/:queueId.gif', async (req, res) => {
   try {
     const { queueId } = req.params;
     const mail = await MailQueue.findByPk(queueId);
-    
+
     if (mail && !mail.isOpened) {
       await mail.update({
         isOpened: true,
@@ -292,7 +292,7 @@ router.get('/campaign/:id/details', async (req, res) => {
   try {
     const { id } = req.params;
     const campaign = await MailCampaign.findByPk(id);
-    
+
     if (!campaign) {
       return res.status(404).json({ success: false, message: 'Campaign not found' });
     }
@@ -309,9 +309,9 @@ router.get('/campaign/:id/details', async (req, res) => {
       opened: recipients.filter(r => r.isOpened).length
     };
 
-    res.json({ 
-      success: true, 
-      campaign, 
+    res.json({
+      success: true,
+      campaign,
       recipients,
       stats
     });

@@ -3,11 +3,14 @@ const router = express.Router();
 const jwt = require('jsonwebtoken');
 
 const { sequelize } = require('../sequelize');
-const { Plan, OrgAccount, Subscription, User, Permission, Role, StaffProfile, ChannelPartner } = require('../models');
+const { Plan, OrgAccount, Subscription, User, Permission, Role, StaffProfile, ChannelPartner, Lead, LeadConfig } = require('../models');
 const bcrypt = require('bcryptjs');
 const { authRequired } = require('../middleware/auth');
 const { requireRole } = require('../middleware/roles');
 const { Op } = require('sequelize');
+const multer = require('multer');
+const ExcelJS = require('exceljs');
+const upload = multer({ storage: multer.memoryStorage() });
 
 function normalizePhone(phone) {
   const digits = String(phone || '').replace(/[^0-9]/g, '');
@@ -31,7 +34,37 @@ async function validateChannelPartnerMapping({ phone, channelPartnerId }) {
 }
 
 router.use(authRequired);
-router.use(requireRole(['superadmin']));
+router.use((req, res, next) => {
+  // Parse permissions robustly
+  let perms = req.user.permissions;
+  let safety = 0;
+  while (typeof perms === 'string' && safety < 5) {
+    try {
+      const parsed = JSON.parse(perms);
+      if (parsed === perms) break;
+      perms = parsed;
+    } catch(e) { break; }
+    safety++;
+  }
+  req.user.permissions = perms || {};
+
+  const superAllowedPaths = [
+    '/leads',
+    '/staff',
+    '/clients',
+    '/client/',
+    '/channel-partners',
+    '/dashboard',
+    '/plans'
+  ];
+
+  if (superAllowedPaths.some(p => req.path.startsWith(p))) {
+    const hasSuperAccess = req.user.role === 'superadmin' || req.user.permissions.superadmin_access === true;
+    if (hasSuperAccess) return next();
+    return res.status(403).json({ success: false, message: 'Forbidden' });
+  }
+  return requireRole(['superadmin'])(req, res, next);
+});
 
 // Plans
 router.get('/plans', async (_req, res) => {
@@ -109,9 +142,22 @@ router.put('/plans/:id', async (req, res) => {
 });
 
 // Channel Partners
-router.get('/channel-partners', async (_req, res) => {
+router.get('/channel-partners', async (req, res) => {
   try {
-    const rows = await ChannelPartner.findAll({ order: [['createdAt', 'DESC']] });
+    const user = req.user;
+    let where = {};
+    
+    if (user.role !== 'superadmin') {
+      const perms = user.permissions || {};
+      if (perms.partners === 'manage_own') {
+        where = { createdBy: user.id };
+      }
+    }
+
+    const rows = await ChannelPartner.findAll({ 
+      where,
+      order: [['createdAt', 'DESC']] 
+    });
     return res.json({ success: true, channelPartners: rows });
   } catch (_) {
     return res.status(500).json({ success: false, message: 'Failed to load channel partners' });
@@ -120,6 +166,7 @@ router.get('/channel-partners', async (_req, res) => {
 
 router.post('/channel-partners', async (req, res) => {
   try {
+    const data = { ...req.body, createdBy: req.user.id };
     const {
       name,
       channelPartnerId,
@@ -137,8 +184,9 @@ router.post('/channel-partners', async (req, res) => {
       address,
       birthDate,
       anniversaryDate,
-      gstNumber
-    } = req.body || {};
+      gstNumber,
+      createdBy
+    } = data;
     if (!name) return res.status(400).json({ success: false, message: 'name required' });
     if (!channelPartnerId) return res.status(400).json({ success: false, message: 'channelPartnerId required' });
 
@@ -174,6 +222,7 @@ router.post('/channel-partners', async (req, res) => {
       anniversaryDate: anniversaryDate || null,
       gstNumber: gstNumber || null,
       extra: extra || null,
+      createdBy: createdBy || null,
     });
 
     // Sync with User table
@@ -202,8 +251,17 @@ router.post('/channel-partners', async (req, res) => {
 
 router.put('/channel-partners/:id', async (req, res) => {
   try {
+    const user = req.user;
     const row = await ChannelPartner.findByPk(req.params.id);
     if (!row) return res.status(404).json({ success: false, message: 'Not found' });
+
+    // Permission check
+    if (user.role !== 'superadmin') {
+      const perms = user.permissions || {};
+      if (perms.partners === 'manage_own' && row.createdBy !== user.id) {
+        return res.status(403).json({ success: false, message: 'Permission denied' });
+      }
+    }
 
     const {
       name,
@@ -297,30 +355,156 @@ router.put('/channel-partners/:id', async (req, res) => {
 });
 
 // OrgAccounts
-router.get('/clients', async (_req, res) => {
+router.get('/clients', async (req, res) => {
   try {
-    const rows = await OrgAccount.findAll({ order: [['createdAt', 'DESC']] });
-    const now = new Date();
-    for (const org of rows) {
-      try {
-        const sub = await Subscription.findOne({
-          where: { orgAccountId: org.id, status: 'ACTIVE' },
-          order: [['endAt', 'DESC'], ['updatedAt', 'DESC']],
-          include: [{ model: Plan, as: 'plan' }]
-        });
-        const shouldBeActive = !!(sub && new Date(sub.endAt) >= now);
-        const targetStatus = shouldBeActive ? 'ACTIVE' : 'DISABLED';
-        if (org.status !== targetStatus && org.status !== 'SUSPENDED') {
-          await org.update({ status: targetStatus });
-        }
-        // Add subscription data to org object
-        org.dataValues.currentSubscription = sub;
-        org.dataValues.plan = sub?.plan || null;
-      } catch (_) { }
+    const user = req.user;
+    let where = {};
+    
+    if (user.role !== 'superadmin') {
+      const perms = user.permissions || {};
+      if (perms.clients === 'manage_own') {
+        where = { createdBy: user.id };
+      }
     }
-    return res.json({ success: true, clients: rows });
+
+    const { User, Subscription, Plan, Role, Permission } = require('../models');
+    const allOrgs = await OrgAccount.findAll({ 
+      where,
+      order: [['createdAt', 'ASC']] 
+    }); // Oldest first to find parents easily
+    const now = new Date();
+
+    // Group organizations by phone number to identify parent/children
+    const phoneGroups = {};
+    allOrgs.forEach(org => {
+      const ph = org.phone;
+      if (!ph) {
+        // Orgs without phone are treated as independent parents
+        phoneGroups[`no-phone-${org.id}`] = [org];
+      } else {
+        if (!phoneGroups[ph]) phoneGroups[ph] = [];
+        phoneGroups[ph].push(org);
+      }
+    });
+
+    const geoPermission = await Permission.findOne({ where: { name: 'geolocation_access' } });
+    const finalClients = [];
+
+    for (const ph in phoneGroups) {
+      const groupOrgs = phoneGroups[ph];
+      const parentOrg = groupOrgs[0]; // Oldest is the parent
+      const childrenOrgs = groupOrgs.slice(1);
+      const linkedOrgIds = groupOrgs.map(o => o.id);
+
+      // 1. Get Effective Subscription from Parent
+      const effectiveSub = await Subscription.findOne({
+        where: { orgAccountId: parentOrg.id, status: 'ACTIVE' },
+        order: [['endAt', 'DESC'], ['updatedAt', 'DESC']],
+        include: [{ model: Plan, as: 'plan' }]
+      });
+
+      // 2. Calculate Shared Staff Counts with breakdown
+      const staffBreakdown = [];
+      let totalStaffCount = 0;
+      let totalGeoStaffCount = 0;
+
+      for (const org of groupOrgs) {
+        // Active staff for THIS specific org
+        const orgStaffCount = await User.count({
+          where: {
+            phone: { [Op.ne]: String(ph) },
+            role: 'staff',
+            active: true,
+            orgAccountId: org.id
+          }
+        });
+
+        // Geo staff for THIS specific org
+        let orgGeoCount = 0;
+        if (geoPermission) {
+          const geoUsers = await User.findAll({
+            where: {
+              role: 'staff',
+              active: true,
+              orgAccountId: org.id
+            },
+            include: [{
+              model: Role,
+              as: 'roles',
+              required: true,
+              include: [{
+                model: Permission,
+                as: 'permissions',
+                where: { id: geoPermission.id },
+                required: true
+              }]
+            }]
+          });
+          orgGeoCount = geoUsers.length;
+        }
+
+        if (orgStaffCount > 0 || orgGeoCount > 0 || org.id !== parentOrg.id) {
+          staffBreakdown.push({
+            orgId: org.id,
+            name: org.name,
+            staffCount: orgStaffCount,
+            geoStaffCount: orgGeoCount,
+            isParent: org.id === parentOrg.id
+          });
+        }
+
+        totalStaffCount += orgStaffCount;
+        totalGeoStaffCount += orgGeoCount;
+      }
+
+      // Update Parent Org status based on sub
+      const shouldBeActive = !!(effectiveSub && new Date(effectiveSub.endAt) >= now);
+      const targetStatus = shouldBeActive ? 'ACTIVE' : 'DISABLED';
+      if (parentOrg.status !== targetStatus && parentOrg.status !== 'SUSPENDED') {
+        await parentOrg.update({ status: targetStatus });
+      }
+
+      parentOrg.dataValues.currentSubscription = effectiveSub;
+      parentOrg.dataValues.plan = effectiveSub?.plan || null;
+      parentOrg.dataValues.staffCount = totalStaffCount;
+      parentOrg.dataValues.geoStaffCount = totalGeoStaffCount;
+      parentOrg.dataValues.staffLimit = effectiveSub?.staffLimit || effectiveSub?.plan?.staffLimit || 0;
+      parentOrg.dataValues.maxGeolocationStaff = effectiveSub?.maxGeolocationStaff !== null ? effectiveSub?.maxGeolocationStaff : (effectiveSub?.plan?.maxGeolocationStaff || 0);
+      parentOrg.dataValues.staffBreakdown = staffBreakdown;
+      parentOrg.dataValues.isParentAccount = true;
+      parentOrg.dataValues.childCount = childrenOrgs.length;
+
+      finalClients.push(parentOrg);
+    }
+
+    // Sort by createdAt DESC for the final list
+    finalClients.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+
+    return res.json({ success: true, clients: finalClients });
   } catch (e) {
+    console.error('Load clients error:', e);
     return res.status(500).json({ success: false, message: 'Failed to load clients' });
+  }
+});
+
+// Get staff of a specific client
+router.get('/clients/:id/staff', async (req, res) => {
+  try {
+    const staff = await User.findAll({
+      where: { 
+        orgAccountId: req.params.id,
+        role: 'staff' // We only want to promote staff/admin maybe?
+      },
+      attributes: ['id', 'phone', 'role'],
+      include: [{
+        model: StaffProfile,
+        as: 'profile',
+        attributes: ['name']
+      }]
+    });
+    return res.json({ success: true, staff });
+  } catch (e) {
+    return res.status(500).json({ success: false, message: 'Failed to load client staff' });
   }
 });
 
@@ -392,20 +576,28 @@ router.get('/clients/:id/plan-details', async (req, res) => {
 
 router.post('/clients', async (req, res) => {
   try {
+    const data = { ...req.body, createdBy: req.user.id };
     const {
       name, phone, status = 'ACTIVE', clientType, location, extra, businessEmail, state, city,
       channelPartnerId, roleDescription, employeeCount,
-      contactPersonName, address, birthDate, anniversaryDate, gstNumber
-    } = req.body || {};
+      contactPersonName, address, birthDate, anniversaryDate, gstNumber, createdBy
+    } = data;
     if (!name) return res.status(400).json({ success: false, message: 'name required' });
 
     const normalizedPhone = normalizePhone(phone);
 
     if (normalizedPhone) {
-      // We only block if the phone is already used by a STAFF member.
-      // Multiple organizations can share the same admin phone number.
-      const existingStaff = await User.findOne({ where: { phone: String(normalizedPhone), role: 'staff' } });
+      // Check if phone already exists as an OrgAccount phone
+      const existingOrgPhone = await OrgAccount.findOne({ where: { phone: String(normalizedPhone) } });
+      if (existingOrgPhone) {
+        return res.status(400).json({
+          success: false,
+          message: `Phone number is already registered for organization: ${existingOrgPhone.name}.`
+        });
+      }
 
+      // Check if phone already exists as a STAFF member.
+      const existingStaff = await User.findOne({ where: { phone: String(normalizedPhone), role: 'staff' } });
       if (existingStaff) {
         return res.status(400).json({
           success: false,
@@ -434,6 +626,7 @@ router.post('/clients', async (req, res) => {
       anniversaryDate: anniversaryDate || null,
       gstNumber: gstNumber || null,
       extra: extra || null,
+      createdBy: createdBy || null,
     });
 
     try {
@@ -470,8 +663,17 @@ router.post('/clients', async (req, res) => {
 
 router.put('/clients/:id', async (req, res) => {
   try {
+    const user = req.user;
     const row = await OrgAccount.findByPk(req.params.id);
     if (!row) return res.status(404).json({ success: false, message: 'Not found' });
+    
+    // Permission check
+    if (user.role !== 'superadmin') {
+      const perms = user.permissions || {};
+      if (perms.clients === 'manage_own' && row.createdBy !== user.id) {
+        return res.status(403).json({ success: false, message: 'Permission denied' });
+      }
+    }
     const {
       name, phone, status, clientType, location, extra, businessEmail, state, city,
       channelPartnerId, roleDescription, employeeCount,
@@ -490,6 +692,13 @@ router.put('/clients/:id', async (req, res) => {
         }
       });
       
+      if (existingOrg) {
+        return res.status(400).json({
+          success: false,
+          message: `Phone number is already registered for another organization: ${existingOrg.name}.`
+        });
+      }
+
       // We only block if the phone is already used by a STAFF member in ANY org.
       const existingStaff = await User.findOne({ 
         where: { 
@@ -504,9 +713,6 @@ router.put('/clients/:id', async (req, res) => {
           message: 'Phone number is already registered as a staff member.'
         });
       }
-      
-      // Note: We no longer block if existingOrg exists, because multiple clients can share admin phone.
-      // But we might want to warn or just allow it. The user requested this.
     }
 
     if (phone !== undefined) {
@@ -883,10 +1089,37 @@ router.post('/clients/:id/impersonate', async (req, res) => {
       { expiresIn: process.env.JWT_EXPIRES_IN || '7d' }
     );
 
+    // Fetch all organizations for this phone number
+    const allUsers = await User.findAll({ 
+      where: { phone: admin.phone },
+      include: [{ model: OrgAccount, as: 'orgAccount' }]
+    });
+
+    const orgMap = new Map();
+    allUsers.forEach(u => {
+      if (!u.orgAccountId) return;
+      const key = `${u.orgAccountId}-${u.role}`;
+      if (!orgMap.has(key)) {
+        orgMap.set(key, {
+          id: u.orgAccountId,
+          name: u.orgAccount?.name || `Organization ${u.orgAccountId}`,
+          role: u.role
+        });
+      }
+    });
+
+    const selectableOrgs = Array.from(orgMap.values());
+    const others = allUsers.filter(u => !u.orgAccountId).map(u => ({
+      id: null,
+      name: u.role === 'superadmin' ? 'Super Admin Panel' : 'Channel Partner Panel',
+      role: u.role
+    }));
+
     return res.json({
       success: true,
       token,
       user: { id: admin.id, role: admin.role, phone: admin.phone, name },
+      organizations: [...selectableOrgs, ...others]
     });
   } catch (e) {
     console.error('Impersonate error:', e);
@@ -902,7 +1135,6 @@ router.post('/clients/:id/toggle-status', async (req, res) => {
 
     let newStatus;
     if (org.status === 'SUSPENDED') {
-      // Re-activate: calculate what status it SHOULD have based on subscription
       const sub = await Subscription.findOne({
         where: { orgAccountId: org.id, status: 'ACTIVE' },
         order: [['endAt', 'DESC']]
@@ -910,7 +1142,6 @@ router.post('/clients/:id/toggle-status', async (req, res) => {
       const now = new Date();
       newStatus = (sub && new Date(sub.endAt) >= now) ? 'ACTIVE' : 'DISABLED';
     } else {
-      // Deactivate
       newStatus = 'SUSPENDED';
     }
 
@@ -921,4 +1152,456 @@ router.post('/clients/:id/toggle-status', async (req, res) => {
   }
 });
 
+// ── STAFF MANAGEMENT (Superadmin Staff) ──────────────────────────────────────
+
+
+router.post('/staff', async (req, res) => {
+  try {
+    const { phone, permissions, password, userId } = req.body;
+    let normalized = normalizePhone(phone);
+    
+    // We will store the superadmin lead permissions in the user's permissions field
+    let basePermissions = permissions;
+    if (typeof basePermissions === 'string') {
+      try { basePermissions = JSON.parse(basePermissions); } catch(e) { basePermissions = {}; }
+    }
+    
+    const superPermissions = {
+      ...(basePermissions || {}),
+      superadmin_access: true
+    };
+
+    if (userId) {
+      const user = await User.findByPk(userId);
+      if (!user) return res.status(404).json({ success: false, message: 'User not found' });
+      
+      let currentPerms = user.permissions;
+      while (typeof currentPerms === 'string' && currentPerms.startsWith('{')) {
+        try { currentPerms = JSON.parse(currentPerms); } catch(e) { break; }
+      }
+      if (typeof currentPerms !== 'object' || currentPerms === null) currentPerms = {};
+
+      const mergedPerms = {
+        ...currentPerms,
+        ...(basePermissions || {}),
+        superadmin_access: true
+      };
+      
+      await user.update({
+        permissions: mergedPerms
+      });
+      return res.json({ success: true, user });
+    }
+    
+    if (!normalized) return res.status(400).json({ success: false, message: 'Phone required' });
+    
+    const existing = await User.findOne({ where: { phone: normalized } });
+    if (existing) {
+      let currentPerms = existing.permissions;
+      while (typeof currentPerms === 'string' && currentPerms.startsWith('{')) {
+        try { currentPerms = JSON.parse(currentPerms); } catch(e) { break; }
+      }
+      if (typeof currentPerms !== 'object' || currentPerms === null) currentPerms = {};
+
+      const mergedPerms = {
+        ...currentPerms,
+        ...(basePermissions || {}),
+        superadmin_access: true
+      };
+
+      await existing.update({ permissions: mergedPerms });
+      return res.json({ success: true, user: existing });
+    }
+
+    const passwordHash = await bcrypt.hash(password || 'staff123', 10);
+    const user = await User.create({
+      phone: normalized,
+      role: 'staff', // Default to staff so they can use APK
+      permissions: superPermissions,
+      passwordHash,
+      active: true
+    });
+
+    return res.json({ success: true, user });
+  } catch (e) {
+    console.error('Create staff error:', e);
+    return res.status(500).json({ success: false, message: 'Failed to create staff' });
+  }
+});
+
+// Helper to list all users who have superadmin_access: true
+router.get('/staff', async (req, res) => {
+  console.log('[Superadmin] GET /staff hit!');
+  try {
+    const allUsers = await User.findAll({
+      attributes: ['id', 'phone', 'role', 'permissions', 'createdAt']
+    });
+    
+    const staff = allUsers.filter(u => {
+      let perms = u.permissions;
+      let safety = 0;
+      while (typeof perms === 'string' && safety < 5) {
+        try {
+          const parsed = JSON.parse(perms);
+          if (parsed === perms) break;
+          perms = parsed;
+        } catch(e) { break; }
+        safety++;
+      }
+      return perms && typeof perms === 'object' && perms.superadmin_access === true;
+    }).map(u => {
+      let perms = u.permissions;
+      let safety = 0;
+      while (typeof perms === 'string' && safety < 5) {
+        try {
+          const parsed = JSON.parse(perms);
+          if (parsed === perms) break;
+          perms = parsed;
+        } catch(e) { break; }
+        safety++;
+      }
+      return {
+        ...u.toJSON(),
+        permissions: perms
+      };
+    });
+
+    console.log(`[Superadmin] Found ${staff.length} staff members with superadmin_access`);
+    return res.json({ success: true, staff });
+  } catch (e) {
+    console.error('Fetch staff error:', e);
+    return res.status(500).json({ success: false, message: 'Failed to fetch staff' });
+  }
+});
+
+router.put('/staff/:id', async (req, res) => {
+  try {
+    const { phone, permissions, password } = req.body;
+    const user = await User.findByPk(req.params.id);
+    if (!user) return res.status(404).json({ success: false, message: 'Staff not found' });
+
+    let perms = permissions;
+    if (typeof perms === 'string') {
+      try { perms = JSON.parse(perms); } catch(e) {}
+    }
+    
+    // Ensure we don't lose superadmin_access on update
+    let currentPerms = user.permissions;
+    while (typeof currentPerms === 'string' && currentPerms.startsWith('{')) {
+      try { currentPerms = JSON.parse(currentPerms); } catch(e) { break; }
+    }
+    if (typeof currentPerms !== 'object' || currentPerms === null) currentPerms = {};
+
+    const finalPerms = {
+      ...currentPerms,
+      ...(perms || {}),
+      superadmin_access: true
+    };
+    
+    const updateData = { permissions: finalPerms };
+    if (phone) updateData.phone = normalizePhone(phone);
+    if (password) updateData.passwordHash = await bcrypt.hash(password, 10);
+
+    await user.update(updateData);
+    return res.json({ success: true, user });
+  } catch (e) {
+    return res.status(500).json({ success: false, message: 'Failed to update staff' });
+  }
+});
+
+router.delete('/staff/:id', async (req, res) => {
+  try {
+    const user = await User.findByPk(req.params.id);
+    if (!user) return res.status(404).json({ success: false, message: 'Staff not found' });
+
+    // Revoke superadmin_access
+    const perms = user.permissions || {};
+    delete perms.superadmin_access;
+
+    await user.update({ permissions: perms });
+    return res.json({ success: true, message: 'Staff access revoked' });
+  } catch (e) {
+    console.error('Revoke error:', e);
+    return res.status(500).json({ success: false, message: 'Failed to revoke access' });
+  }
+});
+
+
+// ── LEADS MANAGEMENT ─────────────────────────────────────────────────────────
+
+router.get('/leads/config', async (req, res) => {
+  try {
+    const configs = await LeadConfig.findAll();
+    const result = {};
+    configs.forEach(c => {
+      try {
+        result[c.key] = JSON.parse(c.options || '[]');
+      } catch (_) {
+        result[c.key] = [];
+      }
+    });
+    return res.json({ success: true, config: result });
+  } catch (e) {
+    return res.status(500).json({ success: false, message: 'Failed to load lead config' });
+  }
+});
+
+router.put('/leads/config', async (req, res) => {
+  try {
+    const { key, options } = req.body;
+    if (!key) return res.status(400).json({ success: false, message: 'key required' });
+    
+    const [config, created] = await LeadConfig.findOrCreate({
+      where: { key },
+      defaults: { options: JSON.stringify(options || []) }
+    });
+    
+    if (!created) {
+      await config.update({ options: JSON.stringify(options || []) });
+    }
+    
+    return res.json({ success: true, config });
+  } catch (e) {
+    return res.status(500).json({ success: false, message: 'Failed to update lead config' });
+  }
+});
+
+router.get('/leads/export-template', async (_req, res) => {
+  try {
+    const workbook = new ExcelJS.Workbook();
+    const worksheet = workbook.addWorksheet('Leads Template');
+
+    worksheet.columns = [
+      { header: 'Company Name*', key: 'companyName', width: 25 },
+      { header: 'Person Name', key: 'personName', width: 20 },
+      { header: 'Phone', key: 'phone', width: 15 },
+      { header: 'Email', key: 'email', width: 20 },
+      { header: 'Address', key: 'address', width: 30 },
+      { header: 'Customer Type', key: 'customerType', width: 15 },
+      { header: 'Category', key: 'category', width: 15 },
+      { header: 'Status', key: 'status', width: 15 },
+      { header: 'Next Follow Up (YYYY-MM-DD)', key: 'nextFollowUpDate', width: 25 },
+      { header: 'Last Follow Up (YYYY-MM-DD)', key: 'lastFollowUpDate', width: 25 },
+      { header: 'Handled By', key: 'handledBy', width: 15 },
+      { header: 'Service Required', key: 'serviceRequired', width: 20 },
+      { header: 'Remarks', key: 'remarks', width: 30 },
+    ];
+
+    // Add a demo row
+    worksheet.addRow({
+      companyName: 'ThinkTech Software',
+      personName: 'John Doe',
+      phone: '9876543210',
+      email: 'john@example.com',
+      address: 'Kolkata, West Bengal',
+      customerType: 'Direct',
+      category: 'IT Services',
+      status: 'Demo',
+      nextFollowUpDate: '2026-05-10',
+      lastFollowUpDate: '2026-04-20',
+      handledBy: 'Admin',
+      serviceRequired: 'Payroll, Sales',
+      remarks: 'Interested in core HR features'
+    });
+
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', 'attachment; filename=leads_template.xlsx');
+
+    await workbook.xlsx.write(res);
+    res.end();
+  } catch (e) {
+    res.status(500).json({ success: false, message: 'Template generation failed' });
+  }
+});
+
+router.post('/leads/import', upload.single('file'), async (req, res) => {
+  try {
+    if (!req.file) return res.status(400).json({ success: false, message: 'No file uploaded' });
+
+    const workbook = new ExcelJS.Workbook();
+    await workbook.xlsx.load(req.file.buffer);
+    const worksheet = workbook.getWorksheet(1);
+
+    const leadsToImport = [];
+    worksheet.eachRow((row, rowNumber) => {
+      if (rowNumber === 1) return; // Skip header
+
+      const companyName = row.getCell(1).value;
+      if (!companyName) return;
+
+      leadsToImport.push({
+        companyName: String(companyName).trim(),
+        personName: row.getCell(2).value ? String(row.getCell(2).value).trim() : null,
+        phone: row.getCell(3).value ? String(row.getCell(3).value).trim() : null,
+        email: row.getCell(4).value ? String(row.getCell(4).value).trim() : null,
+        address: row.getCell(5).value ? String(row.getCell(5).value).trim() : null,
+        customerType: row.getCell(6).value ? String(row.getCell(6).value).trim() : null,
+        category: row.getCell(7).value ? String(row.getCell(7).value).trim() : null,
+        status: row.getCell(8).value ? String(row.getCell(8).value).trim() : null,
+        nextFollowUpDate: row.getCell(9).value ? String(row.getCell(9).value).trim() : null,
+        lastFollowUpDate: row.getCell(10).value ? String(row.getCell(10).value).trim() : null,
+        handledBy: row.getCell(11).value ? String(row.getCell(11).value).trim() : null,
+        serviceRequired: row.getCell(12).value ? String(row.getCell(12).value).trim() : null,
+        remarks: row.getCell(13).value ? String(row.getCell(13).value).trim() : null,
+        createdBy: req.user.id
+      });
+    });
+
+    if (leadsToImport.length === 0) {
+      return res.status(400).json({ success: false, message: 'No valid leads found in excel' });
+    }
+
+    await Lead.bulkCreate(leadsToImport);
+    return res.json({ success: true, message: `Successfully imported ${leadsToImport.length} leads` });
+  } catch (e) {
+    console.error('Lead import error:', e);
+    return res.status(500).json({ success: false, message: 'Lead import failed' });
+  }
+});
+
+router.get('/leads/export', async (req, res) => {
+  try {
+    const user = req.user;
+    let where = {};
+    
+    if (user.role !== 'superadmin') {
+      const perms = user.permissions || {};
+      if (perms.leads === 'manage_own') {
+        where = { createdBy: user.id };
+      }
+    }
+
+    const { company, phone, customerType, category, status, handledBy, serviceRequired } = req.query || {};
+    
+    if (company) where.companyName = { [Op.like]: `%${company}%` };
+    if (phone) where.phone = { [Op.like]: `%${phone}%` };
+    if (customerType) where.customerType = customerType;
+    if (category) where.category = category;
+    if (status) where.status = status;
+    if (handledBy) where.handledBy = handledBy;
+    if (serviceRequired) where.serviceRequired = { [Op.like]: `%${serviceRequired}%` };
+
+    const leads = await Lead.findAll({ 
+      where,
+      include: [{ model: User, as: 'creator', attributes: ['phone'] }],
+      order: [['createdAt', 'DESC']] 
+    });
+
+    const workbook = new ExcelJS.Workbook();
+    const worksheet = workbook.addWorksheet('All Leads');
+
+    worksheet.columns = [
+      { header: 'ID', key: 'id', width: 10 },
+      { header: 'Company Name', key: 'companyName', width: 25 },
+      { header: 'Person Name', key: 'personName', width: 20 },
+      { header: 'Phone', key: 'phone', width: 15 },
+      { header: 'Email', key: 'email', width: 20 },
+      { header: 'Address', key: 'address', width: 30 },
+      { header: 'Customer Type', key: 'customerType', width: 15 },
+      { header: 'Category', key: 'category', width: 15 },
+      { header: 'Status', key: 'status', width: 15 },
+      { header: 'Next Follow Up', key: 'nextFollowUpDate', width: 15 },
+      { header: 'Last Follow Up', key: 'lastFollowUpDate', width: 15 },
+      { header: 'Handled By', key: 'handledBy', width: 15 },
+      { header: 'Service Required', key: 'serviceRequired', width: 20 },
+      { header: 'Remarks', key: 'remarks', width: 30 },
+      { header: 'Created At', key: 'createdAt', width: 20 }
+    ];
+
+    leads.forEach(l => {
+      worksheet.addRow({
+        ...l.toJSON(),
+        createdAt: l.createdAt ? new Date(l.createdAt).toLocaleString() : ''
+      });
+    });
+
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', 'attachment; filename=all_leads.xlsx');
+
+    await workbook.xlsx.write(res);
+    res.end();
+  } catch (e) {
+    console.error('Lead export error:', e);
+    res.status(500).json({ success: false, message: 'Export failed' });
+  }
+});
+
+router.get('/leads', async (req, res) => {
+  try {
+    const user = req.user;
+    let where = {};
+    
+    if (user.role !== 'superadmin') {
+      const perms = user.permissions || {};
+      if (perms.leads === 'manage_own') {
+        where = { createdBy: user.id };
+      }
+    }
+
+    const leads = await Lead.findAll({ 
+      where,
+      include: [
+        { model: User, as: 'creator', attributes: ['phone'] }
+      ],
+      order: [['createdAt', 'DESC']] 
+    });
+    return res.json({ success: true, leads });
+  } catch (e) {
+    return res.status(500).json({ success: false, message: 'Failed to load leads' });
+  }
+});
+
+router.post('/leads', async (req, res) => {
+  try {
+    const data = { ...req.body, createdBy: req.user.id };
+    const lead = await Lead.create(data);
+    return res.json({ success: true, lead });
+  } catch (e) {
+    return res.status(500).json({ success: false, message: 'Failed to create lead' });
+  }
+});
+
+router.put('/leads/:id', async (req, res) => {
+  try {
+    const user = req.user;
+    const lead = await Lead.findByPk(req.params.id);
+    if (!lead) return res.status(404).json({ success: false, message: 'Lead not found' });
+
+    // Permission check
+    if (user.role !== 'superadmin') {
+      const perms = user.permissions || {};
+      if (perms.leads === 'manage_own' && lead.createdBy !== user.id) {
+        return res.status(403).json({ success: false, message: 'Permission denied' });
+      }
+    }
+
+    await lead.update(req.body);
+    return res.json({ success: true, lead });
+  } catch (e) {
+    return res.status(500).json({ success: false, message: 'Failed to update lead' });
+  }
+});
+
+router.delete('/leads/:id', async (req, res) => {
+  try {
+    const user = req.user;
+    const lead = await Lead.findByPk(req.params.id);
+    if (!lead) return res.status(404).json({ success: false, message: 'Lead not found' });
+
+    // Permission check
+    if (user.role !== 'superadmin') {
+      const perms = user.permissions || {};
+      if (perms.leads === 'manage_own' && lead.createdBy !== user.id) {
+        return res.status(403).json({ success: false, message: 'Permission denied' });
+      }
+    }
+
+    await lead.destroy();
+    return res.json({ success: true, message: 'Lead deleted' });
+  } catch (e) {
+    return res.status(500).json({ success: false, message: 'Failed to delete lead' });
+  }
+});
+
 module.exports = router;
+

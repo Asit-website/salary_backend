@@ -2,7 +2,7 @@ const express = require('express');
 const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs');
 
-const { User, StaffProfile, OtpVerify, OrgAccount, ChannelPartner } = require('../models');
+const { User, StaffProfile, OtpVerify, OrgAccount, ChannelPartner, Subscription, Plan } = require('../models');
 const otpStore = require('../otpStore');
 
 // Minimal SMS sender using the provided HTTP API
@@ -156,7 +156,7 @@ router.post('/verify-otp', async (req, res) => {
     }
 
     const { orgId } = req.body || {};
-    const allUsers = await User.findAll({ 
+    const allUsers = await User.findAll({
       where: { phone: String(normalizedPhone) },
       include: [{ model: OrgAccount, as: 'orgAccount' }]
     });
@@ -179,11 +179,53 @@ router.post('/verify-otp', async (req, res) => {
       return res.json({ success: true, requireSignup: true, phone: normalizedPhone });
     }
 
+    console.log(`Verify-OTP: Found ${allUsers.length} users for phone ${normalizedPhone}`);
     let user;
+    const hasSuperAccess = allUsers.some(u => {
+      let perms = u.permissions;
+      if (typeof perms === 'string') {
+        try { perms = JSON.parse(perms); } catch(e) {}
+      }
+      return u.role === 'superadmin' || (perms && perms.superadmin_access === true);
+    });
+
+    // If exactly one user and it's NOT an admin (who might want to create new orgs), direct login.
+    // ADDED: Allow superadmin/staff with superadmin_access to direct login if they are the only one.
     if (allUsers.length === 1) {
-      user = allUsers[0];
-    } else {
-      // Multiple users found
+      const singleUser = allUsers[0];
+      const isGlobalSuper = singleUser.role === 'superadmin';
+      const isPartner = singleUser.role === 'channel_partner';
+      
+      // Allow direct login if it's the only account, even if it has super access (to avoid stuck on mobile selection)
+      if (isGlobalSuper || isPartner || (singleUser.role !== 'admin' && !hasSuperAccess) || (allUsers.length === 1)) {
+        console.log('Verify-OTP: Single user found, direct login allowed');
+        user = singleUser;
+      }
+    }
+
+    const isMobileApk = req.headers['x-app-platform'] === 'mobile-apk';
+
+    if (!user) {
+      // Auto-pick for mobile APK if multiple accounts exist
+      if (isMobileApk && allUsers.length > 1) {
+        // Try to find a regular staff user first
+        user = allUsers.find(u => u.role === 'staff' && u.orgAccountId);
+        // Fallback to any staff user
+        if (!user) user = allUsers.find(u => u.role === 'staff');
+        // Fallback to any superadmin staff
+        if (!user) user = allUsers.find(u => {
+           let p = u.permissions;
+           if (typeof p === 'string') try { p = JSON.parse(p); } catch(_) {}
+           return p && p.superadmin_access === true;
+        });
+        
+        if (user) console.log(`Verify-OTP: Mobile APK auto-selected user ID ${user.id} (${user.role})`);
+      }
+    }
+
+    if (!user) {
+      console.log('Verify-OTP: Multiple accounts or admin access found, forcing selection screen');
+      // Multiple users OR single admin (to allow "Add Organization" flow)
       if (!orgId) {
         // Return unique list of organizations
         const orgMap = new Map();
@@ -200,22 +242,78 @@ router.post('/verify-otp', async (req, res) => {
         });
 
         const selectableOrgs = Array.from(orgMap.values());
-        
-        // If there's a superadmin/partner without orgId, they should also be selectable
-        const others = allUsers.filter(u => !u.orgAccountId).map(u => ({
-          id: null,
-          name: u.role === 'superadmin' ? 'Super Admin Panel' : 'Channel Partner Panel',
-          role: u.role
-        }));
 
-        return res.json({ 
-          success: true, 
-          requireSelection: true, 
-          organizations: [...selectableOrgs, ...others] 
+        // If there's a superadmin/partner without orgId, OR a user with superadmin_access permission, they should be selectable
+        const othersMap = new Map();
+        allUsers.forEach(u => {
+          let perms = u.permissions;
+          if (typeof perms === 'string') {
+            try { perms = JSON.parse(perms); } catch(e) {}
+          }
+          const isSuper = u.role === 'superadmin' || (perms && perms.superadmin_access === true);
+          const isPartner = u.role === 'channel_partner';
+          
+          if (isSuper) {
+            if (!othersMap.has('superadmin')) {
+              othersMap.set('superadmin', {
+                id: `superadmin-${u.id}`, // Unique ID
+                name: 'Super Admin Leads',
+                role: u.role,
+                isSuperadminPanel: true
+              });
+            }
+          } else if (isPartner || !u.orgAccountId) {
+             const key = isPartner ? 'partner' : `no-org-${u.role}`;
+             if (!othersMap.has(key)) {
+               othersMap.set(key, {
+                 id: isPartner ? `partner-${u.id}` : `panel-${u.id}`,
+                 name: isPartner ? 'Channel Partner Panel' : `Panel (${u.role})`,
+                 role: u.role,
+                 isSuperadminPanel: false
+               });
+             }
+          }
+        });
+
+        const others = Array.from(othersMap.values());
+
+        const secret = process.env.JWT_SECRET || 'dev_secret_change_me';
+        const tempToken = jwt.sign(
+          { phone: normalizedPhone },
+          secret,
+          { expiresIn: '1h' }
+        );
+
+        return res.json({
+          success: true,
+          requireSelection: true,
+          token: tempToken,
+          organizations: [...selectableOrgs, ...others]
         });
       } else {
         // Find the specific user for this org
-        user = allUsers.find(u => String(u.orgAccountId) === String(orgId) || (orgId === 'null' && !u.orgAccountId));
+        if (req.body.isSuperadminPanel) {
+           // If it's a superadmin panel selection, find the user with superadmin_access
+           user = allUsers.find(u => {
+             let perms = u.permissions;
+             if (typeof perms === 'string') {
+               try { perms = JSON.parse(perms); } catch(e) {}
+             }
+             return u.role === 'superadmin' || (perms && perms.superadmin_access === true);
+           });
+        } else if (String(orgId).startsWith('superadmin-')) {
+           const userId = orgId.split('-')[1];
+           user = allUsers.find(u => String(u.id) === String(userId));
+        } else if (String(orgId).startsWith('partner-')) {
+           const userId = orgId.split('-')[1];
+           user = allUsers.find(u => String(u.id) === String(userId));
+        } else if (String(orgId).startsWith('panel-')) {
+           const userId = orgId.split('-')[1];
+           user = allUsers.find(u => String(u.id) === String(userId));
+        } else {
+          user = allUsers.find(u => String(u.orgAccountId) === String(orgId) || (orgId === 'null' && !u.orgAccountId));
+        }
+        
         if (!user) {
           return res.status(400).json({ success: false, message: 'Invalid organization selection' });
         }
@@ -251,19 +349,320 @@ router.post('/verify-otp', async (req, res) => {
     const staffId = profile?.staffId || null;
 
     const secret = process.env.JWT_SECRET || 'dev_secret_change_me';
-    const token = jwt.sign(
-      { id: user.id, role: user.role, phone: user.phone, name, staffId, orgAccountId: user.orgAccountId, channelPartnerId: user.channelPartnerId },
+    const isSuperRole = user.role === 'superadmin';
+    const isActuallySuperPanel = !!req.body.isSuperadminPanel || isSuperRole;
+
+    const finalToken = jwt.sign(
+      { 
+        id: user.id, 
+        role: user.role, 
+        phone: user.phone, 
+        name, 
+        staffId, 
+        orgAccountId: isActuallySuperPanel ? null : user.orgAccountId, 
+        channelPartnerId: user.channelPartnerId, 
+        isSuperadminPanel: isActuallySuperPanel,
+        permissions: user.permissions 
+      },
       secret,
       { expiresIn: process.env.JWT_EXPIRES_IN || '7d' }
     );
 
     return res.json({
       success: true,
-      token,
-      user: { id: user.id, role: user.role, phone: user.phone, name, staffId, orgAccountId: user.orgAccountId, channelPartnerId: user.channelPartnerId },
+      token: finalToken,
+      user: { 
+        id: user.id, 
+        role: user.role, 
+        phone: user.phone, 
+        name, 
+        staffId, 
+        orgAccountId: isActuallySuperPanel ? null : user.orgAccountId, 
+        channelPartnerId: user.channelPartnerId, 
+        isSuperadminPanel: isActuallySuperPanel,
+        permissions: user.permissions 
+      },
     });
   } catch (e) {
     return res.status(500).json({ success: false, message: 'Failed to verify OTP' });
+  }
+});
+
+router.post('/switch-account', async (req, res) => {
+  try {
+    const { orgId } = req.body;
+    const authHeader = req.headers.authorization;
+    if (!authHeader) return res.status(401).json({ success: false, message: 'Unauthorized' });
+
+    const token = authHeader.split(' ')[1];
+    const secret = process.env.JWT_SECRET || 'dev_secret_change_me';
+    let decoded;
+    try {
+      decoded = jwt.verify(token, secret);
+    } catch (err) {
+      console.error('Switch account token verify failed:', err);
+      return res.status(401).json({ success: false, message: 'Invalid token' });
+    }
+
+    const phone = decoded.phone;
+    if (!phone) return res.status(401).json({ success: false, message: 'Invalid session' });
+
+    // Find all users with this phone number - using already imported models
+    const allUsers = await User.findAll({ where: { phone: String(phone) } });
+
+    // Find the specific user for the requested orgId
+    let user;
+    if (req.body.isSuperadminPanel) {
+      user = allUsers.find(u => {
+        let perms = u.permissions;
+        if (typeof perms === 'string') {
+          try { perms = JSON.parse(perms); } catch(e) {}
+        }
+        return u.role === 'superadmin' || (perms && perms.superadmin_access === true);
+      });
+    } else if (String(orgId).startsWith('superadmin-')) {
+       const userId = orgId.split('-')[1];
+       user = allUsers.find(u => String(u.id) === String(userId));
+    } else if (String(orgId).startsWith('partner-')) {
+       const userId = orgId.split('-')[1];
+       user = allUsers.find(u => String(u.id) === String(userId));
+    } else if (String(orgId).startsWith('panel-')) {
+       const userId = orgId.split('-')[1];
+       user = allUsers.find(u => String(u.id) === String(userId));
+    } else {
+      user = allUsers.find(u => String(u.orgAccountId) === String(orgId) || (orgId === 'null' && !u.orgAccountId));
+    }
+
+    if (!user) {
+      console.error('Account not found for phone:', phone, 'orgId:', orgId, 'isSuperadminPanel:', req.body.isSuperadminPanel);
+      return res.status(400).json({ success: false, message: 'Account not found for this organization' });
+    }
+
+    if (user.active === false) return res.status(403).json({ success: false, message: 'User disabled' });
+
+    // Issue new token
+    const profile = await StaffProfile.findOne({ where: { userId: user.id } });
+    const name = profile?.name || null;
+    const staffId = profile?.staffId || null;
+
+    const newToken = jwt.sign(
+      { 
+        id: user.id, 
+        role: user.role, 
+        phone: user.phone, 
+        name, 
+        staffId, 
+        orgAccountId: req.body.isSuperadminPanel ? null : user.orgAccountId, // Nullify orgId for superadmin panel
+        channelPartnerId: user.channelPartnerId, 
+        isSuperadminPanel: !!req.body.isSuperadminPanel,
+        permissions: user.permissions
+      },
+      secret,
+      { expiresIn: process.env.JWT_EXPIRES_IN || '7d' }
+    );
+
+    return res.json({
+      success: true,
+      token: newToken,
+      user: { 
+        id: user.id, 
+        role: user.role, 
+        phone: user.phone, 
+        name, 
+        staffId, 
+        orgAccountId: req.body.isSuperadminPanel ? null : user.orgAccountId, // Nullify orgId for superadmin panel
+        channelPartnerId: user.channelPartnerId, 
+        isSuperadminPanel: !!req.body.isSuperadminPanel,
+        permissions: user.permissions
+      },
+    });
+  } catch (e) {
+    console.error('Switch account failed:', e);
+    return res.status(500).json({ success: false, message: 'Failed to switch account' });
+  }
+});
+
+router.post('/add-organization', async (req, res) => {
+  try {
+    const { name, address, businessEmail } = req.body;
+    const authHeader = req.headers.authorization;
+    if (!authHeader) return res.status(401).json({ success: false, message: 'Unauthorized' });
+
+    const token = authHeader.split(' ')[1];
+    const secret = process.env.JWT_SECRET || 'dev_secret_change_me';
+    let decoded;
+    try {
+      decoded = jwt.verify(token, secret);
+    } catch (err) {
+      return res.status(401).json({ success: false, message: 'Invalid token' });
+    }
+
+    const phone = decoded.phone;
+    if (!phone) return res.status(401).json({ success: false, message: 'Invalid session' });
+
+    // 1. Normalize phone (last 10 digits to be safe)
+    const normalizedPhone = phone.length > 10 ? phone.slice(-10) : phone;
+
+    // Find an existing user to copy password hash and name
+    // Search both exact and normalized
+    const existingUser = await User.findOne({
+      where: {
+        [require('sequelize').Op.or]: [
+          { phone: String(phone) },
+          { phone: String(normalizedPhone) }
+        ]
+      }
+    });
+
+    if (!existingUser) {
+      console.error('No existing user found for phone:', phone);
+      return res.status(400).json({ success: false, message: 'Existing account not found' });
+    }
+
+    const profile = await StaffProfile.findOne({ where: { userId: existingUser.id } });
+
+    console.log('Creating organization for phone:', normalizedPhone);
+
+    // Create Org
+    const org = await OrgAccount.create({
+      name,
+      address,
+      businessEmail,
+      phone: String(normalizedPhone),
+      status: 'ACTIVE'
+    });
+
+    console.log('New Org created:', org.id);
+
+    // Create User record for this phone + new Org
+    const newUser = await User.create({
+      role: 'admin',
+      orgAccountId: org.id,
+      phone: String(normalizedPhone),
+      passwordHash: existingUser.passwordHash,
+      active: true
+    });
+
+    console.log('New User created:', newUser.id);
+
+    // Create StaffProfile for new user
+    await StaffProfile.create({
+      userId: newUser.id,
+      orgAccountId: org.id,
+      name: profile?.name || 'Admin'
+    });
+
+    // Clone subscription from the VERY FIRST organization (Master/Parent)
+    try {
+      // Find the oldest admin account for this phone
+      const firstAdmin = await User.findOne({
+        where: {
+          [require('sequelize').Op.or]: [
+            { phone: String(phone) },
+            { phone: String(normalizedPhone) }
+          ],
+          role: 'admin'
+        },
+        order: [['id', 'ASC']]
+      });
+
+      let templateSub = null;
+      if (firstAdmin) {
+        console.log('Found firstAdmin for cloning:', firstAdmin.id, 'Org:', firstAdmin.orgAccountId);
+        templateSub = await Subscription.findOne({
+          where: { orgAccountId: firstAdmin.orgAccountId },
+          order: [['endAt', 'DESC']]
+        });
+      }
+
+      const yesterday = new Date();
+      yesterday.setDate(yesterday.getDate() - 1);
+
+      const thirtyDaysLater = new Date();
+      thirtyDaysLater.setDate(thirtyDaysLater.getDate() + 30);
+
+      if (templateSub) {
+        console.log('Cloning from template subscription:', templateSub.id);
+        const finalEndAt = templateSub.endAt && new Date(templateSub.endAt) > thirtyDaysLater
+          ? templateSub.endAt
+          : thirtyDaysLater;
+
+        await Subscription.create({
+          orgAccountId: org.id,
+          planId: templateSub.planId,
+          startAt: yesterday,
+          endAt: finalEndAt,
+          status: 'ACTIVE',
+          staffLimit: templateSub.staffLimit || 10,
+          maxGeolocationStaff: templateSub.maxGeolocationStaff,
+          salesEnabled: templateSub.salesEnabled,
+          geolocationEnabled: templateSub.geolocationEnabled,
+          expenseEnabled: templateSub.expenseEnabled,
+          payrollEnabled: templateSub.payrollEnabled,
+          performanceEnabled: templateSub.performanceEnabled,
+          aiReportsEnabled: templateSub.aiReportsEnabled,
+          aiAssistantEnabled: templateSub.aiAssistantEnabled,
+          taskManagementEnabled: templateSub.taskManagementEnabled,
+          rosterEnabled: templateSub.rosterEnabled,
+          recruitmentEnabled: templateSub.recruitmentEnabled,
+          communityEnabled: templateSub.communityEnabled
+        });
+      } else {
+        console.log('No template sub found, using fallback trial plan');
+        const trialPlan = await Plan.findOne({ where: { active: true }, order: [['price', 'ASC']] });
+        const end = new Date();
+        end.setDate(end.getDate() + 30);
+
+        await Subscription.create({
+          orgAccountId: org.id,
+          planId: trialPlan ? trialPlan.id : 1,
+          startAt: yesterday,
+          endAt: end,
+          status: 'ACTIVE',
+          staffLimit: 10,
+          salesEnabled: true,
+          payrollEnabled: true,
+          expenseEnabled: true
+        });
+      }
+      console.log('Subscription created successfully for Org:', org.id);
+    } catch (subErr) {
+      console.error('Subscription cloning failed:', subErr);
+    }
+
+    // Return updated list of organizations
+    const allUsers = await User.findAll({
+      where: { phone: String(phone) },
+      include: [{ model: OrgAccount, as: 'orgAccount' }]
+    });
+
+    const orgMap = new Map();
+    allUsers.forEach(u => {
+      if (!u.orgAccountId) return;
+      const key = `${u.orgAccountId}-${u.role}`;
+      if (!orgMap.has(key)) {
+        orgMap.set(key, {
+          id: u.orgAccountId,
+          name: u.orgAccount?.name || `Organization ${u.orgAccountId}`,
+          role: u.role
+        });
+      }
+    });
+
+    const others = allUsers.filter(u => !u.orgAccountId).map(u => ({
+      id: null,
+      name: u.role === 'superadmin' ? 'Super Admin Panel' : 'Channel Partner Panel',
+      role: u.role
+    }));
+
+    return res.json({
+      success: true,
+      organizations: [...Array.from(orgMap.values()), ...others]
+    });
+
+  } catch (e) {
+    console.error('Add organization failed:', e);
+    return res.status(500).json({ success: false, message: 'Failed to add organization' });
   }
 });
 
@@ -310,16 +709,70 @@ router.post('/login', async (req, res) => {
     const staffId = profile?.staffId || null;
 
     const secret = process.env.JWT_SECRET || 'dev_secret_change_me';
-    const token = jwt.sign(
-      { id: user.id, role: user.role, phone: user.phone, name, staffId, orgAccountId: user.orgAccountId, channelPartnerId: user.channelPartnerId },
+    const finalToken = jwt.sign(
+      { id: user.id, role: user.role, phone: user.phone, name, staffId, orgAccountId: user.orgAccountId, channelPartnerId: user.channelPartnerId, isSuperadminPanel: !!req.body.isSuperadminPanel },
       secret,
       { expiresIn: process.env.JWT_EXPIRES_IN || '7d' }
     );
 
+    const allUsers = await User.findAll({
+      where: { phone: user.phone },
+      include: [{ model: OrgAccount, as: 'orgAccount' }]
+    });
+
+    if (user.role === 'admin' || allUsers.length > 1) {
+      const orgMap = new Map();
+      allUsers.forEach(u => {
+        if (!u.orgAccountId) return;
+        const key = `${u.orgAccountId}-${u.role}`;
+        if (!orgMap.has(key)) {
+          orgMap.set(key, {
+            id: u.orgAccountId,
+            name: u.orgAccount?.name || `Organization ${u.orgAccountId}`,
+            role: u.role
+          });
+        }
+      });
+
+      const selectableOrgs = Array.from(orgMap.values());
+      const others = allUsers.filter(u => {
+        let perms = u.permissions;
+        if (typeof perms === 'string') {
+          try { perms = JSON.parse(perms); } catch(e) {}
+        }
+        return !u.orgAccountId || (perms && perms.superadmin_access === true);
+      }).map(u => {
+        let perms = u.permissions;
+        if (typeof perms === 'string') {
+          try { perms = JSON.parse(perms); } catch(e) {}
+        }
+        const isSuper = u.role === 'superadmin' || (perms && perms.superadmin_access === true);
+        return {
+          id: u.orgAccountId || null,
+          name: isSuper ? 'Super Admin Panel' : 'Channel Partner Panel',
+          role: u.role,
+          isSuperadminPanel: isSuper
+        };
+      });
+
+      const tempToken = jwt.sign(
+        { phone: user.phone },
+        secret,
+        { expiresIn: '1h' }
+      );
+
+      return res.json({
+        success: true,
+        requireSelection: true,
+        token: tempToken,
+        organizations: [...selectableOrgs, ...others]
+      });
+    }
+
     return res.json({
       success: true,
-      token,
-      user: { id: user.id, role: user.role, phone: user.phone, name, staffId, orgAccountId: user.orgAccountId, channelPartnerId: user.channelPartnerId },
+      token: finalToken,
+      user: { id: user.id, role: user.role, phone: user.phone, name, staffId, orgAccountId: user.orgAccountId, channelPartnerId: user.channelPartnerId, isSuperadminPanel: !!req.body.isSuperadminPanel },
     });
   } catch (e) {
     return res.status(500).json({ success: false, message: 'Login failed' });

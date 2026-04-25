@@ -6,14 +6,18 @@ async function initDb() {
   await sequelize.authenticate();
 
   // Sync models to create/update tables
+  // These are causing duplicate index issues with 'alter: true'. 
+  // Use migrations for schema changes.
+  /*
   await MailCampaign.sync({ alter: true });
   await MailQueue.sync({ alter: true });
   await JobPosting.sync({ alter: true });
   await Candidate.sync({ alter: true });
   await Interview.sync({ alter: true });
+  */
   const { Plan, Subscription } = require('./models');
-  await Plan.sync({ alter: true });
-  await Subscription.sync({ alter: true });
+  // await Plan.sync({ alter: true });
+  // await Subscription.sync({ alter: true });
 
   // Ensure face_id column exists
   try {

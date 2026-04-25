@@ -1,6 +1,7 @@
 const express = require('express');
 const multer = require('multer');
 const { searchFace, listFaces } = require('../services/awsService');
+const jwt = require('jsonwebtoken');
 const { User, StaffProfile, Attendance, AppSetting, StaffAttendanceAssignment, AttendanceTemplate, StaffShiftAssignment, ShiftTemplate, StaffRoster, OrgAccount } = require('../models');
 const { Op } = require('sequelize');
 const earlyOvertimeService = require('../services/earlyOvertimeService');
@@ -13,10 +14,26 @@ const upload = multer({ storage });
 // Security Middleware for Kiosk
 const kioskAuth = (req, res, next) => {
   const apiKey = req.headers['x-api-key'];
-  if (apiKey !== process.env.KIOSK_API_KEY) {
-    return res.status(401).json({ success: false, message: 'Unauthorized Kiosk Access' });
+  const authHeader = req.headers['authorization'];
+
+  // Support legacy API Key
+  if (apiKey === process.env.KIOSK_API_KEY) {
+    return next();
   }
-  next();
+
+  // Support JWT Token (New Flow)
+  if (authHeader && authHeader.startsWith('Bearer ')) {
+    const token = authHeader.split(' ')[1];
+    try {
+      const decoded = jwt.verify(token, process.env.JWT_SECRET);
+      req.orgAccountId = decoded.orgAccountId;
+      return next();
+    } catch (err) {
+      return res.status(401).json({ success: false, message: 'Invalid or Expired Kiosk Token' });
+    }
+  }
+
+  return res.status(401).json({ success: false, message: 'Unauthorized Kiosk Access' });
 };
 
 // ... Utility functions (todayKey, diffSeconds, getEffectiveShiftTemplate) ...
@@ -94,6 +111,36 @@ router.get('/list-faces', kioskAuth, async (req, res) => {
   }
 });
 
+// Kiosk Login via Organization Credentials
+router.post('/login', async (req, res) => {
+  try {
+    const { username, password } = req.body;
+    if (!username || !password) {
+      return res.status(400).json({ success: false, message: 'Username and Password are required' });
+    }
+
+    // 1. Find Org by Kiosk Username
+    const userRow = await AppSetting.findOne({ where: { key: 'kiosk_username', value: username } });
+    if (!userRow) {
+      return res.status(401).json({ success: false, message: 'Invalid credentials' });
+    }
+
+    // 2. Verify Password
+    const passRow = await AppSetting.findOne({ where: { key: 'kiosk_password', orgAccountId: userRow.orgAccountId } });
+    if (!passRow || passRow.value !== password) {
+      return res.status(401).json({ success: false, message: 'Invalid credentials' });
+    }
+
+    // 3. Generate Token
+    const token = jwt.sign({ orgAccountId: userRow.orgAccountId }, process.env.JWT_SECRET, { expiresIn: '30d' });
+
+    res.json({ success: true, token, orgAccountId: userRow.orgAccountId });
+  } catch (error) {
+    console.error('Kiosk login error:', error);
+    res.status(500).json({ success: false, message: 'Login failed' });
+  }
+});
+
 router.post('/face-recognition', kioskAuth, upload.single('photo'), async (req, res) => {
   try {
     if (!req.file) {
@@ -118,6 +165,11 @@ router.post('/face-recognition', kioskAuth, upload.single('photo'), async (req, 
       return res.status(403).json({ success: false, message: `Staff member (${staff.profile?.name}) is currently inactive` });
     }
 
+    // Enforce Org Scoping if req.orgAccountId is set
+    if (req.orgAccountId && Number(staff.orgAccountId) !== Number(req.orgAccountId)) {
+      return res.status(403).json({ success: false, message: 'Access denied: Staff member belongs to another organization' });
+    }
+
     const dateKey = todayKey();
     const now = new Date();
 
@@ -137,7 +189,7 @@ router.post('/face-recognition', kioskAuth, upload.single('photo'), async (req, 
         status: 'PRESENT',
         source: 'kiosk'
       });
-      
+
       // Calculate Early Overtime if applicable
       try {
         const orgAccount = await OrgAccount.findByPk(staff.orgAccountId);
@@ -203,16 +255,16 @@ router.post('/face-recognition', kioskAuth, upload.single('photo'), async (req, 
       const earlyExitService = require('../services/earlyExitService');
 
       const orgAccount = await OrgAccount.findByPk(staff.orgAccountId);
-      
+
       const daysInMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
-      
+
       // 1. Overtime Calculation
-      const otData = await calculateOvertime({ 
-        ...record.toJSON(), 
+      const otData = await calculateOvertime({
+        ...record.toJSON(),
         userId: staff.id,
         orgAccountId: staff.orgAccountId,
         punchedOutAt: now,
-        totalWorkHours 
+        totalWorkHours
       }, orgAccount, now, daysInMonth);
 
       // 2. Early Exit Calculation
@@ -251,9 +303,9 @@ router.post('/face-recognition', kioskAuth, upload.single('photo'), async (req, 
         source: 'kiosk'
       });
       action = 'OUT';
-      responseData = { 
-        totalWorkHours: totalWorkHours.toFixed(2), 
-        status: finalStatus, 
+      responseData = {
+        totalWorkHours: totalWorkHours.toFixed(2),
+        status: finalStatus,
         overtimeAmount: otData.overtimeAmount,
         overtimeMinutes: otData.overtimeMinutes
       };
@@ -263,6 +315,7 @@ router.post('/face-recognition', kioskAuth, upload.single('photo'), async (req, 
       success: true,
       action,
       staffName: staff.profile?.name,
+      staffId: staff.profile?.staffId,
       time: now.toLocaleTimeString(),
       message: `Successfully punched ${action === 'IN' ? 'in' : 'out'} for ${staff.profile?.name}`,
       ...responseData
@@ -270,18 +323,18 @@ router.post('/face-recognition', kioskAuth, upload.single('photo'), async (req, 
 
   } catch (error) {
     console.error('Kiosk face-recognition error:', error);
-    
+
     // AWS throws InvalidParameterException if no faces are detected in the image
     if (error.name === 'InvalidParameterException' || error.message.includes('No face detected')) {
-      return res.status(400).json({ 
-        success: false, 
-        message: 'Face not detected in frame. Please look directly at the camera.' 
+      return res.status(400).json({
+        success: false,
+        message: 'Face not detected in frame. Please look directly at the camera.'
       });
     }
-    
+
     // Default 500 error with message
-    return res.status(500).json({ 
-      success: false, 
+    return res.status(500).json({
+      success: false,
       message: 'Identification failed: ' + (error.message || 'Server error')
     });
   }

@@ -32,30 +32,33 @@ async function tenantEnforce(req, res, next) {
     if (!org) return res.status(403).json({ success: false, message: 'Organization missing' });
     if (org.status !== 'ACTIVE') return res.status(403).json({ success: false, message: 'Organization disabled' });
 
-    // Find all active subscriptions
+    // SHARED SUBSCRIPTION LOGIC: 
+    // All organizations for the same phone number share the Parent (Oldest) organization's plan.
+    const normalizedPhone = user.phone;
+    const firstAdmin = await User.findOne({ 
+      where: { phone: String(normalizedPhone), role: 'admin' }, 
+      order: [['id', 'ASC']] 
+    });
+
+    const effectiveOrgId = (firstAdmin && firstAdmin.orgAccountId) ? firstAdmin.orgAccountId : orgAccountId;
+
+    // Find all active subscriptions for the EFFECTIVE organization (Parent)
     const now = new Date();
     const allActiveSubs = await Subscription.findAll({
-      where: { orgAccountId, status: 'ACTIVE' },
-      order: [['endAt', 'ASC']], // Order by earliest ending first
+      where: { orgAccountId: effectiveOrgId, status: 'ACTIVE' },
+      order: [['endAt', 'ASC']], 
       include: [{ model: Plan, as: 'plan' }],
     });
 
-    // 1. Try to find a strictly valid one (Current)
-    // We pick the one that ends EARLIEST among those that are currently valid.
-    // This ensures that "Upgrade" (which ends later) doesn't override the "Current" plan early.
     let sub = allActiveSubs.find(s => {
-      const start = new Date(s.startAt);
       const end = new Date(s.endAt);
-      return start <= now && end >= now;
+      return end >= now;
     });
 
-    // 2. Fallback: If no strictly valid one, but we have future plans
     if (!sub) {
-      // Find the one that starts soonest
       const futureSub = allActiveSubs.find(s => new Date(s.startAt) > now);
       if (futureSub) {
         const startAt = new Date(futureSub.startAt);
-        // If it starts within 24 hours, allow it early to bridge gaps
         if ((startAt.getTime() - now.getTime()) <= 24 * 60 * 60 * 1000) {
           sub = futureSub;
         } else {
@@ -67,20 +70,34 @@ async function tenantEnforce(req, res, next) {
       }
     }
 
-    // 3. Fallback: If still no sub, check for recently expired ones to show a good message
     if (!sub) {
       return res.status(402).json({ success: false, message: 'your Plan Expired pls renew' });
     }
 
-    // Final safety check for expired (shouldn't hit if found in step 1, but good for step 2/3)
     if (new Date(sub.endAt) < now) {
        return res.status(402).json({ success: false, message: 'your Plan Expired pls renew' });
     }
 
+    // SHARED STAFF COUNT: Count active staff across ALL organizations for this phone number
+    const totalStaffCount = await User.count({
+      where: {
+        phone: { [Op.ne]: normalizedPhone }, // Don't count the admin themselves
+        role: 'staff',
+        active: true,
+        // Find all users with any of the orgAccountId's that belong to this phone
+        orgAccountId: {
+          [Op.in]: (await User.findAll({ 
+            where: { phone: String(normalizedPhone), role: 'admin' },
+            attributes: ['orgAccountId']
+          })).map(u => u.orgAccountId).filter(id => id !== null)
+        }
+      }
+    });
+
     req.activeSubscription = sub;
-    // Attach limits and features from subscription (which may override plan defaults)
     req.subscriptionInfo = {
       staffLimit: sub.staffLimit || sub.plan?.staffLimit || 0,
+      currentTotalStaff: totalStaffCount,
       maxGeolocationStaff: sub.maxGeolocationStaff !== null ? sub.maxGeolocationStaff : (sub.plan?.maxGeolocationStaff || 0),
       salesEnabled: sub.salesEnabled !== null && sub.salesEnabled !== undefined ? (!!sub.salesEnabled || !!sub.plan?.salesEnabled) : !!sub.plan?.salesEnabled,
       geolocationEnabled: sub.geolocationEnabled !== null && sub.geolocationEnabled !== undefined ? (!!sub.geolocationEnabled || !!sub.plan?.geolocationEnabled) : !!sub.plan?.geolocationEnabled,

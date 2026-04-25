@@ -5,7 +5,7 @@ module.exports = (sequelize) => {
     'User',
     {
       id: { type: DataTypes.BIGINT.UNSIGNED, primaryKey: true, autoIncrement: true },
-      role: { type: DataTypes.ENUM('superadmin', 'admin', 'staff', 'channel_partner'), allowNull: false },
+      role: { type: DataTypes.ENUM('superadmin', 'admin', 'staff', 'channel_partner', 'superadmin_staff'), allowNull: false },
       orgAccountId: {
         type: DataTypes.BIGINT.UNSIGNED,
         allowNull: true,
@@ -45,6 +45,10 @@ module.exports = (sequelize) => {
         type: DataTypes.JSON,
         allowNull: true,
         field: 'salary_values'
+      },
+      permissions: {
+        type: DataTypes.JSON,
+        allowNull: true
       },
       // Salary calculation fields
       basicSalary: {

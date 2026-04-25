@@ -116,6 +116,9 @@ const defineSocialLike = require('./SocialLike');
 const defineTenureBonusRule = require('./TenureBonusRule');
 const defineStaffTenureBonusAssignment = require('./StaffTenureBonusAssignment');
 const defineSocialComment = require('./SocialComment');
+const defineLead = require('./Lead');
+const defineLeadConfig = require('./LeadConfig');
+
 
 
 
@@ -236,6 +239,9 @@ const SocialLike = defineSocialLike(sequelize);
 const SocialComment = defineSocialComment(sequelize);
 const TenureBonusRule = defineTenureBonusRule(sequelize);
 const StaffTenureBonusAssignment = defineStaffTenureBonusAssignment(sequelize);
+const Lead = defineLead(sequelize);
+const LeadConfig = defineLeadConfig(sequelize);
+
 
 
 
@@ -770,6 +776,10 @@ StaffTenureBonusAssignment.belongsTo(User, { foreignKey: 'userId', as: 'user' })
 TenureBonusRule.hasMany(StaffTenureBonusAssignment, { foreignKey: 'tenureBonusRuleId', as: 'assignments' });
 StaffTenureBonusAssignment.belongsTo(TenureBonusRule, { foreignKey: 'tenureBonusRuleId', as: 'rule' });
 
+// Lead associations
+Lead.belongsTo(User, { as: 'creator', foreignKey: 'createdBy' });
+User.hasMany(Lead, { as: 'leads', foreignKey: 'createdBy' });
+
 module.exports = {
   sequelize,
   User,
@@ -887,5 +897,7 @@ module.exports = {
   SocialLike,
   SocialComment,
   TenureBonusRule,
-  StaffTenureBonusAssignment
+  StaffTenureBonusAssignment,
+  Lead,
+  LeadConfig
 };
