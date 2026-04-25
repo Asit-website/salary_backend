@@ -364,6 +364,9 @@ router.get('/clients', async (req, res) => {
       const perms = user.permissions || {};
       if (perms.clients === 'manage_own') {
         where = { createdBy: user.id };
+      } else if (perms.clients === 'manage_selected') {
+        const selectedIds = Array.isArray(perms.selectedClients) ? perms.selectedClients : [];
+        where = { id: { [Op.in]: selectedIds } };
       }
     }
 
@@ -512,6 +515,22 @@ router.get('/clients/:id/staff', async (req, res) => {
 router.get('/clients/:id/plan-details', async (req, res) => {
   try {
     const clientId = req.params.id;
+
+    // Permission check
+    if (req.user.role !== 'superadmin') {
+      const perms = req.user.permissions || {};
+      if (perms.clients === 'manage_own') {
+        const org = await OrgAccount.findByPk(clientId);
+        if (!org || org.createdBy !== req.user.id) {
+          return res.status(403).json({ success: false, message: 'Permission denied' });
+        }
+      } else if (perms.clients === 'manage_selected') {
+        const selectedIds = Array.isArray(perms.selectedClients) ? perms.selectedClients.map(id => Number(id)) : [];
+        if (!selectedIds.includes(Number(clientId))) {
+          return res.status(403).json({ success: false, message: 'Permission denied' });
+        }
+      }
+    }
 
     // Get all active/future subscriptions
     const subscriptions = await Subscription.findAll({
@@ -673,6 +692,12 @@ router.put('/clients/:id', async (req, res) => {
       if (perms.clients === 'manage_own' && row.createdBy !== user.id) {
         return res.status(403).json({ success: false, message: 'Permission denied' });
       }
+      if (perms.clients === 'manage_selected') {
+        const selectedIds = Array.isArray(perms.selectedClients) ? perms.selectedClients.map(id => Number(id)) : [];
+        if (!selectedIds.includes(Number(row.id))) {
+          return res.status(403).json({ success: false, message: 'Permission denied' });
+        }
+      }
     }
     const {
       name, phone, status, clientType, location, extra, businessEmail, state, city,
@@ -753,6 +778,20 @@ router.post('/clients/:id/subscription', async (req, res) => {
     const orgAccountId = Number(req.params.id);
     const org = await OrgAccount.findByPk(orgAccountId);
     if (!org) return res.status(404).json({ success: false, message: 'Organization not found' });
+
+    // Permission check
+    if (req.user.role !== 'superadmin') {
+      const perms = req.user.permissions || {};
+      if (perms.clients === 'manage_own' && org.createdBy !== req.user.id) {
+        return res.status(403).json({ success: false, message: 'Permission denied' });
+      }
+      if (perms.clients === 'manage_selected') {
+        const selectedIds = Array.isArray(perms.selectedClients) ? perms.selectedClients.map(id => Number(id)) : [];
+        if (!selectedIds.includes(Number(org.id))) {
+          return res.status(403).json({ success: false, message: 'Permission denied' });
+        }
+      }
+    }
 
     const {
       planId, planCode, startAt, staffLimit, maxGeolocationStaff,
@@ -966,6 +1005,22 @@ router.get('/client/:id/staff-count', async (req, res) => {
   try {
     const clientId = req.params.id;
 
+    // Permission check
+    if (req.user.role !== 'superadmin') {
+      const perms = req.user.permissions || {};
+      if (perms.clients === 'manage_own') {
+        const org = await OrgAccount.findByPk(clientId);
+        if (!org || org.createdBy !== req.user.id) {
+          return res.status(403).json({ success: false, message: 'Permission denied' });
+        }
+      } else if (perms.clients === 'manage_selected') {
+        const selectedIds = Array.isArray(perms.selectedClients) ? perms.selectedClients.map(id => Number(id)) : [];
+        if (!selectedIds.includes(Number(clientId))) {
+          return res.status(403).json({ success: false, message: 'Permission denied' });
+        }
+      }
+    }
+
     // Count staff users for this organization
     const staffCount = await User.count({
       where: {
@@ -1037,6 +1092,22 @@ router.get('/client/:id/geo-staff-count', async (req, res) => {
   try {
     const clientId = req.params.id;
 
+    // Permission check
+    if (req.user.role !== 'superadmin') {
+      const perms = req.user.permissions || {};
+      if (perms.clients === 'manage_own') {
+        const org = await OrgAccount.findByPk(clientId);
+        if (!org || org.createdBy !== req.user.id) {
+          return res.status(403).json({ success: false, message: 'Permission denied' });
+        }
+      } else if (perms.clients === 'manage_selected') {
+        const selectedIds = Array.isArray(perms.selectedClients) ? perms.selectedClients.map(id => Number(id)) : [];
+        if (!selectedIds.includes(Number(clientId))) {
+          return res.status(403).json({ success: false, message: 'Permission denied' });
+        }
+      }
+    }
+
     // Directly query the users table for staff with geolocation access
     const [results] = await sequelize.query(`
       SELECT COUNT(DISTINCT u.id) as count
@@ -1070,6 +1141,20 @@ router.post('/clients/:id/impersonate', async (req, res) => {
     const orgAccountId = Number(req.params.id);
     const org = await OrgAccount.findByPk(orgAccountId);
     if (!org) return res.status(404).json({ success: false, message: 'Organization not found' });
+
+    // Permission check
+    if (req.user.role !== 'superadmin') {
+      const perms = req.user.permissions || {};
+      if (perms.clients === 'manage_own' && org.createdBy !== req.user.id) {
+        return res.status(403).json({ success: false, message: 'Permission denied' });
+      }
+      if (perms.clients === 'manage_selected') {
+        const selectedIds = Array.isArray(perms.selectedClients) ? perms.selectedClients.map(id => Number(id)) : [];
+        if (!selectedIds.includes(Number(org.id))) {
+          return res.status(403).json({ success: false, message: 'Permission denied' });
+        }
+      }
+    }
 
     // Find the admin user for this org
     const admin = await User.findOne({
@@ -1132,6 +1217,20 @@ router.post('/clients/:id/toggle-status', async (req, res) => {
   try {
     const org = await OrgAccount.findByPk(req.params.id);
     if (!org) return res.status(404).json({ success: false, message: 'Client not found' });
+
+    // Permission check
+    if (req.user.role !== 'superadmin') {
+      const perms = req.user.permissions || {};
+      if (perms.clients === 'manage_own' && org.createdBy !== req.user.id) {
+        return res.status(403).json({ success: false, message: 'Permission denied' });
+      }
+      if (perms.clients === 'manage_selected') {
+        const selectedIds = Array.isArray(perms.selectedClients) ? perms.selectedClients.map(id => Number(id)) : [];
+        if (!selectedIds.includes(Number(org.id))) {
+          return res.status(403).json({ success: false, message: 'Permission denied' });
+        }
+      }
+    }
 
     let newStatus;
     if (org.status === 'SUSPENDED') {
@@ -1315,10 +1414,20 @@ router.delete('/staff/:id', async (req, res) => {
     if (!user) return res.status(404).json({ success: false, message: 'Staff not found' });
 
     // Revoke superadmin_access
-    const perms = user.permissions || {};
+    let perms = user.permissions;
+    while (typeof perms === 'string' && (perms.startsWith('{') || perms.startsWith('['))) {
+      try { 
+        const parsed = JSON.parse(perms); 
+        if (parsed === perms) break;
+        perms = parsed;
+      } catch(e) { break; }
+    }
+    if (typeof perms !== 'object' || perms === null) perms = {};
+
     delete perms.superadmin_access;
 
-    await user.update({ permissions: perms });
+    // Use a fresh object to ensure Sequelize detects the change
+    await user.update({ permissions: { ...perms } });
     return res.json({ success: true, message: 'Staff access revoked' });
   } catch (e) {
     console.error('Revoke error:', e);

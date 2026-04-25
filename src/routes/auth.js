@@ -179,31 +179,42 @@ router.post('/verify-otp', async (req, res) => {
       return res.json({ success: true, requireSignup: true, phone: normalizedPhone });
     }
 
-    console.log(`Verify-OTP: Found ${allUsers.length} users for phone ${normalizedPhone}`);
+    const isMobileApk = req.headers['x-app-platform'] === 'mobile-apk';
+
+    console.log(`Verify-OTP: Found ${allUsers.length} users for phone ${normalizedPhone}. Platform: ${isMobileApk ? 'Mobile' : 'Web'}`);
+    
     let user;
     const hasSuperAccess = allUsers.some(u => {
       let perms = u.permissions;
       if (typeof perms === 'string') {
         try { perms = JSON.parse(perms); } catch(e) {}
       }
-      return u.role === 'superadmin' || (perms && perms.superadmin_access === true);
+      const isSuper = u.role === 'superadmin' || (perms && perms.superadmin_access === true);
+      console.log(`Checking user ID ${u.id}: role=${u.role}, superAccess=${isSuper}, permsType=${typeof perms}`);
+      return isSuper;
     });
 
+    console.log(`Verify-OTP: hasSuperAccess determined as ${hasSuperAccess}`);
+
     // If exactly one user and it's NOT an admin (who might want to create new orgs), direct login.
-    // ADDED: Allow superadmin/staff with superadmin_access to direct login if they are the only one.
     if (allUsers.length === 1) {
       const singleUser = allUsers[0];
       const isGlobalSuper = singleUser.role === 'superadmin';
       const isPartner = singleUser.role === 'channel_partner';
       
-      // Allow direct login if it's the only account, even if it has super access (to avoid stuck on mobile selection)
-      if (isGlobalSuper || isPartner || (singleUser.role !== 'admin' && !hasSuperAccess) || (allUsers.length === 1)) {
+      // If it's a regular user (not admin, not super, not partner), login directly.
+      // If it's a specialized user but we are on MOBILE, also login directly.
+      // NEW: If it's a GLOBAL superadmin, also login directly on web if it's their only account.
+      if ((!isGlobalSuper && !isPartner && singleUser.role !== 'admin' && !hasSuperAccess) || 
+          (allUsers.length === 1 && (isMobileApk || isGlobalSuper))) {
         console.log('Verify-OTP: Single user found, direct login allowed');
         user = singleUser;
+      } else {
+        console.log(`Verify-OTP: Single user found but direct login REJECTED. role=${singleUser.role}, hasSuperAccess=${hasSuperAccess}, isMobile=${isMobileApk}`);
       }
     }
 
-    const isMobileApk = req.headers['x-app-platform'] === 'mobile-apk';
+
 
     if (!user) {
       // Auto-pick for mobile APK if multiple accounts exist
@@ -257,7 +268,7 @@ router.post('/verify-otp', async (req, res) => {
             if (!othersMap.has('superadmin')) {
               othersMap.set('superadmin', {
                 id: `superadmin-${u.id}`, // Unique ID
-                name: 'Super Admin Leads',
+                name: 'Super Admin Permissions',
                 role: u.role,
                 isSuperadminPanel: true
               });
