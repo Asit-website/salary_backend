@@ -780,6 +780,10 @@ StaffTenureBonusAssignment.belongsTo(TenureBonusRule, { foreignKey: 'tenureBonus
 Lead.belongsTo(User, { as: 'creator', foreignKey: 'createdBy' });
 User.hasMany(Lead, { as: 'leads', foreignKey: 'createdBy' });
 
+// OrgAccount creator associations
+OrgAccount.belongsTo(User, { as: 'creator', foreignKey: 'createdBy' });
+User.hasMany(OrgAccount, { as: 'createdOrgs', foreignKey: 'createdBy' });
+
 module.exports = {
   sequelize,
   User,

@@ -373,21 +373,54 @@ router.get('/clients', async (req, res) => {
     const { User, Subscription, Plan, Role, Permission } = require('../models');
     const allOrgs = await OrgAccount.findAll({ 
       where,
+      include: [{
+        model: User,
+        as: 'creator',
+        attributes: ['id', 'role', 'orgAccountId']
+      }],
       order: [['createdAt', 'ASC']] 
-    }); // Oldest first to find parents easily
+    });
     const now = new Date();
 
-    // Group organizations by phone number to identify parent/children
+    // Group organizations by phone number OR creator's organization to identify parent/children
     const phoneGroups = {};
+    const orgToGroupHead = {}; // orgId -> parentOrgId
+
     allOrgs.forEach(org => {
       const ph = org.phone;
-      if (!ph) {
-        // Orgs without phone are treated as independent parents
-        phoneGroups[`no-phone-${org.id}`] = [org];
-      } else {
-        if (!phoneGroups[ph]) phoneGroups[ph] = [];
-        phoneGroups[ph].push(org);
+      const creatorOrgId = org.creator?.orgAccountId;
+      
+      let groupKey = null;
+
+      // 1. Try grouping by phone
+      if (ph && phoneGroups[ph]) {
+        groupKey = ph;
+      } 
+      // 2. Try grouping by creator's org (if creator is not a superadmin)
+      else if (creatorOrgId && org.creator?.role !== 'superadmin') {
+        // Find which group the creator's org belongs to
+        const headId = orgToGroupHead[creatorOrgId] || creatorOrgId;
+        // Find the group that contains this headId
+        for (const k in phoneGroups) {
+          if (phoneGroups[k].some(o => o.id === headId)) {
+            groupKey = k;
+            break;
+          }
+        }
+        // If no phone group found for headId, create a new group keyed by headId
+        if (!groupKey) groupKey = `org-${headId}`;
       }
+
+      if (!groupKey) {
+        groupKey = ph ? ph : `no-phone-${org.id}`;
+      }
+
+      if (!phoneGroups[groupKey]) phoneGroups[groupKey] = [];
+      phoneGroups[groupKey].push(org);
+      
+      // Update mapping
+      const headId = phoneGroups[groupKey][0].id;
+      orgToGroupHead[org.id] = headId;
     });
 
     const geoPermission = await Permission.findOne({ where: { name: 'geolocation_access' } });
@@ -1197,14 +1230,30 @@ router.post('/clients/:id/impersonate', async (req, res) => {
     const others = allUsers.filter(u => !u.orgAccountId).map(u => ({
       id: null,
       name: u.role === 'superadmin' ? 'Super Admin Panel' : 'Channel Partner Panel',
-      role: u.role
+      role: u.role,
+      isSuperadminPanel: u.role === 'superadmin'
     }));
+
+    // Calculate canCreateOrg
+    const { StaffBadge, Badge } = require('../models');
+    let hasCreateOrgAccess = false;
+    const badge = await Badge.findOne({ where: { name: 'create_org_tab' } });
+    if (badge) {
+      const assignment = await StaffBadge.findOne({
+        where: { 
+          phone: String(admin.phone),
+          badgeId: badge.id
+        }
+      });
+      if (assignment) hasCreateOrgAccess = true;
+    }
 
     return res.json({
       success: true,
       token,
       user: { id: admin.id, role: admin.role, phone: admin.phone, name },
-      organizations: [...selectableOrgs, ...others]
+      organizations: [...selectableOrgs, ...others],
+      canCreateOrg: hasCreateOrgAccess || selectableOrgs.some(o => o.role === 'admin')
     });
   } catch (e) {
     console.error('Impersonate error:', e);
@@ -1333,7 +1382,8 @@ router.get('/staff', async (req, res) => {
   console.log('[Superadmin] GET /staff hit!');
   try {
     const allUsers = await User.findAll({
-      attributes: ['id', 'phone', 'role', 'permissions', 'createdAt']
+      attributes: ['id', 'phone', 'role', 'permissions', 'createdAt'],
+      include: [{ model: StaffProfile, as: 'profile', attributes: ['name'] }]
     });
     
     const staff = allUsers.filter(u => {
@@ -1359,8 +1409,10 @@ router.get('/staff', async (req, res) => {
         } catch(e) { break; }
         safety++;
       }
+      const data = u.toJSON();
       return {
-        ...u.toJSON(),
+        ...data,
+        name: data.profile?.name || null,
         permissions: perms
       };
     });

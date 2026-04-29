@@ -1,11 +1,37 @@
 const express = require('express');
 const { Op } = require('sequelize');
-const { StaffRoster, ShiftTemplate, User, StaffProfile, StaffShiftAssignment } = require('../models');
+const { StaffRoster, ShiftTemplate, User, StaffProfile, StaffShiftAssignment, Badge, BadgePermission } = require('../models');
 const { authRequired } = require('../middleware/auth');
 const { requireRole } = require('../middleware/roles');
 const { tenantEnforce } = require('../middleware/tenant');
 
 const router = express.Router();
+
+async function checkRosterPermission(req) {
+  if (req.user?.role === 'admin' || req.user?.role === 'superadmin') return true;
+  if (req.user?.role !== 'staff') return false;
+
+  const user = await User.findOne({
+    where: { id: req.user.id, orgAccountId: req.tenantOrgAccountId },
+    include: [
+      {
+        model: Badge,
+        as: 'badges',
+        where: { isActive: true },
+        required: false,
+        through: { where: { isActive: true }, attributes: [] },
+        include: [{ 
+          model: BadgePermission, 
+          as: 'permissions',
+          where: { permissionKey: 'roster_tab' }
+        }],
+      },
+    ],
+  });
+
+  const hasPerm = (user?.badges || []).some(b => (b.permissions || []).length > 0);
+  return hasPerm;
+}
 
 function todayKey(d = new Date()) {
   const yyyy = d.getFullYear();
@@ -25,7 +51,9 @@ function requireOrg(req, res) {
 
 router.get('/admin/roster/staff', authRequired, requireRole(['admin', 'superadmin', 'staff']), tenantEnforce, async (req, res) => {
   try {
-    if (req.user?.role === 'staff') return res.status(403).json({ success: false, message: 'Forbidden' });
+    const hasAccess = await checkRosterPermission(req);
+    if (!hasAccess) return res.status(403).json({ success: false, message: 'Forbidden: Roster access required' });
+    
     const orgId = requireOrg(req, res); if (!orgId) return;
 
     const dateKey = todayKey();
@@ -93,7 +121,9 @@ router.get('/admin/roster/staff', authRequired, requireRole(['admin', 'superadmi
 
 router.get('/admin/roster', authRequired, requireRole(['admin', 'superadmin', 'staff']), tenantEnforce, async (req, res) => {
   try {
-    if (req.user?.role === 'staff') return res.status(403).json({ success: false, message: 'Forbidden' });
+    const hasAccess = await checkRosterPermission(req);
+    if (!hasAccess) return res.status(403).json({ success: false, message: 'Forbidden: Roster access required' });
+    
     const orgId = requireOrg(req, res); if (!orgId) return;
     
     const startDate = req.query.startDate;
@@ -122,7 +152,9 @@ router.get('/admin/roster', authRequired, requireRole(['admin', 'superadmin', 's
 
 router.post('/admin/roster', authRequired, requireRole(['admin', 'superadmin', 'staff']), tenantEnforce, async (req, res) => {
   try {
-    if (req.user?.role === 'staff') return res.status(403).json({ success: false, message: 'Forbidden' });
+    const hasAccess = await checkRosterPermission(req);
+    if (!hasAccess) return res.status(403).json({ success: false, message: 'Forbidden: Roster access required' });
+    
     const orgId = requireOrg(req, res); if (!orgId) return;
 
     const { assessments } = req.body; // Array of { userId, date, shiftTemplateId, status }
@@ -155,5 +187,7 @@ router.post('/admin/roster', authRequired, requireRole(['admin', 'superadmin', '
     return res.status(500).json({ success: false, message: 'Failed to save roster' });
   }
 });
+
+module.exports = router;
 
 module.exports = router;

@@ -20,6 +20,13 @@ const SIDEBAR_PERMISSION_OPTIONS = [
   { key: 'letters_tab', label: 'Letters' },
   { key: 'settings_tab', label: 'Settings' },
   { key: 'task_management_tab', label: 'Task Management' },
+  { key: 'roster_tab', label: 'Roster Management' },
+  { key: 'ai_reports_tab', label: 'AI Reports' },
+  { key: 'ai_assistant_tab', label: 'AI Assistant' },
+  { key: 'performance_tab', label: 'Performance Management' },
+  { key: 'recruitment_tab', label: 'Recruitment (ATS)' },
+  { key: 'community_tab', label: 'Community Feed' },
+  { key: 'create_org_tab', label: 'Create Organization' },
 ];
 
 const permissionMap = new Map(SIDEBAR_PERMISSION_OPTIONS.map((x) => [x.key, x.label]));

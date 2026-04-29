@@ -78,8 +78,10 @@ async function tenantEnforce(req, res, next) {
        return res.status(402).json({ success: false, message: 'your Plan Expired pls renew' });
     }
 
-    // SHARED STAFF COUNT: Count active staff across ALL organizations for this phone number
+    // SHARED STAFF COUNT: Count unique active staff phone numbers across ALL organizations for this phone number
     const totalStaffCount = await User.count({
+      distinct: true,
+      col: 'phone',
       where: {
         phone: { [Op.ne]: normalizedPhone }, // Don't count the admin themselves
         role: 'staff',

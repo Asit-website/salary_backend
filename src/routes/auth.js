@@ -182,12 +182,12 @@ router.post('/verify-otp', async (req, res) => {
     const isMobileApk = req.headers['x-app-platform'] === 'mobile-apk';
 
     console.log(`Verify-OTP: Found ${allUsers.length} users for phone ${normalizedPhone}. Platform: ${isMobileApk ? 'Mobile' : 'Web'}`);
-    
+
     let user;
     const hasSuperAccess = allUsers.some(u => {
       let perms = u.permissions;
       if (typeof perms === 'string') {
-        try { perms = JSON.parse(perms); } catch(e) {}
+        try { perms = JSON.parse(perms); } catch (e) { }
       }
       const isSuper = u.role === 'superadmin' || (perms && perms.superadmin_access === true);
       console.log(`Checking user ID ${u.id}: role=${u.role}, superAccess=${isSuper}, permsType=${typeof perms}`);
@@ -195,18 +195,36 @@ router.post('/verify-otp', async (req, res) => {
     });
 
     console.log(`Verify-OTP: hasSuperAccess determined as ${hasSuperAccess}`);
+    
+    // NEW: Check if any user has 'create_org_tab' permission
+    const { Badge, BadgePermission, StaffBadge } = require('../models');
+    const createOrgAssignments = await StaffBadge.findAll({
+      where: { userId: allUsers.map(u => u.id), isActive: true },
+      include: [{
+        model: Badge,
+        as: 'badge',
+        where: { isActive: true },
+        include: [{
+          model: BadgePermission,
+          as: 'permissions',
+          where: { permissionKey: 'create_org_tab' }
+        }]
+      }]
+    });
+    const hasCreateOrgAccess = createOrgAssignments.length > 0;
+    console.log(`Verify-OTP: hasCreateOrgAccess determined as ${hasCreateOrgAccess} (found ${createOrgAssignments.length} assignments)`);
 
     // If exactly one user and it's NOT an admin (who might want to create new orgs), direct login.
     if (allUsers.length === 1) {
       const singleUser = allUsers[0];
       const isGlobalSuper = singleUser.role === 'superadmin';
       const isPartner = singleUser.role === 'channel_partner';
-      
+
       // If it's a regular user (not admin, not super, not partner), login directly.
       // If it's a specialized user but we are on MOBILE, also login directly.
       // NEW: If it's a GLOBAL superadmin, also login directly on web if it's their only account.
-      if ((!isGlobalSuper && !isPartner && singleUser.role !== 'admin' && !hasSuperAccess) || 
-          (allUsers.length === 1 && (isMobileApk || isGlobalSuper))) {
+      if ((!isGlobalSuper && !isPartner && singleUser.role !== 'admin' && !hasSuperAccess && !hasCreateOrgAccess) ||
+        (allUsers.length === 1 && (isMobileApk || isGlobalSuper))) {
         console.log('Verify-OTP: Single user found, direct login allowed');
         user = singleUser;
       } else {
@@ -225,11 +243,11 @@ router.post('/verify-otp', async (req, res) => {
         if (!user) user = allUsers.find(u => u.role === 'staff');
         // Fallback to any superadmin staff
         if (!user) user = allUsers.find(u => {
-           let p = u.permissions;
-           if (typeof p === 'string') try { p = JSON.parse(p); } catch(_) {}
-           return p && p.superadmin_access === true;
+          let p = u.permissions;
+          if (typeof p === 'string') try { p = JSON.parse(p); } catch (_) { }
+          return p && p.superadmin_access === true;
         });
-        
+
         if (user) console.log(`Verify-OTP: Mobile APK auto-selected user ID ${user.id} (${user.role})`);
       }
     }
@@ -259,11 +277,11 @@ router.post('/verify-otp', async (req, res) => {
         allUsers.forEach(u => {
           let perms = u.permissions;
           if (typeof perms === 'string') {
-            try { perms = JSON.parse(perms); } catch(e) {}
+            try { perms = JSON.parse(perms); } catch (e) { }
           }
           const isSuper = u.role === 'superadmin' || (perms && perms.superadmin_access === true);
           const isPartner = u.role === 'channel_partner';
-          
+
           if (isSuper) {
             if (!othersMap.has('superadmin')) {
               othersMap.set('superadmin', {
@@ -274,15 +292,15 @@ router.post('/verify-otp', async (req, res) => {
               });
             }
           } else if (isPartner || !u.orgAccountId) {
-             const key = isPartner ? 'partner' : `no-org-${u.role}`;
-             if (!othersMap.has(key)) {
-               othersMap.set(key, {
-                 id: isPartner ? `partner-${u.id}` : `panel-${u.id}`,
-                 name: isPartner ? 'Channel Partner Panel' : `Panel (${u.role})`,
-                 role: u.role,
-                 isSuperadminPanel: false
-               });
-             }
+            const key = isPartner ? 'partner' : `no-org-${u.role}`;
+            if (!othersMap.has(key)) {
+              othersMap.set(key, {
+                id: isPartner ? `partner-${u.id}` : `panel-${u.id}`,
+                name: isPartner ? 'Channel Partner Panel' : `Panel (${u.role})`,
+                role: u.role,
+                isSuperadminPanel: false
+              });
+            }
           }
         });
 
@@ -299,32 +317,33 @@ router.post('/verify-otp', async (req, res) => {
           success: true,
           requireSelection: true,
           token: tempToken,
-          organizations: [...selectableOrgs, ...others]
+          organizations: [...selectableOrgs, ...others],
+          canCreateOrg: hasCreateOrgAccess || allUsers.some(u => u.role === 'admin')
         });
       } else {
         // Find the specific user for this org
         if (req.body.isSuperadminPanel) {
-           // If it's a superadmin panel selection, find the user with superadmin_access
-           user = allUsers.find(u => {
-             let perms = u.permissions;
-             if (typeof perms === 'string') {
-               try { perms = JSON.parse(perms); } catch(e) {}
-             }
-             return u.role === 'superadmin' || (perms && perms.superadmin_access === true);
-           });
+          // If it's a superadmin panel selection, find the user with superadmin_access
+          user = allUsers.find(u => {
+            let perms = u.permissions;
+            if (typeof perms === 'string') {
+              try { perms = JSON.parse(perms); } catch (e) { }
+            }
+            return u.role === 'superadmin' || (perms && perms.superadmin_access === true);
+          });
         } else if (String(orgId).startsWith('superadmin-')) {
-           const userId = orgId.split('-')[1];
-           user = allUsers.find(u => String(u.id) === String(userId));
+          const userId = orgId.split('-')[1];
+          user = allUsers.find(u => String(u.id) === String(userId));
         } else if (String(orgId).startsWith('partner-')) {
-           const userId = orgId.split('-')[1];
-           user = allUsers.find(u => String(u.id) === String(userId));
+          const userId = orgId.split('-')[1];
+          user = allUsers.find(u => String(u.id) === String(userId));
         } else if (String(orgId).startsWith('panel-')) {
-           const userId = orgId.split('-')[1];
-           user = allUsers.find(u => String(u.id) === String(userId));
+          const userId = orgId.split('-')[1];
+          user = allUsers.find(u => String(u.id) === String(userId));
         } else {
           user = allUsers.find(u => String(u.orgAccountId) === String(orgId) || (orgId === 'null' && !u.orgAccountId));
         }
-        
+
         if (!user) {
           return res.status(400).json({ success: false, message: 'Invalid organization selection' });
         }
@@ -364,16 +383,16 @@ router.post('/verify-otp', async (req, res) => {
     const isActuallySuperPanel = !!req.body.isSuperadminPanel || isSuperRole;
 
     const finalToken = jwt.sign(
-      { 
-        id: user.id, 
-        role: user.role, 
-        phone: user.phone, 
-        name, 
-        staffId, 
-        orgAccountId: isActuallySuperPanel ? null : user.orgAccountId, 
-        channelPartnerId: user.channelPartnerId, 
+      {
+        id: user.id,
+        role: user.role,
+        phone: user.phone,
+        name,
+        staffId,
+        orgAccountId: isActuallySuperPanel ? null : user.orgAccountId,
+        channelPartnerId: user.channelPartnerId,
         isSuperadminPanel: isActuallySuperPanel,
-        permissions: user.permissions 
+        permissions: user.permissions
       },
       secret,
       { expiresIn: process.env.JWT_EXPIRES_IN || '7d' }
@@ -382,16 +401,16 @@ router.post('/verify-otp', async (req, res) => {
     return res.json({
       success: true,
       token: finalToken,
-      user: { 
-        id: user.id, 
-        role: user.role, 
-        phone: user.phone, 
-        name, 
-        staffId, 
-        orgAccountId: isActuallySuperPanel ? null : user.orgAccountId, 
-        channelPartnerId: user.channelPartnerId, 
+      user: {
+        id: user.id,
+        role: user.role,
+        phone: user.phone,
+        name,
+        staffId,
+        orgAccountId: isActuallySuperPanel ? null : user.orgAccountId,
+        channelPartnerId: user.channelPartnerId,
         isSuperadminPanel: isActuallySuperPanel,
-        permissions: user.permissions 
+        permissions: user.permissions
       },
     });
   } catch (e) {
@@ -427,19 +446,19 @@ router.post('/switch-account', async (req, res) => {
       user = allUsers.find(u => {
         let perms = u.permissions;
         if (typeof perms === 'string') {
-          try { perms = JSON.parse(perms); } catch(e) {}
+          try { perms = JSON.parse(perms); } catch (e) { }
         }
         return u.role === 'superadmin' || (perms && perms.superadmin_access === true);
       });
     } else if (String(orgId).startsWith('superadmin-')) {
-       const userId = orgId.split('-')[1];
-       user = allUsers.find(u => String(u.id) === String(userId));
+      const userId = orgId.split('-')[1];
+      user = allUsers.find(u => String(u.id) === String(userId));
     } else if (String(orgId).startsWith('partner-')) {
-       const userId = orgId.split('-')[1];
-       user = allUsers.find(u => String(u.id) === String(userId));
+      const userId = orgId.split('-')[1];
+      user = allUsers.find(u => String(u.id) === String(userId));
     } else if (String(orgId).startsWith('panel-')) {
-       const userId = orgId.split('-')[1];
-       user = allUsers.find(u => String(u.id) === String(userId));
+      const userId = orgId.split('-')[1];
+      user = allUsers.find(u => String(u.id) === String(userId));
     } else {
       user = allUsers.find(u => String(u.orgAccountId) === String(orgId) || (orgId === 'null' && !u.orgAccountId));
     }
@@ -457,14 +476,14 @@ router.post('/switch-account', async (req, res) => {
     const staffId = profile?.staffId || null;
 
     const newToken = jwt.sign(
-      { 
-        id: user.id, 
-        role: user.role, 
-        phone: user.phone, 
-        name, 
-        staffId, 
+      {
+        id: user.id,
+        role: user.role,
+        phone: user.phone,
+        name,
+        staffId,
         orgAccountId: req.body.isSuperadminPanel ? null : user.orgAccountId, // Nullify orgId for superadmin panel
-        channelPartnerId: user.channelPartnerId, 
+        channelPartnerId: user.channelPartnerId,
         isSuperadminPanel: !!req.body.isSuperadminPanel,
         permissions: user.permissions
       },
@@ -475,14 +494,14 @@ router.post('/switch-account', async (req, res) => {
     return res.json({
       success: true,
       token: newToken,
-      user: { 
-        id: user.id, 
-        role: user.role, 
-        phone: user.phone, 
-        name, 
-        staffId, 
+      user: {
+        id: user.id,
+        role: user.role,
+        phone: user.phone,
+        name,
+        staffId,
         orgAccountId: req.body.isSuperadminPanel ? null : user.orgAccountId, // Nullify orgId for superadmin panel
-        channelPartnerId: user.channelPartnerId, 
+        channelPartnerId: user.channelPartnerId,
         isSuperadminPanel: !!req.body.isSuperadminPanel,
         permissions: user.permissions
       },
@@ -540,7 +559,8 @@ router.post('/add-organization', async (req, res) => {
       address,
       businessEmail,
       phone: String(normalizedPhone),
-      status: 'ACTIVE'
+      status: 'ACTIVE',
+      createdBy: decoded.id
     });
 
     console.log('New Org created:', org.id);
@@ -562,6 +582,74 @@ router.post('/add-organization', async (req, res) => {
       orgAccountId: org.id,
       name: profile?.name || 'Admin'
     });
+
+    // NEW: Link this organization to the parent admin(s)
+    try {
+      console.log('Linking new org to parent admins. Staff phone:', normalizedPhone);
+      // Find organizations where this user is currently a staff member
+      const staffMemberships = await User.findAll({
+        where: { 
+          [require('sequelize').Op.or]: [
+            { phone: String(phone) },
+            { phone: String(normalizedPhone) }
+          ],
+          role: 'staff'
+        },
+        attributes: ['orgAccountId']
+      });
+
+      const parentOrgIds = staffMemberships.map(m => m.orgAccountId).filter(id => id !== null);
+      console.log('Found staff memberships in orgs:', parentOrgIds);
+
+      if (parentOrgIds.length > 0) {
+        // Find the admin phones for these organizations
+        const admins = await User.findAll({
+          where: { orgAccountId: parentOrgIds, role: 'admin' },
+          attributes: ['phone', 'passwordHash']
+        });
+
+        console.log('Found parent admins:', admins.map(a => a.phone));
+
+        const uniqueAdminPhones = [];
+        const seenPhones = new Set([String(phone), String(normalizedPhone)]); // Don't re-add the staff themselves
+
+        for (const admin of admins) {
+          const adminPhone = String(admin.phone);
+          if (!seenPhones.has(adminPhone)) {
+            uniqueAdminPhones.push(admin);
+            seenPhones.add(adminPhone);
+          }
+        }
+
+        console.log('Unique parent admin phones to link:', uniqueAdminPhones.map(a => a.phone));
+
+        // Create admin user records in the new org for these parent admins
+        for (const admin of uniqueAdminPhones) {
+          const adminUserRecord = await User.create({
+            role: 'admin',
+            orgAccountId: org.id,
+            phone: admin.phone,
+            passwordHash: admin.passwordHash,
+            active: true
+          });
+
+          // Also create a basic staff profile so their name shows up
+          const adminProfile = await StaffProfile.findOne({ where: { phone: admin.phone } });
+          await StaffProfile.create({
+            userId: adminUserRecord.id,
+            orgAccountId: org.id,
+            name: adminProfile?.name || 'Parent Admin',
+            phone: admin.phone
+          });
+          
+          console.log(`Successfully linked new org ${org.id} to parent admin ${admin.phone}`);
+        }
+      } else {
+        console.log('No parent staff memberships found to link.');
+      }
+    } catch (err) {
+      console.error('Failed to link new org to parent admins:', err);
+    }
 
     // Clone subscription from the VERY FIRST organization (Master/Parent)
     try {
@@ -749,13 +837,13 @@ router.post('/login', async (req, res) => {
       const others = allUsers.filter(u => {
         let perms = u.permissions;
         if (typeof perms === 'string') {
-          try { perms = JSON.parse(perms); } catch(e) {}
+          try { perms = JSON.parse(perms); } catch (e) { }
         }
         return !u.orgAccountId || (perms && perms.superadmin_access === true);
       }).map(u => {
         let perms = u.permissions;
         if (typeof perms === 'string') {
-          try { perms = JSON.parse(perms); } catch(e) {}
+          try { perms = JSON.parse(perms); } catch (e) { }
         }
         const isSuper = u.role === 'superadmin' || (perms && perms.superadmin_access === true);
         return {

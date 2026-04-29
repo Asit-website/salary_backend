@@ -19,7 +19,7 @@ function getCellValue(cell) {
 
 
 
-const { sequelize, User, StaffProfile, Role, Permission, AppSetting, DocumentType, ShiftTemplate, ShiftBreak, ShiftRotationalSlot, StaffShiftAssignment, SalaryAccess, AttendanceTemplate, StaffAttendanceAssignment, SalaryTemplate, StaffSalaryAssignment, Site, WorkUnit, Route, RouteStop, StaffRouteAssignment, SiteCheckpoint, PatrolLog, LeaveTemplate, LeaveTemplateCategory, StaffLeaveAssignment, LeaveBalance, LeaveRequest, AIAnomaly, ReliabilityScore, SalaryForecast, Attendance, Client, AssignedJob, SalesTarget, HolidayTemplate, HolidayDate, StaffHolidayAssignment, WeeklyOffTemplate, StaffWeeklyOffAssignment, Subscription, Plan, SalesVisit, Asset, AssetAssignment, AssetMaintenance, StaffLoan, StaffAdvance, OrderProduct, StaffOrderProduct, AttendanceAutomationRule, StaffGeofenceAssignment, GeofenceTemplate, GeofenceSite, DeviceInfo, Appraisal, Rating, OrgAccount, OvertimeRule, StaffOvertimeAssignment, EarlyExitRule, StaffEarlyExitAssignment, LatePunchInRule, StaffLatePunchInAssignment, TenureBonusRule, StaffTenureBonusAssignment } = require('../models');
+const { sequelize, User, StaffProfile, Role, Permission, AppSetting, DocumentType, ShiftTemplate, ShiftBreak, ShiftRotationalSlot, StaffShiftAssignment, SalaryAccess, AttendanceTemplate, StaffAttendanceAssignment, SalaryTemplate, StaffSalaryAssignment, Site, WorkUnit, Route, RouteStop, StaffRouteAssignment, SiteCheckpoint, PatrolLog, LeaveTemplate, LeaveTemplateCategory, StaffLeaveAssignment, LeaveBalance, LeaveRequest, AIAnomaly, ReliabilityScore, SalaryForecast, Attendance, Client, AssignedJob, SalesTarget, HolidayTemplate, HolidayDate, StaffHolidayAssignment, WeeklyOffTemplate, StaffWeeklyOffAssignment, Subscription, Plan, SalesVisit, Asset, AssetAssignment, AssetMaintenance, StaffLoan, StaffAdvance, OrderProduct, StaffOrderProduct, AttendanceAutomationRule, StaffGeofenceAssignment, GeofenceTemplate, GeofenceSite, DeviceInfo, Appraisal, Rating, OrgAccount, OvertimeRule, StaffOvertimeAssignment, EarlyExitRule, StaffEarlyExitAssignment, LatePunchInRule, StaffLatePunchInAssignment, TenureBonusRule, StaffTenureBonusAssignment, StaffBadge, Badge, BadgePermission } = require('../models');
 
 const multer = require('multer');
 
@@ -99,6 +99,116 @@ function dateOnlySafe(input) {
   if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) return raw;
   return new Date().toISOString().slice(0, 10);
 }
+
+// --- Multi-Org Staff Assignment ---
+
+router.get('/my-organizations', requireRole(['admin']), async (req, res) => {
+  try {
+    const phone = req.user.phone;
+    // Find all orgs where this phone is an admin
+    const admins = await User.findAll({
+      where: { phone: String(phone), role: 'admin' },
+      include: [{ model: OrgAccount, as: 'orgAccount' }]
+    });
+
+    const orgs = admins.map(a => ({
+      id: a.orgAccountId,
+      name: a.orgAccount?.name || `Organization ${a.orgAccountId}`
+    })).filter(o => o.id);
+
+    return res.json({ success: true, organizations: orgs });
+  } catch (e) {
+    return res.status(500).json({ success: false, message: 'Failed to load organizations' });
+  }
+});
+
+router.post('/staff/:id/assign-to-org', requireRole(['admin']), async (req, res) => {
+  try {
+    const { targetOrgId } = req.body;
+    const staffId = req.params.id;
+    const orgId = requireOrg(req, res); if (!orgId) return;
+
+    if (!targetOrgId) return res.status(400).json({ success: false, message: 'Target organization required' });
+
+    // Verify ownership of target org
+    const adminAccount = await User.findOne({
+      where: { phone: req.user.phone, role: 'admin', orgAccountId: targetOrgId }
+    });
+    if (!adminAccount) {
+      return res.status(403).json({ success: false, message: 'You do not have admin access to target organization' });
+    }
+
+    const staffUser = await User.findOne({ where: { id: staffId, orgAccountId: orgId } });
+    if (!staffUser) return res.status(404).json({ success: false, message: 'Staff not found in current organization' });
+
+    // Check if already assigned
+    const existing = await User.findOne({ where: { phone: staffUser.phone, orgAccountId: targetOrgId } });
+    if (existing) {
+      return res.status(400).json({ success: false, message: 'Staff already assigned to that organization' });
+    }
+
+    // Create new user record
+    const newUser = await User.create({
+      role: 'admin',
+      orgAccountId: targetOrgId,
+      phone: staffUser.phone,
+      passwordHash: staffUser.passwordHash,
+      active: true
+    });
+
+    // Copy profile
+    const profile = await StaffProfile.findOne({ where: { userId: staffId } });
+    await StaffProfile.create({
+      userId: newUser.id,
+      orgAccountId: targetOrgId,
+      name: profile?.name || 'Staff',
+      phone: staffUser.phone,
+      email: profile?.email || null,
+      designation: profile?.designation || null,
+      department: profile?.department || null,
+    });
+
+    return res.json({ success: true, message: 'Staff successfully assigned to organization' });
+  } catch (e) {
+    console.error('Assign staff error:', e);
+    return res.status(500).json({ success: false, message: 'Failed to assign staff to organization' });
+  }
+});
+
+router.delete('/staff/:id/unassign-from-org/:targetOrgId', requireRole(['admin']), async (req, res) => {
+  try {
+    const staffId = req.params.id;
+    const targetOrgId = Number(req.params.targetOrgId);
+    const orgId = requireOrg(req, res); if (!orgId) return;
+
+    // Verify admin access to target org
+    const adminAccount = await User.findOne({
+      where: { phone: req.user.phone, role: 'admin', orgAccountId: targetOrgId }
+    });
+    if (!adminAccount) {
+      return res.status(403).json({ success: false, message: 'You do not have admin access to target organization' });
+    }
+
+    // Get staff phone from the current org
+    const staffUser = await User.findOne({ where: { id: staffId, orgAccountId: orgId } });
+    if (!staffUser) return res.status(404).json({ success: false, message: 'Staff not found in current organization' });
+
+    // Cannot unassign from current org
+    if (targetOrgId === orgId) {
+      return res.status(400).json({ success: false, message: 'Cannot unassign from the current organization' });
+    }
+
+    // Remove the user record in target org
+    await User.destroy({
+      where: { phone: staffUser.phone, orgAccountId: targetOrgId }
+    });
+
+    return res.json({ success: true, message: 'Staff successfully unassigned from organization' });
+  } catch (e) {
+    console.error('Unassign staff error:', e);
+    return res.status(500).json({ success: false, message: 'Failed to unassign staff' });
+  }
+});
 
 function escapeHtml(input) {
   return String(input || '')
@@ -5833,46 +5943,63 @@ router.get('/staff', requireRole(['admin', 'staff']), async (req, res) => {
 
     const staff = await User.findAll({
       where,
-      include: [{ model: StaffProfile, as: 'profile' }],
+      include: [
+        { model: StaffProfile, as: 'profile' },
+        {
+          model: Badge,
+          as: 'badges',
+          through: { where: { isActive: true } },
+          include: [{
+            model: BadgePermission,
+            as: 'permissions',
+            where: { permissionKey: 'create_org_tab' },
+            required: false
+          }]
+        }
+      ],
       order: [['createdAt', 'DESC']],
     });
 
-    const mappedData = staff.map((u) => ({
-      id: u.id,
-      active: u.active === true,
-      createdAt: u.createdAt,
-      staffId: u.profile?.staffId || null,
-      phone: u.phone,
-      name: u.profile?.name || `Staff ${u.id}`,
-      email: u.profile?.email || null,
-      department: u.profile?.department || null,
-      designation: u.profile?.designation || null,
-      staffType: u.profile?.staffType || 'regular',
-      salaryTemplateId: u.salaryTemplateId,
-      attendanceSettingTemplate: u.profile?.attendanceSettingTemplate || null,
-      salaryValues: u.salaryValues,
-      shiftSelection: u.profile?.shiftSelection || null,
-      openingBalance: u.profile?.openingBalance || 0,
-      salaryDetailAccess: !!u.profile?.salaryDetailAccess,
-      allowCurrentCycleSalaryAccess: !!u.profile?.allowCurrentCycleSalaryAccess,
-      dateOfJoining: u.profile?.dateOfJoining || null,
-      // salary components for convenience
-      basicSalary: u.basicSalary,
-      hra: u.hra,
-      da: u.da,
-      specialAllowance: u.specialAllowance,
-      conveyanceAllowance: u.conveyanceAllowance,
-      medicalAllowance: u.medicalAllowance,
-      telephoneAllowance: u.telephoneAllowance,
-      otherAllowances: u.otherAllowances,
-      pfDeduction: u.pfDeduction,
-      esiDeduction: u.esiDeduction,
-      professionalTax: u.professionalTax,
-      tdsDeduction: u.tdsDeduction,
-      photoUrl: u.profile?.photoUrl || null,
-      education: u.profile?.education || null,
-      experience: u.profile?.experience || null,
-    }));
+    const mappedData = staff.map((u) => {
+      const canCreateOrg = u.badges?.some(b => b.permissions && b.permissions.length > 0) || false;
+      return {
+        id: u.id,
+        active: u.active === true,
+        createdAt: u.createdAt,
+        staffId: u.profile?.staffId || null,
+        phone: u.phone,
+        name: u.profile?.name || `Staff ${u.id}`,
+        email: u.profile?.email || null,
+        department: u.profile?.department || null,
+        designation: u.profile?.designation || null,
+        staffType: u.profile?.staffType || 'regular',
+        salaryTemplateId: u.salaryTemplateId,
+        attendanceSettingTemplate: u.profile?.attendanceSettingTemplate || null,
+        salaryValues: u.salaryValues,
+        shiftSelection: u.profile?.shiftSelection || null,
+        openingBalance: u.profile?.openingBalance || 0,
+        salaryDetailAccess: !!u.profile?.salaryDetailAccess,
+        allowCurrentCycleSalaryAccess: !!u.profile?.allowCurrentCycleSalaryAccess,
+        dateOfJoining: u.profile?.dateOfJoining || null,
+        canCreateOrg,
+        // salary components for convenience
+        basicSalary: u.basicSalary,
+        hra: u.hra,
+        da: u.da,
+        specialAllowance: u.specialAllowance,
+        conveyanceAllowance: u.conveyanceAllowance,
+        medicalAllowance: u.medicalAllowance,
+        telephoneAllowance: u.telephoneAllowance,
+        otherAllowances: u.otherAllowances,
+        pfDeduction: u.pfDeduction,
+        esiDeduction: u.esiDeduction,
+        professionalTax: u.professionalTax,
+        tdsDeduction: u.tdsDeduction,
+        photoUrl: u.profile?.photoUrl || null,
+        education: u.profile?.education || null,
+        experience: u.profile?.experience || null,
+      };
+    });
 
     return res.json({
       success: true,
@@ -5993,7 +6120,8 @@ router.post('/staff/import', uploadMemory.single('file'), async (req, res) => {
       });
     });
 
-    const staffLimit = Number(((activeSub && (activeSub.staffLimit ?? (activeSub.meta ? activeSub.meta.staffLimit : undefined))) ?? (activeSub.plan ? activeSub.plan.staffLimit : 0)) || 0);
+    let currentTotalCount = req.subscriptionInfo?.currentTotalStaff || 0;
+    const staffLimit = req.subscriptionInfo?.staffLimit || 0;
 
     for (const data of rows) {
       try {
@@ -6004,14 +6132,11 @@ router.post('/staff/import', uploadMemory.single('file'), async (req, res) => {
           continue;
         }
 
-        // Check limit
-        if (staffLimit > 0) {
-          const count = await User.count({ where: { role: 'staff', orgAccountId: orgId, active: true } });
-          if (count >= staffLimit) {
-            results.failed++;
-            results.errors.push(`Row ${data.rowNumber}: Staff limit reached`);
-            continue;
-          }
+        // Check limit using shared staff count logic
+        if (staffLimit > 0 && currentTotalCount >= staffLimit) {
+          results.failed++;
+          results.errors.push(`Row ${data.rowNumber}: Staff limit reached (${staffLimit})`);
+          continue;
         }
 
         // Check duplicate phone
@@ -6040,6 +6165,8 @@ router.post('/staff/import', uploadMemory.single('file'), async (req, res) => {
           orgAccountId: orgId,
           active: true
         });
+
+        currentTotalCount++;
 
         await StaffProfile.create({
           userId: user.id,
@@ -9903,6 +10030,43 @@ router.get('/staff/:id', async (req, res) => {
       }
       return v;
     };
+    // Fetch all organizations where this phone is registered
+    const existingMemberships = await User.findAll({
+      where: { phone: user.phone },
+      include: [{ model: OrgAccount, as: 'orgAccount', attributes: ['id', 'name'] }]
+    });
+    const existingOrgs = existingMemberships.map(m => ({
+      id: m.orgAccountId,
+      name: m.orgAccount?.name || `Organization ${m.orgAccountId}`
+    })).filter(m => m.id);
+
+    // Fetch all organizations where the CURRENT admin is an admin
+    const myAdminAccounts = await User.findAll({
+      where: { phone: req.user.phone, role: 'admin' },
+      include: [{ model: OrgAccount, as: 'orgAccount', attributes: ['id', 'name'] }]
+    });
+    const allOrgs = myAdminAccounts.map(a => ({
+      id: a.orgAccountId,
+      name: a.orgAccount?.name || `Organization ${a.orgAccountId}`
+    })).filter(o => o.id);
+
+    // Check if this staff has any badge with 'create_org_tab' permission
+    const staffBadge = await StaffBadge.findOne({
+      where: {
+        userId: user.id,
+        isActive: true
+      },
+      include: [{
+        model: Badge,
+        as: 'badge',
+        include: [{
+          model: BadgePermission,
+          as: 'permissions',
+          where: { permissionKey: 'create_org_tab' }
+        }]
+      }]
+    });
+    const canCreateOrg = !!staffBadge;
 
     return res.json({
       success: true,
@@ -9914,6 +10078,10 @@ router.get('/staff/:id', async (req, res) => {
         created_at: user.createdAt,
         salaryTemplateId: user.salaryTemplateId,
         salaryValues: pickSalaryValues(user),
+        existingOrgs: existingOrgs,
+        allOrgs: allOrgs,
+        canCreateOrg: canCreateOrg,
+        orgAccountId: user.orgAccountId,
         // Provide snake_case fields for Admin UI fallback parsing
         basic_salary: user.basicSalary ?? user.basic_salary ?? 0,
         hra: user.hra ?? user.hra_amount ?? 0,
