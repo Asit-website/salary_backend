@@ -2202,3 +2202,197 @@
 [2026-04-23T05:53:23.172Z] [Late-Dbg] User 69 Final: LateCount=0, Amt=0, Days=0
 [2026-04-23T05:53:23.302Z] [Late-Dbg] User 70 Final: LateCount=1, Amt=0, Days=0
 [2026-04-23T05:53:29.353Z] [User 58] calculateSalary (Existing): lpResult: {"latePunchInMinutes":85,"latePunchInPenalty":100,"latePenaltyDays":0.5,"lateCount":3,"lateDetails":[{"id":1487,"userId":58,"orgAccountId":10,"latePunchInMinutes":10,"latePunchInAmount":0,"latePunchInRuleId":4,"isLate":false,"date":"2026-04-22","status":"present","punchedInAt":"2026-04-22T05:40:00.000Z"},{"id":1499,"userId":58,"orgAccountId":10,"latePunchInMinutes":30,"latePunchInAmount":0,"latePunchInRuleId":4,"isLate":false,"date":"2026-04-23","status":"present","punchedInAt":"2026-04-23T06:00:00.000Z"},{"id":1738,"userId":58,"orgAccountId":10,"latePunchInMinutes":45,"latePunchInAmount":100,"latePunchInRuleId":4,"isLate":false,"date":"2026-04-24","status":"present","punchedInAt":"2026-04-24T06:15:00.000Z"}]}
+[2026-04-29T09:36:02.347Z] [Late-Dbg] User 57 Final: LateCount=0, Amt=0, Days=0
+[2026-04-29T09:36:02.420Z] [Late-Dbg] User 58 Final: LateCount=0, Amt=0, Days=0
+[Admin-Bonus] SKIP: User 58, Rule Active=true, RuleMonth=2026-04, TargetMonth=2026-03
+[2026-04-29T09:36:02.471Z] [Late-Dbg] User 59 Final: LateCount=0, Amt=0, Days=0
+[2026-04-29T09:36:02.516Z] [Late-Dbg] User 61 Final: LateCount=0, Amt=0, Days=0
+[2026-04-29T09:36:02.557Z] [Late-Dbg] User 62 Final: LateCount=0, Amt=0, Days=0
+[2026-04-29T09:36:02.596Z] [Late-Dbg] User 63 Final: LateCount=0, Amt=0, Days=0
+[2026-04-29T09:36:02.635Z] [Late-Dbg] User 64 Final: LateCount=0, Amt=0, Days=0
+[2026-04-29T09:36:02.671Z] [Late-Dbg] User 65 Final: LateCount=0, Amt=0, Days=0
+[2026-04-29T09:36:02.707Z] [Late-Dbg] User 68 Final: LateCount=0, Amt=0, Days=0
+[2026-04-29T09:36:02.751Z] [Late-Dbg] User 69 Final: LateCount=0, Amt=0, Days=0
+[2026-04-29T09:36:02.787Z] [Late-Dbg] User 70 Final: LateCount=0, Amt=0, Days=0
+[2026-04-29T09:36:02.825Z] [Late-Dbg] User 98 Final: LateCount=0, Amt=0, Days=0
+[2026-04-29T09:36:02.867Z] [Late-Dbg] User 99 Final: LateCount=0, Amt=0, Days=0
+[2026-04-29T09:36:02.897Z] [Late-Dbg] User 100 Final: LateCount=0, Amt=0, Days=0
+[2026-04-29T09:36:02.922Z] [Late-Dbg] User 101 Final: LateCount=0, Amt=0, Days=0
+[2026-04-29T09:36:02.951Z] [Late-Dbg] User 102 Final: LateCount=0, Amt=0, Days=0
+[2026-04-29T09:36:02.991Z] [Late-Dbg] User 103 Final: LateCount=0, Amt=0, Days=0
+[2026-04-29T09:36:03.074Z] [Late-Dbg] User 107 Final: LateCount=0, Amt=0, Days=0
+[2026-04-29T09:36:03.276Z] [Late-Dbg] User 108 Final: LateCount=0, Amt=0, Days=0
+[2026-04-29T09:36:03.338Z] [Late-Dbg] User 109 Final: LateCount=0, Amt=0, Days=0
+[2026-04-29T09:36:05.108Z] [User 57] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0,"lateDetails":[]}
+[2026-04-29T09:36:26.586Z] [User 57] calculateSalary (Existing): lpResult: {"latePunchInMinutes":106,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":1,"lateDetails":[{"id":1471,"userId":57,"orgAccountId":10,"latePunchInMinutes":106,"latePunchInAmount":0,"latePunchInRuleId":null,"isLate":true,"date":"2026-04-22","status":null,"punchedInAt":"2026-04-22T07:16:55.000Z"}]}
+[2026-04-29T09:36:40.924Z] [User 57] calculateSalary (Existing): lpResult: {"latePunchInMinutes":106,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":1,"lateDetails":[{"id":1471,"userId":57,"orgAccountId":10,"latePunchInMinutes":106,"latePunchInAmount":0,"latePunchInRuleId":null,"isLate":true,"date":"2026-04-22","status":null,"punchedInAt":"2026-04-22T07:16:55.000Z"}]}
+[2026-04-29T09:38:52.110Z] [Late-Dbg] User 57 Final: LateCount=1, Amt=0, Days=0
+[Admin-Bonus] SKIP: User 57, Bonus calculated as 0. Gross_pre=0
+[2026-04-29T09:38:52.200Z] [Late-Dbg] User 58 Final: LateCount=3, Amt=1000, Days=0.5
+[Admin-Bonus] SUCCESS: User 58, Rule=bonus, Joining=2026-03-30, Tenure=1mo, Bracket=10%, Bonus=600
+[2026-04-29T09:38:52.291Z] [Late-Dbg] User 59 Final: LateCount=0, Amt=0, Days=0
+[2026-04-29T09:38:52.349Z] [Late-Dbg] User 61 Final: LateCount=0, Amt=0, Days=0
+[2026-04-29T09:38:52.404Z] [Late-Dbg] User 62 Final: LateCount=0, Amt=0, Days=0
+[2026-04-29T09:38:52.442Z] [Late-Dbg] User 63 Final: LateCount=0, Amt=0, Days=0
+[2026-04-29T09:38:52.485Z] [Late-Dbg] User 64 Final: LateCount=0, Amt=0, Days=0
+[2026-04-29T09:38:52.522Z] [Late-Dbg] User 65 Final: LateCount=0, Amt=0, Days=0
+[2026-04-29T09:38:52.581Z] [Late-Dbg] User 68 Final: LateCount=0, Amt=0, Days=0
+[2026-04-29T09:38:52.775Z] [Late-Dbg] User 69 Final: LateCount=0, Amt=0, Days=0
+[2026-04-29T09:38:53.017Z] [Late-Dbg] User 70 Final: LateCount=1, Amt=0, Days=0
+[2026-04-29T09:38:53.111Z] [Late-Dbg] User 98 Final: LateCount=0, Amt=0, Days=0
+[2026-04-29T09:38:53.157Z] [Late-Dbg] User 99 Final: LateCount=0, Amt=0, Days=0
+[2026-04-29T09:38:53.189Z] [Late-Dbg] User 100 Final: LateCount=0, Amt=0, Days=0
+[2026-04-29T09:38:53.230Z] [Late-Dbg] User 101 Final: LateCount=0, Amt=0, Days=0
+[2026-04-29T09:38:53.272Z] [Late-Dbg] User 102 Final: LateCount=0, Amt=0, Days=0
+[2026-04-29T09:38:53.309Z] [Late-Dbg] User 103 Final: LateCount=0, Amt=0, Days=0
+[2026-04-29T09:38:53.340Z] [Late-Dbg] User 107 Final: LateCount=0, Amt=0, Days=0
+[2026-04-29T09:38:53.368Z] [Late-Dbg] User 108 Final: LateCount=0, Amt=0, Days=0
+[2026-04-29T09:38:53.396Z] [Late-Dbg] User 109 Final: LateCount=0, Amt=0, Days=0
+[2026-04-29T09:39:28.581Z] [Late-Dbg] User 57 Final: LateCount=1, Amt=0, Days=0
+[Admin-Bonus] SKIP: User 57, Bonus calculated as 0. Gross_pre=0
+[2026-04-29T09:39:28.700Z] [Late-Dbg] User 58 Final: LateCount=3, Amt=1000, Days=0.5
+[Admin-Bonus] SUCCESS: User 58, Rule=bonus, Joining=2026-03-30, Tenure=1mo, Bracket=10%, Bonus=600
+[2026-04-29T09:39:28.844Z] [Late-Dbg] User 59 Final: LateCount=0, Amt=0, Days=0
+[2026-04-29T09:39:28.899Z] [Late-Dbg] User 61 Final: LateCount=0, Amt=0, Days=0
+[2026-04-29T09:39:28.952Z] [Late-Dbg] User 62 Final: LateCount=0, Amt=0, Days=0
+[2026-04-29T09:39:28.987Z] [Late-Dbg] User 63 Final: LateCount=0, Amt=0, Days=0
+[2026-04-29T09:39:29.025Z] [Late-Dbg] User 64 Final: LateCount=0, Amt=0, Days=0
+[2026-04-29T09:39:29.053Z] [Late-Dbg] User 65 Final: LateCount=0, Amt=0, Days=0
+[2026-04-29T09:39:29.097Z] [Late-Dbg] User 68 Final: LateCount=0, Amt=0, Days=0
+[2026-04-29T09:39:29.228Z] [Late-Dbg] User 69 Final: LateCount=0, Amt=0, Days=0
+[2026-04-29T09:39:29.439Z] [Late-Dbg] User 70 Final: LateCount=1, Amt=0, Days=0
+[2026-04-29T09:39:29.516Z] [Late-Dbg] User 98 Final: LateCount=0, Amt=0, Days=0
+[2026-04-29T09:39:29.546Z] [Late-Dbg] User 99 Final: LateCount=0, Amt=0, Days=0
+[2026-04-29T09:39:29.575Z] [Late-Dbg] User 100 Final: LateCount=0, Amt=0, Days=0
+[2026-04-29T09:39:29.609Z] [Late-Dbg] User 101 Final: LateCount=0, Amt=0, Days=0
+[2026-04-29T09:39:29.645Z] [Late-Dbg] User 102 Final: LateCount=0, Amt=0, Days=0
+[2026-04-29T09:39:29.677Z] [Late-Dbg] User 103 Final: LateCount=0, Amt=0, Days=0
+[2026-04-29T09:39:29.710Z] [Late-Dbg] User 107 Final: LateCount=0, Amt=0, Days=0
+[2026-04-29T09:39:29.768Z] [Late-Dbg] User 108 Final: LateCount=0, Amt=0, Days=0
+[2026-04-29T09:39:29.804Z] [Late-Dbg] User 109 Final: LateCount=0, Amt=0, Days=0
+[2026-04-29T09:40:06.626Z] [Late-Dbg] User 57 Final: LateCount=1, Amt=0, Days=0
+[Admin-Bonus] SKIP: User 57, Bonus calculated as 0. Gross_pre=0
+[2026-04-29T09:40:06.711Z] [Late-Dbg] User 58 Final: LateCount=3, Amt=1000, Days=0.5
+[Admin-Bonus] SUCCESS: User 58, Rule=bonus, Joining=2026-03-30, Tenure=1mo, Bracket=10%, Bonus=600
+[2026-04-29T09:40:06.882Z] [Late-Dbg] User 59 Final: LateCount=0, Amt=0, Days=0
+[2026-04-29T09:40:06.941Z] [Late-Dbg] User 61 Final: LateCount=0, Amt=0, Days=0
+[2026-04-29T09:40:06.985Z] [Late-Dbg] User 62 Final: LateCount=0, Amt=0, Days=0
+[2026-04-29T09:40:07.018Z] [Late-Dbg] User 63 Final: LateCount=0, Amt=0, Days=0
+[2026-04-29T09:40:07.054Z] [Late-Dbg] User 64 Final: LateCount=0, Amt=0, Days=0
+[2026-04-29T09:40:07.088Z] [Late-Dbg] User 65 Final: LateCount=0, Amt=0, Days=0
+[2026-04-29T09:40:07.133Z] [Late-Dbg] User 68 Final: LateCount=0, Amt=0, Days=0
+[2026-04-29T09:40:07.246Z] [Late-Dbg] User 69 Final: LateCount=0, Amt=0, Days=0
+[2026-04-29T09:40:07.463Z] [Late-Dbg] User 70 Final: LateCount=1, Amt=0, Days=0
+[2026-04-29T09:40:07.543Z] [Late-Dbg] User 98 Final: LateCount=0, Amt=0, Days=0
+[2026-04-29T09:40:07.591Z] [Late-Dbg] User 99 Final: LateCount=0, Amt=0, Days=0
+[2026-04-29T09:40:07.626Z] [Late-Dbg] User 100 Final: LateCount=0, Amt=0, Days=0
+[2026-04-29T09:40:07.668Z] [Late-Dbg] User 101 Final: LateCount=0, Amt=0, Days=0
+[2026-04-29T09:40:07.705Z] [Late-Dbg] User 102 Final: LateCount=0, Amt=0, Days=0
+[2026-04-29T09:40:07.745Z] [Late-Dbg] User 103 Final: LateCount=0, Amt=0, Days=0
+[2026-04-29T09:40:07.782Z] [Late-Dbg] User 107 Final: LateCount=0, Amt=0, Days=0
+[2026-04-29T09:40:07.823Z] [Late-Dbg] User 108 Final: LateCount=0, Amt=0, Days=0
+[2026-04-29T09:40:07.864Z] [Late-Dbg] User 109 Final: LateCount=0, Amt=0, Days=0
+[2026-04-29T09:40:20.425Z] [Late-Dbg] User 57 Final: LateCount=1, Amt=0, Days=0
+[Admin-Bonus] SKIP: User 57, Bonus calculated as 0. Gross_pre=0
+[2026-04-29T09:40:20.513Z] [Late-Dbg] User 58 Final: LateCount=3, Amt=1000, Days=0.5
+[Admin-Bonus] SUCCESS: User 58, Rule=bonus, Joining=2026-03-30, Tenure=1mo, Bracket=10%, Bonus=600
+[2026-04-29T09:40:20.653Z] [Late-Dbg] User 59 Final: LateCount=0, Amt=0, Days=0
+[2026-04-29T09:40:20.707Z] [Late-Dbg] User 61 Final: LateCount=0, Amt=0, Days=0
+[2026-04-29T09:40:20.767Z] [Late-Dbg] User 62 Final: LateCount=0, Amt=0, Days=0
+[2026-04-29T09:40:20.799Z] [Late-Dbg] User 63 Final: LateCount=0, Amt=0, Days=0
+[2026-04-29T09:40:20.824Z] [Late-Dbg] User 64 Final: LateCount=0, Amt=0, Days=0
+[2026-04-29T09:40:20.855Z] [Late-Dbg] User 65 Final: LateCount=0, Amt=0, Days=0
+[2026-04-29T09:40:20.927Z] [Late-Dbg] User 68 Final: LateCount=0, Amt=0, Days=0
+[2026-04-29T09:40:21.070Z] [Late-Dbg] User 69 Final: LateCount=0, Amt=0, Days=0
+[2026-04-29T09:40:21.250Z] [Late-Dbg] User 70 Final: LateCount=1, Amt=0, Days=0
+[2026-04-29T09:40:21.344Z] [Late-Dbg] User 98 Final: LateCount=0, Amt=0, Days=0
+[2026-04-29T09:40:21.400Z] [Late-Dbg] User 99 Final: LateCount=0, Amt=0, Days=0
+[2026-04-29T09:40:21.428Z] [Late-Dbg] User 100 Final: LateCount=0, Amt=0, Days=0
+[2026-04-29T09:40:21.451Z] [Late-Dbg] User 101 Final: LateCount=0, Amt=0, Days=0
+[2026-04-29T09:40:21.476Z] [Late-Dbg] User 102 Final: LateCount=0, Amt=0, Days=0
+[2026-04-29T09:40:21.499Z] [Late-Dbg] User 103 Final: LateCount=0, Amt=0, Days=0
+[2026-04-29T09:40:21.528Z] [Late-Dbg] User 107 Final: LateCount=0, Amt=0, Days=0
+[2026-04-29T09:40:21.562Z] [Late-Dbg] User 108 Final: LateCount=0, Amt=0, Days=0
+[2026-04-29T09:40:21.591Z] [Late-Dbg] User 109 Final: LateCount=0, Amt=0, Days=0
+[2026-04-29T09:41:40.623Z] [Late-Dbg] User 57 Final: LateCount=1, Amt=0, Days=0
+[Admin-Bonus] SKIP: User 57, Bonus calculated as 0. Gross_pre=0
+[2026-04-29T09:41:40.700Z] [Late-Dbg] User 58 Final: LateCount=3, Amt=1000, Days=0.5
+[Admin-Bonus] SUCCESS: User 58, Rule=bonus, Joining=2026-03-30, Tenure=1mo, Bracket=10%, Bonus=600
+[2026-04-29T09:41:40.825Z] [Late-Dbg] User 59 Final: LateCount=0, Amt=0, Days=0
+[2026-04-29T09:41:40.885Z] [Late-Dbg] User 61 Final: LateCount=0, Amt=0, Days=0
+[2026-04-29T09:41:40.948Z] [Late-Dbg] User 62 Final: LateCount=0, Amt=0, Days=0
+[2026-04-29T09:41:40.977Z] [Late-Dbg] User 63 Final: LateCount=0, Amt=0, Days=0
+[2026-04-29T09:41:41.004Z] [Late-Dbg] User 64 Final: LateCount=0, Amt=0, Days=0
+[2026-04-29T09:41:41.029Z] [Late-Dbg] User 65 Final: LateCount=0, Amt=0, Days=0
+[2026-04-29T09:41:41.092Z] [Late-Dbg] User 68 Final: LateCount=0, Amt=0, Days=0
+[2026-04-29T09:41:41.249Z] [Late-Dbg] User 69 Final: LateCount=0, Amt=0, Days=0
+[2026-04-29T09:41:41.448Z] [Late-Dbg] User 70 Final: LateCount=1, Amt=0, Days=0
+[2026-04-29T09:41:41.531Z] [Late-Dbg] User 98 Final: LateCount=0, Amt=0, Days=0
+[2026-04-29T09:41:41.601Z] [Late-Dbg] User 99 Final: LateCount=0, Amt=0, Days=0
+[2026-04-29T09:41:41.651Z] [Late-Dbg] User 100 Final: LateCount=0, Amt=0, Days=0
+[2026-04-29T09:41:41.681Z] [Late-Dbg] User 101 Final: LateCount=0, Amt=0, Days=0
+[2026-04-29T09:41:41.712Z] [Late-Dbg] User 102 Final: LateCount=0, Amt=0, Days=0
+[2026-04-29T09:41:41.745Z] [Late-Dbg] User 103 Final: LateCount=0, Amt=0, Days=0
+[2026-04-29T09:41:41.784Z] [Late-Dbg] User 107 Final: LateCount=0, Amt=0, Days=0
+[2026-04-29T09:41:41.821Z] [Late-Dbg] User 108 Final: LateCount=0, Amt=0, Days=0
+[2026-04-29T09:41:41.856Z] [Late-Dbg] User 109 Final: LateCount=0, Amt=0, Days=0
+[2026-04-29T09:41:56.845Z] [User 99] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0,"lateDetails":[]}
+[2026-04-29T09:49:05.442Z] [User 57] calculateSalary (Existing): lpResult: {"latePunchInMinutes":106,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":1,"lateDetails":[{"id":1471,"userId":57,"orgAccountId":10,"latePunchInMinutes":106,"latePunchInAmount":0,"latePunchInRuleId":null,"isLate":true,"date":"2026-04-22","status":null,"punchedInAt":"2026-04-22T07:16:55.000Z"}]}
+[2026-04-29T09:51:30.792Z] [User 57] calculateSalary (Existing): lpResult: {"latePunchInMinutes":106,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":1,"lateDetails":[{"id":1471,"userId":57,"orgAccountId":10,"latePunchInMinutes":106,"latePunchInAmount":0,"latePunchInRuleId":null,"isLate":true,"date":"2026-04-22","status":null,"punchedInAt":"2026-04-22T07:16:55.000Z"}]}
+[2026-04-29T09:51:42.357Z] [User 61] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0,"lateDetails":[]}
+[2026-04-29T09:51:57.563Z] [User 58] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0,"lateDetails":[]}
+[2026-04-29T09:52:11.559Z] [User 58] calculateSalary (Existing): lpResult: {"latePunchInMinutes":85,"latePunchInPenalty":100,"latePenaltyDays":0.5,"lateCount":3,"lateDetails":[{"id":1487,"userId":58,"orgAccountId":10,"latePunchInMinutes":10,"latePunchInAmount":0,"latePunchInRuleId":4,"isLate":false,"date":"2026-04-22","status":"present","punchedInAt":"2026-04-22T05:40:00.000Z"},{"id":1499,"userId":58,"orgAccountId":10,"latePunchInMinutes":30,"latePunchInAmount":0,"latePunchInRuleId":4,"isLate":false,"date":"2026-04-23","status":"present","punchedInAt":"2026-04-23T06:00:00.000Z"},{"id":1738,"userId":58,"orgAccountId":10,"latePunchInMinutes":45,"latePunchInAmount":100,"latePunchInRuleId":4,"isLate":false,"date":"2026-04-24","status":"present","punchedInAt":"2026-04-24T06:15:00.000Z"}]}
+[2026-04-29T09:52:19.803Z] [User 61] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0,"lateDetails":[]}
+[2026-04-29T09:52:28.607Z] [User 57] calculateSalary (Existing): lpResult: {"latePunchInMinutes":106,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":1,"lateDetails":[{"id":1471,"userId":57,"orgAccountId":10,"latePunchInMinutes":106,"latePunchInAmount":0,"latePunchInRuleId":null,"isLate":true,"date":"2026-04-22","status":null,"punchedInAt":"2026-04-22T07:16:55.000Z"}]}
+[2026-04-29T10:01:03.738Z] [User 57] calculateSalary (Existing): lpResult: {"latePunchInMinutes":106,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":1,"lateDetails":[{"id":1471,"userId":57,"orgAccountId":10,"latePunchInMinutes":106,"latePunchInAmount":0,"latePunchInRuleId":null,"isLate":true,"date":"2026-04-22","status":null,"punchedInAt":"2026-04-22T07:16:55.000Z"}]}
+[2026-04-29T10:01:23.997Z] [User 69] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0,"lateDetails":[]}
+[2026-04-29T10:01:49.035Z] [User 69] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0,"lateDetails":[]}
+[2026-04-29T10:02:03.366Z] [User 68] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0,"lateDetails":[]}
+[2026-04-29T10:02:19.890Z] [User 68] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0,"lateDetails":[]}
+[2026-04-29T10:02:59.736Z] [User 61] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0,"lateDetails":[]}
+[2026-04-29T10:11:09.164Z] [Late-Dbg] User 57 Final: LateCount=0, Amt=0, Days=0
+[2026-04-29T10:11:09.259Z] [Late-Dbg] User 58 Final: LateCount=0, Amt=0, Days=0
+[Admin-Bonus] SKIP: User 58, Rule Active=true, RuleMonth=2026-04, TargetMonth=2026-03
+[2026-04-29T10:11:09.345Z] [Late-Dbg] User 59 Final: LateCount=0, Amt=0, Days=0
+[2026-04-29T10:11:09.415Z] [Late-Dbg] User 61 Final: LateCount=0, Amt=0, Days=0
+[2026-04-29T10:11:09.476Z] [Late-Dbg] User 62 Final: LateCount=0, Amt=0, Days=0
+[2026-04-29T10:11:09.531Z] [Late-Dbg] User 63 Final: LateCount=0, Amt=0, Days=0
+[2026-04-29T10:11:09.590Z] [Late-Dbg] User 64 Final: LateCount=0, Amt=0, Days=0
+[2026-04-29T10:11:09.650Z] [Late-Dbg] User 65 Final: LateCount=0, Amt=0, Days=0
+[2026-04-29T10:11:09.715Z] [Late-Dbg] User 68 Final: LateCount=0, Amt=0, Days=0
+[2026-04-29T10:11:09.780Z] [Late-Dbg] User 69 Final: LateCount=0, Amt=0, Days=0
+[2026-04-29T10:11:09.846Z] [Late-Dbg] User 70 Final: LateCount=0, Amt=0, Days=0
+[2026-04-29T10:11:09.956Z] [Late-Dbg] User 98 Final: LateCount=0, Amt=0, Days=0
+[2026-04-29T10:11:10.028Z] [Late-Dbg] User 99 Final: LateCount=0, Amt=0, Days=0
+[2026-04-29T10:11:10.091Z] [Late-Dbg] User 100 Final: LateCount=0, Amt=0, Days=0
+[2026-04-29T10:11:10.158Z] [Late-Dbg] User 101 Final: LateCount=0, Amt=0, Days=0
+[2026-04-29T10:11:10.236Z] [Late-Dbg] User 102 Final: LateCount=0, Amt=0, Days=0
+[2026-04-29T10:11:10.304Z] [Late-Dbg] User 103 Final: LateCount=0, Amt=0, Days=0
+[2026-04-29T10:11:10.364Z] [Late-Dbg] User 107 Final: LateCount=0, Amt=0, Days=0
+[2026-04-29T10:11:10.428Z] [Late-Dbg] User 108 Final: LateCount=0, Amt=0, Days=0
+[2026-04-29T10:11:10.488Z] [Late-Dbg] User 109 Final: LateCount=0, Amt=0, Days=0
+[2026-04-29T10:11:18.702Z] [User 68] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0,"lateDetails":[]}
+[2026-04-29T10:11:36.625Z] [Late-Dbg] User 57 Final: LateCount=1, Amt=0, Days=0
+[Admin-Bonus] SKIP: User 57, Bonus calculated as 0. Gross_pre=0
+[2026-04-29T10:11:36.742Z] [Late-Dbg] User 58 Final: LateCount=3, Amt=1000, Days=0.5
+[Admin-Bonus] SUCCESS: User 58, Rule=bonus, Joining=2026-03-30, Tenure=1mo, Bracket=10%, Bonus=600
+[2026-04-29T10:11:36.878Z] [Late-Dbg] User 59 Final: LateCount=0, Amt=0, Days=0
+[2026-04-29T10:11:36.942Z] [Late-Dbg] User 61 Final: LateCount=0, Amt=0, Days=0
+[2026-04-29T10:11:37.017Z] [Late-Dbg] User 62 Final: LateCount=0, Amt=0, Days=0
+[2026-04-29T10:11:37.057Z] [Late-Dbg] User 63 Final: LateCount=0, Amt=0, Days=0
+[2026-04-29T10:11:37.097Z] [Late-Dbg] User 64 Final: LateCount=0, Amt=0, Days=0
+[2026-04-29T10:11:37.138Z] [Late-Dbg] User 65 Final: LateCount=0, Amt=0, Days=0
+[2026-04-29T10:11:37.210Z] [Late-Dbg] User 68 Final: LateCount=0, Amt=0, Days=0
+[2026-04-29T10:11:37.380Z] [Late-Dbg] User 69 Final: LateCount=0, Amt=0, Days=0
+[2026-04-29T10:11:37.603Z] [Late-Dbg] User 70 Final: LateCount=1, Amt=0, Days=0
+[2026-04-29T10:11:37.709Z] [Late-Dbg] User 98 Final: LateCount=0, Amt=0, Days=0
+[2026-04-29T10:11:38.064Z] [Late-Dbg] User 99 Final: LateCount=0, Amt=0, Days=0
+[2026-04-29T10:11:38.340Z] [Late-Dbg] User 100 Final: LateCount=0, Amt=0, Days=0
+[2026-04-29T10:11:38.391Z] [Late-Dbg] User 101 Final: LateCount=0, Amt=0, Days=0
+[2026-04-29T10:11:38.443Z] [Late-Dbg] User 102 Final: LateCount=0, Amt=0, Days=0
+[2026-04-29T10:11:38.491Z] [Late-Dbg] User 103 Final: LateCount=0, Amt=0, Days=0
+[2026-04-29T10:11:38.540Z] [Late-Dbg] User 107 Final: LateCount=0, Amt=0, Days=0
+[2026-04-29T10:11:38.591Z] [Late-Dbg] User 108 Final: LateCount=0, Amt=0, Days=0
+[2026-04-29T10:11:38.640Z] [Late-Dbg] User 109 Final: LateCount=0, Amt=0, Days=0
+[2026-04-29T10:11:45.058Z] [User 69] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0,"lateDetails":[]}
+[2026-04-29T10:11:56.828Z] [User 57] calculateSalary (Existing): lpResult: {"latePunchInMinutes":106,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":1,"lateDetails":[{"id":1471,"userId":57,"orgAccountId":10,"latePunchInMinutes":106,"latePunchInAmount":0,"latePunchInRuleId":null,"isLate":true,"date":"2026-04-22","status":null,"punchedInAt":"2026-04-22T07:16:55.000Z"}]}

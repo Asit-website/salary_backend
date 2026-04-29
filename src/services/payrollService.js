@@ -702,11 +702,11 @@ async function calculateSalary(userId, monthKey) {
     }
   }
 
-  const payableUnits = present + (half * 0.5) + paidLeaveCount + weeklyOffCount + holidaysCount;
-  ratio = daysInMonth > 0 ? (payableUnits / daysInMonth) : 0;
+  let payableUnits = present + (half * 0.5) + paidLeaveCount + weeklyOffCount + holidaysCount;
+  let ratio = daysInMonth > 0 ? (payableUnits / daysInMonth) : 0;
 
   // Calculate Late Penalty separately via the new meta function
-  const lp = await computeLatePenaltyMeta({
+  let lp = await computeLatePenaltyMeta({
     userId: u.id,
     monthKey,
     orgAccount: u.orgAccount,

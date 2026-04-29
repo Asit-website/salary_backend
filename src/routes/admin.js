@@ -19,7 +19,7 @@ function getCellValue(cell) {
 
 
 
-const { sequelize, User, StaffProfile, Role, Permission, AppSetting, DocumentType, ShiftTemplate, ShiftBreak, ShiftRotationalSlot, StaffShiftAssignment, SalaryAccess, AttendanceTemplate, StaffAttendanceAssignment, SalaryTemplate, StaffSalaryAssignment, Site, WorkUnit, Route, RouteStop, StaffRouteAssignment, SiteCheckpoint, PatrolLog, LeaveTemplate, LeaveTemplateCategory, StaffLeaveAssignment, LeaveBalance, LeaveRequest, AIAnomaly, ReliabilityScore, SalaryForecast, Attendance, Client, AssignedJob, SalesTarget, HolidayTemplate, HolidayDate, StaffHolidayAssignment, WeeklyOffTemplate, StaffWeeklyOffAssignment, Subscription, Plan, SalesVisit, Asset, AssetAssignment, AssetMaintenance, StaffLoan, StaffAdvance, OrderProduct, StaffOrderProduct, AttendanceAutomationRule, StaffGeofenceAssignment, GeofenceTemplate, GeofenceSite, DeviceInfo, Appraisal, Rating, OrgAccount, OvertimeRule, StaffOvertimeAssignment, EarlyExitRule, StaffEarlyExitAssignment, LatePunchInRule, StaffLatePunchInAssignment, TenureBonusRule, StaffTenureBonusAssignment, StaffBadge, Badge, BadgePermission } = require('../models');
+const { sequelize, User, StaffProfile, Role, Permission, AppSetting, DocumentType, ShiftTemplate, ShiftBreak, ShiftRotationalSlot, StaffShiftAssignment, SalaryAccess, AttendanceTemplate, StaffAttendanceAssignment, SalaryTemplate, StaffSalaryAssignment, Site, WorkUnit, Route, RouteStop, StaffRouteAssignment, SiteCheckpoint, PatrolLog, LeaveTemplate, LeaveTemplateCategory, StaffLeaveAssignment, LeaveBalance, LeaveRequest, AIAnomaly, ReliabilityScore, SalaryForecast, Attendance, Client, AssignedJob, SalesTarget, HolidayTemplate, HolidayDate, StaffHolidayAssignment, WeeklyOffTemplate, StaffWeeklyOffAssignment, Subscription, Plan, SalesVisit, Asset, AssetAssignment, AssetMaintenance, StaffLoan, StaffAdvance, OrderProduct, StaffOrderProduct, AttendanceAutomationRule, StaffGeofenceAssignment, GeofenceTemplate, GeofenceSite, DeviceInfo, Appraisal, Rating, OrgAccount, OvertimeRule, StaffOvertimeAssignment, EarlyExitRule, StaffEarlyExitAssignment, LatePunchInRule, StaffLatePunchInAssignment, TenureBonusRule, StaffTenureBonusAssignment, StaffBadge, Badge, BadgePermission, PayrollCycle, PayrollLine } = require('../models');
 
 const multer = require('multer');
 
@@ -22502,7 +22502,6 @@ router.post('/payroll/generate-payslip', async (req, res) => {
     // Calculate data
     const data = await calculateSalary(userId, monthKey);
 
-    // Ensure directory exists
     // Path: uploads/payslips/YYYY-MM/
     const uploadsDir = path.join(__dirname, '../../uploads/payslips', monthKey);
     if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir, { recursive: true });
@@ -22511,28 +22510,42 @@ router.post('/payroll/generate-payslip', async (req, res) => {
     const absolutePath = path.join(uploadsDir, filename);
     const relativePath = `/uploads/payslips/${monthKey}/${filename}`;
 
-    // Generate and save
+    // Generate and save PDF
     await generatePayslipPDF(data, absolutePath);
 
+    // Get user to determine organization
+    const user = await User.findByPk(userId, { include: [{ model: StaffProfile, as: 'profile' }] });
+    if (!user) return res.status(404).json({ success: false, message: 'User not found' });
+    const orgAccountId = user.orgAccountId;
+
     // Update DB
-    console.log(`Updating payslip path for user ${userId}, month ${monthKey}`);
-    const cycle = await sequelize.models.PayrollCycle.findOne({
-      where: { monthKey },
+    const cycle = await PayrollCycle.findOne({
+      where: { monthKey, orgAccountId },
       order: [['id', 'DESC']]
     });
 
+    if (!cycle) {
+      return res.status(404).json({ success: false, message: `Payroll cycle not found for ${monthKey} in this organization` });
+    }
+
+    console.log(`[GENERATE_PAYSLIP] Finding line for userId: ${userId} (type: ${typeof userId}), cycleId: ${cycle.id}`);
+    const line = await PayrollLine.findOne({ 
+      where: { cycleId: cycle.id, userId: Number(userId) } 
+    });
+
+    if (!line) {
+      console.warn(`[GENERATE_PAYSLIP] No PayrollLine found for userId: ${userId}, cycleId: ${cycle.id}`);
+    } else {
+      console.log(`[GENERATE_PAYSLIP] Found line: ${line.id}`);
+    }
+
     let smsResult = null;
 
-    if (cycle) {
-      console.log(`Cycle found: ${cycle.id}`);
-      const line = await sequelize.models.PayrollLine.findOne({ where: { cycleId: cycle.id, userId } });
-      if (line) {
-        console.log(`Line found: ${line.id}. Updating path to ${relativePath}`);
-        await line.update({ payslipPath: relativePath });
-        console.log('Line updated');
-
-        // Send SMS to staff
-        const user = await sequelize.models.User.findByPk(userId, { include: [{ model: sequelize.models.StaffProfile, as: 'profile' }] });
+    if (line) {
+      await line.update({ payslipPath: relativePath });
+      
+      // Send SMS to staff
+      try {
         const phone = user?.profile?.phone || user?.phone;
         if (phone) {
           const orgId = user.orgAccountId;
@@ -22547,34 +22560,32 @@ router.post('/payroll/generate-payslip', async (req, res) => {
 
           if (canSend) {
             const name = user?.profile?.name || user?.name || 'Staff';
-            const baseUrl = `https://${req.get('host')}`;
-            const pdfUrl = `${baseUrl}${relativePath}`;
             const d = dayjs(monthKey, 'YYYY-MM');
-            const monthName = d.isValid() ? d.format('MMMM').toLowerCase() : monthKey;
+            const monthName = d.isValid() ? d.format('MMMM') : monthKey;
             const smsText = `Hi ${name}, your payslip for ${monthName} is now available. View it here: https://vetansutra.com ( Powered by Thinktech Software company)`;
-
-            const normalized = String(phone || '').replace(/[^0-9]/g, '');
+            
+            const normalized = String(phone || '').replace(/[^\d]/g, '');
             let fullPhone = normalized;
             if (fullPhone.length === 10) fullPhone = '91' + fullPhone;
 
             const smsUrl = `http://182.18.162.128/api/mt/SendSMS?APIKEY=85I1g6L9hEeIntNZgQRrzA&senderid=VETANS&channel=Trans&DCS=0&flashsms=0&number=${fullPhone}&text=${encodeURIComponent(smsText)}&route=08`;
-            console.log(`[PAISLIP SMS] Sending to ${fullPhone}: ${smsText}`);
-            console.log(`[PAISLIP SMS] URL: ${smsUrl}`);
+            console.log(`[PAYSLIP SMS] Sending to ${fullPhone}: ${smsText}`);
+            console.log(`[PAYSLIP SMS] URL: ${smsUrl}`);
 
             const resp = await fetch(smsUrl);
             const respText = await resp.text();
             smsResult = { ok: resp.ok, status: resp.status, body: respText };
-            console.log('[PAISLIP SMS] Result:', smsResult);
+            console.log(`[PAYSLIP SMS] Result:`, smsResult);
           }
         }
-      } else {
-        console.log('PayrollLine not found');
+      } catch (smsErr) {
+        console.error('SMS sending failed:', smsErr);
       }
     } else {
-      console.log('PayrollCycle not found');
+      console.warn(`No PayrollLine found for user ${userId} in cycle ${cycle.id}`);
     }
 
-    return res.json({ success: true, message: 'Payslip generated and saved', path: relativePath, sms: smsResult });
+    return res.json({ success: true, message: 'Payslip generated and saved', path: relativePath, smsResult });
   } catch (e) {
     console.error('Generate payslip error:', e);
     return res.status(500).json({ success: false, message: 'Failed to generate payslip' });
