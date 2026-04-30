@@ -171,7 +171,26 @@ class LatePunchInService {
       return { rows: [], totalPenalty: 0, totalDays: 0, lateCount: 0 };
     }
 
-    const rows = [...attendanceRows].sort((a, b) => new Date(a.date) - new Date(b.date));
+    // Filter attendanceRows to keep only the earliest punch-in per unique date
+    const uniqueDayRows = [];
+    const seenDates = new Map(); // dateKey -> earliestRow
+
+    for (const row of attendanceRows) {
+        const dateKey = row.date instanceof Date ? row.date.toISOString().slice(0, 10) : String(row.date || '').slice(0, 10);
+        if (!dateKey) continue;
+
+        if (!seenDates.has(dateKey)) {
+            seenDates.set(dateKey, row);
+        } else {
+            const existing = seenDates.get(dateKey);
+            // If this row has an earlier punch-in, replace the existing one
+            if (row.punchedInAt && (!existing.punchedInAt || new Date(row.punchedInAt) < new Date(existing.punchedInAt))) {
+                seenDates.set(dateKey, row);
+            }
+        }
+    }
+    const rows = Array.from(seenDates.values()).sort((a, b) => new Date(a.date) - new Date(b.date));
+
     let totalPenalty = 0;
     let totalDays = 0;
     let lateCount = 0;

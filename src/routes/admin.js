@@ -900,11 +900,11 @@ router.get('/payroll/monthly-summary-excel', async (req, res) => {
     });
 
     const labelMap = {
-      basic_salary: 'BASIC', da: 'Dearness Allow.', hra: 'House rent Allow.', medical_allowance: 'Medical Allowance',
-      conveyance: 'Conveyance', conveyance_allowance: 'Conveyance', other_allowance: 'Other Allowance',
-      overtimePay: 'OT PAY', earlyOvertimePay: 'Early OT', special_allowance: 'Special Allowance', travel_allowance: 'Travel Allowance',
-      pf: 'P.F.', esi: 'E.S.I.', ptax: 'P.Tax', professional_tax: 'P.Tax', tds: 'T.D.S.', loan_advance: 'Loan/Advance',
-      advance: 'Loan/Advance', latePunchInAmount: 'PUNCHIN PEN', earlyExitAmount: 'EXIT PEN', breakDeductionAmount: 'BREAK PEN'
+      basic_salary: 'BASIC', da: 'DA', hra: 'HRA', medical_allowance: 'MEDICAL',
+      conveyance: 'CONVEYANCE', conveyance_allowance: 'CONVEYANCE', other_allowance: 'OTHER ALLOW.',
+      overtimePay: 'OT PAY', earlyOvertimePay: 'EARLY OT', special_allowance: 'SPECIAL ALLOW.', travel_allowance: 'TRAVEL ALLOW.',
+      pf: 'P.F.', esi: 'E.S.I.', ptax: 'P.TAX', professional_tax: 'P.TAX', tds: 'T.D.S.', loan_advance: 'LOAN/ADVANCE',
+      advance: 'LOAN/ADVANCE', latePunchInAmount: 'LATE PENALTY', late_punchin_penalty: 'LATE PENALTY', latePunchInPenalty: 'LATE PENALTY', earlyExitAmount: 'EXIT PEN', breakDeductionAmount: 'BREAK PEN'
     };
 
     const dEarnings = [...earningKeys].map(k => ({ key: k, label: labelMap[k] || k.replace(/_/g, ' ').toUpperCase() }));
@@ -913,13 +913,13 @@ router.get('/payroll/monthly-summary-excel', async (req, res) => {
 
     const cols = [
       { header: 'SL', width: 5 },
-      { header: groupBy === 'department' ? 'Department' : 'Designation', width: 25 },
-      ...dEarnings.map(e => ({ header: e.label, width: 12 })),
-      ...dIncentives.map(i => ({ header: i.label, width: 12 })),
-      { header: 'Gross Pay', width: 12 },
-      ...dDeductions.map(d => ({ header: d.label, width: 12 })),
-      { header: 'Total Deduction', width: 15 },
-      { header: 'Net Pay', width: 15 },
+      { header: groupBy === 'department' ? 'DEPARTMENT' : 'DESIGNATION', width: 25 },
+      ...dEarnings.map(e => ({ header: e.label, width: 14 })),
+      ...dIncentives.map(i => ({ header: i.label, width: 14 })),
+      { header: 'GROSS PAY', width: 14 },
+      ...dDeductions.map(d => ({ header: d.label, width: 16 })),
+      { header: 'TOTAL DEDUCTION', width: 18 },
+      { header: 'NET PAY', width: 15 },
     ];
 
     const workbook = new exceljs.Workbook();
@@ -930,13 +930,13 @@ router.get('/payroll/monthly-summary-excel', async (req, res) => {
     worksheet.mergeCells(1, 1, 1, cols.length);
     const companyCell = worksheet.getCell(1, 1);
     companyCell.value = org ? org.name.toUpperCase() : 'ORGANIZATION';
-    companyCell.font = { bold: true, size: 16 };
+    companyCell.font = { bold: true, size: 18 };
     companyCell.alignment = { horizontal: 'center' };
 
     worksheet.mergeCells(3, 1, 3, cols.length);
     const titleCell = worksheet.getCell(3, 1);
     titleCell.value = `Monthly Summary (${groupBy.toUpperCase()} WISE) for the Month of ${monthName.toUpperCase()}`;
-    titleCell.font = { bold: true };
+    titleCell.font = { bold: true, size: 14 };
     titleCell.alignment = { horizontal: 'center' };
 
     // Grouping labels Row 4
@@ -944,22 +944,32 @@ router.get('/payroll/monthly-summary-excel', async (req, res) => {
     const eEnd = eStart + dEarnings.length + dIncentives.length - 1;
     if (eEnd >= eStart) {
       worksheet.mergeCells(4, eStart, 4, eEnd);
-      const eH = worksheet.getCell(4, eStart); eH.value = 'E A R N I N G S'; eH.alignment = { horizontal: 'center', vertical: 'middle' }; eH.font = { bold: true };
-      eH.border = { top: { style: 'thin' }, left: { style: 'thin' }, bottom: { style: 'thin' }, right: { style: 'thin' } };
+      const eH = worksheet.getCell(4, eStart);
+      eH.value = 'E A R N I N G S';
+      eH.alignment = { horizontal: 'center', vertical: 'middle' };
+      eH.font = { bold: true, color: { argb: 'FFFFFFFF' } };
+      eH.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF4F81BD' } };
+      eH.border = { top: { style: 'medium' }, left: { style: 'medium' }, bottom: { style: 'medium' }, right: { style: 'medium' } };
     }
     const dStart = eEnd + 2;
     const dEnd = dStart + dDeductions.length - 1;
     if (dEnd >= dStart) {
       worksheet.mergeCells(4, dStart, 4, dEnd);
-      const dH = worksheet.getCell(4, dStart); dH.value = 'D E D U C T I O N S'; dH.alignment = { horizontal: 'center', vertical: 'middle' }; dH.font = { bold: true };
-      dH.border = { top: { style: 'thin' }, left: { style: 'thin' }, bottom: { style: 'thin' }, right: { style: 'thin' } };
+      const dH = worksheet.getCell(4, dStart);
+      dH.value = 'D E D U C T I O N S';
+      dH.alignment = { horizontal: 'center', vertical: 'middle' };
+      dH.font = { bold: true, color: { argb: 'FFFFFFFF' } };
+      dH.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFC0504D' } };
+      dH.border = { top: { style: 'medium' }, left: { style: 'medium' }, bottom: { style: 'medium' }, right: { style: 'medium' } };
     }
 
     const headerRow = worksheet.getRow(5);
     headerRow.values = cols.map(c => c.header);
-    headerRow.font = { bold: true };
+    headerRow.font = { bold: true, color: { argb: 'FF000000' } };
+    headerRow.height = 25;
     cols.forEach((c, idx) => worksheet.getColumn(idx + 1).width = c.width);
     headerRow.eachCell(cell => {
+      cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFD9D9D9' } };
       cell.border = { top: { style: 'thin' }, left: { style: 'thin' }, bottom: { style: 'thin' }, right: { style: 'thin' } };
       cell.alignment = { horizontal: 'center', vertical: 'middle' };
     });
@@ -997,10 +1007,10 @@ router.get('/payroll/monthly-summary-excel', async (req, res) => {
       g.netPay += Number(t.netSalary || 0);
     });
 
-    let sl = 1;
+    let slNum = 1;
     const grandTotals = Array(cols.length - 2).fill(0);
     for (const [label, data] of Object.entries(grouped)) {
-      const vals = [sl++, label.toUpperCase()];
+      const vals = [slNum++, label.toUpperCase()];
       dEarnings.forEach(dk => vals.push(data.e_sums[dk.key]));
       dIncentives.forEach(dk => vals.push(data.i_sums[dk.key]));
       vals.push(data.grossPay);
@@ -1008,13 +1018,30 @@ router.get('/payroll/monthly-summary-excel', async (req, res) => {
       vals.push(data.totalDeduction, data.netPay);
 
       const row = worksheet.addRow(vals);
-      row.eachCell(cell => cell.border = { top: { style: 'thin' }, left: { style: 'thin' }, bottom: { style: 'thin' }, right: { style: 'thin' } });
+      row.eachCell((cell, colNumber) => {
+        cell.border = { top: { style: 'thin' }, left: { style: 'thin' }, bottom: { style: 'thin' }, right: { style: 'thin' } };
+        // Number formatting for amount columns
+        if (colNumber >= 3 && typeof cell.value === 'number') {
+          cell.numFmt = '#,##0.00';
+        }
+        // Zebra striping
+        if ((slNum - 1) % 2 === 0) {
+          cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF9F9F9' } };
+        }
+      });
       vals.slice(2).forEach((v, idx) => grandTotals[idx] += v);
     }
 
-    const ftRow = worksheet.addRow([null, 'Grand Total', ...grandTotals]);
+    const ftRowArr = [null, 'GRAND TOTAL', ...grandTotals];
+    const ftRow = worksheet.addRow(ftRowArr);
     ftRow.font = { bold: true };
-    ftRow.eachCell(cell => cell.border = { top: { style: 'thin' }, left: { style: 'thin' }, bottom: { style: 'thin' }, right: { style: 'thin' } });
+    ftRow.eachCell((cell, colNumber) => {
+      cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFEBF1DE' } };
+      cell.border = { top: { style: 'thin' }, left: { style: 'thin' }, bottom: { style: 'thick' }, right: { style: 'thin' } };
+      if (colNumber >= 3 && typeof cell.value === 'number') {
+        cell.numFmt = '#,##0.00';
+      }
+    });
 
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
     res.setHeader('Content-Disposition', `attachment; filename=Monthly-Summary-${cycle.monthKey}.xlsx`);
@@ -1101,12 +1128,12 @@ router.get('/payroll/:cycleId/salary-register-excel', async (req, res) => {
     });
 
     const labelMap = {
-      basic_salary: 'BASIC', da: 'Dearness Allow.', hra: 'House rent Allow.', medical_allowance: 'Medical Allowance',
-      conveyance: 'Conveyance', conveyance_allowance: 'Conveyance', other_allowance: 'Other Allowance',
-      overtimePay: 'OT PAY', overtime_pay: 'OT PAY', earlyOvertimePay: 'Early OT',
-      special_allowance: 'Special Allowance', travel_allowance: 'Travel Allowance',
-      pf: 'P.F.', esi: 'E.S.I.', ptax: 'P.Tax', professional_tax: 'P.Tax', tds: 'T.D.S.', loan_advance: 'Loan/Advance',
-      advance: 'Loan/Advance', latePunchInAmount: 'PUNCHIN PEN', earlyExitAmount: 'EXIT PEN', breakDeductionAmount: 'BREAK PEN'
+      basic_salary: 'BASIC', da: 'DA', hra: 'HRA', medical_allowance: 'MEDICAL',
+      conveyance: 'CONVEYANCE', conveyance_allowance: 'CONVEYANCE', other_allowance: 'OTHER ALLOW.',
+      overtimePay: 'OT PAY', overtime_pay: 'OT PAY', earlyOvertimePay: 'EARLY OT',
+      special_allowance: 'SPECIAL ALLOW.', travel_allowance: 'TRAVEL ALLOW.',
+      pf: 'P.F.', esi: 'E.S.I.', ptax: 'P.TAX', professional_tax: 'P.TAX', tds: 'T.D.S.', loan_advance: 'LOAN/ADVANCE',
+      advance: 'LOAN/ADVANCE', latePunchInAmount: 'LATE PENALTY', late_punchin_penalty: 'LATE PENALTY', latePunchInPenalty: 'LATE PENALTY', earlyExitAmount: 'EXIT PEN', breakDeductionAmount: 'BREAK PEN'
     };
 
     const dE = [...earningKeys].map(k => ({ key: k, label: labelMap[k] || k.replace(/_/g, ' ').toUpperCase() }));
@@ -1127,20 +1154,20 @@ router.get('/payroll/:cycleId/salary-register-excel', async (req, res) => {
 
     const cols = [
       { header: 'SL', key: 'sl', width: 5 },
-      { header: 'Name of Employee', key: 'name', width: 25 },
-      { header: 'Work days', key: 'workDays', width: 10 },
-      { header: 'Paid Sun', key: 'paidSun', width: 10 },
-      { header: 'Paid Holi', key: 'paidHoli', width: 10 },
-      { header: 'Absent', key: 'absent', width: 10 },
-      { header: 'Total pay day', key: 'totalPayDay', width: 12 },
-      { header: 'Basic Rate', key: 'basicRate', width: 12 },
-      ...fdE.map(e => ({ header: e.label, key: `e_${e.key}`, width: 12 })),
-      ...dI.map(i => ({ header: i.label, key: `i_${i.key}`, width: 12 })),
-      { header: 'Gross Pay', key: 'grossPay', width: 12 },
-      ...fdD.map(d => ({ header: d.label, key: `d_${d.key}`, width: 12 })),
-      { header: 'Total Deduction', key: 'totalDeduction', width: 15 },
-      { header: 'Net Pay', key: 'netPay', width: 15 },
-      { header: 'Signature/Date', key: 'signature', width: 20 },
+      { header: 'NAME OF EMPLOYEE', key: 'name', width: 25 },
+      { header: 'WORK DAYS', key: 'workDays', width: 12 },
+      { header: 'PAID SUNDAY', key: 'paidSun', width: 14 },
+      { header: 'PAID HOLIDAY', key: 'paidHoli', width: 14 },
+      { header: 'ABSENT', key: 'absent', width: 10 },
+      { header: 'TOTAL PAY DAY', key: 'totalPayDay', width: 15 },
+      { header: 'BASIC RATE', key: 'basicRate', width: 12 },
+      ...fdE.map(e => ({ header: e.label, key: `e_${e.key}`, width: 14 })),
+      ...dI.map(i => ({ header: i.label, key: `i_${i.key}`, width: 14 })),
+      { header: 'GROSS PAY', key: 'grossPay', width: 12 },
+      ...fdD.map(d => ({ header: d.label, key: `d_${d.key}`, width: 16 })),
+      { header: 'TOTAL DEDUCTION', key: 'totalDeduction', width: 18 },
+      { header: 'NET PAY', key: 'netPay', width: 15 },
+      { header: 'SIGNATURE/DATE', key: 'signature', width: 20 },
     ];
 
     const workbook = new exceljs.Workbook();
@@ -1151,34 +1178,49 @@ router.get('/payroll/:cycleId/salary-register-excel', async (req, res) => {
     // Company Header
     worksheet.mergeCells(1, 1, 1, cols.length);
     const companyCell = worksheet.getCell(1, 1);
-    companyCell.value = org.name.toUpperCase(); companyCell.font = { bold: true, size: 14 }; companyCell.alignment = { horizontal: 'center' };
+    companyCell.value = org.name.toUpperCase();
+    companyCell.font = { bold: true, size: 18 };
+    companyCell.alignment = { horizontal: 'center' };
 
     worksheet.mergeCells(2, 1, 2, cols.length);
     const addressCell = worksheet.getCell(2, 1); addressCell.value = org.address || ''; addressCell.alignment = { horizontal: 'center' };
 
     worksheet.mergeCells(3, 1, 3, cols.length);
-    const titleCell = worksheet.getCell(3, 1); titleCell.value = `Pay Register for the Month of ${monthName.toUpperCase()}`; titleCell.font = { bold: true }; titleCell.alignment = { horizontal: 'center' };
+    const titleCell = worksheet.getCell(3, 1);
+    titleCell.value = `Pay Register for the Month of ${monthName.toUpperCase()}`;
+    titleCell.font = { bold: true, size: 14 };
+    titleCell.alignment = { horizontal: 'center' };
 
     // Group Headers (Earnings / Deductions) Row 4
     const eStart = 9;
     const eEnd = eStart + fdE.length + dI.length - 1;
     if (eEnd >= eStart) {
       worksheet.mergeCells(4, eStart, 4, eEnd);
-      const eH = worksheet.getCell(4, eStart); eH.value = 'E A R N I N G S'; eH.alignment = { horizontal: 'center', vertical: 'middle' }; eH.font = { bold: true };
-      eH.border = { top: { style: 'thin' }, left: { style: 'thin' }, bottom: { style: 'thin' }, right: { style: 'thin' } };
+      const eH = worksheet.getCell(4, eStart);
+      eH.value = 'E A R N I N G S';
+      eH.alignment = { horizontal: 'center', vertical: 'middle' };
+      eH.font = { bold: true, color: { argb: 'FFFFFFFF' } };
+      eH.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF4F81BD' } };
+      eH.border = { top: { style: 'medium' }, left: { style: 'medium' }, bottom: { style: 'medium' }, right: { style: 'medium' } };
     }
     const dStart = eEnd + 2;
     const dEnd = dStart + fdD.length - 1;
     if (dEnd >= dStart) {
       worksheet.mergeCells(4, dStart, 4, dEnd);
-      const dH = worksheet.getCell(4, dStart); dH.value = 'D E D U C T I O N S'; dH.alignment = { horizontal: 'center', vertical: 'middle' }; dH.font = { bold: true };
-      dH.border = { top: { style: 'thin' }, left: { style: 'thin' }, bottom: { style: 'thin' }, right: { style: 'thin' } };
+      const dH = worksheet.getCell(4, dStart);
+      dH.value = 'D E D U C T I O N S';
+      dH.alignment = { horizontal: 'center', vertical: 'middle' };
+      dH.font = { bold: true, color: { argb: 'FFFFFFFF' } };
+      dH.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFC0504D' } };
+      dH.border = { top: { style: 'medium' }, left: { style: 'medium' }, bottom: { style: 'medium' }, right: { style: 'medium' } };
     }
 
     const headerRow = worksheet.getRow(5);
     headerRow.values = cols.map(c => c.header);
-    headerRow.font = { bold: true };
+    headerRow.font = { bold: true, color: { argb: 'FF000000' } };
+    headerRow.height = 25;
     headerRow.eachCell(cell => {
+      cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFD9D9D9' } };
       cell.border = { top: { style: 'thin' }, left: { style: 'thin' }, bottom: { style: 'thin' }, right: { style: 'thin' } };
       cell.alignment = { horizontal: 'center', vertical: 'middle' };
     });
@@ -1249,23 +1291,60 @@ router.get('/payroll/:cycleId/salary-register-excel', async (req, res) => {
         subTotals.netPay += rowData.netPay; grandTotals.netPay += rowData.netPay;
 
         const row = worksheet.addRow(rowData);
-        row.eachCell(cell => cell.border = { top: { style: 'thin' }, left: { style: 'thin' }, bottom: { style: 'thin' }, right: { style: 'thin' } });
+        row.eachCell((cell, colNumber) => {
+          cell.border = { top: { style: 'thin' }, left: { style: 'thin' }, bottom: { style: 'thin' }, right: { style: 'thin' } };
+          // Number formatting for amount columns
+          if (colNumber >= 8 && typeof cell.value === 'number') {
+            cell.numFmt = '#,##0.00';
+          }
+          // Zebra striping
+          if (sl % 2 === 0) {
+            cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF9F9F9' } };
+          }
+        });
         currRow++;
       });
 
+      // Add a small gap before sub-total
+      worksheet.addRow([]);
+      currRow++;
+
       // Sub-total for group
       worksheet.mergeCells(currRow, 1, currRow, 8);
-      const groupCell = worksheet.getCell(currRow, 1); groupCell.value = groupVal.toUpperCase(); groupCell.font = { bold: true }; groupCell.alignment = { horizontal: 'center' };
+      const groupCell = worksheet.getCell(currRow, 1);
+      groupCell.value = `TOTAL: ${groupVal.toUpperCase()}`;
+      groupCell.font = { bold: true };
+      groupCell.alignment = { horizontal: 'right' };
       const subRow = worksheet.getRow(currRow);
       let colIdx = 9;
-      fdE.forEach(dk => { subRow.getCell(colIdx++).value = subTotals.e[dk.key]; });
-      dI.forEach(dk => { subRow.getCell(colIdx++).value = subTotals.i[dk.key]; });
-      subRow.getCell(colIdx++).value = subTotals.grossPay;
-      fdD.forEach(dk => { subRow.getCell(colIdx++).value = subTotals.d[dk.key]; });
-      subRow.getCell(colIdx++).value = subTotals.totalDeduction;
-      subRow.getCell(colIdx++).value = subTotals.netPay;
+      fdE.forEach(dk => {
+        const c = subRow.getCell(colIdx++);
+        c.value = subTotals.e[dk.key];
+        c.numFmt = '#,##0.00';
+      });
+      dI.forEach(dk => {
+        const c = subRow.getCell(colIdx++);
+        c.value = subTotals.i[dk.key];
+        c.numFmt = '#,##0.00';
+      });
+      const grossCell = subRow.getCell(colIdx++); grossCell.value = subTotals.grossPay; grossCell.numFmt = '#,##0.00';
+      fdD.forEach(dk => {
+        const c = subRow.getCell(colIdx++);
+        c.value = subTotals.d[dk.key];
+        c.numFmt = '#,##0.00';
+      });
+      const totalDeducCell = subRow.getCell(colIdx++); totalDeducCell.value = subTotals.totalDeduction; totalDeducCell.numFmt = '#,##0.00';
+      const netPayCell = subRow.getCell(colIdx++); netPayCell.value = subTotals.netPay; netPayCell.numFmt = '#,##0.00';
+
       subRow.font = { bold: true };
-      subRow.eachCell(cell => cell.border = { top: { style: 'thin' }, left: { style: 'thin' }, bottom: { style: 'thin' }, right: { style: 'thin' } });
+      subRow.eachCell(cell => {
+        cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFEBF1DE' } };
+        cell.border = { top: { style: 'thin' }, left: { style: 'thin' }, bottom: { style: 'thin' }, right: { style: 'thin' } };
+      });
+      currRow++;
+
+      // Add another gap after group
+      worksheet.addRow([]);
       currRow++;
     }
 
@@ -2395,7 +2474,7 @@ router.post('/payroll/:cycleId/compute', async (req, res) => {
           'breakRuleId', 'excessBreakMinutes', 'breakTotalSeconds',
           'totalWorkHours', 'earlyOvertimeMinutes', 'earlyOvertimeAmount', 'earlyOvertimeRuleId',
           'latePunchInMinutes', 'latePunchInAmount', 'late_punchin_minutes', 'late_punchin_amount',
-          'latePunchInRuleId', 'late_punchin_rule_id'
+          'latePunchInRuleId', 'late_punchin_rule_id', 'overtimeRuleId', 'overtime_rule_id'
         ]
       });
 
@@ -2622,9 +2701,8 @@ router.post('/payroll/:cycleId/compute', async (req, res) => {
 
 
       // Proration by payable units: present(1) + half(0.5) + weeklyOff(1) + holidays(1) + paidLeave(1)
-
-      const payableUnitsRaw = present + (half * 0.5) + weeklyOff + holidays + paidLeave;
-      const payableUnits = Math.max(0, payableUnitsRaw);
+      const payableUnitsGross = present + (half * 0.5) + weeklyOff + holidays + paidLeave;
+      const payableUnits = Math.max(0, payableUnitsGross);
       const daysForRatio = daysInMonth;
       const ratio = daysForRatio > 0 ? Math.max(0, Math.min(1, payableUnits / daysForRatio)) : 1;
 
@@ -2715,32 +2793,36 @@ router.post('/payroll/:cycleId/compute', async (req, res) => {
         console.error('Error fetching leave encashment for compute route:', err);
       }
 
-      // Overtime computation: Prioritize persisted automation rule amount over legacy formulas
-      // Only for staff assigned to an overtime rule
+      // Overtime computation: ONLY for staff assigned to an overtime rule
       let totalOvertimeAmount = 0;
       let totalOvertimeMinutes = 0;
 
       const otAssignment = await StaffOvertimeAssignment.findOne({ where: { userId: u.id, orgAccountId: orgId } });
-
-      // Fetch Org settings for fallback rule (Moved up to fix ReferenceError)
       const orgAccountRecord = await OrgAccount.findByPk(orgId);
 
       try {
+        // Fetch all assignments and global rules
+        const otAssignment = await StaffOvertimeAssignment.findOne({ where: { userId: u.id, orgAccountId: orgId } });
+        const orgAccountRecord = await OrgAccount.findByPk(orgId);
+
         for (const a of atts) {
-          // Prioritize already stored database values for minutes and amount
-          // Only fallback to re-calculation if DB value is missing or 0
-          let finalOtAmt = Number(a.overtimeAmount || a.overtime_amount || 0);
-          let finalOtMins = Number(a.overtimeMinutes || a.overtime_minutes || 0);
+          // Check if this specific record has a rule, OR if there's a global/assigned rule to use
+          const effectiveRuleId = a.overtimeRuleId || a.overtime_rule_id || otAssignment?.overtimeRuleId || orgAccountRecord?.overtimeRuleId;
 
-          if (finalOtAmt === 0 || finalOtMins === 0) {
-            // RE-CALCULATE only if database values are missing
-            const otRes = await calculateOvertime(a, orgAccountRecord, a.punchedOutAt, daysInMonth);
-            if (finalOtAmt === 0) finalOtAmt = Number(otRes.overtimeAmount || 0);
-            if (finalOtMins === 0) finalOtMins = Number(otRes.overtimeMinutes || 0);
+          if (effectiveRuleId) {
+            let finalOtAmt = Number(a.overtimeAmount || a.overtime_amount || 0);
+            let finalOtMins = Number(a.overtimeMinutes || a.overtime_minutes || 0);
+
+            // If minutes exist but amount is 0, or we need to force re-calc
+            if (finalOtMins > 0 && finalOtAmt === 0) {
+              const otRes = await calculateOvertime(a, orgAccountRecord, a.punchedOutAt, daysInMonth);
+              finalOtAmt = Number(otRes.overtimeAmount || 0);
+              finalOtMins = Number(otRes.overtimeMinutes || 0);
+            }
+
+            totalOvertimeAmount += finalOtAmt;
+            totalOvertimeMinutes += finalOtMins;
           }
-
-          totalOvertimeAmount += finalOtAmt;
-          totalOvertimeMinutes += finalOtMins;
         }
       } catch (otErr) {
         console.error(`[Payroll-OT-Error] Failed for staff ${u.id}:`, otErr);
@@ -2748,17 +2830,13 @@ router.post('/payroll/:cycleId/compute', async (req, res) => {
 
       const overtimeHours = totalOvertimeMinutes / 60;
       let overtimePay = totalOvertimeAmount;
-      let hourlyRate = 0;
-
-      // Legacy fallback: Only if NO automation rule amounts were found but minutes exist
-      if (overtimePay <= 0 && totalOvertimeMinutes > 0) {
-        const overtimeBaseSalary = Number(e?.basic_salary || sd.basicSalary || 0) + Number(e?.da || sd.da || 0);
-        hourlyRate = daysInMonth > 0 ? (overtimeBaseSalary / (daysInMonth * 8)) : 0;
-        overtimePay = Math.max(0, overtimeHours) * Math.max(0, hourlyRate);
-      }
+      const overtimeBaseSalary = Number(e?.basic_salary || sd.basicSalary || 0) + Number(e?.da || sd.da || 0);
+      const hourlyRate = daysInMonth > 0 ? (overtimeBaseSalary / (daysInMonth * 8)) : 0;
 
       if (overtimePay > 0) {
         finalE.overtime_pay = overtimePay;
+      } else {
+        delete finalE.overtime_pay;
       }
 
       // Early Overtime Computation
@@ -2904,11 +2982,58 @@ router.post('/payroll/:cycleId/compute', async (req, res) => {
       const totalIncentives = sumObj(finalI);
       const totalDeductions = sumObj(finalD);
       const grossSalary = totalEarnings + totalIncentives;
-      const netSalary = grossSalary - totalDeductions;
+
+      // --- Dynamic ESI and PT Logic (Admin Compute) ---
+      if (u.salaryTemplate) {
+        const template = u.salaryTemplate;
+        let templateDeductions = [];
+        try {
+          templateDeductions = typeof template.deductions === 'string' ? JSON.parse(template.deductions) : (template.deductions || []);
+        } catch (e) { }
+
+        for (const rule of templateDeductions) {
+          // ESI Rule: 0.75% only if gross <= 21000
+          if (rule.key === 'ESI_EMPLOYEE' || rule.type === 'ESI') {
+            if (grossSalary > 21000) {
+              finalD.esi = 0;
+              if (finalD.ESI) finalD.ESI = 0;
+            } else {
+              // Recalculate 0.75% on the actual gross salary with 2 decimal precision
+              const esiPercent = Number(rule.valueNumber || 0.75);
+              const calculatedEsi = Number((grossSalary * (esiPercent / 100)).toFixed(2));
+              finalD.esi = calculatedEsi;
+              if (finalD.ESI) finalD.ESI = calculatedEsi;
+            }
+          }
+
+          // Professional Tax Slab Rule
+          if (rule.key === 'PROFESSIONAL_TAX' || rule.key === 'PROFESSIONAL TAX' || rule.type === 'PT' || rule.key === 'PT') {
+            const slabs = rule.slabs || rule.meta?.slabs || [];
+            if (Array.isArray(slabs) && slabs.length > 0) {
+              let ptAmount = 0;
+              for (const slab of slabs) {
+                const from = Number(slab.from || slab.min || 0);
+                const to = Number(slab.to || slab.max || 9999999);
+                if (grossSalary >= from && grossSalary <= to) {
+                  ptAmount = Number(slab.amount || slab.value || 0);
+                  break;
+                }
+              }
+              finalD.professional_tax = ptAmount;
+              if (finalD.PT) finalD.PT = ptAmount;
+            }
+          }
+        }
+      }
+      // Recalculate total deductions and net salary after overrides
+      const updatedTotalDeductions = Object.values(finalD).reduce((s, v) => s + (Number(v) || 0), 0);
+      const netSalary = grossSalary - updatedTotalDeductions;
+      // --- End Dynamic Logic ---
 
       const totalAbsent = absent;
       const attendanceSummary = {
         present, half, leave, paidLeave, unpaidLeave, absent: totalAbsent, weeklyOff, holidays, ratio,
+        payableDays: payableUnits,
         overtimeMinutes: totalOvertimeMinutes,
         overtimeHours: Number(overtimeHours.toFixed(2)),
         overtimeHourlyRate: Number(hourlyRate.toFixed(2)),
@@ -2917,7 +3042,7 @@ router.post('/payroll/:cycleId/compute', async (req, res) => {
         earlyOvertimePay: totalEarlyOvertimeAmount,
         lateCount,
         latePunchInMinutes: totalLatePunchInMinutes,
-        latePenaltyDays,
+        latePenaltyDays: 0, // Set to 0 so UI doesn't subtract it from Payable Days
         latePenalty: latePenaltyAmount,
         latePunchInPenalty: latePenaltyAmount,
         earlyExitMinutes: totalEarlyExitMinutes,
@@ -2927,7 +3052,7 @@ router.post('/payroll/:cycleId/compute', async (req, res) => {
         tenureBonus: tenureBonusMeta,
         netSalary: Math.max(0, netSalary),
       };
-      const totals = { totalEarnings, totalIncentives, totalDeductions, grossSalary, netSalary, ratio };
+      const totals = { totalEarnings, totalIncentives, totalDeductions: updatedTotalDeductions, grossSalary, netSalary, ratio };
 
       // Check if line exists and is manual
       const existingLine = await require('../models').sequelize.models.PayrollLine.findOne({
@@ -9188,8 +9313,8 @@ router.put('/settings/kiosk', async (req, res) => {
         if (existing) {
           return res.status(400).json({ success: false, message: 'Kiosk username already taken by another organization' });
         }
-        
-        const [row] = await AppSetting.findOrCreate({ 
+
+        const [row] = await AppSetting.findOrCreate({
           where: { key: 'kiosk_username', orgAccountId: orgId },
           defaults: { value: uname, orgAccountId: orgId }
         });
@@ -9200,7 +9325,7 @@ router.put('/settings/kiosk', async (req, res) => {
     if (password !== undefined) {
       const pwd = String(password || '').trim();
       if (pwd) {
-        const [row] = await AppSetting.findOrCreate({ 
+        const [row] = await AppSetting.findOrCreate({
           where: { key: 'kiosk_password', orgAccountId: orgId },
           defaults: { value: pwd, orgAccountId: orgId }
         });
@@ -16104,17 +16229,50 @@ router.get('/reports/org-activities', async (req, res) => {
       const workbook = new exceljs.Workbook();
       const worksheet = workbook.addWorksheet('Activities Report'); // Changed sheet name
 
-      worksheet.columns = [
+      const columns = [
         { header: 'Created At', key: 'createdAt', width: 20 },
         { header: 'User', key: 'user', width: 25 },
         { header: 'Department', key: 'department', width: 20 },
-        { header: 'Activity Type', key: 'activityType', width: 20 }, // New column
-        { header: 'Description', key: 'description', width: 30 }, // New column
+        { header: 'Activity Type', key: 'activityType', width: 20 },
+        { header: 'Description', key: 'description', width: 30 },
         { header: 'Status', key: 'status', width: 15 },
-        { header: 'Transferred To', key: 'transferredTo', width: 25 }, // New column
+        { header: 'Transferred To', key: 'transferredTo', width: 25 },
         { header: 'Closed By', key: 'closedBy', width: 25 },
-        { header: 'Activity History', key: 'history', width: 60 } // Changed header
+        { header: 'Activity History', key: 'history', width: 60 }
       ];
+
+      // Set columns with headers disabled to prevent Row 1 overwrite
+      worksheet.columns = columns.map(col => ({ ...col, header: undefined }));
+
+      const org = await OrgAccount.findByPk(orgId);
+      const companyRow = worksheet.getRow(1);
+      worksheet.mergeCells(1, 1, 1, columns.length);
+      companyRow.getCell(1).value = (org?.name || 'Organization').toUpperCase();
+      companyRow.getCell(1).font = { size: 18, bold: true };
+      companyRow.getCell(1).alignment = { horizontal: 'center' };
+
+      const titleRow = worksheet.getRow(3);
+      worksheet.mergeCells(3, 1, 3, columns.length);
+      titleRow.getCell(1).value = 'ACTIVITIES REPORT';
+      titleRow.getCell(1).font = { size: 14, bold: true };
+      titleRow.getCell(1).alignment = { horizontal: 'center' };
+
+      const infoRow = worksheet.getRow(4);
+      worksheet.mergeCells(4, 1, 4, columns.length);
+      infoRow.getCell(1).value = `Period: ${startDate.getFullYear()}-${startDate.getMonth() + 1} | Printed On: ${new Date().toLocaleString()}`;
+      infoRow.getCell(1).alignment = { horizontal: 'center' };
+      infoRow.getCell(1).font = { bold: true };
+
+      const headerRow = worksheet.getRow(6);
+      columns.forEach((col, i) => {
+        const cell = headerRow.getCell(i + 1);
+        cell.value = col.header;
+        cell.width = col.width;
+        cell.font = { bold: true };
+        cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE0E0E0' } };
+        cell.alignment = { horizontal: 'center' };
+        cell.border = { top: { style: 'thin' }, left: { style: 'thin' }, bottom: { style: 'thin' }, right: { style: 'thin' } };
+      });
 
       activities.forEach(a => { // Changed from tickets to activities
         const historyText = a.history?.map(h =>
@@ -16297,6 +16455,8 @@ router.get('/reports/org-leave', async (req, res) => {
 
       ];
 
+      worksheet.columns = columns;
+
 
 
       // Data rows
@@ -16331,19 +16491,36 @@ router.get('/reports/org-leave', async (req, res) => {
 
 
 
-      // Style the header row
+      // Header Section
+      const org = await OrgAccount.findByPk(orgId);
+      const companyRow = worksheet.getRow(1);
+      worksheet.mergeCells(1, 1, 1, columns.length);
+      companyRow.getCell(1).value = (org?.name || 'Organization').toUpperCase();
+      companyRow.getCell(1).font = { size: 18, bold: true };
+      companyRow.getCell(1).alignment = { horizontal: 'center' };
 
-      worksheet.getRow(1).font = { bold: true };
+      const titleRow = worksheet.getRow(3);
+      worksheet.mergeCells(3, 1, 3, columns.length);
+      titleRow.getCell(1).value = 'ORGANIZATION LEAVE REPORT';
+      titleRow.getCell(1).font = { size: 14, bold: true };
+      titleRow.getCell(1).alignment = { horizontal: 'center' };
 
-      worksheet.getRow(1).fill = {
+      const infoRow = worksheet.getRow(4);
+      worksheet.mergeCells(4, 1, 4, columns.length);
+      infoRow.getCell(1).value = `Period: ${startDate.getFullYear()}-${startDate.getMonth() + 1} | Printed On: ${new Date().toLocaleString()}`;
+      infoRow.getCell(1).alignment = { horizontal: 'center' };
+      infoRow.getCell(1).font = { bold: true };
 
-        type: 'pattern',
-
-        pattern: 'solid',
-
-        fgColor: { argb: 'FFE0E0E0' }
-
-      };
+      const headerRow = worksheet.getRow(6);
+      columns.forEach((col, i) => {
+        const cell = headerRow.getCell(i + 1);
+        cell.value = col.header;
+        cell.width = col.width;
+        cell.font = { bold: true };
+        cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE0E0E0' } };
+        cell.alignment = { horizontal: 'center' };
+        cell.border = { top: { style: 'thin' }, left: { style: 'thin' }, bottom: { style: 'thin' }, right: { style: 'thin' } };
+      });
 
 
 
@@ -16995,6 +17172,8 @@ router.get('/reports/org-applied-leave', async (req, res) => {
 
       ];
 
+      worksheet.columns = columns;
+
 
 
       leaveData.forEach(leave => {
@@ -17027,11 +17206,37 @@ router.get('/reports/org-applied-leave', async (req, res) => {
 
       });
 
+      // Header Section
+      const org = await OrgAccount.findByPk(orgId);
+      const companyRow = worksheet.getRow(1);
+      worksheet.mergeCells(1, 1, 1, columns.length);
+      companyRow.getCell(1).value = (org?.name || 'Organization').toUpperCase();
+      companyRow.getCell(1).font = { size: 18, bold: true };
+      companyRow.getCell(1).alignment = { horizontal: 'center' };
 
+      const titleRow = worksheet.getRow(3);
+      worksheet.mergeCells(3, 1, 3, columns.length);
+      titleRow.getCell(1).value = 'ORGANIZATION APPLIED LEAVE REPORT';
+      titleRow.getCell(1).font = { size: 14, bold: true };
+      titleRow.getCell(1).alignment = { horizontal: 'center' };
 
-      worksheet.getRow(1).font = { bold: true };
+      const infoRow = worksheet.getRow(4);
+      worksheet.mergeCells(4, 1, 4, columns.length);
+      infoRow.getCell(1).value = `Period: ${startDate.getFullYear()}-${startDate.getMonth() + 1} | Printed On: ${new Date().toLocaleString()}`;
+      infoRow.getCell(1).alignment = { horizontal: 'center' };
+      infoRow.getCell(1).font = { bold: true };
 
-      worksheet.getRow(1).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE0E0E0' } };
+      const headerRow = worksheet.getRow(6);
+      columns.forEach((col, i) => {
+        const cell = headerRow.getCell(i + 1);
+        cell.value = col.header;
+        cell.width = col.width;
+        cell.font = { bold: true };
+        cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE0E0E0' } };
+        cell.alignment = { horizontal: 'center' };
+        cell.border = { top: { style: 'thin' }, left: { style: 'thin' }, bottom: { style: 'thin' }, right: { style: 'thin' } };
+      });
+
 
       res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
 
@@ -17119,7 +17324,7 @@ router.get('/reports/org-leave-balance', async (req, res) => {
 
       const worksheet = workbook.addWorksheet('Leave Balance Report');
 
-      worksheet.columns = [
+      const columns = [
 
         { header: 'Employee Name', key: 'employeeName', width: 20 },
 
@@ -17136,6 +17341,70 @@ router.get('/reports/org-leave-balance', async (req, res) => {
         { header: 'Remaining', key: 'remaining', width: 10 }
 
       ];
+
+      worksheet.columns = columns;
+
+
+
+      // Header Section
+
+      const org = await OrgAccount.findByPk(orgId);
+
+      const companyRow = worksheet.getRow(1);
+
+      worksheet.mergeCells(1, 1, 1, columns.length);
+
+      companyRow.getCell(1).value = (org?.name || 'Organization').toUpperCase();
+
+      companyRow.getCell(1).font = { size: 18, bold: true };
+
+      companyRow.getCell(1).alignment = { horizontal: 'center' };
+
+
+
+      const titleRow = worksheet.getRow(3);
+
+      worksheet.mergeCells(3, 1, 3, columns.length);
+
+      titleRow.getCell(1).value = 'ORGANIZATION LEAVE BALANCE REPORT';
+
+      titleRow.getCell(1).font = { size: 14, bold: true };
+
+      titleRow.getCell(1).alignment = { horizontal: 'center' };
+
+
+
+      const infoRow = worksheet.getRow(4);
+
+      worksheet.mergeCells(4, 1, 4, columns.length);
+
+      infoRow.getCell(1).value = `Printed On: ${new Date().toLocaleString()}`;
+
+      infoRow.getCell(1).alignment = { horizontal: 'center' };
+
+      infoRow.getCell(1).font = { bold: true };
+
+
+
+      const headerRow = worksheet.getRow(6);
+
+      columns.forEach((col, i) => {
+
+        const cell = headerRow.getCell(i + 1);
+
+        cell.value = col.header;
+
+        cell.width = col.width;
+
+        cell.font = { bold: true };
+
+        cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE0E0E0' } };
+
+        cell.alignment = { horizontal: 'center' };
+
+        cell.border = { top: { style: 'thin' }, left: { style: 'thin' }, bottom: { style: 'thin' }, right: { style: 'thin' } };
+
+      });
 
 
 
@@ -17162,10 +17431,6 @@ router.get('/reports/org-leave-balance', async (req, res) => {
       });
 
 
-
-      worksheet.getRow(1).font = { bold: true };
-
-      worksheet.getRow(1).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE0E0E0' } };
 
       res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
 
@@ -17498,27 +17763,26 @@ router.get('/reports/monthly-attendance', async (req, res) => {
     worksheet.columns = columns;
 
     // 1. HEADER SECTION
-    // Row 1: Title
-    const titleRow = worksheet.getRow(1);
+    // Row 1: Company Name
+    const companyRow = worksheet.getRow(1);
     worksheet.mergeCells(1, 1, 1, daysInMonth + 2);
-    titleRow.getCell(1).value = 'Monthly Status Report (Detailed Work Duration)';
+    companyRow.getCell(1).value = org.name.toUpperCase();
+    companyRow.getCell(1).font = { size: 18, bold: true };
+    companyRow.getCell(1).alignment = { horizontal: 'center' };
+
+    // Row 3: Title
+    const titleRow = worksheet.getRow(3);
+    worksheet.mergeCells(3, 1, 3, daysInMonth + 2);
+    titleRow.getCell(1).value = 'MONTHLY STATUS REPORT (DETAILED WORK DURATION)';
     titleRow.getCell(1).font = { size: 14, bold: true };
     titleRow.getCell(1).alignment = { horizontal: 'center' };
 
-    // Row 3: Date Range
-    worksheet.mergeCells(3, 1, 3, daysInMonth + 2);
-    const dateRangeRow = worksheet.getRow(3);
-    dateRangeRow.getCell(1).value = `${startDate.format('MMM DD YYYY')} To ${endDate.format('MMM DD YYYY')}`;
-    dateRangeRow.getCell(1).alignment = { horizontal: 'center' };
-    dateRangeRow.getCell(1).font = { bold: true };
-
-    // Row 4: Company and Printed On
+    // Row 4: Date Range & Printed Info
+    worksheet.mergeCells(4, 1, 4, daysInMonth + 2);
     const infoRow = worksheet.getRow(4);
-    infoRow.getCell(1).value = `Company: ${org.name}`;
+    infoRow.getCell(1).value = `${startDate.format('MMM DD YYYY')} To ${endDate.format('MMM DD YYYY')} | Printed On: ${dayjs().format('MMM DD YYYY HH:mm')}`;
+    infoRow.getCell(1).alignment = { horizontal: 'center' };
     infoRow.getCell(1).font = { bold: true };
-    worksheet.mergeCells(4, daysInMonth - 2, 4, daysInMonth + 2);
-    infoRow.getCell(daysInMonth - 2).value = `Printed On : ${dayjs().format('MMM DD YYYY HH:mm')}`;
-    infoRow.getCell(daysInMonth - 2).alignment = { horizontal: 'right' };
 
     // Row 6: Day Initials
     const dayRow = worksheet.getRow(6);
@@ -17727,10 +17991,11 @@ router.get('/reports/monthly-attendance', async (req, res) => {
                 const e = dayjs(l.endDate).format('YYYY-MM-DD');
                 return (dStr >= s && dStr <= e);
               });
+              const todayStr = dayjs().format('YYYY-MM-DD');
               if (isL) cell.value = 'L';
               else if (isH) cell.value = 'H';
               else if (checkIsWeeklyOff(staff.id, dStr)) cell.value = 'WO';
-              else cell.value = '-';
+              else cell.value = (dStr <= todayStr ? 'A' : '-');
             }
           } else if (h === 'InTime') {
             cell.value = att?.punchedInAt ? dayjs(att.punchedInAt).format('HH:mm') : '';
@@ -17832,45 +18097,155 @@ router.get('/reports/org-punch-matrix', async (req, res) => {
 
 
 
+    // Helper to format date as YYYY-MM-DD in local time
+    const formatLocalISO = (date) => {
+      const y = date.getFullYear();
+      const m = String(date.getMonth() + 1).padStart(2, '0');
+      const d = String(date.getDate()).padStart(2, '0');
+      return `${y}-${m}-${d}`;
+    };
+
     const attendanceData = await Attendance.findAll({
-
       where: {
-
         userId: staffList.map(s => s.id),
-
         date: {
-
-          [Op.gte]: startDate.toISOString().split('T')[0],
-
-          [Op.lte]: endDate.toISOString().split('T')[0]
-
+          [Op.gte]: formatLocalISO(startDate),
+          [Op.lte]: formatLocalISO(endDate)
         }
-
       }
+    });
+    const { StaffWeeklyOffAssignment, WeeklyOffTemplate, StaffHolidayAssignment, HolidayTemplate, HolidayDate } = require('../models');
 
+    // Fetch Weekly Off Assignments
+    const woAssignments = await StaffWeeklyOffAssignment.findAll({
+      where: {
+        userId: staffList.map(s => s.id),
+        [Op.or]: [
+          { effectiveTo: null },
+          { effectiveTo: { [Op.gte]: formatLocalISO(startDate) } }
+        ],
+        effectiveFrom: { [Op.lte]: formatLocalISO(endDate) }
+      },
+      include: [{ model: WeeklyOffTemplate, as: 'template' }]
     });
 
-
+    // Fetch Holiday Assignments
+    const holidayAssignments = await StaffHolidayAssignment.findAll({
+      where: {
+        userId: staffList.map(s => s.id),
+        [Op.or]: [
+          { effectiveTo: null },
+          { effectiveTo: { [Op.gte]: formatLocalISO(startDate) } }
+        ],
+        effectiveFrom: { [Op.lte]: formatLocalISO(endDate) }
+      },
+      include: [{
+        model: HolidayTemplate,
+        as: 'template',
+        include: [{
+          model: HolidayDate,
+          as: 'holidays',
+          where: {
+            date: {
+              [Op.gte]: formatLocalISO(startDate),
+              [Op.lte]: formatLocalISO(endDate)
+            }
+          }
+        }]
+      }]
+    });
 
     // Map attendance to matrix: { userId: { date: [in,out pairs] } }
 
     const matrix = {};
 
     attendanceData.forEach(att => {
-
       if (!matrix[att.userId]) matrix[att.userId] = {};
 
-      if (!matrix[att.userId][att.date]) matrix[att.userId][att.date] = [];
+      // Normalize date to YYYY-MM-DD string
+      let dateStr = att.date;
+      if (att.date instanceof Date) {
+        dateStr = att.date.toISOString().split('T')[0];
+      } else if (typeof att.date === 'string' && att.date.includes('T')) {
+        dateStr = att.date.split('T')[0];
+      }
+
+      if (!matrix[att.userId][dateStr]) matrix[att.userId][dateStr] = [];
 
       const formatTime = (value) => new Date(value).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false });
       const inTime = att.punchedInAt ? formatTime(att.punchedInAt) : '';
       const outTime = att.punchedOutAt ? formatTime(att.punchedOutAt) : '';
 
       const pair = inTime && outTime ? `${inTime}, ${outTime}` : (inTime || outTime || '');
-      if (pair) {
-        matrix[att.userId][att.date].push(pair);
+      if (pair && !matrix[att.userId][dateStr].includes(pair)) {
+        matrix[att.userId][dateStr].push(pair);
       }
+    });
 
+    // Process matrix to fill WO, H, and A
+    const todayStr = formatLocalISO(new Date());
+    staffList.forEach(staff => {
+      if (!matrix[staff.id]) matrix[staff.id] = {};
+      const userWoAsg = woAssignments.filter(a => a.userId === staff.id);
+      const userHolAsg = holidayAssignments.filter(a => a.userId === staff.id);
+
+      for (let i = 1; i <= daysInMonth; i++) {
+        const d = new Date(startDate.getFullYear(), startDate.getMonth(), i);
+        const dateKey = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+
+        if (!matrix[staff.id][dateKey] || matrix[staff.id][dateKey].length === 0) {
+          // Check Holidays
+          let isHoliday = false;
+          for (const asg of userHolAsg) {
+            if (dateKey >= asg.effectiveFrom && (!asg.effectiveTo || dateKey <= asg.effectiveTo)) {
+              if (asg.template?.holidays?.some(hd => hd.date === dateKey)) {
+                isHoliday = true;
+                break;
+              }
+            }
+          }
+          if (isHoliday) {
+            matrix[staff.id][dateKey] = ['H'];
+            continue;
+          }
+
+          // Check Weekly Off
+          let isWO = false;
+          for (const asg of userWoAsg) {
+            if (dateKey >= asg.effectiveFrom && (!asg.effectiveTo || dateKey <= asg.effectiveTo)) {
+              let config = asg.template?.config || [];
+              if (typeof config === 'string') {
+                try { config = JSON.parse(config); } catch (_) {
+                  try { config = JSON.parse(JSON.parse(config)); } catch (__) { config = []; }
+                }
+              }
+              const configArr = Array.isArray(config) ? config : [];
+              const dayOfWeek = d.getDay();
+              const weekOfMonth = Math.ceil(d.getDate() / 7);
+
+              const match = configArr.find(c =>
+                c && Number(c.day) === dayOfWeek &&
+                (c.weeks === 'all' || (Array.isArray(c.weeks) && c.weeks.map(Number).includes(weekOfMonth)))
+              );
+              if (match) {
+                isWO = true;
+                break;
+              }
+            }
+          }
+          if (isWO) {
+            matrix[staff.id][dateKey] = ['WO'];
+            continue;
+          }
+
+          // Check Absent (Only if date is today or in the past)
+          if (dateKey <= todayStr) {
+            matrix[staff.id][dateKey] = ['A'];
+          } else {
+            matrix[staff.id][dateKey] = ['-'];
+          }
+        }
+      }
     });
 
 
@@ -17883,29 +18258,40 @@ router.get('/reports/org-punch-matrix', async (req, res) => {
 
 
 
-      // Prepare headers
-
-      const columns = [
-
-        { header: 'S.N.', key: 'sn', width: 5 },
-
-        { header: 'Staff Name', key: 'staffName', width: 25 }
-
-      ];
-
-
-
-      for (let i = 1; i <= daysInMonth; i++) {
-
-        const dayStr = i.toString().padStart(2, '0');
-
-        const dateStr = `${dayStr}-${(startDate.getMonth() + 1).toString().padStart(2, '0')}-${startDate.getFullYear()}`;
-
-        columns.push({ header: dateStr, key: `day_${i}`, width: 12 });
-
-      }
-
+      const columns = [{ header: 'S.N.', key: 'sn', width: 5 }, { header: 'Name', key: 'staffName', width: 20 }];
+      for (let i = 1; i <= daysInMonth; i++) columns.push({ header: `${i}`, key: `day_${i}`, width: 10 });
       worksheet.columns = columns;
+
+      // Header Section
+      const org = await OrgAccount.findByPk(orgId);
+      const companyRow = worksheet.getRow(1);
+      worksheet.mergeCells(1, 1, 1, columns.length);
+      companyRow.getCell(1).value = (org?.name || 'Organization').toUpperCase();
+      companyRow.getCell(1).font = { size: 18, bold: true };
+      companyRow.getCell(1).alignment = { horizontal: 'center' };
+
+      const titleRow = worksheet.getRow(3);
+      worksheet.mergeCells(3, 1, 3, columns.length);
+      titleRow.getCell(1).value = 'PUNCH MATRIX REPORT';
+      titleRow.getCell(1).font = { size: 14, bold: true };
+      titleRow.getCell(1).alignment = { horizontal: 'center' };
+
+      const infoRow = worksheet.getRow(4);
+      worksheet.mergeCells(4, 1, 4, columns.length);
+      infoRow.getCell(1).value = `Month: ${month}-${year} | Printed On: ${new Date().toLocaleString()}`;
+      infoRow.getCell(1).alignment = { horizontal: 'center' };
+      infoRow.getCell(1).font = { bold: true };
+
+      const headerRow = worksheet.getRow(6);
+      columns.forEach((col, i) => {
+        const cell = headerRow.getCell(i + 1);
+        cell.value = col.header;
+        cell.width = col.width;
+        cell.font = { bold: true };
+        cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE0E0E0' } };
+        cell.alignment = { horizontal: 'center' };
+        cell.border = { top: { style: 'thin' }, left: { style: 'thin' }, bottom: { style: 'thin' }, right: { style: 'thin' } };
+      });
 
 
 
@@ -17935,16 +18321,6 @@ router.get('/reports/org-punch-matrix', async (req, res) => {
         worksheet.addRow(rowData);
 
       });
-
-
-
-      // Style header
-
-      worksheet.getRow(1).font = { bold: true };
-
-      worksheet.getRow(1).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE0E0E0' } };
-
-      worksheet.getRow(1).alignment = { horizontal: 'center' };
 
 
 
@@ -18012,6 +18388,14 @@ router.get('/reports/org-attendance-matrix', async (req, res) => {
     const endDate = new Date(startDate.getFullYear(), startDate.getMonth() + 1, 0);
     const daysInMonth = endDate.getDate();
 
+    // Helper to format date as YYYY-MM-DD in local time
+    const formatLocalISO = (date) => {
+      const y = date.getFullYear();
+      const m = String(date.getMonth() + 1).padStart(2, '0');
+      const d = String(date.getDate()).padStart(2, '0');
+      return `${y}-${m}-${d}`;
+    };
+
     let staffWhereClause = { orgAccountId: orgId, role: 'staff' };
     if (employeeIds) {
       const empIds = employeeIds.split(',').map(id => parseInt(id.trim())).filter(id => !isNaN(id));
@@ -18033,8 +18417,8 @@ router.get('/reports/org-attendance-matrix', async (req, res) => {
       where: {
         userId: staffList.map(s => s.id),
         date: {
-          [Op.gte]: startDate.toISOString().split('T')[0],
-          [Op.lte]: endDate.toISOString().split('T')[0]
+          [Op.gte]: formatLocalISO(startDate),
+          [Op.lte]: formatLocalISO(endDate)
         }
       },
       order: [['date', 'ASC']]
@@ -18046,9 +18430,9 @@ router.get('/reports/org-attendance-matrix', async (req, res) => {
         userId: staffList.map(s => s.id),
         [Op.or]: [
           { effectiveTo: null },
-          { effectiveTo: { [Op.gte]: startDate.toISOString().split('T')[0] } }
+          { effectiveTo: { [Op.gte]: formatLocalISO(startDate) } }
         ],
-        effectiveFrom: { [Op.lte]: endDate.toISOString().split('T')[0] }
+        effectiveFrom: { [Op.lte]: formatLocalISO(endDate) }
       },
       include: [{ model: WeeklyOffTemplate, as: 'template' }]
     });
@@ -18059,9 +18443,9 @@ router.get('/reports/org-attendance-matrix', async (req, res) => {
         userId: staffList.map(s => s.id),
         [Op.or]: [
           { effectiveTo: null },
-          { effectiveTo: { [Op.gte]: startDate.toISOString().split('T')[0] } }
+          { effectiveTo: { [Op.gte]: formatLocalISO(startDate) } }
         ],
-        effectiveFrom: { [Op.lte]: endDate.toISOString().split('T')[0] }
+        effectiveFrom: { [Op.lte]: formatLocalISO(endDate) }
       },
       include: [{
         model: HolidayTemplate,
@@ -18071,8 +18455,8 @@ router.get('/reports/org-attendance-matrix', async (req, res) => {
           as: 'holidays',
           where: {
             date: {
-              [Op.gte]: startDate.toISOString().split('T')[0],
-              [Op.lte]: endDate.toISOString().split('T')[0]
+              [Op.gte]: formatLocalISO(startDate),
+              [Op.lte]: formatLocalISO(endDate)
             }
           }
         }]
@@ -18108,9 +18492,9 @@ router.get('/reports/org-attendance-matrix', async (req, res) => {
         userId: staffList.map(s => s.id),
         [Op.or]: [
           { effectiveTo: null },
-          { effectiveTo: { [Op.gte]: startDate.toISOString().split('T')[0] } }
+          { effectiveTo: { [Op.gte]: formatLocalISO(startDate) } }
         ],
-        effectiveFrom: { [Op.lte]: endDate.toISOString().split('T')[0] }
+        effectiveFrom: { [Op.lte]: formatLocalISO(endDate) }
       },
       include: [{ model: ShiftTemplate, as: 'template' }],
       order: [['effectiveFrom', 'ASC']]
@@ -18142,13 +18526,7 @@ router.get('/reports/org-attendance-matrix', async (req, res) => {
       details[s.id] = {};
     });
 
-    // Helper to format date as YYYY-MM-DD in local time
-    const formatLocalISO = (date) => {
-      const y = date.getFullYear();
-      const m = String(date.getMonth() + 1).padStart(2, '0');
-      const d = String(date.getDate()).padStart(2, '0');
-      return `${y}-${m}-${d}`;
-    };
+
 
     // Map all days (explicit records, late status, WO, and Holidays) in one pass per staff
     staffList.forEach(staff => {
@@ -18266,14 +18644,16 @@ router.get('/reports/org-attendance-matrix', async (req, res) => {
             }
           }
 
-          matrix[staff.id][dateKey] = isWO ? 'WO' : '-';
-          details[staff.id][dateKey].status = isWO ? 'WO' : '-';
+          const todayStr = formatLocalISO(new Date());
+          const displayStatus = isWO ? 'WO' : (dateKey <= todayStr ? 'A' : '-');
+          matrix[staff.id][dateKey] = displayStatus;
+          details[staff.id][dateKey].status = displayStatus;
         }
       }
     });
 
     if (format === 'excel') {
-
+      const org = await OrgAccount.findByPk(orgId);
       const workbook = new exceljs.Workbook();
       const worksheet = workbook.addWorksheet('Attendance Report');
 
@@ -18290,7 +18670,38 @@ router.get('/reports/org-attendance-matrix', async (req, res) => {
       columns.push({ header: 'Late By (Min)', key: 'lateMinutes', width: 15 });
       columns.push({ header: 'Late Days', key: 'lateDays', width: 12 });
       columns.push({ header: 'Penalty Days', key: 'penaltyDays', width: 12 });
+
       worksheet.columns = columns;
+
+      // Header Section
+      const companyRow = worksheet.getRow(1);
+      worksheet.mergeCells(1, 1, 1, columns.length);
+      companyRow.getCell(1).value = (org?.name || 'Organization').toUpperCase();
+      companyRow.getCell(1).font = { size: 18, bold: true };
+      companyRow.getCell(1).alignment = { horizontal: 'center' };
+
+      const titleRow = worksheet.getRow(3);
+      worksheet.mergeCells(3, 1, 3, columns.length);
+      titleRow.getCell(1).value = 'ATTENDANCE MATRIX REPORT';
+      titleRow.getCell(1).font = { size: 14, bold: true };
+      titleRow.getCell(1).alignment = { horizontal: 'center' };
+
+      const infoRow = worksheet.getRow(4);
+      worksheet.mergeCells(4, 1, 4, columns.length);
+      infoRow.getCell(1).value = `Month: ${month}-${year} | Printed On: ${new Date().toLocaleString()}`;
+      infoRow.getCell(1).alignment = { horizontal: 'center' };
+      infoRow.getCell(1).font = { bold: true };
+
+      const headerRow = worksheet.getRow(6);
+      columns.forEach((col, i) => {
+        const cell = headerRow.getCell(i + 1);
+        cell.value = col.header;
+        cell.width = col.width;
+        cell.font = { bold: true };
+        cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE0E0E0' } };
+        cell.alignment = { horizontal: 'center' };
+        cell.border = { top: { style: 'thin' }, left: { style: 'thin' }, bottom: { style: 'thin' }, right: { style: 'thin' } };
+      });
 
       staffList.forEach((staff, index) => {
         const rowData = {
@@ -18309,10 +18720,8 @@ router.get('/reports/org-attendance-matrix', async (req, res) => {
         worksheet.addRow(rowData);
       });
 
-      worksheet.getRow(1).font = { bold: true };
-      worksheet.getRow(1).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE0E0E0' } };
-      worksheet.getRow(1).alignment = { horizontal: 'center' };
-      worksheet.eachRow({ includeEmpty: true }, (row) => {
+      worksheet.eachRow({ includeEmpty: true }, (row, rowNumber) => {
+        if (rowNumber < 6) return; // Skip headers
         row.eachCell({ includeEmpty: true }, (cell) => {
           cell.border = {
             top: { style: 'thin' },
@@ -18410,20 +18819,53 @@ router.get('/reports/per-day-salary-average', async (req, res) => {
     if (format === 'excel') {
       const workbook = new exceljs.Workbook();
       const sheet = workbook.addWorksheet('Per Day Salary Average');
+      const org = await OrgAccount.findByPk(orgId);
 
-      sheet.columns = [
+      const columns = [
         { header: 'S.N.', key: 'sn', width: 5 },
         { header: 'Staff Name', key: 'staffName', width: 25 },
-        { header: 'Staff ID', key: 'staffId', width: 15 },
+        { header: 'Staff ID', key: 'staffId', width: 12 },
         { header: 'Department', key: 'department', width: 20 },
         { header: 'Designation', key: 'designation', width: 20 },
-        { header: 'Monthly Base Gross', key: 'monthlyGross', width: 15 },
-        { header: 'Actual Monthly Earnings', key: 'actualEarnings', width: 20 },
-        { header: 'OT Pay', key: 'overtimePay', width: 15 },
-        { header: 'Incentives', key: 'incentives', width: 15 },
-        { header: 'Payable Days', key: 'payableDays', width: 15 },
+        { header: 'Monthly Gross', key: 'monthlyGross', width: 15 },
+        { header: 'Actual Earned', key: 'actualEarnings', width: 15 },
+        { header: 'OT Pay', key: 'overtimePay', width: 12 },
+        { header: 'Incentives', key: 'incentives', width: 12 },
+        { header: 'Payable Days', key: 'payableDays', width: 12 },
         { header: 'Per Day Avg Cost', key: 'perDayAverage', width: 18 },
       ];
+
+      // Set columns with headers disabled to prevent Row 1 overwrite
+      sheet.columns = columns.map(col => ({ ...col, header: undefined }));
+
+      const companyRow = sheet.getRow(1);
+      sheet.mergeCells(1, 1, 1, 11);
+      companyRow.getCell(1).value = (org?.name || 'Organization').toUpperCase();
+      companyRow.getCell(1).font = { size: 18, bold: true };
+      companyRow.getCell(1).alignment = { horizontal: 'center' };
+
+      const titleRow = sheet.getRow(3);
+      sheet.mergeCells(3, 1, 3, 11);
+      titleRow.getCell(1).value = 'PER DAY SALARY AVERAGE REPORT';
+      titleRow.getCell(1).font = { size: 14, bold: true };
+      titleRow.getCell(1).alignment = { horizontal: 'center' };
+
+      const infoRow = sheet.getRow(4);
+      sheet.mergeCells(4, 1, 4, 11);
+      infoRow.getCell(1).value = `Month: ${monthKey} | Printed On: ${new Date().toLocaleString()}`;
+      infoRow.getCell(1).alignment = { horizontal: 'center' };
+      infoRow.getCell(1).font = { bold: true };
+
+      const headerRow = sheet.getRow(6);
+      columns.forEach((col, i) => {
+        const cell = headerRow.getCell(i + 1);
+        cell.value = col.header;
+        cell.width = col.width;
+        cell.font = { bold: true };
+        cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE0E0E0' } };
+        cell.alignment = { horizontal: 'center' };
+        cell.border = { top: { style: 'thin' }, left: { style: 'thin' }, bottom: { style: 'thin' }, right: { style: 'thin' } };
+      });
 
       report.forEach((r, idx) => {
         sheet.addRow({ sn: idx + 1, ...r });
@@ -18511,8 +18953,9 @@ router.get('/reports/comparison', async (req, res) => {
     if (format === 'excel') {
       const workbook = new exceljs.Workbook();
       const sheet = workbook.addWorksheet('Comparison Report');
+      const org = await OrgAccount.findByPk(orgId);
 
-      sheet.columns = [
+      const columns = [
         { header: 'S.N.', key: 'sn', width: 5 },
         { header: 'Staff Name', key: 'staffName', width: 25 },
         { header: 'Department', key: 'department', width: 20 },
@@ -18526,6 +18969,38 @@ router.get('/reports/comparison', async (req, res) => {
         { header: `OT Pay ${currentKey}`, key: 'otCurr', width: 15 },
         { header: 'OT Pay Diff', key: 'otDiff', width: 12 },
       ];
+
+      // Set columns with headers disabled to prevent Row 1 overwrite
+      sheet.columns = columns.map(col => ({ ...col, header: undefined }));
+
+      const companyRow = sheet.getRow(1);
+      sheet.mergeCells(1, 1, 1, 12);
+      companyRow.getCell(1).value = (org?.name || 'Organization').toUpperCase();
+      companyRow.getCell(1).font = { size: 18, bold: true };
+      companyRow.getCell(1).alignment = { horizontal: 'center' };
+
+      const titleRow = sheet.getRow(3);
+      sheet.mergeCells(3, 1, 3, 12);
+      titleRow.getCell(1).value = 'MONTHLY COMPARISON REPORT';
+      titleRow.getCell(1).font = { size: 14, bold: true };
+      titleRow.getCell(1).alignment = { horizontal: 'center' };
+
+      const infoRow = sheet.getRow(4);
+      sheet.mergeCells(4, 1, 4, 12);
+      infoRow.getCell(1).value = `Period: ${lastKey} vs ${currentKey} | Printed On: ${new Date().toLocaleString()}`;
+      infoRow.getCell(1).alignment = { horizontal: 'center' };
+      infoRow.getCell(1).font = { bold: true };
+
+      const headerRow = sheet.getRow(6);
+      columns.forEach((col, i) => {
+        const cell = headerRow.getCell(i + 1);
+        cell.value = col.header;
+        cell.width = col.width;
+        cell.font = { bold: true };
+        cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE0E0E0' } };
+        cell.alignment = { horizontal: 'center' };
+        cell.border = { top: { style: 'thin' }, left: { style: 'thin' }, bottom: { style: 'thin' }, right: { style: 'thin' } };
+      });
 
       report.forEach((r, idx) => {
         sheet.addRow({
@@ -18609,8 +19084,9 @@ router.get('/reports/ot-impact', async (req, res) => {
     if (format === 'excel') {
       const workbook = new exceljs.Workbook();
       const sheet = workbook.addWorksheet('OT Impact Report');
+      const org = await OrgAccount.findByPk(orgId);
 
-      sheet.columns = [
+      const columns = [
         { header: 'S.N.', key: 'sn', width: 5 },
         { header: 'Staff Name', key: 'staffName', width: 25 },
         { header: 'Staff ID', key: 'staffId', width: 12 },
@@ -18620,6 +19096,38 @@ router.get('/reports/ot-impact', async (req, res) => {
         { header: 'Total Net (With OT)', key: 'totalNet', width: 18 },
         { header: 'OT % of Base', key: 'otPercentage', width: 15 },
       ];
+
+      // Set columns with headers disabled to prevent Row 1 overwrite
+      sheet.columns = columns.map(col => ({ ...col, header: undefined }));
+
+      const companyRow = sheet.getRow(1);
+      sheet.mergeCells(1, 1, 1, 8); // SN + columns
+      companyRow.getCell(1).value = (org?.name || 'Organization').toUpperCase();
+      companyRow.getCell(1).font = { size: 18, bold: true };
+      companyRow.getCell(1).alignment = { horizontal: 'center' };
+
+      const titleRow = sheet.getRow(3);
+      sheet.mergeCells(3, 1, 3, 8);
+      titleRow.getCell(1).value = 'OVERTIME IMPACT REPORT';
+      titleRow.getCell(1).font = { size: 14, bold: true };
+      titleRow.getCell(1).alignment = { horizontal: 'center' };
+
+      const infoRow = sheet.getRow(4);
+      sheet.mergeCells(4, 1, 4, 8);
+      infoRow.getCell(1).value = `Month: ${dateKey} | Printed On: ${new Date().toLocaleString()}`;
+      infoRow.getCell(1).alignment = { horizontal: 'center' };
+      infoRow.getCell(1).font = { bold: true };
+
+      const headerRow = sheet.getRow(6);
+      columns.forEach((col, i) => {
+        const cell = headerRow.getCell(i + 1);
+        cell.value = col.header;
+        cell.width = col.width;
+        cell.font = { bold: true };
+        cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE0E0E0' } };
+        cell.alignment = { horizontal: 'center' };
+        cell.border = { top: { style: 'thin' }, left: { style: 'thin' }, bottom: { style: 'thin' }, right: { style: 'thin' } };
+      });
 
       report.forEach((r, idx) => {
         sheet.addRow({ sn: idx + 1, ...r });
@@ -18714,19 +19222,52 @@ router.get('/reports/late-penalty-analysis', async (req, res) => {
     }
 
     if (format === 'excel') {
+      const org = await OrgAccount.findByPk(orgId);
       const workbook = new exceljs.Workbook();
       const sheet = workbook.addWorksheet('Late Penalty Report');
 
-      sheet.columns = [
+      const columns = [
         { header: 'S.N.', key: 'sn', width: 5 },
         { header: 'Staff Name', key: 'staffName', width: 25 },
         { header: 'Department', key: 'department', width: 20 },
         { header: 'Applied Rule', key: 'ruleName', width: 25 },
-        { header: 'Penalty Type', key: 'penaltyType', width: 20 },
-        { header: 'Late Instances', key: 'lateInstances', width: 15 },
-        { header: 'Total Late Min', key: 'totalLateMinutes', width: 15 },
-        { header: 'Total Penalty', key: 'totalPenaltyAmount', width: 15 },
+        { header: 'Penalty Type', key: 'type', width: 15 },
+        { header: 'Late Instances', key: 'instances', width: 15 },
+        { header: 'Total Late Min', key: 'totalMins', width: 15 },
+        { header: 'Total Penalty', key: 'penalty', width: 15 },
       ];
+
+      // Set columns with headers disabled to prevent Row 1 overwrite
+      sheet.columns = columns.map(col => ({ ...col, header: undefined }));
+
+      const companyRow = sheet.getRow(1);
+      sheet.mergeCells(1, 1, 1, columns.length);
+      companyRow.getCell(1).value = (org?.name || 'Organization').toUpperCase();
+      companyRow.getCell(1).font = { size: 18, bold: true };
+      companyRow.getCell(1).alignment = { horizontal: 'center' };
+
+      const titleRow = sheet.getRow(3);
+      sheet.mergeCells(3, 1, 3, columns.length);
+      titleRow.getCell(1).value = 'LATE PENALTY ANALYSIS REPORT';
+      titleRow.getCell(1).font = { size: 14, bold: true };
+      titleRow.getCell(1).alignment = { horizontal: 'center' };
+
+      const infoRow = sheet.getRow(4);
+      sheet.mergeCells(4, 1, 4, columns.length);
+      infoRow.getCell(1).value = `Printed On: ${new Date().toLocaleString()}`;
+      infoRow.getCell(1).alignment = { horizontal: 'center' };
+      infoRow.getCell(1).font = { bold: true };
+
+      const headerRow = sheet.getRow(6);
+      columns.forEach((col, i) => {
+        const cell = headerRow.getCell(i + 1);
+        cell.value = col.header;
+        cell.width = col.width;
+        cell.font = { bold: true };
+        cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE0E0E0' } };
+        cell.alignment = { horizontal: 'center' };
+        cell.border = { top: { style: 'thin' }, left: { style: 'thin' }, bottom: { style: 'thin' }, right: { style: 'thin' } };
+      });
 
       report.forEach((r, idx) => {
         sheet.addRow({ sn: idx + 1, ...r });
@@ -18812,7 +19353,7 @@ router.get('/reports/org-tickets', async (req, res) => {
       const workbook = new exceljs.Workbook();
       const worksheet = workbook.addWorksheet('Tickets Report');
 
-      worksheet.columns = [
+      const columns = [
         { header: 'Created At', key: 'createdAt', width: 20 },
         { header: 'Allocated To', key: 'allocatedTo', width: 25 },
         { header: 'Department', key: 'department', width: 20 },
@@ -18823,6 +19364,39 @@ router.get('/reports/org-tickets', async (req, res) => {
         { header: 'Closed By', key: 'closedBy', width: 25 },
         { header: 'Ticket History', key: 'history', width: 60 }
       ];
+
+      // Set columns with headers disabled to prevent Row 1 overwrite
+      worksheet.columns = columns.map(col => ({ ...col, header: undefined }));
+
+      const org = await OrgAccount.findByPk(orgId);
+      const companyRow = worksheet.getRow(1);
+      worksheet.mergeCells(1, 1, 1, columns.length);
+      companyRow.getCell(1).value = (org?.name || 'Organization').toUpperCase();
+      companyRow.getCell(1).font = { size: 18, bold: true };
+      companyRow.getCell(1).alignment = { horizontal: 'center' };
+
+      const titleRow = worksheet.getRow(3);
+      worksheet.mergeCells(3, 1, 3, columns.length);
+      titleRow.getCell(1).value = 'TICKETS REPORT';
+      titleRow.getCell(1).font = { size: 14, bold: true };
+      titleRow.getCell(1).alignment = { horizontal: 'center' };
+
+      const infoRow = worksheet.getRow(4);
+      worksheet.mergeCells(4, 1, 4, columns.length);
+      infoRow.getCell(1).value = `Printed On: ${new Date().toLocaleString()}`;
+      infoRow.getCell(1).alignment = { horizontal: 'center' };
+      infoRow.getCell(1).font = { bold: true };
+
+      const headerRow = worksheet.getRow(6);
+      columns.forEach((col, i) => {
+        const cell = headerRow.getCell(i + 1);
+        cell.value = col.header;
+        cell.width = col.width;
+        cell.font = { bold: true };
+        cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE0E0E0' } };
+        cell.alignment = { horizontal: 'center' };
+        cell.border = { top: { style: 'thin' }, left: { style: 'thin' }, bottom: { style: 'thin' }, right: { style: 'thin' } };
+      });
 
       tickets.forEach(t => {
         const historyText = t.history?.map(h =>
@@ -18902,7 +19476,7 @@ router.get('/reports/org-activities', async (req, res) => {
       const workbook = new exceljs.Workbook();
       const worksheet = workbook.addWorksheet('Activities Report');
 
-      worksheet.columns = [
+      const columns = [
         { header: 'Date', key: 'date', width: 15 },
         { header: 'Staff Name', key: 'staffName', width: 25 },
         { header: 'Department', key: 'department', width: 20 },
@@ -18910,6 +19484,39 @@ router.get('/reports/org-activities', async (req, res) => {
         { header: 'Status', key: 'status', width: 15 },
         { header: 'Remarks', key: 'remarks', width: 40 }
       ];
+
+      // Set columns with headers disabled to prevent Row 1 overwrite
+      worksheet.columns = columns.map(col => ({ ...col, header: undefined }));
+
+      const org = await OrgAccount.findByPk(orgId);
+      const companyRow = worksheet.getRow(1);
+      worksheet.mergeCells(1, 1, 1, columns.length);
+      companyRow.getCell(1).value = (org?.name || 'Organization').toUpperCase();
+      companyRow.getCell(1).font = { size: 18, bold: true };
+      companyRow.getCell(1).alignment = { horizontal: 'center' };
+
+      const titleRow = worksheet.getRow(3);
+      worksheet.mergeCells(3, 1, 3, columns.length);
+      titleRow.getCell(1).value = 'ACTIVITIES REPORT';
+      titleRow.getCell(1).font = { size: 14, bold: true };
+      titleRow.getCell(1).alignment = { horizontal: 'center' };
+
+      const infoRow = worksheet.getRow(4);
+      worksheet.mergeCells(4, 1, 4, columns.length);
+      infoRow.getCell(1).value = `Month: ${month} | Year: ${year} | Printed On: ${new Date().toLocaleString()}`;
+      infoRow.getCell(1).alignment = { horizontal: 'center' };
+      infoRow.getCell(1).font = { bold: true };
+
+      const headerRow = worksheet.getRow(6);
+      columns.forEach((col, i) => {
+        const cell = headerRow.getCell(i + 1);
+        cell.value = col.header;
+        cell.width = col.width;
+        cell.font = { bold: true };
+        cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE0E0E0' } };
+        cell.alignment = { horizontal: 'center' };
+        cell.border = { top: { style: 'thin' }, left: { style: 'thin' }, bottom: { style: 'thin' }, right: { style: 'thin' } };
+      });
 
       activities.forEach(a => {
         worksheet.addRow({
@@ -18922,8 +19529,6 @@ router.get('/reports/org-activities', async (req, res) => {
         });
       });
 
-      worksheet.getRow(1).font = { bold: true };
-      worksheet.getRow(1).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE6F7FF' } };
 
       res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
       res.setHeader('Content-Disposition', `attachment; filename=org-activities-report-${month}-${year}.xlsx`);
@@ -19039,10 +19644,11 @@ router.get('/reports/org-meetings', async (req, res) => {
     const preparedMeetings = meetings.map(decorateMeeting);
 
     if (format === 'excel') {
+      const org = await OrgAccount.findByPk(orgId);
       const workbook = new exceljs.Workbook();
       const worksheet = workbook.addWorksheet('Meetings Report');
 
-      worksheet.columns = [
+      const columns = [
         { header: 'Scheduled At', key: 'scheduledAt', width: 25 },
         { header: 'Meeting Title', key: 'title', width: 30 },
         { header: 'Status', key: 'status', width: 15 },
@@ -19053,6 +19659,39 @@ router.get('/reports/org-meetings', async (req, res) => {
         { header: 'Department', key: 'department', width: 20 },
         { header: 'Description', key: 'description', width: 40 }
       ];
+
+      // Set columns with headers disabled to prevent Row 1 overwrite
+      worksheet.columns = columns.map(col => ({ ...col, header: undefined }));
+
+      const companyRow = worksheet.getRow(1);
+      worksheet.mergeCells(1, 1, 1, columns.length);
+      companyRow.getCell(1).value = (org?.name || 'Organization').toUpperCase();
+      companyRow.getCell(1).font = { size: 18, bold: true };
+      companyRow.getCell(1).alignment = { horizontal: 'center' };
+
+      const titleRow = worksheet.getRow(3);
+      worksheet.mergeCells(3, 1, 3, columns.length);
+      titleRow.getCell(1).value = 'MEETINGS REPORT';
+      titleRow.getCell(1).font = { size: 14, bold: true };
+      titleRow.getCell(1).alignment = { horizontal: 'center' };
+
+      const infoRow = worksheet.getRow(4);
+      worksheet.mergeCells(4, 1, 4, columns.length);
+      infoRow.getCell(1).value = `Period: ${month}-${year} | Printed On: ${new Date().toLocaleString()}`;
+      infoRow.getCell(1).alignment = { horizontal: 'center' };
+      infoRow.getCell(1).font = { bold: true };
+
+      const headerRow = worksheet.getRow(6);
+      columns.forEach((col, i) => {
+        const cell = headerRow.getCell(i + 1);
+        cell.value = col.header;
+        cell.width = col.width;
+        cell.font = { bold: true };
+        cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE0E0E0' } };
+        cell.alignment = { horizontal: 'center' };
+        cell.border = { top: { style: 'thin' }, left: { style: 'thin' }, bottom: { style: 'thin' }, right: { style: 'thin' } };
+      });
+
 
       preparedMeetings.forEach(m => {
         worksheet.addRow({
@@ -19084,216 +19723,136 @@ router.get('/reports/org-meetings', async (req, res) => {
   }
 });
 
+// Organization-based Visit Reports
 router.get('/reports/org-sales', async (req, res) => {
-
   try {
-
     const orgId = requireOrg(req, res); if (!orgId) return;
 
-
-
     const { month, year, format, employeeIds } = req.query;
-
     const startDate = month && year ? new Date(year, month - 1, 1) : new Date(new Date().getFullYear(), new Date().getMonth(), 1);
-
     const endDate = new Date(startDate.getFullYear(), startDate.getMonth() + 1, 0);
 
-
-
     // Get staff based on selection
-
     let staffWhereClause = {
-
       orgAccountId: orgId,
-
       role: 'staff'
-
     };
 
-
-
     // If specific employees are selected, filter by their IDs
-
     if (employeeIds) {
-
       const empIds = employeeIds.split(',').map(id => parseInt(id.trim())).filter(id => !isNaN(id));
-
       if (empIds.length > 0) {
-
         staffWhereClause.id = { [Op.in]: empIds };
-
       }
-
     }
-
-
 
     // Get all staff in the organization (or selected staff)
-
     const staff = await User.findAll({
-
       where: staffWhereClause,
-
       include: [{
-
         model: StaffProfile,
-
         as: 'profile'
-
       }]
-
     });
 
-
-
-    // Get sales visit data for all staff
-
+    // Get visit data for all staff
     const salesData = await SalesVisit.findAll({
-
       where: {
-
         userId: staff.map(s => s.id),
-
         visitDate: {
-
           [Op.gte]: startDate,
-
           [Op.lte]: endDate
-
         }
-
       },
-
       include: [{
-
         model: User,
-
         as: 'user',
-
         include: [{
-
           model: StaffProfile,
-
           as: 'profile'
-
         }]
-
       }]
-
     });
-
-
 
     if (format === 'excel') {
-
+      const org = await OrgAccount.findByPk(orgId);
       const workbook = new exceljs.Workbook();
+      const worksheet = workbook.addWorksheet('Visit Report');
 
-      const worksheet = workbook.addWorksheet('Sales Report');
-
-
-
-      // Headers
-
-      worksheet.columns = [
-
+      const columns = [
         { header: 'Employee Name', key: 'employeeName', width: 20 },
-
         { header: 'Employee ID', key: 'employeeId', width: 15 },
-
         { header: 'Department', key: 'department', width: 15 },
-
         { header: 'Client Name', key: 'clientName', width: 20 },
-
         { header: 'Visit Date', key: 'visitDate', width: 15 },
-
         { header: 'Visit Type', key: 'visitType', width: 15 },
-
         { header: 'Location', key: 'location', width: 25 },
-
         { header: 'Phone', key: 'phone', width: 15 }
-
       ];
 
+      worksheet.columns = columns;
 
+      const companyRow = worksheet.getRow(1);
+      worksheet.mergeCells(1, 1, 1, columns.length);
+      companyRow.getCell(1).value = (org?.name || 'Organization').toUpperCase();
+      companyRow.getCell(1).font = { size: 18, bold: true };
+      companyRow.getCell(1).alignment = { horizontal: 'center' };
+
+      const titleRow = worksheet.getRow(3);
+      worksheet.mergeCells(3, 1, 3, columns.length);
+      titleRow.getCell(1).value = 'VISIT REPORT';
+      titleRow.getCell(1).font = { size: 14, bold: true };
+      titleRow.getCell(1).alignment = { horizontal: 'center' };
+
+      const infoRow = worksheet.getRow(4);
+      worksheet.mergeCells(4, 1, 4, columns.length);
+      infoRow.getCell(1).value = `Month: ${month}-${year} | Printed On: ${dayjs().format('MMM DD YYYY HH:mm')}`;
+      infoRow.getCell(1).alignment = { horizontal: 'center' };
+      infoRow.getCell(1).font = { bold: true };
+
+      const headerRow = worksheet.getRow(6);
+      columns.forEach((col, i) => {
+        const cell = headerRow.getCell(i + 1);
+        cell.value = col.header;
+        cell.width = col.width;
+        cell.font = { bold: true };
+        cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE6F7FF' } };
+        cell.alignment = { horizontal: 'center' };
+        cell.border = { top: { style: 'thin' }, left: { style: 'thin' }, bottom: { style: 'thin' }, right: { style: 'thin' } };
+      });
 
       // Data rows
-
       salesData.forEach(sale => {
-
         worksheet.addRow({
-
           employeeName: sale.user?.profile?.name || 'N/A',
-
           employeeId: sale.user?.phone || 'N/A',
-
           department: sale.user?.profile?.department || 'N/A',
-
           clientName: sale.clientName || 'N/A',
-
           visitDate: new Date(sale.visitDate).toLocaleDateString(),
-
           visitType: sale.visitType || 'N/A',
-
           location: sale.location || 'N/A',
-
           phone: sale.phone || 'N/A'
-
         });
-
       });
-
-
 
       // Style the header row
-
-      worksheet.getRow(1).eachCell((cell) => {
-
-        cell.font = { bold: true };
-
-        cell.fill = {
-
-          type: 'pattern',
-
-          pattern: 'solid',
-
-          fgColor: { argb: 'FFE6F7FF' }
-
-        };
-
-      });
-
-
+      // Styling handled in headers above
 
       res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
-
-      res.setHeader('Content-Disposition', `attachment; filename=org-sales-report-${month}.xlsx`);
-
-
+      res.setHeader('Content-Disposition', `attachment; filename=org-visit-report-${month}.xlsx`);
 
       await workbook.xlsx.write(res);
-
       res.end();
-
     } else {
-
       res.json({
-
         success: true,
-
         data: salesData
-
       });
-
     }
-
   } catch (error) {
-
-    console.error('Org sales report error:', error);
-
-    res.status(500).json({ success: false, message: 'Failed to generate sales report' });
-
+    console.error('Org visit report error:', error);
+    res.status(500).json({ success: false, message: 'Failed to generate visit report' });
   }
-
 });
 
 
@@ -22529,8 +23088,8 @@ router.post('/payroll/generate-payslip', async (req, res) => {
     }
 
     console.log(`[GENERATE_PAYSLIP] Finding line for userId: ${userId} (type: ${typeof userId}), cycleId: ${cycle.id}`);
-    const line = await PayrollLine.findOne({ 
-      where: { cycleId: cycle.id, userId: Number(userId) } 
+    const line = await PayrollLine.findOne({
+      where: { cycleId: cycle.id, userId: Number(userId) }
     });
 
     if (!line) {
@@ -22543,7 +23102,7 @@ router.post('/payroll/generate-payslip', async (req, res) => {
 
     if (line) {
       await line.update({ payslipPath: relativePath });
-      
+
       // Send SMS to staff
       try {
         const phone = user?.profile?.phone || user?.phone;
@@ -22563,7 +23122,7 @@ router.post('/payroll/generate-payslip', async (req, res) => {
             const d = dayjs(monthKey, 'YYYY-MM');
             const monthName = d.isValid() ? d.format('MMMM') : monthKey;
             const smsText = `Hi ${name}, your payslip for ${monthName} is now available. View it here: https://vetansutra.com ( Powered by Thinktech Software company)`;
-            
+
             const normalized = String(phone || '').replace(/[^\d]/g, '');
             let fullPhone = normalized;
             if (fullPhone.length === 10) fullPhone = '91' + fullPhone;

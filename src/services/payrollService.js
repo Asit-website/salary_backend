@@ -57,33 +57,33 @@ async function computeOvertimeMeta({ userId, monthKey, overtimeBaseSalary, orgAc
   let totalOvertimePay = 0;
 
   for (const row of rows) {
-    // Try both camelCase and snake_case to be extra safe against model mapping issues
-    let otAmount = Number(row.overtimeAmount !== undefined ? row.overtimeAmount : (row.getDataValue ? row.getDataValue('overtime_amount') : (row.overtime_amount || 0)));
-    let otMinutes = Number(row.overtimeMinutes !== undefined ? row.overtimeMinutes : (row.getDataValue ? row.getDataValue('overtime_minutes') : (row.overtime_minutes || 0)));
+    // CRITICAL: Only count if it has an associated Automation Rule
+    if (row.overtimeRuleId || (row.getDataValue && row.getDataValue('overtime_rule_id'))) {
+      let otAmount = Number(row.overtimeAmount !== undefined ? row.overtimeAmount : (row.getDataValue ? row.getDataValue('overtime_amount') : (row.overtime_amount || 0)));
+      let otMinutes = Number(row.overtimeMinutes !== undefined ? row.overtimeMinutes : (row.getDataValue ? row.getDataValue('overtime_minutes') : (row.overtime_minutes || 0)));
 
-    console.log(`[Payroll-OT] Row: ${row.date}, Amt: ${otAmount}, Min: ${otMinutes}`);
+      // If amount is missing but rule exists, calculate it
+      if (orgAccount?.overtimeRuleId && otAmount <= 0 && otMinutes > 0) {
+        const result = await calculateOvertime(row, orgAccount, row.punchedOutAt, daysInMonth);
+        otAmount = result.overtimeAmount;
+        otMinutes = result.overtimeMinutes;
+      }
 
-    // If an Automation Rule is active and amount is missing, calculate it
-    if (orgAccount?.overtimeRuleId && otAmount <= 0 && otMinutes > 0) {
-      const result = await calculateOvertime(row, orgAccount, row.punchedOutAt, daysInMonth);
-      otAmount = result.overtimeAmount;
-      otMinutes = result.overtimeMinutes;
+      totalOvertimeMinutes += otMinutes;
+      totalOvertimePay += otAmount;
     }
+  }
 
-    totalOvertimeMinutes += otMinutes;
-    totalOvertimePay += otAmount;
+  // Final Force-Zero if no minutes were accumulated via rules
+  if (totalOvertimeMinutes <= 0) {
+    totalOvertimeMinutes = 0;
+    totalOvertimePay = 0;
   }
 
   const overtimeHours = totalOvertimeMinutes / 60;
   const hourlyRate = daysInMonth > 0 ? (Number(overtimeBaseSalary || 0) / (daysInMonth * 8)) : 0;
 
-  const hasActiveRule = Number(orgAccount?.overtimeRuleId) > 0;
-  console.log(`[Payroll-OT] Final - User: ${userId}, TotalMin: ${totalOvertimeMinutes}, TotalPay: ${totalOvertimePay}, RuleActive: ${hasActiveRule}`);
-
-  if (!hasActiveRule && totalOvertimePay <= 0 && totalOvertimeMinutes > 0) {
-    totalOvertimePay = Math.round(Math.max(0, overtimeHours) * Math.max(0, hourlyRate));
-    console.log(`[Payroll-OT] Fallback applied: ${totalOvertimePay}`);
-  }
+  console.log(`[Payroll-OT] Final Strict - User: ${userId}, TotalMin: ${totalOvertimeMinutes}, TotalPay: ${totalOvertimePay}`);
 
   return {
     overtimeMinutes: totalOvertimeMinutes,
@@ -845,10 +845,16 @@ async function calculateSalary(userId, monthKey) {
 
   if (overtime.overtimePay > 0) {
     finalEarnings.overtime_pay = overtime.overtimePay;
+  } else {
+    // FORCE DELETE if no rule or zero
+    delete finalEarnings.overtime_pay;
+    delete finalEarnings.OVERTIME_PAY;
   }
 
   if (earlyOvertime.earlyOvertimePay > 0) {
     finalEarnings.early_overtime_pay = (finalEarnings.early_overtime_pay || 0) + earlyOvertime.earlyOvertimePay;
+  } else {
+    delete finalEarnings.early_overtime_pay;
   }
 
   // Early Exit penalties
@@ -906,7 +912,53 @@ async function calculateSalary(userId, monthKey) {
   const _totalDeductions = sumObj(finalDeductions);
 
   const grossSalary = _totalEarnings + _totalIncentives;
-  const netSalary = grossSalary - _totalDeductions;
+
+  // --- Dynamic ESI and PT Logic ---
+  if (u.salaryTemplate) {
+    const template = u.salaryTemplate;
+    let templateDeductions = [];
+    try {
+      templateDeductions = typeof template.deductions === 'string' ? JSON.parse(template.deductions) : (template.deductions || []);
+    } catch (e) { }
+
+    for (const rule of templateDeductions) {
+      // ESI Rule: 0.75% only if gross <= 21000
+      if (rule.key === 'ESI_EMPLOYEE' || rule.type === 'ESI') {
+        if (grossSalary > 21000) {
+          finalDeductions.esi = 0;
+          if (finalDeductions.ESI) finalDeductions.ESI = 0;
+        } else {
+          // Recalculate 0.75% on the actual gross salary with 2 decimal precision
+          const esiPercent = Number(rule.valueNumber || 0.75);
+          const calculatedEsi = Number((grossSalary * (esiPercent / 100)).toFixed(2));
+          finalDeductions.esi = calculatedEsi;
+          if (finalDeductions.ESI) finalDeductions.ESI = calculatedEsi;
+        }
+      }
+
+      // Professional Tax Slab Rule
+      if (rule.key === 'PROFESSIONAL_TAX' || rule.key === 'PROFESSIONAL TAX' || rule.type === 'PT' || rule.key === 'PT') {
+        const slabs = rule.slabs || rule.meta?.slabs || [];
+        if (Array.isArray(slabs) && slabs.length > 0) {
+          let ptAmount = 0;
+          for (const slab of slabs) {
+            const from = Number(slab.from || slab.min || 0);
+            const to = Number(slab.to || slab.max || 9999999);
+            if (grossSalary >= from && grossSalary <= to) {
+              ptAmount = Number(slab.amount || slab.value || 0);
+              break;
+            }
+          }
+          finalDeductions.professional_tax = ptAmount;
+          if (finalDeductions.PT) finalDeductions.PT = ptAmount;
+        }
+      }
+    }
+  }
+  // Recalculate total deductions and net salary after overrides
+  const updatedTotalDeductions = Object.values(finalDeductions).reduce((s, v) => s + (Number(v) || 0), 0);
+  const netSalary = grossSalary - updatedTotalDeductions;
+  // --- End Dynamic Logic ---
 
   return {
     success: true,
@@ -914,7 +966,7 @@ async function calculateSalary(userId, monthKey) {
     totals: {
       totalEarnings: _totalEarnings,
       totalIncentives: _totalIncentives,
-      totalDeductions: _totalDeductions,
+      totalDeductions: updatedTotalDeductions,
       grossSalary,
       netSalary: Math.max(0, netSalary),
       ratio
@@ -922,21 +974,22 @@ async function calculateSalary(userId, monthKey) {
     attendanceSummary: {
       present, half, leave, paidLeave: paidLeaveCount, unpaidLeave,
       absent, weeklyOff: weeklyOffCount, holidays: holidaysCount, ratio,
+      payableDays: payableUnits, // This is the gross payable days (e.g. 28)
       lateCount: lp.lateCount,
       latePenalty: lp.latePunchInPenalty,
       latePunchInPenalty: lp.latePunchInPenalty,
-      latePenaltyDays: lp.latePenaltyDays,
+      latePenaltyDays: 0, // Set to 0 so UI doesn't subtract it from Payable Days
       latePunchInMinutes: lp.latePunchInMinutes,
-      overtimeMinutes: overtime.overtimeMinutes,
-      overtimeHours: overtime.overtimeHours,
-      overtimeHourlyRate: overtime.overtimeHourlyRate,
-      overtimePay: overtime.overtimePay,
+      overtimeMinutes: overtime.overtimePay > 0 ? overtime.overtimeMinutes : 0,
+      overtimeHours: overtime.overtimePay > 0 ? overtime.overtimeHours : 0,
+      overtimeHourlyRate: overtime.overtimePay > 0 ? overtime.overtimeHourlyRate : 0,
+      overtimePay: overtime.overtimePay > 0 ? overtime.overtimePay : 0,
       earlyExitMinutes: earlyExit.earlyExitMinutes,
       earlyExitPenalty: earlyExit.earlyExitPenalty,
       breakPenalty: breakMeta.breakPenalty,
       excessBreakMinutes: breakMeta.excessBreakMinutes,
-      earlyOvertimeMinutes: earlyOvertime.earlyOvertimeMinutes,
-      earlyOvertimePay: earlyOvertime.earlyOvertimePay,
+      earlyOvertimeMinutes: earlyOvertime.earlyOvertimePay > 0 ? earlyOvertime.earlyOvertimeMinutes : 0,
+      earlyOvertimePay: earlyOvertime.earlyOvertimePay > 0 ? earlyOvertime.earlyOvertimePay : 0,
     },
     earnings: finalEarnings,
     incentives: finalIncentives,
