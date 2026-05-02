@@ -9,6 +9,7 @@ const { tenantEnforce } = require('../middleware/tenant');
 const { upload } = require('../upload');
 const earlyOvertimeService = require('../services/earlyOvertimeService');
 const latePunchInService = require('../services/latePunchInService');
+const { formatDate: isoDate, todayKey } = require('../utils/dateUtils');
 
 const router = express.Router();
 
@@ -16,12 +17,7 @@ router.use(authRequired);
 router.use(tenantEnforce);
 router.use(requireRole(['staff']));
 
-function todayKey(d = new Date()) {
-  const yyyy = d.getFullYear();
-  const mm = String(d.getMonth() + 1).padStart(2, '0');
-  const dd = String(d.getDate()).padStart(2, '0');
-  return `${yyyy}-${mm}-${dd}`;
-}
+
 
 async function hasApprovedLeave(userId, dateKey) {
   try {
@@ -114,17 +110,7 @@ function parseMonth(monthStr) {
   return { y, mo };
 }
 
-function isoDate(d) {
-  if (typeof d === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(d.trim())) {
-    return d.trim();
-  }
-  const dt = d instanceof Date ? d : new Date(d);
-  if (Number.isNaN(dt.getTime())) return null;
-  const yyyy = dt.getUTCFullYear();
-  const mm = String(dt.getUTCMonth() + 1).padStart(2, '0');
-  const dd = String(dt.getUTCDate()).padStart(2, '0');
-  return `${yyyy}-${mm}-${dd}`;
-}
+
 
 function addDays(d, n) {
   const x = new Date(d.getFullYear(), d.getMonth(), d.getDate() + n);

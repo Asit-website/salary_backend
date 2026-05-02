@@ -39,9 +39,9 @@ async function getEffectiveShiftTemplate(userId, dateKey) {
       if (tpl) return tpl;
     }
     return null;
-  } catch (e) { 
+  } catch (e) {
     console.error('[EarlyOvertimeService] Error getting shift template:', e.message);
-    return null; 
+    return null;
   }
 }
 
@@ -55,12 +55,12 @@ async function getEarlyOvertimeMinutes(attendance, rule, shiftTemplate) {
   }
 
   const punchIn = new Date(attendance.punchedInAt);
-  
+
   // Timezone safe extraction (IST - Asia/Kolkata)
   const istStr = punchIn.toLocaleString('en-US', { timeZone: 'Asia/Kolkata', hour12: false });
   const localMatch = istStr.match(/(\d{1,2}):(\d{2}):(\d{2})/);
   let punchInSec = 0;
-  
+
   if (localMatch) {
     const ph = parseInt(localMatch[1]);
     const pm = parseInt(localMatch[2]);
@@ -69,7 +69,7 @@ async function getEarlyOvertimeMinutes(attendance, rule, shiftTemplate) {
   } else {
     punchInSec = punchIn.getHours() * 3600 + punchIn.getMinutes() * 60 + punchIn.getSeconds();
   }
-  
+
   const [sh, sm, ss] = shiftTemplate.startTime.split(':').map(Number);
   const shiftStartSec = (sh * 3600 + sm * 60 + (ss || 0));
 
@@ -77,10 +77,10 @@ async function getEarlyOvertimeMinutes(attendance, rule, shiftTemplate) {
 
   if (punchInSec < shiftStartSec) {
     const earlyMin = Math.floor((shiftStartSec - punchInSec) / 60);
-    
+
     // Check against minimum threshold for Early OT to count (fallback to 0)
     const baseThreshold = (rule.thresholds && rule.thresholds.length > 0) ? rule.thresholds[0].minMinutes : 0;
-    
+
     if (earlyMin >= baseThreshold) {
       return earlyMin;
     }
@@ -95,7 +95,7 @@ async function getEarlyOvertimeMinutes(attendance, rule, shiftTemplate) {
 async function calculateEarlyOvertime(params, orgAccountArg, nowArg, daysInMonthArg = 30) {
   const attendance = (params.toJSON ? params.toJSON() : params);
   const now = nowArg || new Date();
-  
+
   const userId = attendance.userId ? Number(attendance.userId) : null;
   const orgAccountId = attendance.orgAccountId ? Number(attendance.orgAccountId) : (params.orgId ? Number(params.orgId) : null);
   const dateKey = attendance.date || (new Date(now).toISOString().split('T')[0]);
@@ -110,11 +110,11 @@ async function calculateEarlyOvertime(params, orgAccountArg, nowArg, daysInMonth
   }
 
   const shiftTemplate = await getEffectiveShiftTemplate(userId, dateKey);
-  
+
   const { Op } = require('sequelize');
   const assignment = await StaffEarlyOvertimeAssignment.findOne({
-    where: { 
-      userId, 
+    where: {
+      userId,
       orgAccountId,
       effectiveFrom: { [Op.lte]: dateKey }
     },
@@ -122,7 +122,7 @@ async function calculateEarlyOvertime(params, orgAccountArg, nowArg, daysInMonth
   });
 
   const ruleId = assignment ? assignment.earlyOvertimeRuleId : (orgAccount && orgAccount.earlyOvertimeRuleId);
-  
+
   let finalRule = ruleId ? await EarlyOvertimeRule.findByPk(ruleId) : null;
   let thresholds = [];
 
@@ -139,9 +139,9 @@ async function calculateEarlyOvertime(params, orgAccountArg, nowArg, daysInMonth
   const earlyOvertimeMinutes = await getEarlyOvertimeMinutes(attendance, { ...(finalRule.toJSON ? finalRule.toJSON() : finalRule), thresholds }, shiftTemplate);
 
   if (earlyOvertimeMinutes <= 0) {
-    return { 
-      earlyOvertimeMinutes: 0, 
-      earlyOvertimeAmount: 0, 
+    return {
+      earlyOvertimeMinutes: 0,
+      earlyOvertimeAmount: 0,
       earlyOvertimeRuleId: finalRule.id || null
     };
   }
@@ -162,7 +162,7 @@ async function calculateEarlyOvertime(params, orgAccountArg, nowArg, daysInMonth
     const baseSalary = Number(user?.basicSalary || 0) + Number(user?.da || 0);
     const daysInMonth = daysInMonthArg || 30;
     const hourlySalary = daysInMonth > 0 ? (baseSalary / (daysInMonth * 8)) : 0;
-    
+
     if (hourlySalary <= 0) {
       earlyOvertimeAmount = 0;
     } else {

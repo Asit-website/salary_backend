@@ -236,8 +236,10 @@ router.get('/me', requireRole(['staff']), async (req, res) => {
 router.get('/', requireRole(['admin', 'superadmin']), async (req, res) => {
   try {
     const status = typeof req.query.status === 'string' && req.query.status.trim() ? req.query.status.trim().toUpperCase() : null;
+    const userId = req.query.userId;
     const where = { orgAccountId: req.tenantOrgAccountId };
     if (status && ['PENDING', 'APPROVED', 'REJECTED'].includes(status)) where.status = status;
+    if (userId) where.userId = userId;
     const rows = await LeaveRequest.findAll({
       where,
       include: [

@@ -62,9 +62,9 @@ class EarlyExitService {
       // Handle overnight shift if necessary (basic check)
       const [sh, sm] = (shift.startTime || '00:00').split(':').map(Number);
       if (sh > eh) {
-          // If start hour > end hour, shift ends next day. 
-          // However, for pure early exit calculation at punch out, 
-          // we usually compare against the current day's projected end.
+        // If start hour > end hour, shift ends next day. 
+        // However, for pure early exit calculation at punch out, 
+        // we usually compare against the current day's projected end.
       }
 
       if (punchedOutAt < shiftEndTs) {
@@ -93,10 +93,10 @@ class EarlyExitService {
 
     // If no rule or no early exit, return just the minutes (if any) and 0 penalty
     if (!finalRule || !finalRule.active || earlyExitMinutes <= 0) {
-      return { 
-        earlyExitMinutes, 
-        earlyExitAmount: 0, 
-        earlyExitRuleId: finalRule?.id || null 
+      return {
+        earlyExitMinutes,
+        earlyExitAmount: 0,
+        earlyExitRuleId: finalRule?.id || null
       };
     }
 

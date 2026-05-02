@@ -73,11 +73,22 @@ class ZktecoService {
     async calculateDetails(userId, punches, date) {
         if (!punches || punches.length < 1) return null;
 
-        const sorted = punches.map(p => ({
+        const sortedRaw = punches.map(p => ({
             ...p,
             punch_time: new Date(p.punch_time),
             state: parseInt(p.punch_state)
         })).sort((a, b) => a.punch_time - b.punch_time);
+
+        // Second layer of deduplication (Standard 5-min throttling for all merged punches)
+        const sorted = [];
+        let lastMs = 0;
+        for (const p of sortedRaw) {
+            const currentMs = p.punch_time.getTime();
+            if (!lastMs || (currentMs - lastMs) >= 5 * 60 * 1000) {
+                sorted.push(p);
+                lastMs = currentMs;
+            }
+        }
 
         // Identify boundaries: First In (0) and Last Out (1)
         const firstInIdx = sorted.findIndex(p => p.state === 0);
@@ -158,7 +169,7 @@ class ZktecoService {
             overtimeAmount = otResult.overtimeAmount;
             overtimeRuleId = otResult.overtimeRuleId;
             if (otResult.status) status = otResult.status;
-            
+
             // If single punch (no check-out), ensure it's marked as PRESENT initially
             if (!lastOut && status !== 'LEAVE') status = 'PRESENT';
 
@@ -353,25 +364,19 @@ class ZktecoService {
 
                 // Filter punches for 5-minute throttling (Deduplication)
                 // Logic: Keep first punch, skip any within 5 mins of the last accepted punch.
-                const parseTime = (str) => {
-                    const d = dayjs(str);
-                    return d.isValid() ? d.toDate() : new Date(str);
-                };
-
-                const sortedPunches = punches.sort((a, b) => parseTime(a.punch_time) - parseTime(b.punch_time));
+                const sortedPunches = [...punches].sort((a, b) => new Date(a.punch_time) - new Date(b.punch_time));
                 const filteredPunches = [];
-                let localLastPunchTime = null;
+                let lastAcceptedMs = 0;
 
                 for (const p of sortedPunches) {
-                    const punchTime = parseTime(p.punch_time);
-                    const punchTimeMs = punchTime.getTime();
+                    const punchTimeMs = new Date(p.punch_time).getTime();
+                    if (Number.isNaN(punchTimeMs)) continue;
 
-                    if (!localLastPunchTime || (punchTimeMs - localLastPunchTime.getTime()) >= 5 * 60 * 1000) {
+                    if (!lastAcceptedMs || (punchTimeMs - lastAcceptedMs) >= 5 * 60 * 1000) {
                         filteredPunches.push(p);
-                        localLastPunchTime = punchTime;
+                        lastAcceptedMs = punchTimeMs;
                     } else {
-                        // Log skipped punch for monitoring
-                        const diffSecs = Math.round((punchTimeMs - localLastPunchTime.getTime()) / 1000);
+                        const diffSecs = Math.round((punchTimeMs - lastAcceptedMs) / 1000);
                         console.log(`[ZktecoSync] THROT: Ignoring punch at ${p.punch_time} for userId ${userId} (Only ${diffSecs}s since last accepted punch)`);
                     }
                 }
@@ -380,8 +385,36 @@ class ZktecoService {
                     console.log(`[ZktecoSync] Throttled ${punches.length - filteredPunches.length} duplicate/rapid punches for userId ${userId}. Final count: ${filteredPunches.length}`);
                 }
 
-                const res = await this.calculateDetails(userId, filteredPunches, dateStr);
-                
+                // Fetch existing record to merge with biometric logs (First-In, Last-Out strategy)
+                const existing = await Attendance.findOne({ where: { userId, date: dateStr } });
+                const finalPunches = [...filteredPunches];
+
+                if (existing) {
+                    console.log(`[ZktecoSync] Found existing attendance record for userId ${userId} on ${dateStr}. Merging...`);
+                    if (existing.punchedInAt) {
+                        finalPunches.push({
+                            emp_code: empCode,
+                            punch_time: existing.punchedInAt,
+                            punch_state: '0', // In
+                            latitude: existing.latitude,
+                            longitude: existing.longitude,
+                            gps_location: existing.address
+                        });
+                    }
+                    if (existing.punchedOutAt) {
+                        finalPunches.push({
+                            emp_code: empCode,
+                            punch_time: existing.punchedOutAt,
+                            punch_state: '1', // Out
+                            latitude: existing.punchOutLatitude,
+                            longitude: existing.punchOutLongitude,
+                            gps_location: existing.punchOutAddress
+                        });
+                    }
+                }
+
+                const res = await this.calculateDetails(userId, finalPunches, dateStr);
+
                 if (!res) {
                     console.log(`[ZktecoSync] FAIL: calculateDetails returned null for userId ${userId}`);
                     continue;
@@ -389,6 +422,12 @@ class ZktecoService {
 
                 // Sync with Attendance table
                 try {
+                    // Decide the source: if it was mobile/kiosk, we keep it as is to allow mobile punch-outs.
+                    // Only set to 'biometric' if it's a new record or already 'biometric'.
+                    const finalSource = (existing && existing.source && existing.source !== 'biometric')
+                        ? existing.source
+                        : 'biometric';
+
                     await Attendance.upsert({
                         userId,
                         date: dateStr,
@@ -411,7 +450,7 @@ class ZktecoService {
                         breakRuleId: res.breakRuleId,
                         excessBreakMinutes: res.excessBreakMinutes,
                         status: res.status,
-                        source: 'biometric',
+                        source: finalSource,
                         latitude: res.latitude,
                         longitude: res.longitude,
                         address: res.address,

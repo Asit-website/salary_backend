@@ -83,9 +83,9 @@ class LatePunchInService {
 
     // If no rule or no lateness, return just the minutes (if any) and 0 penalty
     if (!finalRule || !finalRule.active || latePunchInMinutes <= 0) {
-      return { 
-        latePunchInMinutes, 
-        latePunchInAmount: 0, 
+      return {
+        latePunchInMinutes,
+        latePunchInAmount: 0,
         latePunchInRuleId: finalRule?.id || null,
         isLate: latePunchInMinutes > 0
       };
@@ -103,51 +103,51 @@ class LatePunchInService {
     const pType = finalRule.penaltyType || 'SLABS';
     let thresholds = finalRule.thresholds;
     if (typeof thresholds === 'string') {
-        try { thresholds = JSON.parse(thresholds); } catch (e) { thresholds = []; }
+      try { thresholds = JSON.parse(thresholds); } catch (e) { thresholds = []; }
     }
     if (!Array.isArray(thresholds)) thresholds = [];
 
     let matchedTier = null;
     if (pType === 'SLABS') {
-        const tier = thresholds.find(t => effectiveLateMinutes >= Number(t.minMinutes) && effectiveLateMinutes <= Number(t.maxMinutes));
-        if (tier) {
-            matchedTier = tier;
-            if (Number(tier.frequency || 0) === 1) {
-                deductionAmount = dailySalary * Number(tier.deduction || 0);
-            }
+      const tier = thresholds.find(t => effectiveLateMinutes >= Number(t.minMinutes) && effectiveLateMinutes <= Number(t.maxMinutes));
+      if (tier) {
+        matchedTier = tier;
+        if (Number(tier.frequency || 0) === 1) {
+          deductionAmount = dailySalary * Number(tier.deduction || 0);
         }
+      }
     } else if (pType === 'FIXED_AMOUNT') {
-        const threshold = thresholds.find(t => effectiveLateMinutes >= Number(t.minMinutes));
-        if (threshold) {
-            matchedTier = threshold;
-            deductionAmount = Number(threshold.value || 0);
-        }
+      const threshold = thresholds.find(t => effectiveLateMinutes >= Number(t.minMinutes));
+      if (threshold) {
+        matchedTier = threshold;
+        deductionAmount = Number(threshold.value || 0);
+      }
     } else if (pType === 'FIXED_AMOUNT_PER_HOUR') {
-        const threshold = thresholds.find(t => effectiveLateMinutes >= Number(t.minMinutes));
-        if (threshold) {
-            matchedTier = threshold;
-            const hours = Math.ceil(effectiveLateMinutes / 60);
-            deductionAmount = Number(threshold.value || 0) * hours;
-        }
+      const threshold = thresholds.find(t => effectiveLateMinutes >= Number(t.minMinutes));
+      if (threshold) {
+        matchedTier = threshold;
+        const hours = Math.ceil(effectiveLateMinutes / 60);
+        deductionAmount = Number(threshold.value || 0) * hours;
+      }
     } else if (pType === 'HALF_DAY') {
-        const threshold = thresholds.find(t => effectiveLateMinutes >= Number(t.minMinutes));
-        if (threshold) {
-            matchedTier = threshold;
-            deductionAmount = dailySalary / 2;
-        }
+      const threshold = thresholds.find(t => effectiveLateMinutes >= Number(t.minMinutes));
+      if (threshold) {
+        matchedTier = threshold;
+        deductionAmount = dailySalary / 2;
+      }
     } else if (pType === 'FULL_DAY') {
-        const threshold = thresholds.find(t => effectiveLateMinutes >= Number(t.minMinutes));
-        if (threshold) {
-            matchedTier = threshold;
-            deductionAmount = dailySalary;
-        }
+      const threshold = thresholds.find(t => effectiveLateMinutes >= Number(t.minMinutes));
+      if (threshold) {
+        matchedTier = threshold;
+        deductionAmount = dailySalary;
+      }
     } else if (pType === 'SALARY_MULTIPLIER') {
-        const threshold = thresholds.find(t => effectiveLateMinutes >= Number(t.minMinutes));
-        if (threshold) {
-            matchedTier = threshold;
-            const hourlySalary = dailySalary / 8; // Assuming 8-hour workday
-            deductionAmount = hourlySalary * Number(threshold.value || 0);
-        }
+      const threshold = thresholds.find(t => effectiveLateMinutes >= Number(t.minMinutes));
+      if (threshold) {
+        matchedTier = threshold;
+        const hourlySalary = dailySalary / 8; // Assuming 8-hour workday
+        deductionAmount = hourlySalary * Number(threshold.value || 0);
+      }
     }
 
     console.log(`[LatePunchInService] User: ${userId}, Raw Late: ${latePunchInMinutes}m, Buffer: ${buffer}m, Effective: ${effectiveLateMinutes}m, Type: ${pType}, Amount: ${deductionAmount.toFixed(2)}`);
@@ -176,18 +176,18 @@ class LatePunchInService {
     const seenDates = new Map(); // dateKey -> earliestRow
 
     for (const row of attendanceRows) {
-        const dateKey = row.date instanceof Date ? row.date.toISOString().slice(0, 10) : String(row.date || '').slice(0, 10);
-        if (!dateKey) continue;
+      const dateKey = row.date instanceof Date ? row.date.toISOString().slice(0, 10) : String(row.date || '').slice(0, 10);
+      if (!dateKey) continue;
 
-        if (!seenDates.has(dateKey)) {
-            seenDates.set(dateKey, row);
-        } else {
-            const existing = seenDates.get(dateKey);
-            // If this row has an earlier punch-in, replace the existing one
-            if (row.punchedInAt && (!existing.punchedInAt || new Date(row.punchedInAt) < new Date(existing.punchedInAt))) {
-                seenDates.set(dateKey, row);
-            }
+      if (!seenDates.has(dateKey)) {
+        seenDates.set(dateKey, row);
+      } else {
+        const existing = seenDates.get(dateKey);
+        // If this row has an earlier punch-in, replace the existing one
+        if (row.punchedInAt && (!existing.punchedInAt || new Date(row.punchedInAt) < new Date(existing.punchedInAt))) {
+          seenDates.set(dateKey, row);
         }
+      }
     }
     const rows = Array.from(seenDates.values()).sort((a, b) => new Date(a.date) - new Date(b.date));
 
@@ -202,24 +202,24 @@ class LatePunchInService {
       // 1. Calculate raw penalty for this specific day
       // We pass 30 as default daysInMonth, but we primarily care about the matched rule and tier
       const lp = await this.calculateLatePenalty(row, { id: orgAccountId }, new Date(), 30);
-      
+
       row.latePunchInMinutes = lp.latePunchInMinutes || 0;
       row.latePunchInAmount = 0; // Default to 0, will set if threshold met
       row.lateOccurrence = null;
 
       if (row.latePunchInMinutes > 0) {
         lateCount++;
-        
+
         const rule = lp.rule;
         const tier = lp.tier;
 
         if (rule && tier) {
           const frequency = Number(tier.frequency || 1);
           const tierKey = `${rule.id}_${JSON.stringify(tier)}`; // Unique key for this specific threshold
-          
+
           ruleOccurrences[tierKey] = (ruleOccurrences[tierKey] || 0) + 1;
           const currentCount = ruleOccurrences[tierKey];
-          
+
           // Set occurrence string (e.g., "1/3")
           row.lateOccurrence = `${currentCount}/${frequency}`;
 
@@ -253,7 +253,7 @@ class LatePunchInService {
 
             row.latePunchInAmount = parseFloat(rowPenalty.toFixed(2));
             row.lateOccurrence += ' (Deducted)';
-            
+
             totalPenalty += rowPenalty;
             totalDays += rowDays;
           }

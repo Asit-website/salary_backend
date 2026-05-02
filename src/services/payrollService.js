@@ -656,6 +656,7 @@ async function calculateSalary(userId, monthKey) {
 
   // Classify calendar days (for current month, only count till today)
   let present = 0, half = 0, leave = 0, paidLeaveCount = 0, unpaidLeave = 0, weeklyOffCount = 0, holidaysCount = 0, absent = 0;
+  let paidLeaveDates = [];
   const daysInMonth = end.getDate();
   const now = new Date();
   const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
@@ -667,19 +668,22 @@ async function calculateSalary(userId, monthKey) {
     const s = attMap[key];
 
     // For current month projection, future days are absent unless explicitly marked with work/leave state.
-    // For current month projection, future days are not counted toward absence/work unless explicitly entered.
-    if (isCurrentMonth && dt > todayStart && (!s || s === 'weekly_off' || s === 'holiday')) {
-      // Still count Weekly Off and Holidays in projection for full month gross calculation
+    if (isCurrentMonth && dt > todayStart && (!s || s === 'weekly_off' || s === 'holiday' || s === 'leave')) {
       const isWO = hasWeeklyOffAssignment ? isWeeklyOffForDate(woConfig, dt) : false;
       const isH = holidaySet.has(key);
+      const isPaidL = paidLeaveSet.has(key);
+      const isUnpaidL = unpaidLeaveSet.has(key);
+
       if (isH || s === 'holiday') { holidaysCount += 1; }
       else if (isWO || s === 'weekly_off') { weeklyOffCount += 1; }
+      else if (isPaidL || s === 'leave') { leave += 1; paidLeaveCount += 1; paidLeaveDates.push(key); }
+      else if (isUnpaidL) { leave += 1; unpaidLeave += 1; }
       continue;
     }
 
-    if (s === 'present') { present += 1; continue; }
+    if (s === 'present' || s === 'overtime' || s === 'work_from_home') { present += 1; continue; }
     if (s === 'half_day') { half += 1; continue; }
-    if (s === 'leave') { leave += 1; if (paidLeaveSet.has(key)) paidLeaveCount += 1; else if (unpaidLeaveSet.has(key)) unpaidLeave += 1; continue; }
+    if (s === 'leave') { leave += 1; if (paidLeaveSet.has(key)) { paidLeaveCount += 1; paidLeaveDates.push(key); } else if (unpaidLeaveSet.has(key)) unpaidLeave += 1; continue; }
     if (s === 'weekly_off') { weeklyOffCount += 1; continue; }
     if (s === 'holiday') { holidaysCount += 1; continue; }
 
@@ -693,7 +697,7 @@ async function calculateSalary(userId, monthKey) {
     if (s === 'absent') { absent += 1; continue; }
 
     // For past days with no record at all
-    if (paidLeaveSet.has(key)) { leave += 1; paidLeaveCount += 1; }
+    if (paidLeaveSet.has(key)) { leave += 1; paidLeaveCount += 1; paidLeaveDates.push(key); }
     else if (unpaidLeaveSet.has(key)) { leave += 1; unpaidLeave += 1; }
     else {
       // Only count as absent if the date is in the past (today or before)
@@ -972,7 +976,7 @@ async function calculateSalary(userId, monthKey) {
       ratio
     },
     attendanceSummary: {
-      present, half, leave, paidLeave: paidLeaveCount, unpaidLeave,
+      present, half, leave, paidLeave: paidLeaveCount, paidLeaveDates, unpaidLeave,
       absent, weeklyOff: weeklyOffCount, holidays: holidaysCount, ratio,
       payableDays: payableUnits, // This is the gross payable days (e.g. 28)
       lateCount: lp.lateCount,

@@ -1,6 +1,6 @@
 const express = require('express');
 const { Op } = require('sequelize');
-const { StaffRoster, ShiftTemplate, User, StaffProfile, StaffShiftAssignment, Badge, BadgePermission } = require('../models');
+const { StaffRoster, ShiftTemplate, User, StaffProfile, StaffShiftAssignment, Badge, BadgePermission, Attendance } = require('../models');
 const { authRequired } = require('../middleware/auth');
 const { requireRole } = require('../middleware/roles');
 const { tenantEnforce } = require('../middleware/tenant');
@@ -20,8 +20,8 @@ async function checkRosterPermission(req) {
         where: { isActive: true },
         required: false,
         through: { where: { isActive: true }, attributes: [] },
-        include: [{ 
-          model: BadgePermission, 
+        include: [{
+          model: BadgePermission,
           as: 'permissions',
           where: { permissionKey: 'roster_tab' }
         }],
@@ -53,7 +53,7 @@ router.get('/admin/roster/staff', authRequired, requireRole(['admin', 'superadmi
   try {
     const hasAccess = await checkRosterPermission(req);
     if (!hasAccess) return res.status(403).json({ success: false, message: 'Forbidden: Roster access required' });
-    
+
     const orgId = requireOrg(req, res); if (!orgId) return;
 
     const dateKey = todayKey();
@@ -88,7 +88,7 @@ router.get('/admin/roster/staff', authRequired, requireRole(['admin', 'superadmi
       // 1. Check StaffShiftAssignment (from include)
       if (u.shiftAssignments && u.shiftAssignments.length > 0) {
         // Sort specifically in JS if ordering in include is tricky
-        const assignments = [...u.shiftAssignments].sort((a, b) => 
+        const assignments = [...u.shiftAssignments].sort((a, b) =>
           new Date(b.effectiveFrom) - new Date(a.effectiveFrom)
         );
         effectiveShift = assignments[0].template;
@@ -123,9 +123,9 @@ router.get('/admin/roster', authRequired, requireRole(['admin', 'superadmin', 's
   try {
     const hasAccess = await checkRosterPermission(req);
     if (!hasAccess) return res.status(403).json({ success: false, message: 'Forbidden: Roster access required' });
-    
+
     const orgId = requireOrg(req, res); if (!orgId) return;
-    
+
     const startDate = req.query.startDate;
     const endDate = req.query.endDate;
 
@@ -154,7 +154,7 @@ router.post('/admin/roster', authRequired, requireRole(['admin', 'superadmin', '
   try {
     const hasAccess = await checkRosterPermission(req);
     if (!hasAccess) return res.status(403).json({ success: false, message: 'Forbidden: Roster access required' });
-    
+
     const orgId = requireOrg(req, res); if (!orgId) return;
 
     const { assessments } = req.body; // Array of { userId, date, shiftTemplateId, status }
@@ -165,8 +165,17 @@ router.post('/admin/roster', authRequired, requireRole(['admin', 'superadmin', '
 
     for (const item of assessments) {
       const { userId, date, shiftTemplateId, status } = item;
-      
+
       if (status === 'DELETE') {
+        // Find existing roster to check status before delete
+        const existing = await StaffRoster.findOne({ where: { userId, date, orgAccountId: orgId } });
+        if (existing && (existing.status === 'WEEKLY_OFF' || existing.status === 'HOLIDAY')) {
+          // Also remove from attendance if it was synced as WO/Holiday
+          const att = await Attendance.findOne({ where: { userId, date, orgAccountId: orgId } });
+          if (att && (att.status === 'weekly_off' || att.status === 'holiday')) {
+            await Attendance.destroy({ where: { id: att.id } });
+          }
+        }
         await StaffRoster.destroy({ where: { userId, date, orgAccountId: orgId } });
         continue;
       }
@@ -179,6 +188,26 @@ router.post('/admin/roster', authRequired, requireRole(['admin', 'superadmin', '
         status: status || 'SHIFT',
         orgAccountId: orgId
       });
+
+      // Sync to Attendance for WEEKLY_OFF and HOLIDAY
+      if (status === 'WEEKLY_OFF' || status === 'HOLIDAY') {
+        const attStatus = status === 'WEEKLY_OFF' ? 'weekly_off' : 'holiday';
+        await Attendance.upsert({
+          userId,
+          date,
+          status: attStatus,
+          orgAccountId: orgId,
+          source: 'roster'
+        });
+      } else if (status === 'SHIFT') {
+        // If we assigned a shift, and there was a WO/Holiday attendance record, we might want to clear it?
+        // But better leave it as is if it's already present/absent.
+        // However, if it was 'weekly_off' from a previous roster assignment, we should probably clear it.
+        const att = await Attendance.findOne({ where: { userId, date, orgAccountId: orgId } });
+        if (att && (att.status === 'weekly_off' || att.status === 'holiday') && att.source === 'roster') {
+          await Attendance.destroy({ where: { id: att.id } });
+        }
+      }
     }
 
     return res.json({ success: true, message: 'Roster updated successfully' });

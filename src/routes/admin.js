@@ -1,5 +1,6 @@
 const express = require('express');
 const dayjs = require('dayjs');
+const { formatDate, todayKey } = require('../utils/dateUtils');
 
 const bcrypt = require('bcryptjs');
 
@@ -97,7 +98,7 @@ function getMonthRange(monthKey) {
 function dateOnlySafe(input) {
   const raw = String(input || '').trim();
   if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) return raw;
-  return new Date().toISOString().slice(0, 10);
+  return todayKey();
 }
 
 // --- Multi-Org Staff Assignment ---
@@ -500,7 +501,7 @@ router.post('/performance/ratings', async (req, res) => {
     const metric = String(body.metric || '').trim();
     const rating = Number(body.rating);
     const maxRating = body.maxRating == null || body.maxRating === '' ? 5 : Number(body.maxRating);
-    const ratedAt = body.ratedAt ? String(body.ratedAt) : new Date().toISOString().slice(0, 10);
+    const ratedAt = body.ratedAt ? String(body.ratedAt) : todayKey();
     const note = body.note ? String(body.note) : null;
     if (!Number.isFinite(userId) || !metric || !Number.isFinite(rating)) {
       return res.status(400).json({ success: false, message: 'userId, metric and rating are required' });
@@ -777,17 +778,61 @@ router.get('/payroll/:cycleId/export', async (req, res) => {
       ...sortedIncentives,
       ...sortedDeductions,
       'Total Earnings', 'Total Incentives', 'Total Deductions', 'Gross Salary', 'Net Salary'
-    ];
+    ].map(h => String(h || '').toUpperCase());
 
-    const escapeCSV = (val) => {
-      const str = String(val === null || val === undefined ? '' : val);
-      if (str.includes(',') || str.includes('"') || str.includes('\n')) {
-        return `"${str.replace(/"/g, '""')}"`;
-      }
-      return str;
-    };
+    const workbook = new exceljs.Workbook();
+    const worksheet = workbook.addWorksheet('Payroll Export');
+    worksheet.views = [{ showGridLines: false }];
 
-    const rows = [header.map(escapeCSV).join(',')];
+    // Fetch Org Brand/Account for header
+    const [org, brand] = await Promise.all([
+      OrgAccount.findByPk(orgId),
+      sequelize.models.OrgBrand?.findOne({ where: { orgAccountId: orgId, active: true }, order: [['id', 'DESC']] })
+    ]);
+    
+    const companyName = brand?.displayName || org?.name || 'PAYROLL EXPORT';
+
+    // Header Section
+    let currRow = 1;
+    worksheet.mergeCells(currRow, 1, currRow, header.length);
+    const companyRow = worksheet.getRow(currRow);
+    companyRow.height = 30;
+    const companyCell = worksheet.getCell(currRow, 1);
+    companyCell.value = companyName.toUpperCase();
+    companyCell.font = { bold: true, size: 20, color: { argb: 'FF2D3748' } };
+    companyCell.alignment = { horizontal: 'center', vertical: 'middle' };
+    currRow++;
+
+    if (org && org.address) {
+      worksheet.mergeCells(currRow, 1, currRow, header.length);
+      const addressRow = worksheet.getRow(currRow);
+      addressRow.height = 20;
+      const addressCell = worksheet.getCell(currRow, 1);
+      addressCell.value = org.address;
+      addressCell.font = { size: 11, color: { argb: 'FF718096' } };
+      addressCell.alignment = { horizontal: 'center', vertical: 'middle' };
+      currRow++;
+    }
+
+    worksheet.mergeCells(currRow, 1, currRow, header.length);
+    const titleRow = worksheet.getRow(currRow);
+    titleRow.height = 25;
+    const titleCell = worksheet.getCell(currRow, 1);
+    const monthName = new Date(year, month - 1, 1).toLocaleString('en-IN', { month: 'long', year: 'numeric' });
+    titleCell.value = `PAYROLL REPORT - ${monthName.toUpperCase()}`;
+    titleCell.font = { bold: true, size: 14, color: { argb: 'FF4A5568' } };
+    titleCell.alignment = { horizontal: 'center', vertical: 'middle' };
+    currRow += 2; // Gap
+
+    const headerRow = worksheet.getRow(currRow);
+    headerRow.values = header;
+    headerRow.font = { bold: true };
+    headerRow.eachCell((cell) => {
+      cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE9ECEF' } };
+      cell.border = { top: { style: 'thin' }, left: { style: 'thin' }, bottom: { style: 'thin' }, right: { style: 'thin' } };
+      cell.alignment = { horizontal: 'center', vertical: 'middle' };
+    });
+    currRow++;
 
     for (const pl of parsedLines) {
       const { line, e, i, d, s, t } = pl;
@@ -795,7 +840,6 @@ router.get('/payroll/:cycleId/export', async (req, res) => {
 
       const ratio = Number(t.ratio || s.ratio || 0);
       const pod = ratio * daysInMonth;
-      const attPct = (ratio * 100).toFixed(2);
       const overtimeMinutes = Number(s.overtimeMinutes || 0);
       const overtimeHours = Number(s.overtimeHours || (overtimeMinutes / 60) || 0);
       const overtimeBaseSalary = Number((e.basic_salary ?? u.basicSalary ?? 0) || 0) + Number((e.da ?? 0) || 0);
@@ -819,26 +863,43 @@ router.get('/payroll/:cycleId/export', async (req, res) => {
         Number(s.holidays || 0),
         Number(s.lateCount || 0),
         Number(s.latePenaltyDays || 0),
-        pod.toFixed(2),
-        overtimeHours,
+        Number(pod.toFixed(2)),
+        Number(overtimeHours.toFixed(2)),
         overtimeMinutes,
         Number(overtimeRate.toFixed(2)),
-        overtimePay,
-        ...sortedEarnings.map(k => e[k] || 0),
-        ...sortedIncentives.map(k => i[k] || 0),
-        ...sortedDeductions.map(k => d[k] || 0),
+        Number(overtimePay.toFixed(2)),
+        ...sortedEarnings.map(k => Number(e[k] || 0)),
+        ...sortedIncentives.map(k => Number(i[k] || 0)),
+        ...sortedDeductions.map(k => Number(d[k] || 0)),
         Number(t.totalEarnings || 0),
         Number(t.totalIncentives || 0),
         Number(t.totalDeductions || 0),
         Number(t.grossSalary || 0),
         Number(t.netSalary || 0)
       ];
-      rows.push(rowData.map(escapeCSV).join(','));
+
+      const row = worksheet.addRow(rowData);
+      row.eachCell((cell, colNumber) => {
+        cell.border = { top: { style: 'thin' }, left: { style: 'thin' }, bottom: { style: 'thin' }, right: { style: 'thin' } };
+        // Format numeric cells
+        if (colNumber > 5) {
+          cell.numFmt = '#,##0.00';
+        }
+      });
     }
 
-    res.setHeader('Content-Type', 'text/csv');
-    res.setHeader('Content-Disposition', `attachment; filename=payroll-${cycle.monthKey}.csv`);
-    return res.send(rows.join('\n'));
+    // Set columns width
+    worksheet.columns.forEach((col, idx) => {
+      let maxLen = 0;
+      const colHeader = header[idx];
+      if (colHeader) maxLen = colHeader.length + 5;
+      col.width = Math.min(30, Math.max(12, maxLen));
+    });
+
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', `attachment; filename=payroll-${cycle.monthKey}.xlsx`);
+    await workbook.xlsx.write(res);
+    return res.end();
 
   } catch (e) {
     console.error('Payroll export error:', e);
@@ -2643,6 +2704,7 @@ router.post('/payroll/:cycleId/compute', async (req, res) => {
 
       // Category counts: classify calendar days (for current month, only count till today)
       let present = 0, half = 0, leave = 0, absent = 0, paidLeave = 0, unpaidLeave = 0;
+      let paidLeaveDates = [];
       const daysInMonth = end.getDate();
       const dailySalary = (Number(e.basic_salary || sd.basicSalary || 0) + Number(e.da || sd.da || 0)) / daysInMonth;
       const now = new Date();
@@ -2654,11 +2716,11 @@ router.post('/payroll/:cycleId/compute', async (req, res) => {
         const key = `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, '0')}-${String(dnum).padStart(2, '0')}`;
         const s = attMap[key];
 
-        if (s === 'present' || s === 'overtime') { present += 1; continue; }
+        if (s === 'present' || s === 'overtime' || s === 'work_from_home') { present += 1; continue; }
         if (s === 'half_day') { half += 1; continue; }
         if (s === 'leave') {
           leave += 1;
-          if (paidLeaveSet.has(key)) paidLeave += 1; else if (unpaidLeaveSet.has(key)) unpaidLeave += 1;
+          if (paidLeaveSet.has(key)) { paidLeave += 1; paidLeaveDates.push(key); } else if (unpaidLeaveSet.has(key)) unpaidLeave += 1;
           continue;
         }
         if (s === 'weekly_off') { weeklyOff += 1; continue; }
@@ -2670,10 +2732,17 @@ router.post('/payroll/:cycleId/compute', async (req, res) => {
         if (isH) { holidays += 1; continue; }
         if (isWO) { weeklyOff += 1; continue; }
 
-        if (isCurrentMonth && dt > todayStart) { continue; }
+        // Future day projection for current month
+        if (isCurrentMonth && dt > todayStart) {
+          if (paidLeaveSet.has(key)) { leave += 1; paidLeave += 1; paidLeaveDates.push(key); }
+          else if (unpaidLeaveSet.has(key)) { leave += 1; unpaidLeave += 1; }
+          // WO/H already handled above
+          continue;
+        }
+
         if (s === 'absent') { absent += 1; continue; }
 
-        if (paidLeaveSet.has(key)) { leave += 1; paidLeave += 1; }
+        if (paidLeaveSet.has(key)) { leave += 1; paidLeave += 1; paidLeaveDates.push(key); }
         else if (unpaidLeaveSet.has(key)) { leave += 1; unpaidLeave += 1; }
         else { absent += 1; }
       }
@@ -3032,7 +3101,7 @@ router.post('/payroll/:cycleId/compute', async (req, res) => {
 
       const totalAbsent = absent;
       const attendanceSummary = {
-        present, half, leave, paidLeave, unpaidLeave, absent: totalAbsent, weeklyOff, holidays, ratio,
+        present, half, leave, paidLeave, paidLeaveDates, unpaidLeave, absent: totalAbsent, weeklyOff, holidays, ratio,
         payableDays: payableUnits,
         overtimeMinutes: totalOvertimeMinutes,
         overtimeHours: Number(overtimeHours.toFixed(2)),
@@ -4627,7 +4696,7 @@ router.get('/weekly-off/user/:userId', async (req, res) => {
 
     for (let d = new Date(s); d <= e; d.setDate(d.getDate() + 1)) {
 
-      const dateStr = d.toISOString().slice(0, 10);
+      const dateStr = formatDate(d);
 
       for (const asg of rows) {
 
@@ -7090,7 +7159,7 @@ router.post('/staff/:id/expenses', upload.single('attachment'), async (req, res)
 
       expenseType: expenseType || null,
 
-      expenseDate: expenseDate || new Date().toISOString().slice(0, 10),
+      expenseDate: expenseDate || todayKey(),
 
       billNumber: billNumber || null,
 
@@ -7404,7 +7473,7 @@ router.post('/staff/:id/loans', async (req, res) => {
 
     const t = ['loan', 'payment'].includes(String(type)) ? String(type) : 'loan';
 
-    const dt = date || new Date().toISOString().slice(0, 10);
+    const dt = date || todayKey();
 
     const amt = Number(amount);
 
@@ -7486,7 +7555,10 @@ router.get('/staff/:id/leaves', async (req, res) => {
 
     if (!user) return res.status(404).json({ success: false, message: 'Staff not found' });
 
-    const rows = await LeaveRequest.findAll({ where: { userId: id }, order: [['createdAt', 'DESC']] });
+    const { status } = req.query;
+    const where = { userId: id };
+    if (status) where.status = status;
+    const rows = await LeaveRequest.findAll({ where, order: [['createdAt', 'DESC']] });
 
     const data = rows.map((r) => {
 
@@ -7568,7 +7640,7 @@ function getPrevCycleRange(cycle, forDate /* Date */) {
 
     const end = new Date(y - 1, 11, 31);
 
-    return { start: start.toISOString().slice(0, 10), end: end.toISOString().slice(0, 10) };
+    return { start: formatDate(start), end: formatDate(end) };
 
   }
 
@@ -7588,7 +7660,7 @@ function getPrevCycleRange(cycle, forDate /* Date */) {
 
     const end = new Date(yy, em + 1, 0);
 
-    return { start: start.toISOString().slice(0, 10), end: end.toISOString().slice(0, 10) };
+    return { start: formatDate(start), end: formatDate(end) };
 
   }
 
@@ -7600,7 +7672,7 @@ function getPrevCycleRange(cycle, forDate /* Date */) {
 
   const end = new Date(prev.getFullYear(), prev.getMonth() + 1, 0);
 
-  return { start: start.toISOString().slice(0, 10), end: end.toISOString().slice(0, 10) };
+  return { start: formatDate(start), end: formatDate(end) };
 
 }
 
@@ -7620,7 +7692,7 @@ function getCycleRange(cycle, forDate /* Date */) {
 
     const end = new Date(y, 11, 31);
 
-    return { start: start.toISOString().slice(0, 10), end: end.toISOString().slice(0, 10) };
+    return { start: formatDate(start), end: formatDate(end) };
 
   }
 
@@ -7636,7 +7708,7 @@ function getCycleRange(cycle, forDate /* Date */) {
 
     const end = new Date(y, em + 1, 0);
 
-    return { start: start.toISOString().slice(0, 10), end: end.toISOString().slice(0, 10) };
+    return { start: formatDate(start), end: formatDate(end) };
 
   }
 
@@ -7646,7 +7718,7 @@ function getCycleRange(cycle, forDate /* Date */) {
 
   const end = new Date(y, m + 1, 0);
 
-  return { start: start.toISOString().slice(0, 10), end: end.toISOString().slice(0, 10) };
+  return { start: formatDate(start), end: formatDate(end) };
 
 }
 
@@ -7730,7 +7802,7 @@ function toIsoDateOnly(d) {
   const dt = d instanceof Date ? d : new Date(d);
   if (Number.isNaN(dt.getTime())) return null;
   // Use UTC to avoid server-local shifts
-  return dt.toISOString().slice(0, 10);
+  return formatDate(dt);
 }
 
 function normalizeTime(v) {
@@ -8041,7 +8113,7 @@ router.get('/settings/work-hours', async (req, res) => {
 router.get('/ai/anomalies/top-today', async (req, res) => {
   try {
     const orgId = requireOrg(req, res); if (!orgId) return;
-    const today = new Date().toISOString().slice(0, 10);
+    const today = todayKey();
     const rows = await AIAnomaly.findAll({
       where: { date: today },
       attributes: [
@@ -8146,7 +8218,7 @@ router.post('/ai/anomalies/compute', async (req, res) => {
   try {
     const orgId = requireOrg(req, res); if (!orgId) return;
     const orgStaffIds = (await User.findAll({ where: { orgAccountId: orgId, role: 'staff' }, attributes: ['id'] })).map(u => u.id);
-    const dateIso = String(req.body?.date || new Date().toISOString().slice(0, 10));
+    const dateIso = String(req.body?.date || todayKey());
     const att = await Attendance.findAll({ where: { date: dateIso, userId: orgStaffIds }, order: [['userId', 'ASC'], ['createdAt', 'ASC']] });
 
     // Try AI provider first
@@ -8248,7 +8320,7 @@ router.post('/ai/reliability/compute', async (req, res) => {
 // Allocated leave balances for a given date's cycle (idempotent)
 router.post('/leave/allocate', async (req, res) => {
   try {
-    const dateIso = String(req.body?.date || req.query?.date || new Date().toISOString().slice(0, 10));
+    const dateIso = String(req.body?.date || req.query?.date || todayKey());
     const onDate = new Date(`${dateIso}T00:00:00`);
     if (Number.isNaN(onDate.getTime())) return res.status(400).json({ success: false, message: 'Invalid date' });
 
@@ -13138,7 +13210,7 @@ router.get('/dashboard', async (req, res) => {
 
     const activeStaff = await User.count({ where: { role: 'staff', active: true, orgAccountId: orgId } });
 
-    const today = new Date().toISOString().slice(0, 10);
+    const today = todayKey();
 
     const orgStaffIds = (await User.findAll({ where: { orgAccountId: orgId, role: 'staff' }, attributes: ['id'] })).map(u => u.id);
 
@@ -13240,7 +13312,7 @@ router.get('/dashboard/stats', async (req, res) => {
 
     const activeStaff = await User.count({ where: { role: 'staff', active: true, orgAccountId: orgId } });
 
-    const today = new Date().toISOString().slice(0, 10);
+    const today = todayKey();
 
     const orgStaffIds = (await User.findAll({ where: { orgAccountId: orgId, role: 'staff' }, attributes: ['id'] })).map(u => u.id);
 
@@ -13422,7 +13494,7 @@ router.get('/dashboard/attendance-chart', async (req, res) => {
 
       date.setDate(date.getDate() - i);
 
-      const dateStr = date.toISOString().slice(0, 10);
+      const dateStr = formatDate(date);
 
       const dayName = date.toLocaleDateString('en-US', { weekday: 'short' });
 
@@ -13555,7 +13627,7 @@ router.get('/dashboard/late-arrivals', async (req, res) => {
 
     const orgId = requireOrg(req, res); if (!orgId) return;
 
-    const today = new Date().toISOString().slice(0, 10);
+    const today = todayKey();
 
 
 
@@ -19988,7 +20060,7 @@ router.get('/geolocation', async (req, res) => {
 
     locationPings.forEach(ping => {
 
-      const userDate = new Date(ping.createdAt).toISOString().slice(0, 10);
+      const userDate = formatDate(new Date(ping.createdAt));
 
       const key = `${ping.userId}-${userDate}`;
 
@@ -20106,7 +20178,7 @@ router.get('/geolocation/stats', async (req, res) => {
 
 
 
-    const today = new Date().toISOString().slice(0, 10);
+    const today = todayKey();
 
 
 

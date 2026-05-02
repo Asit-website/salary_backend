@@ -64,7 +64,7 @@ router.post('/patrol/checkin', upload.fields([
         const cfg = JSON.parse(row.value);
         features = Object.assign(features, cfg?.features || {});
       }
-    } catch (_) {}
+    } catch (_) { }
 
     if (features.securityPhotoRequired && !created.photoUrl) {
       return res.status(400).json({ success: false, message: 'Photo required' });
