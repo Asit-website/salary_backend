@@ -995,9 +995,8 @@ router.post('/punch-in', upload.single('photo'), async (req, res) => {
         geofence: geoCheck.nearest || null,
       });
     }
-    if (!req.file) {
-      return res.status(400).json({ success: false, message: 'Photo is required' });
-    }
+    // const photoUrl = req.file ? `/uploads/${req.file.filename}` : null;
+
 
     const key = todayKey();
 
@@ -1017,7 +1016,8 @@ router.post('/punch-in', upload.single('photo'), async (req, res) => {
         return res.status(409).json({ success: false, message: 'Punch-out after latest allowed time' });
       }
     }
-    const photoUrl = `/uploads/${req.file.filename}`;
+    const photoUrl = req.file ? `/uploads/${req.file.filename}` : null;
+
 
     const address = req.body?.address ? String(req.body.address) : null;
     const record = existing
@@ -1129,9 +1129,8 @@ router.post('/punch-out', upload.single('photo'), async (req, res) => {
     if (!canTrackOut) {
       return res.status(409).json({ success: false, message: 'Punch-out disabled by your template' });
     }
-    if (!req.file) {
-      return res.status(400).json({ success: false, message: 'Photo is required' });
-    }
+    // const photoUrl = req.file ? `/uploads/${req.file.filename}` : null;
+
 
     const key = todayKey();
     const lat = Number(req.body?.lat ?? req.body?.latitude);
@@ -1190,7 +1189,8 @@ router.post('/punch-out', upload.single('photo'), async (req, res) => {
         }
       }
     }
-    const photoUrl = `/uploads/${req.file.filename}`;
+    const photoUrl = req.file ? `/uploads/${req.file.filename}` : null;
+
 
     let breakTotalSeconds = Number(record.breakTotalSeconds || 0);
     if (record.isOnBreak && record.breakStartedAt) {
