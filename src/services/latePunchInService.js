@@ -46,7 +46,7 @@ class LatePunchInService {
   /**
    * Main calculation logic for Late Punch-In penalty
    */
-  async calculateLatePenalty(attendance, orgAccount, daysInMonth = 30, now = new Date()) {
+  async calculateLatePenalty(attendance, orgAccount, daysInMonth = 30, now = new Date(), dailySalaryArg = null) {
     const { userId, orgAccountId, date: dateKey, punchedInAt } = attendance;
     if (!punchedInAt) return { latePunchInMinutes: 0, latePunchInAmount: 0, latePunchInRuleId: null };
 
@@ -97,8 +97,14 @@ class LatePunchInService {
 
     let deductionAmount = 0;
     const user = await User.findByPk(userId);
-    const baseSalary = Number(user?.grossSalary || user?.basicSalary || 0) + (user?.grossSalary ? 0 : Number(user?.da || 0));
-    const dailySalary = baseSalary / daysInMonth;
+    let sv = {};
+    if (user?.salaryValues) {
+      try { sv = typeof user.salaryValues === 'string' ? JSON.parse(user.salaryValues) : user.salaryValues; } catch (e) { sv = {}; }
+    }
+    const basic = Number(user?.basicSalary || 0) || Number(sv?.earnings?.basic_salary || sv?.earnings?.BASIC_SALARY || 0);
+    const da = Number(user?.da || 0) || Number(sv?.earnings?.da || sv?.earnings?.DA || 0);
+    const baseSalary = Number(user?.grossSalary || 0) || Number(sv?.earnings?.gross_salary || sv?.earnings?.GROSS_SALARY || 0) || (basic + da);
+    const dailySalary = dailySalaryArg || (baseSalary / daysInMonth);
 
     const pType = finalRule.penaltyType || 'SLABS';
     let thresholds = finalRule.thresholds;
@@ -201,7 +207,7 @@ class LatePunchInService {
     for (const row of rows) {
       // 1. Calculate raw penalty for this specific day
       // We pass 30 as default daysInMonth, but we primarily care about the matched rule and tier
-      const lp = await this.calculateLatePenalty(row, { id: orgAccountId }, 30, new Date());
+      const lp = await this.calculateLatePenalty(row, { id: orgAccountId }, 30, new Date(), dailySalary);
 
       row.latePunchInMinutes = lp.latePunchInMinutes || 0;
       row.latePunchInAmount = 0; // Default to 0, will set if threshold met

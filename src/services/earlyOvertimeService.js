@@ -159,7 +159,13 @@ async function calculateEarlyOvertime(params, orgAccountArg, daysInMonthArg = 30
     earlyOvertimeAmount = (earlyOvertimeMinutes / 60) * rewardValue;
   } else if (rewardType === 'SALARY_MULTIPLIER' || rewardType === 'MULTIPLIER') {
     const user = await User.findByPk(userId);
-    const baseSalary = Number(user?.basicSalary || 0) + Number(user?.da || 0);
+    let sv = {};
+    if (user?.salaryValues) {
+      try { sv = typeof user.salaryValues === 'string' ? JSON.parse(user.salaryValues) : user.salaryValues; } catch (e) { sv = {}; }
+    }
+    const basic = Number(user?.basicSalary || 0) || Number(sv?.earnings?.basic_salary || sv?.earnings?.BASIC_SALARY || 0);
+    const da = Number(user?.da || 0) || Number(sv?.earnings?.da || sv?.earnings?.DA || 0);
+    const baseSalary = basic + da;
     const daysInMonth = daysInMonthArg || 30;
     const hourlySalary = daysInMonth > 0 ? (baseSalary / (daysInMonth * 8)) : 0;
 
@@ -167,7 +173,7 @@ async function calculateEarlyOvertime(params, orgAccountArg, daysInMonthArg = 30
       earlyOvertimeAmount = 0;
     } else {
       const multiplier = Number(rewardValue) || 1;
-      earlyOvertimeAmount = hourlySalary * multiplier;
+      earlyOvertimeAmount = (hourlySalary * multiplier) * (earlyOvertimeMinutes / 60);
       console.log(`[EarlyOvertimeService] Debug - User ${userId} BaseSalary: ${baseSalary}, Hourly: ${hourlySalary.toFixed(2)}, Multiplier: ${multiplier}, Result: ${earlyOvertimeAmount.toFixed(2)}`);
     }
   }

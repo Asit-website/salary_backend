@@ -46,7 +46,7 @@ class EarlyExitService {
   /**
    * Main calculation logic for Early Exit
    */
-  async calculateEarlyExit(attendance, orgAccount, daysInMonth = 30, now = new Date()) {
+  async calculateEarlyExit(attendance, orgAccount, daysInMonth = 30, now = new Date(), dailySalaryArg = null) {
     const { userId, orgAccountId, date: dateKey, punchedOutAt } = attendance;
     if (!punchedOutAt) return { earlyExitMinutes: 0, earlyExitAmount: 0, earlyExitRuleId: null };
 
@@ -102,9 +102,19 @@ class EarlyExitService {
 
     // 3. Calculate Deduction Amount (Only if rule exists and early exit)
     let deductionAmount = 0;
-    const user = await User.findByPk(userId);
-    const baseSalary = Number(user?.grossSalary || user?.basicSalary || 0) + (user?.grossSalary ? 0 : Number(user?.da || 0));
-    const dailySalary = baseSalary / daysInMonth;
+    let dailySalary = dailySalaryArg;
+
+    if (!dailySalary) {
+      const user = await User.findByPk(userId);
+      let sv = {};
+      if (user?.salaryValues) {
+        try { sv = typeof user.salaryValues === 'string' ? JSON.parse(user.salaryValues) : user.salaryValues; } catch (e) { sv = {}; }
+      }
+      const basic = Number(user?.basicSalary || 0) || Number(sv?.earnings?.basic_salary || sv?.earnings?.BASIC_SALARY || 0);
+      const da = Number(user?.da || 0) || Number(sv?.earnings?.da || sv?.earnings?.DA || 0);
+      const gross = Number(user?.grossSalary || 0) || Number(sv?.earnings?.gross_salary || sv?.earnings?.GROSS_SALARY || 0) || (basic + da);
+      dailySalary = (daysInMonth > 0) ? (gross / daysInMonth) : 0;
+    }
 
     // A. Priority 1: Full Day Deduction
     if (finalRule.deductFullDay && finalRule.fullDayThresholdMinutes && earlyExitMinutes >= finalRule.fullDayThresholdMinutes) {
@@ -134,8 +144,9 @@ class EarlyExitService {
         if (rewardType === 'FIXED_AMOUNT') {
           deductionAmount = rewardValue;
         } else if (rewardType === 'SALARY_MULTIPLIER') {
-          const hourlySalary = baseSalary / (daysInMonth * 8);
-          deductionAmount = hourlySalary * rewardValue;
+          const hourlySalary = dailySalary / 8;
+          const durationHours = earlyExitMinutes / 60;
+          deductionAmount = hourlySalary * rewardValue * durationHours;
         }
       }
     }

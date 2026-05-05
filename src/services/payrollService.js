@@ -333,14 +333,23 @@ async function calculateSalary(userId, monthKey) {
 
     // Backfill overtime and early exit info for legacy lines
     try {
-      const basicSalary = Number(earnings?.basic_salary || u.basicSalary || 0) + Number(earnings?.da || u.da || 0);
+      let sv = {};
+      if (u?.salaryValues) {
+        try { sv = typeof u.salaryValues === 'string' ? JSON.parse(u.salaryValues) : u.salaryValues; } catch (e) { sv = {}; }
+      }
+      const basic = Number(earnings?.basic_salary || u.basicSalary || 0) || Number(sv?.earnings?.basic_salary || sv?.earnings?.BASIC_SALARY || 0);
+      const da = Number(earnings?.da || u.da || 0) || Number(sv?.earnings?.da || sv?.earnings?.DA || 0);
+      const basicSalaryBase = basic + da;
+      const grossSalaryBase = Number(earnings?.gross_salary || u.grossSalary || 0) || Number(sv?.earnings?.gross_salary || sv?.earnings?.GROSS_SALARY || 0) || basicSalaryBase;
+
       const orgAccount = await OrgAccount.findByPk(u.orgAccountId);
 
-      const [ee, br, eot, lp] = await Promise.all([
-        computeEarlyExitMeta({ userId: u.id, monthKey, orgAccount }),
-        computeBreakMeta({ userId: u.id, monthKey, orgAccount }),
+      const [ee, br, eot, lp, ot] = await Promise.all([
+        computeEarlyExitMeta({ userId: u.id, monthKey, orgAccount, baseSalary: grossSalaryBase }),
+        computeBreakMeta({ userId: u.id, monthKey, orgAccount, baseSalary: grossSalaryBase }),
         computeEarlyOvertimeMeta({ userId: u.id, monthKey, orgAccount }),
-        computeLatePenaltyMeta({ userId: u.id, monthKey, orgAccount, baseSalary: basicSalary })
+        computeLatePenaltyMeta({ userId: u.id, monthKey, orgAccount, baseSalary: grossSalaryBase }),
+        computeOvertimeMeta({ userId: u.id, monthKey, overtimeBaseSalary: basicSalaryBase, orgAccount })
       ]);
 
       const fl = require('fs');
@@ -365,6 +374,10 @@ async function calculateSalary(userId, monthKey) {
         deductions = { ...(deductions || {}), late_punchin_penalty: lp.latePunchInPenalty };
       }
 
+      if (ot.overtimePay > 0 && !Number(earnings?.overtime_pay || 0)) {
+        earnings = { ...(earnings || {}), overtime_pay: ot.overtimePay };
+      }
+
       attendanceSummary = {
         ...(attendanceSummary || {}),
         earlyExitMinutes: Number(ee.earlyExitMinutes || 0),
@@ -377,6 +390,8 @@ async function calculateSalary(userId, monthKey) {
         latePunchInPenalty: Number(lp.latePunchInPenalty || 0),
         latePenaltyDays: Number(lp.latePenaltyDays || 0),
         lateCount: Number(lp.lateCount || 0),
+        overtimeMinutes: Number(ot.overtimeMinutes || 0),
+        overtimePay: Number(ot.overtimePay || 0),
       };
 
       // Preserve manual totals if they exist and earnings/deductions are missing or zeroed out (prevents zeroing out historical entries)
@@ -751,8 +766,8 @@ async function calculateSalary(userId, monthKey) {
       let val = 0.5;
       if (isH) val *= (rule?.holidayMultiplier || 1);
       else if (isWO) val *= (rule?.weeklyOffMultiplier || 1);
-      
-      present += val; 
+
+      present += val;
       continue;
     }
     if (s === 'leave') { leave += 1; if (paidLeaveSet.has(key)) { paidLeaveCount += 1; paidLeaveDates.push(key); } else if (unpaidLeaveSet.has(key)) unpaidLeave += 1; continue; }

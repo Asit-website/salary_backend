@@ -5,7 +5,7 @@ const dayjs = require('dayjs');
 /**
  * Calculates break deduction for a specific attendance record.
  */
-async function calculateBreakDeduction(attendance, orgAccount, daysInMonth = 30, nowArg = new Date()) {
+async function calculateBreakDeduction(attendance, orgAccount, daysInMonth = 30, nowArg = new Date(), dailySalaryArg = null) {
   try {
     const userId = attendance.userId;
     const orgAccountId = attendance.orgAccountId || orgAccount?.id;
@@ -46,13 +46,18 @@ async function calculateBreakDeduction(attendance, orgAccount, daysInMonth = 30,
     }
 
     // 3. Fetch Staff Salary for Multiplier
-    let dailySalary = 0;
-    if (effectiveRule.deductionType === 'SALARY_MULTIPLIER' || effectiveRule.deductHalfDay || effectiveRule.deductFullDay) {
-      const profile = await StaffProfile.findOne({ where: { userId } });
-      if (profile) {
-        const salaryBase = Number(profile.grossSalary || 0);
-        dailySalary = (daysInMonth > 0) ? (salaryBase / daysInMonth) : 0;
+    let dailySalary = dailySalaryArg;
+    if (!dailySalary && (effectiveRule.deductionType === 'SALARY_MULTIPLIER' || effectiveRule.deductHalfDay || effectiveRule.deductFullDay)) {
+      const { User } = require('../models');
+      const user = await User.findByPk(userId);
+      let sv = {};
+      if (user?.salaryValues) {
+        try { sv = typeof user.salaryValues === 'string' ? JSON.parse(user.salaryValues) : user.salaryValues; } catch (e) { sv = {}; }
       }
+      const basic = Number(user?.basicSalary || 0) || Number(sv?.earnings?.basic_salary || sv?.earnings?.BASIC_SALARY || 0);
+      const da = Number(user?.da || 0) || Number(sv?.earnings?.da || sv?.earnings?.DA || 0);
+      const gross = Number(user?.grossSalary || 0) || Number(sv?.earnings?.gross_salary || sv?.earnings?.GROSS_SALARY || 0) || (basic + da);
+      dailySalary = (daysInMonth > 0) ? (gross / daysInMonth) : 0;
     }
 
     let deductionAmount = 0;
@@ -86,7 +91,10 @@ async function calculateBreakDeduction(attendance, orgAccount, daysInMonth = 30,
           deductionAmount = Number(tier.rewardValue || 0);
         } else if (tier.rewardType === 'SALARY_MULTIPLIER' || (effectiveRule.deductionType === 'SALARY_MULTIPLIER' && !tier.rewardType)) {
           const multiplier = Number(tier.rewardValue || 1);
-          deductionAmount = dailySalary * multiplier;
+          const hourlySalary = dailySalary / 8;
+          excessBreakMinutes = totalBreakMinutes - Number(tier.minMinutes);
+          const durationHours = excessBreakMinutes / 60;
+          deductionAmount = hourlySalary * multiplier * durationHours;
         } else {
           // Default to rule level deduction
           deductionAmount = Number(tier.rewardValue || 0);

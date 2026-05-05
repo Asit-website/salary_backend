@@ -2420,15 +2420,11 @@ router.post('/payroll/:cycleId/compute', async (req, res) => {
     for (const u of staff) {
 
       let sv = parseMaybe(u.salaryValues || u.salary_values || null);
-
       const sd = {
-
-        basicSalary: Number(u.basicSalary || 0),
-
+        basicSalary: Number(u.basicSalary || 0) || Number(sv?.earnings?.basic_salary || sv?.earnings?.BASIC_SALARY || 0),
         hra: Number(u.hra || 0),
-
-        da: Number(u.da || 0),
-
+        da: Number(u.da || 0) || Number(sv?.earnings?.da || sv?.earnings?.DA || 0),
+        grossSalary: Number(u.grossSalary || 0) || Number(sv?.earnings?.gross_salary || sv?.earnings?.GROSS_SALARY || 0) || ( (Number(u.basicSalary || 0) || Number(sv?.earnings?.basic_salary || sv?.earnings?.BASIC_SALARY || 0)) + (Number(u.da || 0) || Number(sv?.earnings?.da || sv?.earnings?.DA || 0)) ),
         specialAllowance: Number(u.specialAllowance || 0),
 
         conveyanceAllowance: Number(u.conveyanceAllowance || 0),
@@ -2464,23 +2460,15 @@ router.post('/payroll/:cycleId/compute', async (req, res) => {
 
 
       const baseE = svRootE || {
-
         basic_salary: sd.basicSalary,
-
         hra: sd.hra,
-
         da: sd.da,
-
+        gross_salary: sd.grossSalary,
         special_allowance: sd.specialAllowance,
-
         conveyance_allowance: sd.conveyanceAllowance,
-
         medical_allowance: sd.medicalAllowance,
-
         telephone_allowance: sd.telephoneAllowance,
-
         other_allowances: sd.otherAllowances,
-
       };
 
       const baseI = svRootI || {};
@@ -2861,7 +2849,7 @@ router.post('/payroll/:cycleId/compute', async (req, res) => {
       let multiplierBreakdown = [];
       let paidLeaveDates = [];
       const daysInMonth = end.getDate();
-      const dailySalary = (Number(e.basic_salary || sd.basicSalary || 0) + Number(e.da || sd.da || 0)) / daysInMonth;
+      const dailySalary = (sd.grossSalary) / daysInMonth;
       const now = new Date();
       const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
       const isCurrentMonth = Number(yy) === now.getFullYear() && Number(mm) === (now.getMonth() + 1);
@@ -3097,7 +3085,7 @@ router.post('/payroll/:cycleId/compute', async (req, res) => {
       }
 
       const overtimeHours = totalOvertimeMinutes / 60;
-      let overtimePay = totalOvertimeAmount;
+      const overtimePay = totalOvertimeAmount;
       const overtimeBaseSalary = Number(e?.basic_salary || sd.basicSalary || 0) + Number(e?.da || sd.da || 0);
       const hourlyRate = daysInMonth > 0 ? (overtimeBaseSalary / (daysInMonth * 8)) : 0;
 
@@ -3139,13 +3127,13 @@ router.post('/payroll/:cycleId/compute', async (req, res) => {
 
       for (const a of atts) {
         // ALWAYS RE-CALCULATE if we are re-generating payroll to ensure multiplier fix is applied
-        const eeRes = await earlyExitService.calculateEarlyExit(a, orgAccountRecord, daysInMonth, a.punchedOutAt);
+        const eeRes = await earlyExitService.calculateEarlyExit(a, orgAccountRecord, daysInMonth, a.punchedOutAt, dailySalary);
         totalEarlyExitAmount += eeRes.earlyExitAmount;
         totalEarlyExitMinutes += eeRes.earlyExitMinutes;
 
         // NEW: Break Deduction Recalculation
         const breakService = require('../services/breakService');
-        const breakRes = await breakService.calculateBreakDeduction(a, orgAccountRecord, daysInMonth, a.punchedOutAt);
+        const breakRes = await breakService.calculateBreakDeduction(a, orgAccountRecord, daysInMonth, a.punchedOutAt, dailySalary);
 
         // Prioritize already stored amount if regeneration is happening
         const finalBreakAmt = Math.max(Number(a.breakDeductionAmount || a.break_deduction_amount || 0), Number(breakRes.breakDeductionAmount || 0));
@@ -8182,12 +8170,19 @@ router.get('/attendance/month', async (req, res) => {
     });
 
     const daysInMonth = last.getDate();
-    const dailySalary = (Number(user.basicSalary || 0) + Number(user.da || 0)) / daysInMonth;
+    let sv = {};
+    if (user.salaryValues) {
+      try { sv = typeof user.salaryValues === 'string' ? JSON.parse(user.salaryValues) : user.salaryValues; } catch (e) { sv = {}; }
+    }
+    const basic = Number(user.basicSalary || 0) || Number(sv?.earnings?.basic_salary || sv?.earnings?.BASIC_SALARY || 0);
+    const da = Number(user.da || 0) || Number(sv?.earnings?.da || sv?.earnings?.DA || 0);
+    const gross = Number(user.grossSalary || 0) || Number(sv?.earnings?.gross_salary || sv?.earnings?.GROSS_SALARY || 0) || (basic + da);
+    const dailySalary = gross / daysInMonth;
     const latePunchInService = require('../services/latePunchInService');
     const lpResult = await latePunchInService.calculateMonthlyLateDetails(user.id, user.orgAccountId, month, rows, dailySalary);
 
-    const toTime = (dt) => (dt ? new Date(dt).toTimeString().slice(0, 8) : null);
-    const data = lpResult.rows.map(r => {
+    const data = [];
+    for (const r of lpResult.rows) {
       let status = r.status || 'absent';
       if (Number(r.breakTotalSeconds) === -1) status = 'leave';
       else if (Number(r.breakTotalSeconds) === -2) status = 'half_day';
@@ -8197,7 +8192,11 @@ router.get('/attendance/month', async (req, res) => {
       } else if (r.punchedInAt || r.punchedOutAt) {
         status = r.punchedOutAt ? 'half_day' : 'present';
       }
-      return {
+      // Re-calculate penalties on the fly for UI consistency
+      const eeRes = await require('../services/earlyExitService').calculateEarlyExit(r, orgAccountRecord, daysInMonth, r.punchedOutAt, dailySalary);
+      const breakRes = await require('../services/breakService').calculateBreakDeduction(r, orgAccountRecord, daysInMonth, r.punchedOutAt, dailySalary);
+
+      data.push({
         id: r.id, date: r.date, checkIn: toTime(r.punchedInAt), checkOut: toTime(r.punchedOutAt), status,
         punchInPhotoUrl: r.punchInPhotoUrl, punchOutPhotoUrl: r.punchOutPhotoUrl,
         user: { name: r.user?.profile?.name || null },
@@ -8205,12 +8204,12 @@ router.get('/attendance/month', async (req, res) => {
         latePunchInMinutes: r.latePunchInMinutes,
         latePunchInAmount: r.latePunchInAmount,
         lateOccurrence: r.lateOccurrence,
-        earlyExitMinutes: r.earlyExitMinutes, earlyExitAmount: r.earlyExitAmount,
-        excessBreakMinutes: r.excessBreakMinutes, breakDeductionAmount: r.breakDeductionAmount,
+        earlyExitMinutes: eeRes.earlyExitMinutes, earlyExitAmount: eeRes.earlyExitAmount,
+        excessBreakMinutes: breakRes.excessBreakMinutes, breakDeductionAmount: breakRes.breakDeductionAmount,
         overtimeMinutes: r.overtimeMinutes, overtimeAmount: r.overtimeAmount,
         earlyOvertimeMinutes: r.earlyOvertimeMinutes, earlyOvertimeAmount: r.earlyOvertimeAmount,
-      };
-    });
+      });
+    }
     return res.json({ success: true, data });
   } catch (e) {
     console.error('Attendance month error:', e);
@@ -8241,7 +8240,14 @@ router.get('/staff/:id/attendance', async (req, res) => {
     });
 
     const daysInMonth = last.getDate();
-    const dailySalary = (Number(user.basicSalary || 0) + Number(user.da || 0)) / daysInMonth;
+    let sv = {};
+    if (user.salaryValues) {
+      try { sv = typeof user.salaryValues === 'string' ? JSON.parse(user.salaryValues) : user.salaryValues; } catch (e) { sv = {}; }
+    }
+    const basic = Number(user.basicSalary || 0) || Number(sv?.earnings?.basic_salary || sv?.earnings?.BASIC_SALARY || 0);
+    const da = Number(user.da || 0) || Number(sv?.earnings?.da || sv?.earnings?.DA || 0);
+    const gross = Number(user.grossSalary || 0) || Number(sv?.earnings?.gross_salary || sv?.earnings?.GROSS_SALARY || 0) || (basic + da);
+    const dailySalary = gross / daysInMonth;
     const latePunchInService = require('../services/latePunchInService');
     const lpResult = await latePunchInService.calculateMonthlyLateDetails(user.id, user.orgAccountId, month, rows, dailySalary);
 
@@ -8263,9 +8269,11 @@ router.get('/staff/:id/attendance', async (req, res) => {
         }
       }
 
-      // Re-calculate OT on the fly to reflect latest rules
+      // Re-calculate penalties on the fly to reflect latest logic/rules
       const workHours = Number(r.totalWorkHours || 0);
       const otRes = await calculateOvertime({ ...r.toJSON(), totalWorkHours: workHours }, orgAccountRecord, daysInMonth);
+      const eeRes = await require('../services/earlyExitService').calculateEarlyExit(r, orgAccountRecord, daysInMonth, r.punchedOutAt, dailySalary);
+      const breakRes = await require('../services/breakService').calculateBreakDeduction(r, orgAccountRecord, daysInMonth, r.punchedOutAt, dailySalary);
 
       data.push({
         id: r.id, date: r.date, checkIn: toTime(r.punchedInAt), checkOut: toTime(r.punchedOutAt), status,
@@ -8274,8 +8282,8 @@ router.get('/staff/:id/attendance', async (req, res) => {
         latePunchInMinutes: r.latePunchInMinutes,
         latePunchInAmount: r.latePunchInAmount,
         lateOccurrence: r.lateOccurrence,
-        earlyExitMinutes: r.earlyExitMinutes, earlyExitAmount: r.earlyExitAmount,
-        excessBreakMinutes: r.excessBreakMinutes, breakDeductionAmount: r.breakDeductionAmount,
+        earlyExitMinutes: eeRes.earlyExitMinutes, earlyExitAmount: eeRes.earlyExitAmount,
+        excessBreakMinutes: breakRes.excessBreakMinutes, breakDeductionAmount: breakRes.breakDeductionAmount,
         overtimeMinutes: otRes.overtimeMinutes, overtimeAmount: otRes.overtimeAmount,
         earlyOvertimeMinutes: r.earlyOvertimeMinutes, earlyOvertimeAmount: r.earlyOvertimeAmount,
       });

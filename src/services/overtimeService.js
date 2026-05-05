@@ -218,7 +218,13 @@ async function calculateOvertime(params, orgAccountArg, daysInMonthArg = 30, now
   const rewardValue = tier?.rewardValue || tier?.value || 0;
 
   const user = await User.findByPk(userId);
-  const baseSalary = Number(user?.basicSalary || 0) + Number(user?.da || 0);
+  let sv = {};
+  if (user?.salaryValues) {
+    try { sv = typeof user.salaryValues === 'string' ? JSON.parse(user.salaryValues) : user.salaryValues; } catch (e) { sv = {}; }
+  }
+  const basic = Number(user?.basicSalary || 0) || Number(sv?.earnings?.basic_salary || sv?.earnings?.BASIC_SALARY || 0);
+  const da = Number(user?.da || 0) || Number(sv?.earnings?.da || sv?.earnings?.DA || 0);
+  const baseSalary = basic + da;
   const daysInMonth = daysInMonthArg || 30;
 
   if (rewardType === 'FIXED_AMOUNT') {
@@ -233,7 +239,7 @@ async function calculateOvertime(params, orgAccountArg, daysInMonthArg = 30, now
       overtimeAmount = 0;
     } else {
       const multiplier = Number(rewardValue) || Number(finalRule.multiplier) || 1;
-      overtimeAmount = hourlySalary * multiplier;
+      overtimeAmount = (hourlySalary * multiplier) * (overtimeMinutes / 60);
     }
   }
 
