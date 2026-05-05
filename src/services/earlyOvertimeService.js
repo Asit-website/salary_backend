@@ -92,7 +92,7 @@ async function getEarlyOvertimeMinutes(attendance, rule, shiftTemplate) {
 /**
  * Calculates early overtime based on a specific Rule or fallback ShiftTemplate.
  */
-async function calculateEarlyOvertime(params, orgAccountArg, nowArg, daysInMonthArg = 30) {
+async function calculateEarlyOvertime(params, orgAccountArg, daysInMonthArg = 30, nowArg = null) {
   const attendance = (params.toJSON ? params.toJSON() : params);
   const now = nowArg || new Date();
 

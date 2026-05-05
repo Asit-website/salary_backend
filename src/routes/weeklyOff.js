@@ -56,4 +56,8 @@ router.get('/my', requireRole(['staff']), async (req, res) => {
   }
 });
 
-module.exports = router;
+module.exports = {
+  router,
+  getMonthWeekNumber,
+  isWeeklyOffForDate
+};

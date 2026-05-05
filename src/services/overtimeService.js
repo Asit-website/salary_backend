@@ -133,9 +133,18 @@ async function getOvertimeMinutes(attendance, rule, shiftTemplate) {
 /**
  * Calculates overtime based on a specific Rule or fallback ShiftTemplate.
  */
-async function calculateOvertime(params, orgAccountArg, nowArg, daysInMonthArg = 30) {
+async function calculateOvertime(params, orgAccountArg, daysInMonthArg = 30, nowArg = null) {
   const attendance = (params.toJSON ? params.toJSON() : params);
-  const totalWorkMinutes = Math.floor((attendance.totalWorkHours || 0) * 60);
+
+  // Robust derivation of totalWorkHours if missing or 0
+  let totalWorkHours = Number(attendance.totalWorkHours || 0);
+  if (totalWorkHours <= 0 && attendance.punchedInAt && attendance.punchedOutAt) {
+    const durMs = new Date(attendance.punchedOutAt) - new Date(attendance.punchedInAt);
+    totalWorkHours = Math.max(0, durMs / 3600000);
+  }
+  attendance.totalWorkHours = totalWorkHours;
+
+  const totalWorkMinutes = Math.floor(totalWorkHours * 60);
   const now = nowArg || new Date();
 
   // Ensure we have numbers for IDs
@@ -201,7 +210,6 @@ async function calculateOvertime(params, orgAccountArg, nowArg, daysInMonthArg =
   }
 
   // 3. Calculate Reward (Amount) based on Tiers
-  // Find the highest applicable threshold based on OVERTIME MINUTES (not total work minutes)
   const sortedTiers = [...(thresholds || [])].sort((a, b) => b.minMinutes - a.minMinutes);
   const tier = sortedTiers.find(t => overtimeMinutes >= t.minMinutes);
 
@@ -209,44 +217,42 @@ async function calculateOvertime(params, orgAccountArg, nowArg, daysInMonthArg =
   const rewardType = tier?.rewardType || (finalRule && finalRule.rewardType);
   const rewardValue = tier?.rewardValue || tier?.value || 0;
 
+  const user = await User.findByPk(userId);
+  const baseSalary = Number(user?.basicSalary || 0) + Number(user?.da || 0);
+  const daysInMonth = daysInMonthArg || 30;
+
   if (rewardType === 'FIXED_AMOUNT') {
     overtimeAmount = rewardValue;
   } else if (rewardType === 'FIXED_AMOUNT_PER_HOUR') {
     overtimeAmount = (overtimeMinutes / 60) * rewardValue;
   } else if (rewardType === 'SALARY_MULTIPLIER' || rewardType === 'MULTIPLIER') {
-    const user = await User.findByPk(userId);
-    // REVERTED: OT uses (Basic + DA) as the base, not Gross.
-    const baseSalary = Number(user?.basicSalary || 0) + Number(user?.da || 0);
-    const daysInMonth = daysInMonthArg || 30; // Standard month units
     const hourlySalary = daysInMonth > 0 ? (baseSalary / (daysInMonth * 8)) : 0;
 
-    // If salary is missing, we can't calculate a multiplier amount, but we should log it
     if (hourlySalary <= 0) {
-      console.log(`[OvertimeService] Warning: Salary Multiplier rule used for user ${userId} but no base salary found (Found: ${baseSalary}).`);
+      console.log(`[OvertimeService] Warning: Salary Multiplier rule used for user ${userId} but no base salary found.`);
       overtimeAmount = 0;
     } else {
       const multiplier = Number(rewardValue) || Number(finalRule.multiplier) || 1;
-      // NEW FIXED SLAB LOGIC: Only multiply by the multiplier (no actual hours)
       overtimeAmount = hourlySalary * multiplier;
-      console.log(`[OvertimeService] Debug - User ${userId} BaseSalary(Gross): ${baseSalary}, Hourly: ${hourlySalary.toFixed(2)}, Multiplier: ${multiplier}, Result: ${overtimeAmount.toFixed(2)}`);
     }
   }
 
-  // Handle Half/Full Day Bonuses if using a real rule
+  // Handle Half/Full Day Bonuses - These should OVERRIDE the base amount if they result in more pay,
+  // or as per user request: "lekin agar 4 hour... to full day milega" implies override.
   if (finalRule && finalRule.id) {
-    if (finalRule.giveHalfDayOvertime && finalRule.halfDayThresholdMinutes) {
-      if (totalWorkMinutes >= finalRule.halfDayThresholdMinutes) {
-        const user = await User.findByPk(userId);
-        const dailyRate = (Number(user?.grossSalary || 0)) / (daysInMonthArg || 30);
-        overtimeAmount += (dailyRate / 2);
-      }
-    }
+    const dailyRate = daysInMonth > 0 ? (baseSalary / daysInMonth) : 0;
 
     if (finalRule.giveFullDayOvertime && finalRule.fullDayThresholdMinutes) {
-      if (totalWorkMinutes >= finalRule.fullDayThresholdMinutes) {
-        const user = await User.findByPk(userId);
-        const dailyRate = (Number(user?.grossSalary || 0)) / (daysInMonthArg || 30);
-        overtimeAmount += dailyRate;
+      if (overtimeMinutes >= finalRule.fullDayThresholdMinutes) {
+        overtimeAmount = dailyRate;
+      } else if (finalRule.giveHalfDayOvertime && finalRule.halfDayThresholdMinutes) {
+        if (overtimeMinutes >= finalRule.halfDayThresholdMinutes) {
+          overtimeAmount = dailyRate / 2;
+        }
+      }
+    } else if (finalRule.giveHalfDayOvertime && finalRule.halfDayThresholdMinutes) {
+      if (overtimeMinutes >= finalRule.halfDayThresholdMinutes) {
+        overtimeAmount = dailyRate / 2;
       }
     }
   }

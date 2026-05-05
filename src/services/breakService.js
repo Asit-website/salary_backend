@@ -5,7 +5,7 @@ const dayjs = require('dayjs');
 /**
  * Calculates break deduction for a specific attendance record.
  */
-async function calculateBreakDeduction(attendance, orgAccount, nowArg = new Date(), daysInMonth = 30) {
+async function calculateBreakDeduction(attendance, orgAccount, daysInMonth = 30, nowArg = new Date()) {
   try {
     const userId = attendance.userId;
     const orgAccountId = attendance.orgAccountId || orgAccount?.id;

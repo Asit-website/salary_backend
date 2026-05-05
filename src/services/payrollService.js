@@ -9,16 +9,17 @@ const {
   Attendance, LeaveRequest, WeeklyOffTemplate, StaffWeeklyOffAssignment,
   HolidayTemplate, HolidayDate, StaffHolidayAssignment, PayrollCycle, PayrollLine,
   AppSetting, StaffLoan, OrgAccount, StaffSalesIncentive, SalesIncentiveRule,
-  AttendanceAutomationRule, LeaveEncashment, StaffAdvance, TenureBonusRule, StaffTenureBonusAssignment
+  AttendanceAutomationRule, LeaveEncashment, StaffAdvance, TenureBonusRule, StaffTenureBonusAssignment,
+  HolidayWorkPayRule, StaffHolidayWorkPayAssignment
 } = require('../models');
+const holidayWorkPayService = require('./holidayWorkPayService');
 
 const categoryNames = {
   'cl': 'Casual Leave',
   'sl': 'Sick Leave',
   'el': 'Earned Leave',
   'ml': 'Maternity Leave',
-  'pt': 'Paternity Leave',
-  'unpaid': 'Unpaid Leave'
+  'pt': 'Paternity Leave'
 };
 
 function getMonthRange(monthKey) {
@@ -62,12 +63,10 @@ async function computeOvertimeMeta({ userId, monthKey, overtimeBaseSalary, orgAc
       let otAmount = Number(row.overtimeAmount !== undefined ? row.overtimeAmount : (row.getDataValue ? row.getDataValue('overtime_amount') : (row.overtime_amount || 0)));
       let otMinutes = Number(row.overtimeMinutes !== undefined ? row.overtimeMinutes : (row.getDataValue ? row.getDataValue('overtime_minutes') : (row.overtime_minutes || 0)));
 
-      // If amount is missing but rule exists, calculate it
-      if (orgAccount?.overtimeRuleId && otAmount <= 0 && otMinutes > 0) {
-        const result = await calculateOvertime(row, orgAccount, row.punchedOutAt, daysInMonth);
-        otAmount = result.overtimeAmount;
-        otMinutes = result.overtimeMinutes;
-      }
+      // Always re-calculate to ensure latest logic and correct daysInMonth are applied
+      const result = await calculateOvertime(row, orgAccount, daysInMonth);
+      otAmount = result.overtimeAmount;
+      otMinutes = result.overtimeMinutes;
 
       totalOvertimeMinutes += otMinutes;
       totalOvertimePay += otAmount;
@@ -111,7 +110,7 @@ async function computeEarlyOvertimeMeta({ userId, monthKey, orgAccount }) {
     let eotMinutes = Number(row.earlyOvertimeMinutes !== undefined ? row.earlyOvertimeMinutes : (row.getDataValue ? row.getDataValue('early_overtime_minutes') : (row.early_overtime_minutes || 0)));
 
     if (orgAccount?.earlyOvertimeRuleId && eotAmount <= 0 && eotMinutes > 0) {
-      const result = await calculateEarlyOvertime(row, orgAccount, row.punchedInAt, daysInMonth);
+      const result = await calculateEarlyOvertime(row, orgAccount, daysInMonth, row.punchedInAt);
       eotAmount = result.earlyOvertimeAmount;
       eotMinutes = result.earlyOvertimeMinutes;
     }
@@ -145,7 +144,7 @@ async function computeEarlyExitMeta({ userId, monthKey, orgAccount }) {
 
     // If an Automation Rule is active and amount is missing, calculate it
     if (orgAccount?.earlyExitRuleId && eeAmount <= 0 && eeMinutes > 0) {
-      const result = await earlyExitService.calculateEarlyExit(row, orgAccount, row.punchedOutAt, daysInMonth);
+      const result = await earlyExitService.calculateEarlyExit(row, orgAccount, daysInMonth, row.punchedOutAt);
       eeAmount = result.earlyExitAmount;
       eeMinutes = result.earlyExitMinutes;
     }
@@ -179,7 +178,7 @@ async function computeBreakMeta({ userId, monthKey, orgAccount }) {
 
     // Re-calculate if rule is active but no penalty saved
     if (orgAccount?.breakRuleId && bAmount <= 0 && (row.breakTotalSeconds || 0) > 0) {
-      const result = await breakService.calculateBreakDeduction(row, orgAccount, row.punchedOutAt, daysInMonth);
+      const result = await breakService.calculateBreakDeduction(row, orgAccount, daysInMonth, row.punchedOutAt);
       bAmount = result.breakDeductionAmount;
       bMinutes = result.excessBreakMinutes;
     }
@@ -595,6 +594,26 @@ async function calculateSalary(userId, monthKey) {
     }
     return '';
   };
+
+  // Build roster sets
+  const rosterWOSet = new Set();
+  const rosterHSet = new Set();
+  try {
+    const rosters = await StaffRoster.findAll({
+      where: { userId: u.id, date: { [Op.gte]: start, [Op.lte]: endKey } }
+    });
+    for (const r of rosters) {
+      const k = toDateKey(r.date);
+      if (r.status === 'WEEKLY_OFF') rosterWOSet.add(k);
+      else if (r.status === 'HOLIDAY') rosterHSet.add(k);
+    }
+    if (rosters.length > 0) {
+      fl.appendFileSync('payroll_debug.log', `[${new Date().toISOString()}] [User ${u.id}] Roster found: WO=${Array.from(rosterWOSet).join(',')}, H=${Array.from(rosterHSet).join(',')}\n`);
+    }
+  } catch (err) {
+    console.error('[Payroll] Failed to fetch rosters:', err.message);
+  }
+
   try {
     let hasg = await StaffHolidayAssignment.findOne({
       where: {
@@ -654,6 +673,23 @@ async function calculateSalary(userId, monthKey) {
     } catch (_) { return false; }
   };
 
+  // Fetch Holiday Work Pay Assignments for this staff member
+  let payRuleAssignments = [];
+  try {
+    payRuleAssignments = await StaffHolidayWorkPayAssignment.findAll({
+      where: {
+        userId: u.id,
+        effectiveFrom: { [Op.lte]: endKey },
+        [Op.or]: [{ effectiveTo: null }, { effectiveTo: { [Op.gte]: start } }],
+        active: true
+      },
+      include: [{ model: HolidayWorkPayRule, as: 'rule' }],
+      order: [['effectiveFrom', 'ASC']]
+    });
+  } catch (err) {
+    console.error(`Error fetching pay rule assignments for user ${u.id}:`, err);
+  }
+
   // Classify calendar days (for current month, only count till today)
   let present = 0, half = 0, leave = 0, paidLeaveCount = 0, unpaidLeave = 0, weeklyOffCount = 0, holidaysCount = 0, absent = 0;
   let paidLeaveDates = [];
@@ -681,15 +717,51 @@ async function calculateSalary(userId, monthKey) {
       continue;
     }
 
-    if (s === 'present' || s === 'overtime' || s === 'work_from_home') { present += 1; continue; }
-    if (s === 'half_day') { half += 1; continue; }
+    if (s === 'present' || s === 'overtime' || s === 'work_from_home') {
+      const activeAsg = payRuleAssignments.filter(a => a.effectiveFrom <= key && (!a.effectiveTo || a.effectiveTo >= key)).pop();
+      const rule = activeAsg?.rule;
+
+      const isWO = rosterWOSet.has(key) || (hasWeeklyOffAssignment ? isWeeklyOffForDate(woConfig, dt) : false);
+      const isH = holidaySet.has(key) || rosterHSet.has(key);
+      const isPL = paidLeaveSet.has(key);
+
+      if (isH) {
+        const mult = (rule?.holidayMultiplier || 1);
+        present += mult;
+        fl.appendFileSync('payroll_debug.log', `[${new Date().toISOString()}] [User ${u.id}] Date ${key}: HOLIDAY PRESENT. Multiplier=${mult}. New Present Total=${present}\n`);
+      }
+      else if (isWO) {
+        const mult = (rule?.weeklyOffMultiplier || 1);
+        present += mult;
+        fl.appendFileSync('payroll_debug.log', `[${new Date().toISOString()}] [User ${u.id}] Date ${key}: WEEKLY_OFF PRESENT. Multiplier=${mult}. New Present Total=${present}\n`);
+      }
+      else {
+        present += 1;
+      }
+      continue;
+    }
+    if (s === 'half_day') {
+      half += 1; // Count for summary
+      const activeAsg = payRuleAssignments.filter(a => a.effectiveFrom <= key && (!a.effectiveTo || a.effectiveTo >= key)).pop();
+      const rule = activeAsg?.rule;
+
+      const isWO = rosterWOSet.has(key) || (hasWeeklyOffAssignment ? isWeeklyOffForDate(woConfig, dt) : false);
+      const isH = holidaySet.has(key) || rosterHSet.has(key);
+
+      let val = 0.5;
+      if (isH) val *= (rule?.holidayMultiplier || 1);
+      else if (isWO) val *= (rule?.weeklyOffMultiplier || 1);
+      
+      present += val; 
+      continue;
+    }
     if (s === 'leave') { leave += 1; if (paidLeaveSet.has(key)) { paidLeaveCount += 1; paidLeaveDates.push(key); } else if (unpaidLeaveSet.has(key)) unpaidLeave += 1; continue; }
     if (s === 'weekly_off') { weeklyOffCount += 1; continue; }
     if (s === 'holiday') { holidaysCount += 1; continue; }
 
     // No explicit attendance or 'absent' marked: check if it's a WO/Holiday first
-    const isWO = hasWeeklyOffAssignment ? isWeeklyOffForDate(woConfig, dt) : false;
-    const isH = holidaySet.has(key);
+    const isWO = rosterWOSet.has(key) || (hasWeeklyOffAssignment ? isWeeklyOffForDate(woConfig, dt) : false);
+    const isH = holidaySet.has(key) || rosterHSet.has(key);
 
     if (isH) { holidaysCount += 1; continue; }
     if (isWO) { weeklyOffCount += 1; continue; }
@@ -706,7 +778,7 @@ async function calculateSalary(userId, monthKey) {
     }
   }
 
-  let payableUnits = present + (half * 0.5) + paidLeaveCount + weeklyOffCount + holidaysCount;
+  let payableUnits = present + paidLeaveCount + weeklyOffCount + holidaysCount;
   let ratio = daysInMonth > 0 ? (payableUnits / daysInMonth) : 0;
 
   // Calculate Late Penalty separately via the new meta function
@@ -976,7 +1048,7 @@ async function calculateSalary(userId, monthKey) {
       ratio
     },
     attendanceSummary: {
-      present, half, leave, paidLeave: paidLeaveCount, paidLeaveDates, unpaidLeave,
+      present, half, leave, paidLeave: paidLeaveCount, paidLeaveDates,
       absent, weeklyOff: weeklyOffCount, holidays: holidaysCount, ratio,
       payableDays: payableUnits, // This is the gross payable days (e.g. 28)
       lateCount: lp.lateCount,

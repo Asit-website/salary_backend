@@ -163,7 +163,7 @@ class ZktecoService {
                 totalWorkHours: (workMinutes / 60),
                 punchedInAt: firstIn,
                 punchedOutAt: lastOut
-            }, orgAccountObj, date, daysInMonth);
+            }, orgAccountObj, daysInMonth, date);
 
             overtimeMinutes = otResult.overtimeMinutes;
             overtimeAmount = otResult.overtimeAmount;
@@ -179,7 +179,7 @@ class ZktecoService {
                 orgAccountId: staff.orgAccountId,
                 date,
                 punchedInAt: firstIn
-            }, orgAccountObj, date, daysInMonth);
+            }, orgAccountObj, daysInMonth, date);
 
             earlyOvertimeMinutes = eotResult.earlyOvertimeMinutes;
             earlyOvertimeAmount = eotResult.earlyOvertimeAmount;
@@ -191,7 +191,7 @@ class ZktecoService {
                 orgAccountId: staff.orgAccountId,
                 date,
                 punchedOutAt: lastOut
-            }, orgAccountObj, date, daysInMonth);
+            }, orgAccountObj, daysInMonth, date);
 
             // 4. Late Punch-In Calculation
             const lpResult = await latePunchInService.calculateLatePenalty({
@@ -199,7 +199,7 @@ class ZktecoService {
                 orgAccountId: staff.orgAccountId,
                 date,
                 punchedInAt: firstIn
-            }, orgAccountObj, date, daysInMonth);
+            }, orgAccountObj, daysInMonth, date);
 
             // 5. Break Deduction Calculation
             const breakService = require('./breakService');
@@ -210,7 +210,7 @@ class ZktecoService {
                 date,
                 breakTotalSeconds: totalBreakSeconds
             };
-            const breakResult = await breakService.calculateBreakDeduction(virtualRecord, orgAccountObj, date, daysInMonth);
+            const breakResult = await breakService.calculateBreakDeduction(virtualRecord, orgAccountObj, daysInMonth, date);
 
             earlyExitMinutes = eeResult.earlyExitMinutes;
             earlyExitAmount = eeResult.earlyExitAmount;

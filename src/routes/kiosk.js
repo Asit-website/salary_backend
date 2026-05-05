@@ -199,7 +199,7 @@ router.post('/face-recognition', kioskAuth, upload.single('photo'), async (req, 
           orgAccountId: staff.orgAccountId,
           date: dateKey,
           punchedInAt: now
-        }, orgAccount, now, daysInMonth);
+        }, orgAccount, daysInMonth, now);
 
         if (eotResult && eotResult.earlyOvertimeMinutes > 0) {
           await record.update({
@@ -222,7 +222,7 @@ router.post('/face-recognition', kioskAuth, upload.single('photo'), async (req, 
           orgAccountId: staff.orgAccountId,
           date: dateKey,
           punchedInAt: now
-        }, orgAccount, now, daysInMonth);
+        }, orgAccount, daysInMonth, now);
 
         if (lpResult && lpResult.isLate) {
           await record.update({
@@ -265,7 +265,7 @@ router.post('/face-recognition', kioskAuth, upload.single('photo'), async (req, 
         orgAccountId: staff.orgAccountId,
         punchedOutAt: now,
         totalWorkHours
-      }, orgAccount, now, daysInMonth);
+      }, orgAccount, daysInMonth, now);
 
       // 2. Early Exit Calculation
       const eeData = await earlyExitService.calculateEarlyExit({
@@ -273,11 +273,11 @@ router.post('/face-recognition', kioskAuth, upload.single('photo'), async (req, 
         userId: staff.id,
         orgAccountId: staff.orgAccountId,
         punchedOutAt: now
-      }, orgAccount, now, daysInMonth);
+      }, orgAccount, daysInMonth, now);
 
       // 3. Break Deduction Calculation
       const breakService = require('../services/breakService');
-      const breakResult = await breakService.calculateBreakDeduction(record, orgAccount, now, daysInMonth);
+      const breakResult = await breakService.calculateBreakDeduction(record, orgAccount, daysInMonth, now);
 
       let finalStatus = otData.status || 'PRESENT';
       if (record.earlyOvertimeMinutes > 0) {

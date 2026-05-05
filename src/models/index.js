@@ -118,6 +118,8 @@ const defineStaffTenureBonusAssignment = require('./StaffTenureBonusAssignment')
 const defineSocialComment = require('./SocialComment');
 const defineLead = require('./Lead');
 const defineLeadConfig = require('./LeadConfig');
+const defineHolidayWorkPayRule = require('./HolidayWorkPayRule');
+const defineStaffHolidayWorkPayAssignment = require('./StaffHolidayWorkPayAssignment');
 
 
 
@@ -241,6 +243,8 @@ const TenureBonusRule = defineTenureBonusRule(sequelize);
 const StaffTenureBonusAssignment = defineStaffTenureBonusAssignment(sequelize);
 const Lead = defineLead(sequelize);
 const LeadConfig = defineLeadConfig(sequelize);
+const HolidayWorkPayRule = defineHolidayWorkPayRule(sequelize);
+const StaffHolidayWorkPayAssignment = defineStaffHolidayWorkPayAssignment(sequelize);
 
 
 
@@ -776,6 +780,12 @@ StaffTenureBonusAssignment.belongsTo(User, { foreignKey: 'userId', as: 'user' })
 TenureBonusRule.hasMany(StaffTenureBonusAssignment, { foreignKey: 'tenureBonusRuleId', as: 'assignments' });
 StaffTenureBonusAssignment.belongsTo(TenureBonusRule, { foreignKey: 'tenureBonusRuleId', as: 'rule' });
 
+// Holiday Work Pay Rule associations
+User.hasMany(StaffHolidayWorkPayAssignment, { foreignKey: 'userId', as: 'holidayWorkPayAssignments' });
+StaffHolidayWorkPayAssignment.belongsTo(User, { foreignKey: 'userId', as: 'user' });
+HolidayWorkPayRule.hasMany(StaffHolidayWorkPayAssignment, { foreignKey: 'ruleId', as: 'assignments' });
+StaffHolidayWorkPayAssignment.belongsTo(HolidayWorkPayRule, { foreignKey: 'ruleId', as: 'rule' });
+
 // Lead associations
 Lead.belongsTo(User, { as: 'creator', foreignKey: 'createdBy' });
 User.hasMany(Lead, { as: 'leads', foreignKey: 'createdBy' });
@@ -903,5 +913,7 @@ module.exports = {
   TenureBonusRule,
   StaffTenureBonusAssignment,
   Lead,
-  LeadConfig
+  LeadConfig,
+  HolidayWorkPayRule,
+  StaffHolidayWorkPayAssignment
 };

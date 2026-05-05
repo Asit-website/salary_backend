@@ -9,6 +9,7 @@ const { tenantEnforce } = require('../middleware/tenant');
 const { upload } = require('../upload');
 const earlyOvertimeService = require('../services/earlyOvertimeService');
 const latePunchInService = require('../services/latePunchInService');
+const holidayWorkPayService = require('../services/holidayWorkPayService');
 const { formatDate: isoDate, todayKey } = require('../utils/dateUtils');
 
 const router = express.Router();
@@ -253,6 +254,24 @@ async function isPaidHoliday(userId, dateKey) {
   } catch (_) { return false; }
 }
 
+async function isWeeklyOff(userId, dateKey) {
+  try {
+    const woAsg = await StaffWeeklyOffAssignment.findOne({
+      where: { userId, effectiveFrom: { [Op.lte]: dateKey } },
+      order: [['effectiveFrom', 'DESC']]
+    });
+    if (!woAsg) return false;
+    const wTpl = await WeeklyOffTemplate.findByPk(woAsg.weeklyOffTemplateId || woAsg.weekly_off_template_id);
+    if (!wTpl) return false;
+    let raw = wTpl.config;
+    while (typeof raw === 'string' && raw.trim().startsWith('[')) {
+      try { raw = JSON.parse(raw); } catch (_) { break; }
+    }
+    const woConfig = Array.isArray(raw) ? raw : [];
+    return isWeeklyOffForDate(woConfig, new Date(dateKey));
+  } catch (_) { return false; }
+}
+
 async function getRequiredWorkSecondsFor(userId, dateKey) {
   try {
     // If a shift is assigned, prefer its requirements
@@ -472,7 +491,8 @@ router.get('/status', async (req, res) => {
   const orgAccount = await OrgAccount.findByPk(req.user.orgAccountId);
 
   if (record?.punchedInAt) {
-    const otData = await calculateOvertime({ ...record.toJSON(), totalWorkHours: workSeconds / 3600 }, orgAccount, now);
+    const daysInMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
+    const otData = await calculateOvertime({ ...record.toJSON(), totalWorkHours: workSeconds / 3600 }, orgAccount, daysInMonth);
     overtimeSeconds = (otData.overtimeMinutes || 0) * 60;
     overtimeAmount = otData.overtimeAmount || 0;
   } else {
@@ -731,7 +751,7 @@ router.get('/history', async (req, res) => {
 
         const { calculateOvertime } = require('../services/overtimeService');
         const orgAcc = await OrgAccount.findByPk(req.user.orgAccountId);
-        const otData = await calculateOvertime({ ...record.toJSON(), totalWorkHours: workingSeconds / 3600 }, orgAcc, outAt);
+        const otData = await calculateOvertime({ ...record.toJSON(), totalWorkHours: workingSeconds / 3600 }, orgAcc, totalDaysRemainingInMonth);
         overtimeSeconds = (otData.overtimeMinutes || 0) * 60;
 
         if (record.status) {
@@ -942,8 +962,14 @@ router.post('/punch-in', upload.single('photo'), async (req, res) => {
     if (tpl) {
       // Holidays rule
       const dateKey = todayKey();
-      if ((tpl.holidaysRule ?? tpl.holidays_rule) === 'disallow' && await isPaidHoliday(req.user.id, dateKey)) {
+      const hasPayRule = await holidayWorkPayService.getEffectiveRule(req.user.id, dateKey);
+      
+      if (!hasPayRule && (tpl.holidaysRule ?? tpl.holidays_rule) === 'disallow' && await isPaidHoliday(req.user.id, dateKey)) {
         return res.status(409).json({ success: false, message: 'Punch-in disabled on paid holidays' });
+      }
+
+      if (!hasPayRule && await isWeeklyOff(req.user.id, dateKey)) {
+        return res.status(409).json({ success: false, message: 'Punch-in disabled on weekly off' });
       }
     }
     // Enforce earliest punch-in if a fixed shift is assigned
@@ -1023,7 +1049,7 @@ router.post('/punch-in', upload.single('photo'), async (req, res) => {
         orgAccountId: req.user.orgAccountId,
         date: key,
         punchedInAt: now
-      }, orgAccount, now, daysInMonth);
+      }, orgAccount, daysInMonth, now);
 
       if (eotResult && eotResult.earlyOvertimeMinutes > 0) {
         await record.update({
@@ -1046,7 +1072,7 @@ router.post('/punch-in', upload.single('photo'), async (req, res) => {
         orgAccountId: req.user.orgAccountId,
         date: key,
         punchedInAt: now
-      }, orgAccount, now, daysInMonth);
+      }, orgAccount, daysInMonth, now);
 
       if (lpResult && lpResult.isLate) {
         await record.update({
@@ -1192,7 +1218,7 @@ router.post('/punch-out', upload.single('photo'), async (req, res) => {
       totalWorkHours: totalWorkHours,
       punchedInAt: record.punchedInAt,
       punchedOutAt: now
-    }, orgAccount, now, daysInMonth);
+    }, orgAccount, daysInMonth, now);
 
     // 2. Early Exit Calculation
     const eeResult = await earlyExitService.calculateEarlyExit({
@@ -1200,11 +1226,11 @@ router.post('/punch-out', upload.single('photo'), async (req, res) => {
       orgAccountId: req.user.orgAccountId,
       date: key,
       punchedOutAt: now
-    }, orgAccount, now, daysInMonth);
+    }, orgAccount, daysInMonth, now);
 
     // 3. Break Deduction Calculation
     const breakService = require('../services/breakService');
-    const breakResult = await breakService.calculateBreakDeduction(record, orgAccount, now, daysInMonth);
+    const breakResult = await breakService.calculateBreakDeduction(record, orgAccount, daysInMonth, now);
 
     let status = otResult.status || 'present';
     if (record.earlyOvertimeMinutes > 0) {

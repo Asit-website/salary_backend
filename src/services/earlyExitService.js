@@ -46,7 +46,7 @@ class EarlyExitService {
   /**
    * Main calculation logic for Early Exit
    */
-  async calculateEarlyExit(attendance, orgAccount, now = new Date(), daysInMonth = 30) {
+  async calculateEarlyExit(attendance, orgAccount, daysInMonth = 30, now = new Date()) {
     const { userId, orgAccountId, date: dateKey, punchedOutAt } = attendance;
     if (!punchedOutAt) return { earlyExitMinutes: 0, earlyExitAmount: 0, earlyExitRuleId: null };
 

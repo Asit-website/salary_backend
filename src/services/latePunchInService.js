@@ -46,7 +46,7 @@ class LatePunchInService {
   /**
    * Main calculation logic for Late Punch-In penalty
    */
-  async calculateLatePenalty(attendance, orgAccount, now = new Date(), daysInMonth = 30) {
+  async calculateLatePenalty(attendance, orgAccount, daysInMonth = 30, now = new Date()) {
     const { userId, orgAccountId, date: dateKey, punchedInAt } = attendance;
     if (!punchedInAt) return { latePunchInMinutes: 0, latePunchInAmount: 0, latePunchInRuleId: null };
 
@@ -201,7 +201,7 @@ class LatePunchInService {
     for (const row of rows) {
       // 1. Calculate raw penalty for this specific day
       // We pass 30 as default daysInMonth, but we primarily care about the matched rule and tier
-      const lp = await this.calculateLatePenalty(row, { id: orgAccountId }, new Date(), 30);
+      const lp = await this.calculateLatePenalty(row, { id: orgAccountId }, 30, new Date());
 
       row.latePunchInMinutes = lp.latePunchInMinutes || 0;
       row.latePunchInAmount = 0; // Default to 0, will set if threshold met

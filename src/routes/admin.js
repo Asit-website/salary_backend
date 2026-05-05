@@ -20,7 +20,7 @@ function getCellValue(cell) {
 
 
 
-const { sequelize, User, StaffProfile, Role, Permission, AppSetting, DocumentType, ShiftTemplate, ShiftBreak, ShiftRotationalSlot, StaffShiftAssignment, SalaryAccess, AttendanceTemplate, StaffAttendanceAssignment, SalaryTemplate, StaffSalaryAssignment, Site, WorkUnit, Route, RouteStop, StaffRouteAssignment, SiteCheckpoint, PatrolLog, LeaveTemplate, LeaveTemplateCategory, StaffLeaveAssignment, LeaveBalance, LeaveRequest, AIAnomaly, ReliabilityScore, SalaryForecast, Attendance, Client, AssignedJob, SalesTarget, HolidayTemplate, HolidayDate, StaffHolidayAssignment, WeeklyOffTemplate, StaffWeeklyOffAssignment, Subscription, Plan, SalesVisit, Asset, AssetAssignment, AssetMaintenance, StaffLoan, StaffAdvance, OrderProduct, StaffOrderProduct, AttendanceAutomationRule, StaffGeofenceAssignment, GeofenceTemplate, GeofenceSite, DeviceInfo, Appraisal, Rating, OrgAccount, OvertimeRule, StaffOvertimeAssignment, EarlyExitRule, StaffEarlyExitAssignment, LatePunchInRule, StaffLatePunchInAssignment, TenureBonusRule, StaffTenureBonusAssignment, StaffBadge, Badge, BadgePermission, PayrollCycle, PayrollLine } = require('../models');
+const { sequelize, User, StaffProfile, Role, Permission, AppSetting, DocumentType, ShiftTemplate, ShiftBreak, ShiftRotationalSlot, StaffShiftAssignment, SalaryAccess, AttendanceTemplate, StaffAttendanceAssignment, SalaryTemplate, StaffSalaryAssignment, Site, WorkUnit, Route, RouteStop, StaffRouteAssignment, SiteCheckpoint, PatrolLog, LeaveTemplate, LeaveTemplateCategory, StaffLeaveAssignment, LeaveBalance, LeaveRequest, AIAnomaly, ReliabilityScore, SalaryForecast, Attendance, Client, AssignedJob, SalesTarget, HolidayTemplate, HolidayDate, StaffHolidayAssignment, WeeklyOffTemplate, StaffWeeklyOffAssignment, Subscription, Plan, SalesVisit, Asset, AssetAssignment, AssetMaintenance, StaffLoan, StaffAdvance, OrderProduct, StaffOrderProduct, AttendanceAutomationRule, StaffGeofenceAssignment, GeofenceTemplate, GeofenceSite, DeviceInfo, Appraisal, Rating, OrgAccount, OvertimeRule, StaffOvertimeAssignment, EarlyExitRule, StaffEarlyExitAssignment, LatePunchInRule, StaffLatePunchInAssignment, TenureBonusRule, StaffTenureBonusAssignment, StaffBadge, Badge, BadgePermission, PayrollCycle, PayrollLine, HolidayWorkPayRule, StaffHolidayWorkPayAssignment, StaffRoster } = require('../models');
 
 const multer = require('multer');
 
@@ -45,6 +45,7 @@ const earlyExitService = require('../services/earlyExitService');
 const earlyOvertimeService = require('../services/earlyOvertimeService');
 const { runAttendanceReminderManual } = require('../jobs');
 const { getScopedStaffIds } = require('../utils/scoping');
+const holidayWorkPayService = require('../services/holidayWorkPayService');
 
 const { enrollFace } = require('../services/awsService');
 
@@ -100,6 +101,123 @@ function dateOnlySafe(input) {
   if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) return raw;
   return todayKey();
 }
+
+// --- Holiday Work Pay Rules ---
+router.get('/holiday-work-pay/rules', requireRole(['admin']), async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
+    const rules = await HolidayWorkPayRule.findAll({ where: { orgAccountId: orgId, active: true } });
+    return res.json({ success: true, data: rules });
+  } catch (e) {
+    console.error('Error loading holiday pay rules:', e);
+    return res.status(500).json({ success: false, message: 'Failed to load rules' });
+  }
+});
+
+router.post('/holiday-work-pay/rules', requireRole(['admin']), async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
+    const { name, holidayMultiplier, weeklyOffMultiplier } = req.body;
+    const rule = await HolidayWorkPayRule.create({
+      orgAccountId: orgId,
+      name,
+      holidayMultiplier,
+      weeklyOffMultiplier
+    });
+    return res.json({ success: true, rule });
+  } catch (e) {
+    console.error('Error creating holiday pay rule:', e);
+    return res.status(500).json({ success: false, message: 'Failed to create rule' });
+  }
+});
+
+router.put('/holiday-work-pay/rules/:id', requireRole(['admin']), async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
+    const { name, holidayMultiplier, weeklyOffMultiplier, active } = req.body;
+    const rule = await HolidayWorkPayRule.findOne({ where: { id: req.params.id, orgAccountId: orgId } });
+    if (!rule) return res.status(404).json({ success: false, message: 'Rule not found' });
+    await rule.update({ name, holidayMultiplier, weeklyOffMultiplier, active });
+    return res.json({ success: true, rule });
+  } catch (e) {
+    console.error('Error updating holiday pay rule:', e);
+    return res.status(500).json({ success: false, message: 'Failed to update rule' });
+  }
+});
+
+router.delete('/holiday-work-pay/rules/:id', requireRole(['admin']), async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
+    const rule = await HolidayWorkPayRule.findOne({ where: { id: req.params.id, orgAccountId: orgId } });
+    if (!rule) return res.status(404).json({ success: false, message: 'Rule not found' });
+    await rule.update({ active: false });
+    return res.json({ success: true, message: 'Rule deleted' });
+  } catch (e) {
+    console.error('Error deleting holiday pay rule:', e);
+    return res.status(500).json({ success: false, message: 'Failed to delete rule' });
+  }
+});
+
+// --- Holiday Work Pay Assignments ---
+router.get('/holiday-work-pay/assignments', requireRole(['admin']), async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
+    const asgs = await StaffHolidayWorkPayAssignment.findAll({
+      where: { orgAccountId: orgId, active: true },
+      include: [{ model: HolidayWorkPayRule, as: 'rule' }]
+    });
+    return res.json({ success: true, data: asgs });
+  } catch (e) {
+    console.error('Error loading holiday pay assignments:', e);
+    return res.status(500).json({ success: false, message: 'Failed to load assignments' });
+  }
+});
+
+router.post('/holiday-work-pay/assignments', requireRole(['admin']), async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
+    const { userId, ruleId, effectiveFrom, effectiveTo } = req.body;
+    const asg = await StaffHolidayWorkPayAssignment.create({
+      orgAccountId: orgId,
+      userId,
+      ruleId,
+      effectiveFrom,
+      effectiveTo,
+      active: true
+    });
+    return res.json({ success: true, assignment: asg });
+  } catch (e) {
+    console.error('Error creating holiday pay assignment:', e);
+    return res.status(500).json({ success: false, message: 'Failed to create assignment' });
+  }
+});
+
+router.put('/holiday-work-pay/assignments/:id', requireRole(['admin']), async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
+    const { userId, ruleId, effectiveFrom, effectiveTo } = req.body;
+    const asg = await StaffHolidayWorkPayAssignment.findOne({ where: { id: req.params.id, orgAccountId: orgId } });
+    if (!asg) return res.status(404).json({ success: false, message: 'Assignment not found' });
+    await asg.update({ userId, ruleId, effectiveFrom, effectiveTo });
+    return res.json({ success: true, assignment: asg });
+  } catch (e) {
+    console.error('Error updating holiday pay assignment:', e);
+    return res.status(500).json({ success: false, message: 'Failed to update assignment' });
+  }
+});
+
+router.delete('/holiday-work-pay/assignments/:id', requireRole(['admin']), async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
+    const asg = await StaffHolidayWorkPayAssignment.findOne({ where: { id: req.params.id, orgAccountId: orgId } });
+    if (!asg) return res.status(404).json({ success: false, message: 'Assignment not found' });
+    await asg.update({ active: false });
+    return res.json({ success: true, message: 'Assignment deleted' });
+  } catch (e) {
+    console.error('Error deleting holiday pay assignment:', e);
+    return res.status(500).json({ success: false, message: 'Failed to delete assignment' });
+  }
+});
 
 // --- Multi-Org Staff Assignment ---
 
@@ -789,7 +907,7 @@ router.get('/payroll/:cycleId/export', async (req, res) => {
       OrgAccount.findByPk(orgId),
       sequelize.models.OrgBrand?.findOne({ where: { orgAccountId: orgId, active: true }, order: [['id', 'DESC']] })
     ]);
-    
+
     const companyName = brand?.displayName || org?.name || 'PAYROLL EXPORT';
 
     // Header Section
@@ -2193,6 +2311,9 @@ router.get('/my-payroll-status', async (req, res) => {
   }
 });
 router.post('/payroll/:cycleId/compute', async (req, res) => {
+  console.log('================================================');
+  console.log('[PAYROLL-COMPUTE] STARTING CALCULATION (v1.5x-Fix)');
+  console.log('================================================');
   const fs = require('fs');
   const logPath = './payroll_debug.log';
   const log = (msg) => {
@@ -2702,8 +2823,42 @@ router.post('/payroll/:cycleId/compute', async (req, res) => {
 
 
 
+      // Build roster sets
+      const rosterWOSet = new Set();
+      const rosterHSet = new Set();
+      try {
+        const rosters = await StaffRoster.findAll({
+          where: { userId: u.id, date: { [Op.gte]: start, [Op.lte]: endKey } }
+        });
+        for (const r of rosters) {
+          const k = toDateKey(r.date);
+          if (r.status === 'WEEKLY_OFF') rosterWOSet.add(k);
+          else if (r.status === 'HOLIDAY') rosterHSet.add(k);
+        }
+      } catch (err) {
+        console.error('[Payroll] Failed to fetch rosters:', err.message);
+      }
+
+      // Fetch Holiday Work Pay Assignments for this staff member
+      let payRuleAssignments = [];
+      try {
+        payRuleAssignments = await StaffHolidayWorkPayAssignment.findAll({
+          where: {
+            userId: u.id,
+            effectiveFrom: { [Op.lte]: endKey },
+            [Op.or]: [{ effectiveTo: null }, { effectiveTo: { [Op.gte]: start } }],
+            active: true
+          },
+          include: [{ model: HolidayWorkPayRule, as: 'rule' }],
+          order: [['effectiveFrom', 'ASC']]
+        });
+      } catch (err) {
+        console.error(`Error fetching pay rule assignments for user ${u.id}:`, err);
+      }
+
       // Category counts: classify calendar days (for current month, only count till today)
       let present = 0, half = 0, leave = 0, absent = 0, paidLeave = 0, unpaidLeave = 0;
+      let multiplierBreakdown = [];
       let paidLeaveDates = [];
       const daysInMonth = end.getDate();
       const dailySalary = (Number(e.basic_salary || sd.basicSalary || 0) + Number(e.da || sd.da || 0)) / daysInMonth;
@@ -2716,21 +2871,67 @@ router.post('/payroll/:cycleId/compute', async (req, res) => {
         const key = `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, '0')}-${String(dnum).padStart(2, '0')}`;
         const s = attMap[key];
 
-        if (s === 'present' || s === 'overtime' || s === 'work_from_home') { present += 1; continue; }
-        if (s === 'half_day') { half += 1; continue; }
+        const isWO = rosterWOSet.has(key) || (hasWeeklyOffAssignment ? isWeeklyOffForDate(woConfig, dt) : false);
+        const isH = (typeof _holidaySet !== 'undefined' && _holidaySet.has(key)) || rosterHSet.has(key);
+
+        if (s === 'present' || s === 'overtime' || s === 'work_from_home') {
+          present += 1;
+          const activeAsg = payRuleAssignments.filter(a => a.effectiveFrom <= key && (!a.effectiveTo || a.effectiveTo >= key)).pop();
+          const rule = activeAsg?.rule;
+          const m = isH ? (rule?.holidayMultiplier || 2) : (rule?.weeklyOffMultiplier || 2);
+          if (u.id == 57) console.log(`[Payroll-Dbg] User 57 Day ${key}: s=${s}, isH=${isH}, isWO=${isWO}, m=${m}`);
+
+          if (isH || isWO) {
+            const added = (m > 1) ? (m - 1) : 0;
+            if (added > 0) {
+              if (isH) holidays += added;
+              else if (isWO) weeklyOff += added;
+            }
+            multiplierBreakdown.push({
+              date: key,
+              type: isH ? 'Holiday' : 'Weekly Off',
+              multiplier: `${m}x`,
+              addedUnits: added,
+              baseUnits: 1, // Full day present
+              status: s
+            });
+          }
+          continue;
+        }
+
+        if (s === 'half_day') {
+          half += 1;
+
+          const activeAsg = payRuleAssignments.filter(a => a.effectiveFrom <= key && (!a.effectiveTo || a.effectiveTo >= key)).pop();
+          const rule = activeAsg?.rule;
+          const m = isH ? (rule?.holidayMultiplier || 2) : (rule?.weeklyOffMultiplier || 2);
+          if (isH || isWO) {
+            const added = (m - 1) * 0.5 + 0.5;
+            if (isH) holidays += added;
+            else if (isWO) weeklyOff += added;
+            multiplierBreakdown.push({
+              date: key,
+              type: isH ? 'Holiday' : 'Weekly Off',
+              multiplier: `${m}x`,
+              addedUnits: added,
+              baseUnits: 0.5,
+              status: s
+            });
+          }
+          continue;
+        }
+
+        // Handle other statuses with mutual exclusivity (WO/H take precedence over leave/absent)
+        if (s === 'weekly_off') { weeklyOff += 1; continue; }
+        if (s === 'holiday') { holidays += 1; continue; }
+        if (isH) { holidays += 1; continue; }
+        if (isWO) { weeklyOff += 1; continue; }
+
         if (s === 'leave') {
           leave += 1;
           if (paidLeaveSet.has(key)) { paidLeave += 1; paidLeaveDates.push(key); } else if (unpaidLeaveSet.has(key)) unpaidLeave += 1;
           continue;
         }
-        if (s === 'weekly_off') { weeklyOff += 1; continue; }
-        if (s === 'holiday') { holidays += 1; continue; }
-
-        const isWO = (() => { try { return hasWeeklyOffAssignment ? isWeeklyOffForDate(woConfig, dt) : false; } catch (_) { return false; } })();
-        const isH = (typeof _holidaySet !== 'undefined') ? _holidaySet.has(key) : false;
-
-        if (isH) { holidays += 1; continue; }
-        if (isWO) { weeklyOff += 1; continue; }
 
         // Future day projection for current month
         if (isCurrentMonth && dt > todayStart) {
@@ -2769,7 +2970,7 @@ router.post('/payroll/:cycleId/compute', async (req, res) => {
 
 
 
-      // Proration by payable units: present(1) + half(0.5) + weeklyOff(1) + holidays(1) + paidLeave(1)
+      // Proration by payable units: present(1) + half(0.5) + weeklyOff(1) + holidays(1) + paidLeave(1) + extra multipliers
       const payableUnitsGross = present + (half * 0.5) + weeklyOff + holidays + paidLeave;
       const payableUnits = Math.max(0, payableUnitsGross);
       const daysForRatio = daysInMonth;
@@ -2882,12 +3083,10 @@ router.post('/payroll/:cycleId/compute', async (req, res) => {
             let finalOtAmt = Number(a.overtimeAmount || a.overtime_amount || 0);
             let finalOtMins = Number(a.overtimeMinutes || a.overtime_minutes || 0);
 
-            // If minutes exist but amount is 0, or we need to force re-calc
-            if (finalOtMins > 0 && finalOtAmt === 0) {
-              const otRes = await calculateOvertime(a, orgAccountRecord, a.punchedOutAt, daysInMonth);
-              finalOtAmt = Number(otRes.overtimeAmount || 0);
-              finalOtMins = Number(otRes.overtimeMinutes || 0);
-            }
+            // Always re-calculate to ensure latest logic and correct daysInMonth are applied
+            const otRes = await calculateOvertime(a, orgAccountRecord, daysInMonth, a.punchedOutAt);
+            finalOtAmt = Number(otRes.overtimeAmount || 0);
+            finalOtMins = Number(otRes.overtimeMinutes || 0);
 
             totalOvertimeAmount += finalOtAmt;
             totalOvertimeMinutes += finalOtMins;
@@ -2917,7 +3116,7 @@ router.post('/payroll/:cycleId/compute', async (req, res) => {
           let eotMins = Number(a.earlyOvertimeMinutes || a.early_overtime_minutes || 0);
 
           if ((eotAmt === 0 || eotMins === 0) && orgAccountRecord?.earlyOvertimeRuleId) {
-            const eotRes = await earlyOvertimeService.calculateEarlyOvertime(a, orgAccountRecord, a.punchedInAt, daysInMonth);
+            const eotRes = await earlyOvertimeService.calculateEarlyOvertime(a, orgAccountRecord, daysInMonth, a.punchedInAt);
             if (eotAmt === 0) eotAmt = Number(eotRes.earlyOvertimeAmount || 0);
             if (eotMins === 0) eotMins = Number(eotRes.earlyOvertimeMinutes || 0);
           }
@@ -2940,13 +3139,13 @@ router.post('/payroll/:cycleId/compute', async (req, res) => {
 
       for (const a of atts) {
         // ALWAYS RE-CALCULATE if we are re-generating payroll to ensure multiplier fix is applied
-        const eeRes = await earlyExitService.calculateEarlyExit(a, orgAccountRecord, a.punchedOutAt, daysInMonth);
+        const eeRes = await earlyExitService.calculateEarlyExit(a, orgAccountRecord, daysInMonth, a.punchedOutAt);
         totalEarlyExitAmount += eeRes.earlyExitAmount;
         totalEarlyExitMinutes += eeRes.earlyExitMinutes;
 
         // NEW: Break Deduction Recalculation
         const breakService = require('../services/breakService');
-        const breakRes = await breakService.calculateBreakDeduction(a, orgAccountRecord, a.punchedOutAt, daysInMonth);
+        const breakRes = await breakService.calculateBreakDeduction(a, orgAccountRecord, daysInMonth, a.punchedOutAt);
 
         // Prioritize already stored amount if regeneration is happening
         const finalBreakAmt = Math.max(Number(a.breakDeductionAmount || a.break_deduction_amount || 0), Number(breakRes.breakDeductionAmount || 0));
@@ -3119,6 +3318,7 @@ router.post('/payroll/:cycleId/compute', async (req, res) => {
         breakPenalty: totalBreakPenaltyAmount,
         excessBreakMinutes: totalExcessBreakMinutes,
         tenureBonus: tenureBonusMeta,
+        multiplierBreakdown,
         netSalary: Math.max(0, netSalary),
       };
       const totals = { totalEarnings, totalIncentives, totalDeductions: updatedTotalDeductions, grossSalary, netSalary, ratio };
@@ -5272,7 +5472,7 @@ router.post('/leave/templates', async (req, res) => {
 
     const orgId = requireOrg(req, res); if (!orgId) return;
 
-    const { name, cycle, countSandwich, approvalLevel, active, categories } = req.body || {};
+    const { name, cycle, cycleStartDate, cycleStartDay, countSandwich, approvalLevel, active, categories } = req.body || {};
 
     if (!name) return res.status(400).json({ success: false, message: 'name required' });
 
@@ -5281,6 +5481,10 @@ router.post('/leave/templates', async (req, res) => {
       name: String(name),
 
       cycle: cycle || 'yearly',
+
+      cycleStartDate: cycleStartDate || null,
+
+      cycleStartDay: Number.isFinite(Number(cycleStartDay)) ? Number(cycleStartDay) : 1,
 
       countSandwich: !!countSandwich,
 
@@ -5350,7 +5554,7 @@ router.put('/leave/templates/:id', async (req, res) => {
 
 
 
-    const { name, cycle, countSandwich, approvalLevel, active, categories } = req.body || {};
+    const { name, cycle, cycleStartDate, cycleStartDay, countSandwich, approvalLevel, active, categories } = req.body || {};
 
     await row.update({
 
@@ -5363,6 +5567,8 @@ router.put('/leave/templates/:id', async (req, res) => {
       approvalLevel: approvalLevel !== undefined ? Number(approvalLevel) : row.approvalLevel,
 
       active: active !== undefined ? !!active : row.active,
+      cycleStartDate: cycleStartDate !== undefined ? cycleStartDate : row.cycleStartDate,
+      cycleStartDay: cycleStartDay !== undefined ? Number(cycleStartDay) : row.cycleStartDay,
 
     });
 
@@ -7626,100 +7832,74 @@ router.put('/leaves/:leaveId/status', async (req, res) => {
 
 
 
-function getPrevCycleRange(cycle, forDate /* Date */) {
-
-  const d = forDate instanceof Date ? forDate : new Date(forDate);
-
-  const y = d.getFullYear();
-
-  const m = d.getMonth();
-
-  if (cycle === 'yearly') {
-
-    const start = new Date(y - 1, 0, 1);
-
-    const end = new Date(y - 1, 11, 31);
-
-    return { start: formatDate(start), end: formatDate(end) };
-
-  }
-
-  if (cycle === 'quarterly') {
-
-    const q = Math.floor(m / 3);
-
-    const prevQ = (q + 3 - 1) % 4;
-
-    const yy = q === 0 ? y - 1 : y;
-
-    const sm = prevQ * 3;
-
-    const em = sm + 2;
-
-    const start = new Date(yy, sm, 1);
-
-    const end = new Date(yy, em + 1, 0);
-
-    return { start: formatDate(start), end: formatDate(end) };
-
-  }
-
-  // monthly
-
-  const prev = new Date(y, m - 1, 1);
-
-  const start = new Date(prev.getFullYear(), prev.getMonth(), 1);
-
-  const end = new Date(prev.getFullYear(), prev.getMonth() + 1, 0);
-
-  return { start: formatDate(start), end: formatDate(end) };
-
+function getPrevCycleRange(cycle, forDate /* Date */, tpl = null) {
+  const current = getCycleRange(cycle, forDate, tpl);
+  const prevDate = new Date(new Date(`${current.start}T00:00:00`).getTime() - 86400000);
+  return getCycleRange(cycle, prevDate, tpl);
 }
 
 
 
-function getCycleRange(cycle, forDate /* Date */) {
-
+function getCycleRange(cycle, forDate /* Date */, tpl = null) {
   const d = forDate instanceof Date ? forDate : new Date(forDate);
-
   const y = d.getFullYear();
-
   const m = d.getMonth();
+  const dt = d.getDate();
 
   if (cycle === 'yearly') {
-
-    const start = new Date(y, 0, 1);
-
-    const end = new Date(y, 11, 31);
-
+    let startMonth = 0; // Jan
+    let startDay = 1;
+    if (tpl && tpl.cycleStartDate) {
+      const csd = new Date(tpl.cycleStartDate);
+      startMonth = csd.getMonth();
+      startDay = csd.getDate();
+    }
+    let start = new Date(y, startMonth, startDay);
+    if (d < start) {
+      start = new Date(y - 1, startMonth, startDay);
+    }
+    const end = new Date(start.getFullYear() + 1, startMonth, startDay - 1);
     return { start: formatDate(start), end: formatDate(end) };
-
   }
 
   if (cycle === 'quarterly') {
-
-    const q = Math.floor(m / 3);
-
-    const sm = q * 3;
-
-    const em = sm + 2;
-
-    const start = new Date(y, sm, 1);
-
-    const end = new Date(y, em + 1, 0);
-
+    let startMonth = 0; // Jan
+    let startDay = 1;
+    if (tpl && tpl.cycleStartDate) {
+      const csd = new Date(tpl.cycleStartDate);
+      startMonth = csd.getMonth();
+      startDay = csd.getDate();
+    }
+    const monthDiff = (m - startMonth + 12) % 12;
+    const qIndex = Math.floor(monthDiff / 3);
+    const cycleStartMonth = (startMonth + (qIndex * 3)) % 12;
+    let cycleStartYear = y;
+    if (m < startMonth && cycleStartMonth >= startMonth) cycleStartYear--;
+    const start = new Date(cycleStartYear, cycleStartMonth, startDay);
+    if (d < start) {
+      const prevStart = new Date(start.getFullYear(), start.getMonth() - 3, startDay);
+      return { start: formatDate(prevStart), end: formatDate(new Date(start.getFullYear(), start.getMonth(), startDay - 1)) };
+    }
+    const end = new Date(start.getFullYear(), start.getMonth() + 3, startDay - 1);
     return { start: formatDate(start), end: formatDate(end) };
-
   }
 
-  // monthly default
+  if (cycle === 'monthly') {
+    let startDay = 1;
+    if (tpl && tpl.cycleStartDay) {
+      startDay = Number(tpl.cycleStartDay);
+    }
+    let start = new Date(y, m, startDay);
+    if (dt < startDay) {
+      start = new Date(y, m - 1, startDay);
+    }
+    const end = new Date(start.getFullYear(), start.getMonth() + 1, startDay - 1);
+    return { start: formatDate(start), end: formatDate(end) };
+  }
 
   const start = new Date(y, m, 1);
-
   const end = new Date(y, m + 1, 0);
-
   return { start: formatDate(start), end: formatDate(end) };
-
 }
 
 
@@ -8066,7 +8246,9 @@ router.get('/staff/:id/attendance', async (req, res) => {
     const lpResult = await latePunchInService.calculateMonthlyLateDetails(user.id, user.orgAccountId, month, rows, dailySalary);
 
     const toTime = (dt) => (dt ? new Date(dt).toTimeString().slice(0, 8) : null);
-    const data = lpResult.rows.map(r => {
+    const orgAccountRecord = await OrgAccount.findByPk(orgId);
+    const data = [];
+    for (const r of lpResult.rows) {
       let status = String(r.status || '').toLowerCase();
       if (Number(r.breakTotalSeconds) === -1) status = 'leave';
       else if (Number(r.breakTotalSeconds) === -2) status = 'half_day';
@@ -8080,7 +8262,12 @@ router.get('/staff/:id/attendance', async (req, res) => {
           status = 'absent';
         }
       }
-      return {
+
+      // Re-calculate OT on the fly to reflect latest rules
+      const workHours = Number(r.totalWorkHours || 0);
+      const otRes = await calculateOvertime({ ...r.toJSON(), totalWorkHours: workHours }, orgAccountRecord, daysInMonth);
+
+      data.push({
         id: r.id, date: r.date, checkIn: toTime(r.punchedInAt), checkOut: toTime(r.punchedOutAt), status,
         user: { name: r.user?.profile?.name || null },
         staffProfile: { staffId: r.user?.profile?.staffId || null, department: r.user?.profile?.department || null },
@@ -8089,10 +8276,10 @@ router.get('/staff/:id/attendance', async (req, res) => {
         lateOccurrence: r.lateOccurrence,
         earlyExitMinutes: r.earlyExitMinutes, earlyExitAmount: r.earlyExitAmount,
         excessBreakMinutes: r.excessBreakMinutes, breakDeductionAmount: r.breakDeductionAmount,
-        overtimeMinutes: r.overtimeMinutes, overtimeAmount: r.overtimeAmount,
+        overtimeMinutes: otRes.overtimeMinutes, overtimeAmount: otRes.overtimeAmount,
         earlyOvertimeMinutes: r.earlyOvertimeMinutes, earlyOvertimeAmount: r.earlyOvertimeAmount,
-      };
-    });
+      });
+    }
     return res.json({ success: true, data });
   } catch (e) {
     console.error('Staff month attendance error:', e);
@@ -8339,8 +8526,8 @@ router.post('/leave/allocate', async (req, res) => {
       const tpl = a.template;
       if (!tpl || !Array.isArray(tpl.categories)) continue;
       const cyc = tpl.cycle || 'monthly';
-      const { start, end } = getCycleRange(cyc, onDate);
-      const prev = getPrevCycleRange(cyc, onDate);
+      const { start, end } = getCycleRange(cyc, onDate, tpl);
+      const prev = getPrevCycleRange(cyc, onDate, tpl);
 
       for (const c of tpl.categories) {
         const key = String(c.key).toLowerCase();
@@ -11550,6 +11737,28 @@ router.post('/attendance/note', async (req, res) => {
 
 // Create/Update attendance record for a staff on a given date (org-scoped)
 
+// Check if staff has approved leave on a date
+router.get('/attendance/check-leave', async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
+    const { userId, date } = req.query;
+    if (!userId || !date) return res.status(400).json({ success: false, message: 'userId and date required' });
+
+    const approvedLeave = await LeaveRequest.findOne({
+      where: {
+        userId: Number(userId),
+        status: 'APPROVED',
+        startDate: { [Op.lte]: date },
+        endDate: { [Op.gte]: date }
+      }
+    });
+
+    return res.json({ success: true, onLeave: !!approvedLeave });
+  } catch (e) {
+    return res.status(500).json({ success: false, message: e.message });
+  }
+});
+
 router.post('/attendance', async (req, res) => {
 
   try {
@@ -11593,9 +11802,54 @@ router.post('/attendance', async (req, res) => {
     const user = await User.findOne({ where: { id: uid, orgAccountId: orgId, role: 'staff' } });
 
     if (!user) {
-
       return res.status(404).json({ success: false, message: 'Staff not found' });
+    }
 
+    // Check for approved leave on this date
+    const approvedLeave = await LeaveRequest.findOne({
+      where: {
+        userId: uid,
+        status: 'APPROVED',
+        startDate: { [Op.lte]: dateIso },
+        endDate: { [Op.gte]: dateIso }
+      }
+    });
+
+    if (approvedLeave) {
+      return res.status(400).json({ success: false, message: 'today this staff is on paid leave' });
+    }
+
+    // Check for Weekly Off or Holiday
+    const payRule = await holidayWorkPayService.getEffectiveRule(uid, dateIso);
+    if (!payRule) {
+      // Check Weekly Off
+      const woAsg = await StaffWeeklyOffAssignment.findOne({
+        where: { userId: uid, effectiveFrom: { [Op.lte]: dateIso } },
+        order: [['effectiveFrom', 'DESC']],
+        include: [{ model: WeeklyOffTemplate, as: 'template' }]
+      });
+      if (woAsg) {
+        let raw = woAsg.template?.config;
+        while (typeof raw === 'string' && raw.trim().startsWith('[')) {
+          try { raw = JSON.parse(raw); } catch (_) { break; }
+        }
+        if (isWeeklyOffForDate(Array.isArray(raw) ? raw : [], new Date(`${dateIso}T00:00:00`))) {
+          return res.status(400).json({ success: false, message: 'Today is Weekly Off' });
+        }
+      }
+
+      // Check Holiday
+      const hAsg = await StaffHolidayAssignment.findOne({
+        where: { userId: uid, effectiveFrom: { [Op.lte]: dateIso } },
+        order: [['effectiveFrom', 'DESC']],
+        include: [{ model: HolidayTemplate, as: 'template', include: [{ model: HolidayDate, as: 'holidays', where: { active: { [Op.ne]: false } }, required: false }] }]
+      });
+      if (hAsg?.template?.holidays) {
+        const isH = hAsg.template.holidays.some(h => String(h.date) === dateIso);
+        if (isH) {
+          return res.status(400).json({ success: false, message: 'Today is Holiday' });
+        }
+      }
     }
 
 
@@ -11633,6 +11887,8 @@ router.post('/attendance', async (req, res) => {
         if (punchedInAt && punchedOutAt) {
           const totalWorkHours = Math.max(0, (new Date(punchedOutAt) - new Date(punchedInAt)) / 3600000);
           console.log(`[AdminAttendance] Calling calculateOvertime for ${uid} with totalWorkHours: ${totalWorkHours}`);
+          const _d = new Date(dateIso);
+          const daysInMonth = new Date(_d.getFullYear(), _d.getMonth() + 1, 0).getDate();
           const otResult = await calculateOvertime({
             userId: uid,
             orgAccountId: orgId,
@@ -11640,7 +11896,7 @@ router.post('/attendance', async (req, res) => {
             punchedInAt,
             punchedOutAt,
             totalWorkHours
-          }, orgAccount);
+          }, orgAccount, daysInMonth, punchedOutAt);
 
           payload.overtimeMinutes = otResult.overtimeMinutes;
           payload.overtimeAmount = otResult.overtimeAmount;
@@ -11655,7 +11911,7 @@ router.post('/attendance', async (req, res) => {
             orgAccountId: orgId,
             date: dateIso,
             punchedOutAt
-          }, orgAccount);
+          }, orgAccount, daysInMonth, punchedOutAt);
 
           payload.earlyExitMinutes = eeResult.earlyExitMinutes;
           payload.earlyExitAmount = eeResult.earlyExitAmount;
@@ -11668,7 +11924,7 @@ router.post('/attendance', async (req, res) => {
             orgAccountId: orgId,
             date: dateIso,
             punchedInAt
-          }, orgAccount);
+          }, orgAccount, daysInMonth, punchedInAt);
 
           payload.earlyOvertimeMinutes = eotResult.earlyOvertimeMinutes;
           payload.earlyOvertimeAmount = eotResult.earlyOvertimeAmount;
@@ -11681,7 +11937,7 @@ router.post('/attendance', async (req, res) => {
             orgAccountId: orgId,
             date: dateIso,
             punchedInAt
-          }, orgAccount);
+          }, orgAccount, daysInMonth, punchedInAt);
 
           payload.latePunchInMinutes = lpResult.latePunchInMinutes;
           payload.latePunchInAmount = lpResult.latePunchInAmount;
@@ -11780,6 +12036,55 @@ router.post('/attendance', async (req, res) => {
 
 });
 
+// Admin helper to check if a day is special (weekly off/holiday) for a staff
+router.get('/attendance/check-special-day', async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
+    const { userId, date } = req.query;
+    if (!userId || !date) return res.status(400).json({ success: false, message: 'userId and date required' });
+
+    const uid = Number(userId);
+    const dateIso = date;
+
+    // Check pay rule first
+    const payRule = await holidayWorkPayService.getEffectiveRule(uid, dateIso);
+    if (payRule) return res.json({ success: true, isSpecial: false });
+
+    // Check Weekly Off
+    const woAsg = await StaffWeeklyOffAssignment.findOne({
+      where: { userId: uid, effectiveFrom: { [Op.lte]: dateIso } },
+      order: [['effectiveFrom', 'DESC']],
+      include: [{ model: WeeklyOffTemplate, as: 'template' }]
+    });
+    if (woAsg) {
+      let raw = woAsg.template?.config;
+      while (typeof raw === 'string' && raw.trim().startsWith('[')) {
+        try { raw = JSON.parse(raw); } catch (_) { break; }
+      }
+      if (isWeeklyOffForDate(Array.isArray(raw) ? raw : [], new Date(`${dateIso}T00:00:00`))) {
+        return res.json({ success: true, isSpecial: true, type: 'weekly_off', message: 'Today is Weekly Off' });
+      }
+    }
+
+    // Check Holiday
+    const hAsg = await StaffHolidayAssignment.findOne({
+      where: { userId: uid, effectiveFrom: { [Op.lte]: dateIso } },
+      order: [['effectiveFrom', 'DESC']],
+      include: [{ model: HolidayTemplate, as: 'template', include: [{ model: HolidayDate, as: 'holidays', where: { active: { [Op.ne]: false } }, required: false }] }]
+    });
+    if (hAsg?.template?.holidays) {
+      const isH = hAsg.template.holidays.some(h => String(h.date) === dateIso);
+      if (isH) {
+        return res.json({ success: true, isSpecial: true, type: 'holiday', message: 'Today is Holiday' });
+      }
+    }
+
+    return res.json({ success: true, isSpecial: false });
+  } catch (e) {
+    return res.status(500).json({ success: false, message: 'Failed to check special day' });
+  }
+});
+
 // ── Bulk Mark Attendance ──────────────────────────────────────────────────────
 router.post('/attendance/bulk', async (req, res) => {
   try {
@@ -11822,6 +12127,56 @@ router.post('/attendance/bulk', async (req, res) => {
     for (const uid of staffIds) {
       const user = await User.findOne({ where: { id: uid, orgAccountId: orgId, role: 'staff' } });
       if (!user) continue;
+
+      // Skip if staff has approved leave on this date
+      const approvedLeave = await LeaveRequest.findOne({
+        where: {
+          userId: uid,
+          status: 'APPROVED',
+          startDate: { [Op.lte]: dateIso },
+          endDate: { [Op.gte]: dateIso }
+        }
+      });
+      if (approvedLeave) {
+        console.log(`[BulkAttendance] Skipping user ${uid} - on approved leave`);
+        continue;
+      }
+
+      // Check for Weekly Off or Holiday
+      const payRule = await holidayWorkPayService.getEffectiveRule(uid, dateIso);
+      if (!payRule) {
+        // Check Weekly Off
+        const woAsg = await StaffWeeklyOffAssignment.findOne({
+          where: { userId: uid, effectiveFrom: { [Op.lte]: dateIso } },
+          order: [['effectiveFrom', 'DESC']],
+          include: [{ model: WeeklyOffTemplate, as: 'template' }]
+        });
+        if (woAsg) {
+          let raw = woAsg.template?.config;
+          while (typeof raw === 'string' && raw.trim().startsWith('[')) {
+            try { raw = JSON.parse(raw); } catch (_) { break; }
+          }
+          if (isWeeklyOffForDate(Array.isArray(raw) ? raw : [], new Date(`${dateIso}T00:00:00`))) {
+            console.log(`[BulkAttendance] Skipping user ${uid} - today is weekly off`);
+            continue;
+          }
+        }
+
+        // Check Holiday
+        const hAsg = await StaffHolidayAssignment.findOne({
+          where: { userId: uid, effectiveFrom: { [Op.lte]: dateIso } },
+          order: [['effectiveFrom', 'DESC']],
+          include: [{ model: HolidayTemplate, as: 'template', include: [{ model: HolidayDate, as: 'holidays', where: { active: { [Op.ne]: false } }, required: false }] }]
+        });
+        if (hAsg?.template?.holidays) {
+          const isH = hAsg.template.holidays.some(h => String(h.date) === dateIso);
+          if (isH) {
+            console.log(`[BulkAttendance] Skipping user ${uid} - today is holiday`);
+            continue;
+          }
+        }
+      }
+
       const payload = { ...basePayload };
       // Overtime calculation using Automation Rules (Bulk)
       try {
@@ -11830,6 +12185,8 @@ router.post('/attendance/bulk', async (req, res) => {
         const punchedOutAt = payload.punchedOutAt;
         if (punchedInAt && punchedOutAt) {
           const totalWorkHours = Math.max(0, (new Date(punchedOutAt) - new Date(punchedInAt)) / 3600000);
+          const _d = new Date(dateIso);
+          const daysInMonth = new Date(_d.getFullYear(), _d.getMonth() + 1, 0).getDate();
           const otResult = await calculateOvertime({
             userId: uid,
             orgAccountId: orgId,
@@ -11837,7 +12194,7 @@ router.post('/attendance/bulk', async (req, res) => {
             punchedInAt,
             punchedOutAt,
             totalWorkHours
-          }, orgAccount);
+          }, orgAccount, daysInMonth, punchedOutAt);
 
           payload.overtimeMinutes = otResult.overtimeMinutes;
           payload.overtimeAmount = otResult.overtimeAmount;
@@ -11850,7 +12207,7 @@ router.post('/attendance/bulk', async (req, res) => {
             orgAccountId: orgId,
             date: dateIso,
             punchedOutAt
-          }, orgAccount);
+          }, orgAccount, daysInMonth, punchedOutAt);
 
           payload.earlyExitMinutes = eeResult.earlyExitMinutes;
           payload.earlyExitAmount = eeResult.earlyExitAmount;
@@ -11863,7 +12220,7 @@ router.post('/attendance/bulk', async (req, res) => {
             orgAccountId: orgId,
             date: dateIso,
             punchedInAt
-          }, orgAccount);
+          }, orgAccount, daysInMonth, punchedInAt);
 
           payload.latePunchInMinutes = lpResult.latePunchInMinutes;
           payload.latePunchInAmount = lpResult.latePunchInAmount;
@@ -19270,7 +19627,7 @@ router.get('/reports/late-penalty-analysis', async (req, res) => {
         for (const att of attendances) {
           if (!att.punchedInAt) continue;
 
-          const result = await latePunchInService.calculateLatePenalty(att, { id: orgId }, att.punchedInAt, daysInMonth);
+          const result = await latePunchInService.calculateLatePenalty(att, { id: orgId }, daysInMonth, att.punchedInAt);
           if (result.latePunchInMinutes > 0) {
             lateInstances++;
             totalLateMinutes += result.latePunchInMinutes;
@@ -19303,10 +19660,10 @@ router.get('/reports/late-penalty-analysis', async (req, res) => {
         { header: 'Staff Name', key: 'staffName', width: 25 },
         { header: 'Department', key: 'department', width: 20 },
         { header: 'Applied Rule', key: 'ruleName', width: 25 },
-        { header: 'Penalty Type', key: 'type', width: 15 },
-        { header: 'Late Instances', key: 'instances', width: 15 },
-        { header: 'Total Late Min', key: 'totalMins', width: 15 },
-        { header: 'Total Penalty', key: 'penalty', width: 15 },
+        { header: 'Penalty Type', key: 'penaltyType', width: 15 },
+        { header: 'Late Instances', key: 'lateInstances', width: 15 },
+        { header: 'Total Late Min', key: 'totalLateMinutes', width: 15 },
+        { header: 'Total Penalty', key: 'totalPenaltyAmount', width: 15 },
       ];
 
       // Set columns with headers disabled to prevent Row 1 overwrite

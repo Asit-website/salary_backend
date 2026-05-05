@@ -28,7 +28,26 @@ const { requireRole } = require('../middleware/roles');
 
 // Apply global auth and role protection
 router.use(authRequired);
-router.use(requireRole(['superadmin']));
+router.use((req, res, next) => {
+  // Parse permissions robustly (consistent with superadmin.js)
+  let perms = req.user.permissions;
+  let safety = 0;
+  while (typeof perms === 'string' && safety < 5) {
+    try {
+      const parsed = JSON.parse(perms);
+      if (parsed === perms) break;
+      perms = parsed;
+    } catch(e) { break; }
+    safety++;
+  }
+  req.user.permissions = perms || {};
+
+  // Allow if superadmin OR has explicit mailing access
+  const hasAccess = req.user.role === 'superadmin' || req.user.permissions.mailing === 'manage_own';
+  if (hasAccess) return next();
+
+  return res.status(403).json({ success: false, message: 'Forbidden' });
+});
 
 // Start a Mailing Campaign
 router.post('/campaign', upload.single('attachment'), async (req, res) => {
@@ -211,7 +230,13 @@ router.post('/campaign/excel', upload.fields([{ name: 'file', maxCount: 1 }, { n
 // Get Campaign Stats with Breakdown
 router.get('/campaigns', async (req, res) => {
   try {
+    let where = {};
+    if (req.user.role !== 'superadmin') {
+      where = { createdBy: req.user.id };
+    }
+
     const campaigns = await MailCampaign.findAll({
+      where,
       order: [['createdAt', 'DESC']],
       limit: 20
     });
@@ -297,6 +322,11 @@ router.get('/campaign/:id/details', async (req, res) => {
       return res.status(404).json({ success: false, message: 'Campaign not found' });
     }
 
+    // Ownership check for non-superadmins
+    if (req.user.role !== 'superadmin' && campaign.createdBy !== req.user.id) {
+      return res.status(403).json({ success: false, message: 'Forbidden: You do not have access to this campaign' });
+    }
+
     const recipients = await MailQueue.findAll({
       where: { campaignId: id },
       order: [['createdAt', 'ASC']]
@@ -326,6 +356,11 @@ router.get('/campaign/:id/export', async (req, res) => {
     const { id } = req.params;
     const campaign = await MailCampaign.findByPk(id);
     if (!campaign) return res.status(404).send('Campaign not found');
+
+    // Ownership check for non-superadmins
+    if (req.user.role !== 'superadmin' && campaign.createdBy !== req.user.id) {
+      return res.status(403).send('Forbidden: You do not have access to this campaign');
+    }
 
     const recipients = await MailQueue.findAll({
       where: { campaignId: id },

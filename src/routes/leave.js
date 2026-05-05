@@ -1,33 +1,84 @@
 const express = require('express');
 const { Op } = require('sequelize');
 
-const { LeaveRequest, User, StaffProfile, StaffLeaveAssignment, LeaveTemplate, LeaveTemplateCategory, LeaveBalance, LeaveEncashment, OrgAccount } = require('../models');
+const { LeaveRequest, User, StaffProfile, StaffLeaveAssignment, LeaveTemplate, LeaveTemplateCategory, LeaveBalance, LeaveEncashment, OrgAccount, StaffWeeklyOffAssignment, WeeklyOffTemplate, StaffHolidayAssignment, HolidayTemplate, HolidayDate } = require('../models');
 const { authRequired } = require('../middleware/auth');
 const { requireRole } = require('../middleware/roles');
 const { tenantEnforce } = require('../middleware/tenant');
 
 const router = express.Router();
+const { getMonthWeekNumber, isWeeklyOffForDate } = require('./weeklyOff');
+const { formatDate } = require('../utils/dateUtils');
 
 router.use(authRequired);
 router.use(tenantEnforce);
 
-function getCycleRange(cycle, forDate /* YYYY-MM-DD */) {
+function getCycleRange(cycle, forDate /* YYYY-MM-DD */, tpl = null) {
   const d = new Date(`${forDate}T00:00:00`);
   const y = d.getFullYear();
   const m = d.getMonth();
-  if (cycle === 'yearly') return { start: `${y}-01-01`, end: `${y}-12-31` };
-  if (cycle === 'quarterly') {
-    const q = Math.floor(m / 3);
-    const sm = q * 3;
-    const em = sm + 2;
-    const start = new Date(y, sm, 1);
-    const end = new Date(y, em + 1, 0);
-    return { start: start.toISOString().slice(0, 10), end: end.toISOString().slice(0, 10) };
+  const dt = d.getDate();
+
+  if (cycle === 'yearly') {
+    let startMonth = 0; // Jan
+    let startDay = 1;
+    if (tpl && tpl.cycleStartDate) {
+      const csd = new Date(tpl.cycleStartDate);
+      startMonth = csd.getMonth();
+      startDay = csd.getDate();
+    }
+    let start = new Date(y, startMonth, startDay);
+    if (d < start) {
+      start = new Date(y - 1, startMonth, startDay);
+    }
+    const end = new Date(start.getFullYear() + 1, startMonth, startDay - 1);
+    return { start: formatDate(start), end: formatDate(end) };
   }
-  // Default monthly range
+
+  if (cycle === 'quarterly') {
+    let startMonth = 0; // Jan
+    let startDay = 1;
+    if (tpl && tpl.cycleStartDate) {
+      const csd = new Date(tpl.cycleStartDate);
+      startMonth = csd.getMonth();
+      startDay = csd.getDate();
+    }
+    const monthDiff = (m - startMonth + 12) % 12;
+    const qIndex = Math.floor(monthDiff / 3);
+    const cycleStartMonth = (startMonth + (qIndex * 3)) % 12;
+    let cycleStartYear = y;
+    if (m < startMonth && cycleStartMonth >= startMonth) cycleStartYear--;
+    const start = new Date(cycleStartYear, cycleStartMonth, startDay);
+    if (d < start) {
+      const prevStart = new Date(start.getFullYear(), start.getMonth() - 3, startDay);
+      return { start: formatDate(prevStart), end: formatDate(new Date(start.getFullYear(), start.getMonth(), startDay - 1)) };
+    }
+    const end = new Date(start.getFullYear(), start.getMonth() + 3, startDay - 1);
+    return { start: formatDate(start), end: formatDate(end) };
+  }
+
+  if (cycle === 'monthly') {
+    let startDay = 1;
+    if (tpl && tpl.cycleStartDay) {
+      startDay = Number(tpl.cycleStartDay);
+    }
+    let start = new Date(y, m, startDay);
+    if (dt < startDay) {
+      start = new Date(y, m - 1, startDay);
+    }
+    const end = new Date(start.getFullYear(), start.getMonth() + 1, startDay - 1);
+    return { start: formatDate(start), end: formatDate(end) };
+  }
+
   const start = new Date(y, m, 1);
   const end = new Date(y, m + 1, 0);
-  return { start: start.toISOString().slice(0, 10), end: end.toISOString().slice(0, 10) };
+  return { start: formatDate(start), end: formatDate(end) };
+}
+
+function getPrevCycleRange(cycle, forDate /* YYYY-MM-DD */, tpl = null) {
+  const current = getCycleRange(cycle, forDate, tpl);
+  const prevDate = new Date(new Date(`${current.start}T00:00:00`).getTime() - 86400000);
+  return getCycleRange(cycle, formatDate(prevDate), tpl);
 }
 
 /**
@@ -40,7 +91,7 @@ async function getEffectiveLeaveBalance(userId, categoryKey, onDate) {
   if (!tpl) return null;
 
   const cyc = tpl.cycle || 'monthly';
-  const { start, end } = getCycleRange(cyc, onDate);
+  const { start, end } = getCycleRange(cyc, onDate, tpl);
   const key = String(categoryKey).toLowerCase();
 
   const lb = await LeaveBalance.findOne({ where: { userId, categoryKey: key, cycleStart: start, cycleEnd: end } });
@@ -52,11 +103,28 @@ async function getEffectiveLeaveBalance(userId, categoryKey, onDate) {
 
   if (lb) {
     const used = Number(lb.used || 0);
-    const remaining = Number(lb.remaining || Math.max(0, total - used));
-    return { lb, total, used, remaining, start, end, cycle: cyc };
+    const allocated = Number(lb.allocated || total);
+    const carried = Number(lb.carriedForward || 0);
+    const remaining = Number(lb.remaining || Math.max(0, allocated - used));
+    return { lb, total: allocated, used, remaining, start, end, cycle: cyc, carriedForward: carried };
   }
 
   // Fallback: derive used from approved requests within cycle when balance row is missing
+  // ALSO: check carry forward from previous cycle
+  let carry = 0;
+  const prev = getPrevCycleRange(cyc, onDate, tpl);
+  const prevBal = await LeaveBalance.findOne({ where: { userId, categoryKey: key, cycleStart: prev.start, cycleEnd: prev.end } });
+  
+  if (prevBal) {
+    const rem = Number(prevBal.remaining || 0);
+    const isCarryForward = !!catCfg.carryForward;
+    const rule = String(catCfg.unusedRule || 'lapse');
+    if (isCarryForward || rule === 'carry_forward') {
+      const cap = catCfg.carryLimitDays == null ? rem : Math.min(rem, Number(catCfg.carryLimitDays));
+      carry = cap;
+    }
+  }
+
   const reqs = await LeaveRequest.findAll({
     where: {
       userId,
@@ -67,11 +135,12 @@ async function getEffectiveLeaveBalance(userId, categoryKey, onDate) {
     }
   }).catch(() => []);
 
+  const totalWithCarry = total + carry;
   const usedDays = Array.isArray(reqs) ? reqs.reduce((s, r) => s + (Number(r.days || 0) || 0), 0) : 0;
-  const used = Math.min(total, Math.max(0, usedDays));
-  const remaining = Math.max(0, total - used);
+  const used = Math.min(totalWithCarry, Math.max(0, usedDays));
+  const remaining = Math.max(0, totalWithCarry - used);
 
-  return { lb: null, total, used, remaining, start, end, cycle: cyc };
+  return { lb: null, total: totalWithCarry, used, remaining, start, end, cycle: cyc, carriedForward: carry };
 }
 
 // STAFF: get my leave categories and balances for current cycle
@@ -85,16 +154,14 @@ router.get('/categories', requireRole(['staff']), async (req, res) => {
     if (!tpl) {
       const cycle = 'monthly';
       const { start, end } = getCycleRange(cycle, forDate);
-      // Return only unpaid option when no template assigned
+      // Return empty categories if no template assigned (unpaid removed)
       return res.json({
-        success: true, cycle: { type: cycle, start, end }, categories: [
-          { key: 'unpaid', name: 'Unpaid Leave', total: null, used: null, remaining: null, unlimited: true }
-        ]
+        success: true, cycle: { type: cycle, start, end }, categories: []
       });
     }
 
     const cycle = tpl.cycle || 'monthly';
-    const { start, end } = getCycleRange(cycle, forDate);
+    const { start, end } = getCycleRange(cycle, forDate, tpl);
 
     const categories = await Promise.all((tpl.categories || []).map(async (c) => {
       const balanceInfo = await getEffectiveLeaveBalance(req.user.id, c.key, forDate);
@@ -110,8 +177,7 @@ router.get('/categories', requireRole(['staff']), async (req, res) => {
       };
     }));
 
-    // Always include a static unpaid option without remaining text
-    categories.push({ key: 'unpaid', name: 'Unpaid Leave', total: null, used: null, remaining: null, unlimited: true });
+    // Unpaid leave option removed as per request
 
     return res.json({ success: true, cycle: { type: cycle, start, end }, categories });
   } catch (e) {
@@ -164,7 +230,27 @@ router.post('/', requireRole(['staff']), async (req, res) => {
         const exists = (tpl.categories || []).some((c) => String(c.key).toLowerCase() === String(catKey).toLowerCase());
         if (!exists) return res.status(400).json({ success: false, message: 'Invalid categoryKey for assigned template' });
         catKey = String(catKey).toLowerCase();
+
+        // CHECK BALANCE BEFORE APPLYING
+        const balanceInfo = await getEffectiveLeaveBalance(req.user.id, catKey, startDate);
+        if (balanceInfo) {
+          const totalRequested = days;
+          if (balanceInfo.remaining < totalRequested) {
+            return res.status(400).json({
+              success: false,
+              message: `your leave has finished used total ${balanceInfo.used}`
+            });
+          }
+        }
+      } else {
+        // If no categoryKey provided but a template exists, we usually require one.
+        // But if we want to be strict, we can error out or pick first.
+        // The user wants "only company provided" so catKey must be there.
+        return res.status(400).json({ success: false, message: 'Leave category is required' });
       }
+    } else {
+      // No template means no paid leaves available
+      return res.status(400).json({ success: false, message: 'No leave template assigned to you. You cannot apply for leave.' });
     }
 
     const lr = await LeaveRequest.create({
@@ -183,6 +269,63 @@ router.post('/', requireRole(['staff']), async (req, res) => {
     return res.json({ success: true, leave: lr });
   } catch (e) {
     return res.status(500).json({ success: false, message: 'Failed to create leave request' });
+  }
+});
+
+// STAFF: check if range contains weekly off or holiday
+router.get('/check-range', requireRole(['staff']), async (req, res) => {
+  try {
+    const { start, end } = req.query;
+    if (!start || !end) return res.json({ success: true, conflict: false });
+
+    const s = new Date(`${start}T00:00:00`);
+    const e = new Date(`${end}T00:00:00`);
+
+    // Fetch Weekly Offs
+    const woRows = await StaffWeeklyOffAssignment.findAll({ 
+      where: { userId: req.user.id }, 
+      include: [{ model: WeeklyOffTemplate, as: 'template' }] 
+    });
+
+    // Fetch Holidays
+    const hAsg = await StaffHolidayAssignment.findOne({
+      where: { userId: req.user.id, effectiveFrom: { [Op.lte]: end } },
+      order: [['effectiveFrom', 'DESC']],
+      include: [{ model: HolidayTemplate, as: 'template', include: [{ model: HolidayDate, as: 'holidays', where: { active: { [Op.ne]: false } }, required: false }] }]
+    });
+
+    for (let d = new Date(s); d <= e; d.setDate(d.getDate() + 1)) {
+      const dateStr = d.toISOString().slice(0, 10);
+      const dayNum = d.getDate();
+
+      // Check Weekly Off
+      for (const asg of woRows) {
+        const ef = new Date(asg.effectiveFrom);
+        const et = asg.effectiveTo ? new Date(asg.effectiveTo) : null;
+        if (d >= ef && (!et || d <= et)) {
+          let raw = asg.template?.config;
+          while (typeof raw === 'string' && raw.trim().startsWith('[')) {
+            try { raw = JSON.parse(raw); } catch (_) { break; }
+          }
+          if (isWeeklyOffForDate(Array.isArray(raw) ? raw : [], d)) {
+            return res.json({ success: true, conflict: true, type: 'weekly_off', date: dateStr, day: dayNum, message: `${dayNum} is weekly off on this date range please change range` });
+          }
+        }
+      }
+
+      // Check Holiday
+      if (hAsg?.template?.holidays) {
+        const isH = hAsg.template.holidays.some(h => String(h.date) === dateStr);
+        if (isH) {
+          return res.json({ success: true, conflict: true, type: 'holiday', date: dateStr, day: dayNum, message: `${dayNum} is holiday on this date range please change range` });
+        }
+      }
+    }
+
+    return res.json({ success: true, conflict: false });
+  } catch (e) {
+    console.error(e);
+    return res.status(500).json({ success: false, message: 'Failed to check range' });
   }
 });
 
@@ -307,60 +450,46 @@ router.patch('/:id/status', requireRole(['admin', 'superadmin']), async (req, re
       return res.json({ success: true, leave: record, message: `Level ${done}/${reqLevels} approved` });
     }
 
-    // Final approval: deduct balance if category present (allow partial unpaid)
+    // Final approval: deduct balance using effective balance helper
     const startDate = record.startDate;
-    const tpl = await getActiveLeaveTemplateForUser(record.userId, startDate);
-    let catKey = record.categoryKey || null;
-    if (tpl && !catKey && Array.isArray(tpl.categories) && tpl.categories.length > 0) {
-      // auto-pick first category
-      catKey = String(tpl.categories[0].key).toLowerCase();
+    const eff = await getEffectiveLeaveBalance(record.userId, record.categoryKey || '', startDate);
+    
+    if (!eff) {
+       return res.status(400).json({ success: false, message: 'Leave category missing or template not found. Only company provided leaves can be approved.' });
     }
 
-    let paidDays = null;
-    let unpaidDays = null;
-    if (catKey) {
-      if (catKey === 'unpaid') {
-        const need = Number(record.days || 0);
-        paidDays = 0;
-        unpaidDays = need;
-      } else {
-        const cyc = tpl ? tpl.cycle || 'monthly' : 'monthly';
-        const { start, end } = getCycleRange(cyc, startDate);
-        let lb = await LeaveBalance.findOne({ where: { userId: record.userId, categoryKey: catKey, cycleStart: start, cycleEnd: end } });
-        const need = Number(record.days || 0);
-        // Determine total from template category
-        const catCfg = (tpl?.categories || []).find(c => String(c.key).toLowerCase() === String(catKey).toLowerCase());
-        const totalForCycle = Number(catCfg?.leaveCount || 0);
-        const remainingBefore = lb ? Number(lb.remaining || 0) : Math.max(0, totalForCycle - Number(lb?.used || 0));
-        paidDays = Math.min(need, Math.max(0, remainingBefore));
-        unpaidDays = Math.max(0, need - paidDays);
-        if (paidDays > 0) {
-          if (!lb) {
-            // Create balance row if missing
-            const used = Math.min(totalForCycle, paidDays);
-            const remaining = Math.max(0, totalForCycle - used);
-            lb = await LeaveBalance.create({
-              userId: record.userId,
-              categoryKey: catKey,
-              cycleStart: start,
-              cycleEnd: end,
-              allocated: totalForCycle,
-              used,
-              remaining,
-              orgAccountId: record.orgAccountId || tpl.orgAccountId || null
-            });
-          } else {
-            const used = Number(lb.used || 0) + paidDays;
-            const remaining = Math.max(0, Number(lb.remaining || 0) - paidDays);
-            await lb.update({ used, remaining });
-          }
-        }
-      }
+    const { lb, total: totalForCycle, remaining: remainingBefore, start, end, carriedForward } = eff;
+    const catKey = String(record.categoryKey).toLowerCase();
+
+    if (catKey === 'unpaid') {
+      return res.status(400).json({ success: false, message: 'Unpaid leave is no longer allowed. Only company provided leaves can be approved.' });
+    }
+
+    const need = Number(record.days || 0);
+    if (need > remainingBefore) {
+      return res.status(400).json({ success: false, message: `Insufficient balance. This staff has only ${remainingBefore} leaves remaining.` });
+    }
+
+    const paidDays = need;
+    const unpaidDays = 0;
+
+    if (!lb) {
+      // Create balance row if missing, using the derived total (which includes carry forward)
+      await LeaveBalance.create({
+        userId: record.userId,
+        categoryKey: catKey,
+        cycleStart: start,
+        cycleEnd: end,
+        allocated: totalForCycle,
+        carriedForward: carriedForward || 0,
+        used: paidDays,
+        remaining: Math.max(0, totalForCycle - paidDays),
+        orgAccountId: record.orgAccountId || req.tenantOrgAccountId || null
+      });
     } else {
-      // No category provided -> treat as unpaid
-      const need = Number(record.days || 0);
-      paidDays = 0;
-      unpaidDays = need;
+      const used = Number(lb.used || 0) + paidDays;
+      const remaining = Math.max(0, Number(lb.remaining || 0) - paidDays);
+      await lb.update({ used, remaining });
     }
 
     await record.update({

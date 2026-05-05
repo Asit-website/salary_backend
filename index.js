@@ -122,7 +122,7 @@ app.use('/superadmin', superadminRoutes);
 app.use('/attendance', attendanceRoutes);
 app.use('/sales', salesRoutes);
 app.use('/leave', leaveRoutes);
-app.use('/leave/weekly-off', weeklyOffRoutes);
+app.use('/leave/weekly-off', weeklyOffRoutes.router);
 app.use('/me', meRoutes);
 app.use('/documents', documentsRoutes);
 app.use('/security', securityRoutes);
