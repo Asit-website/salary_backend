@@ -2424,7 +2424,7 @@ router.post('/payroll/:cycleId/compute', async (req, res) => {
         basicSalary: Number(u.basicSalary || 0) || Number(sv?.earnings?.basic_salary || sv?.earnings?.BASIC_SALARY || 0),
         hra: Number(u.hra || 0),
         da: Number(u.da || 0) || Number(sv?.earnings?.da || sv?.earnings?.DA || 0),
-        grossSalary: Number(u.grossSalary || 0) || Number(sv?.earnings?.gross_salary || sv?.earnings?.GROSS_SALARY || 0) || ( (Number(u.basicSalary || 0) || Number(sv?.earnings?.basic_salary || sv?.earnings?.BASIC_SALARY || 0)) + (Number(u.da || 0) || Number(sv?.earnings?.da || sv?.earnings?.DA || 0)) ),
+        grossSalary: Number(u.grossSalary || 0) || Number(sv?.earnings?.gross_salary || sv?.earnings?.GROSS_SALARY || 0) || ((Number(u.basicSalary || 0) || Number(sv?.earnings?.basic_salary || sv?.earnings?.BASIC_SALARY || 0)) + (Number(u.da || 0) || Number(sv?.earnings?.da || sv?.earnings?.DA || 0))),
         specialAllowance: Number(u.specialAllowance || 0),
 
         conveyanceAllowance: Number(u.conveyanceAllowance || 0),

@@ -53,7 +53,7 @@ async function getEffectiveShiftTemplate(userId, dateKey) {
  * Helper to find minutes exceeding the threshold based on Calculation Type
  */
 async function getOvertimeMinutes(attendance, rule, shiftTemplate) {
-  const totalWorkMinutes = Math.floor((attendance.totalWorkHours || 0) * 60);
+  const totalWorkMinutes = Math.round((attendance.totalWorkHours || 0) * 60);
 
   // 1. Resolve Threshold (Rule > ShiftTemplate > Calculated Shift Time)
   let baseThreshold = (rule.thresholds && rule.thresholds.length > 0) ? rule.thresholds[0].minMinutes : 0;
@@ -110,7 +110,7 @@ async function getOvertimeMinutes(attendance, rule, shiftTemplate) {
     console.log(`[OvertimeService] Rule ID: ${rule.id}, PO (IST): ${istStr}, SE: ${shiftTemplate.endTime}, POSec: ${punchOutSec}, SESec: ${shiftEndSec}`);
 
     if (punchOutSec > shiftEndSec) {
-      overtimeByShift = Math.floor((punchOutSec - shiftEndSec) / 60);
+      overtimeByShift = Math.round((punchOutSec - shiftEndSec) / 60);
     }
   }
 
@@ -144,7 +144,7 @@ async function calculateOvertime(params, orgAccountArg, daysInMonthArg = 30, now
   }
   attendance.totalWorkHours = totalWorkHours;
 
-  const totalWorkMinutes = Math.floor(totalWorkHours * 60);
+  const totalWorkMinutes = Math.round(totalWorkHours * 60);
   const now = nowArg || new Date();
 
   // Ensure we have numbers for IDs
@@ -232,7 +232,15 @@ async function calculateOvertime(params, orgAccountArg, daysInMonthArg = 30, now
   } else if (rewardType === 'FIXED_AMOUNT_PER_HOUR') {
     overtimeAmount = (overtimeMinutes / 60) * rewardValue;
   } else if (rewardType === 'SALARY_MULTIPLIER' || rewardType === 'MULTIPLIER') {
-    const hourlySalary = daysInMonth > 0 ? (baseSalary / (daysInMonth * 8)) : 0;
+    const shiftHours = (shiftTemplate?.workMinutes || 480) / 60;
+    let hourlySalary = daysInMonth > 0 ? (baseSalary / (daysInMonth * shiftHours)) : 0;
+
+    // CUSTOM: If user has 'Half Day' bonus enabled at 0 mins, 
+    // it implies they want 1 hour of OT to be worth at least half a day (standard in some Indian orgs)
+    if (finalRule.giveHalfDayOvertime && Number(finalRule.halfDayThresholdMinutes) === 0) {
+      const dailyRate = daysInMonth > 0 ? (baseSalary / daysInMonth) : 0;
+      hourlySalary = dailyRate / 2; // 1 hour = 0.5 days
+    }
 
     if (hourlySalary <= 0) {
       console.log(`[OvertimeService] Warning: Salary Multiplier rule used for user ${userId} but no base salary found.`);
@@ -250,21 +258,21 @@ async function calculateOvertime(params, orgAccountArg, daysInMonthArg = 30, now
 
     if (finalRule.giveFullDayOvertime && finalRule.fullDayThresholdMinutes) {
       if (overtimeMinutes >= finalRule.fullDayThresholdMinutes) {
-        overtimeAmount = dailyRate;
+        overtimeAmount = Math.max(overtimeAmount, dailyRate);
       } else if (finalRule.giveHalfDayOvertime && finalRule.halfDayThresholdMinutes) {
         if (overtimeMinutes >= finalRule.halfDayThresholdMinutes) {
-          overtimeAmount = dailyRate / 2;
+          overtimeAmount = Math.max(overtimeAmount, dailyRate / 2);
         }
       }
     } else if (finalRule.giveHalfDayOvertime && finalRule.halfDayThresholdMinutes) {
       if (overtimeMinutes >= finalRule.halfDayThresholdMinutes) {
-        overtimeAmount = dailyRate / 2;
+        overtimeAmount = Math.max(overtimeAmount, dailyRate / 2);
       }
     }
   }
 
   return {
-    overtimeMinutes: Math.floor(overtimeMinutes),
+    overtimeMinutes: Math.round(overtimeMinutes),
     overtimeAmount: assignment ? parseFloat(overtimeAmount.toFixed(2)) : 0,
     overtimeRuleId: finalRule.id || null,
     status: overtimeMinutes > 0 ? 'overtime' : (totalWorkMinutes < (shiftTemplate?.halfDayThresholdMinutes || 240) ? 'half_day' : 'present')

@@ -68,7 +68,7 @@ class EarlyExitService {
       }
 
       if (punchedOutAt < shiftEndTs) {
-        earlyExitMinutes = Math.floor((shiftEndTs - punchedOutAt) / 60000);
+        earlyExitMinutes = Math.round((shiftEndTs - punchedOutAt) / 60000);
       }
     }
 
@@ -144,7 +144,8 @@ class EarlyExitService {
         if (rewardType === 'FIXED_AMOUNT') {
           deductionAmount = rewardValue;
         } else if (rewardType === 'SALARY_MULTIPLIER') {
-          const hourlySalary = dailySalary / 8;
+          const shiftHours = (shift?.workMinutes || 480) / 60;
+          const hourlySalary = dailySalary / shiftHours;
           const durationHours = earlyExitMinutes / 60;
           deductionAmount = hourlySalary * rewardValue * durationHours;
         }

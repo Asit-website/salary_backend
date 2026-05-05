@@ -76,7 +76,7 @@ async function getEarlyOvertimeMinutes(attendance, rule, shiftTemplate) {
   console.log(`[EarlyOvertimeService] Rule ID: ${rule.id}, PI (IST): ${istStr}, SS: ${shiftTemplate.startTime}, PISec: ${punchInSec}, SSSec: ${shiftStartSec}`);
 
   if (punchInSec < shiftStartSec) {
-    const earlyMin = Math.floor((shiftStartSec - punchInSec) / 60);
+    const earlyMin = Math.round((shiftStartSec - punchInSec) / 60);
 
     // Check against minimum threshold for Early OT to count (fallback to 0)
     const baseThreshold = (rule.thresholds && rule.thresholds.length > 0) ? rule.thresholds[0].minMinutes : 0;
@@ -167,7 +167,19 @@ async function calculateEarlyOvertime(params, orgAccountArg, daysInMonthArg = 30
     const da = Number(user?.da || 0) || Number(sv?.earnings?.da || sv?.earnings?.DA || 0);
     const baseSalary = basic + da;
     const daysInMonth = daysInMonthArg || 30;
-    const hourlySalary = daysInMonth > 0 ? (baseSalary / (daysInMonth * 8)) : 0;
+    const shiftHours = (shiftTemplate?.workMinutes || 480) / 60;
+    let hourlySalary = daysInMonth > 0 ? (baseSalary / (daysInMonth * shiftHours)) : 0;
+
+    // CUSTOM: If organization has 'Half Day' bonus enabled at 0 mins in the MAIN overtime rule,
+    // we apply the same '1 hour = 0.5 days' logic to early overtime for consistency.
+    if (orgAccount?.overtimeRuleId) {
+      const { OvertimeRule } = require('../models');
+      const mainRule = await OvertimeRule.findByPk(orgAccount.overtimeRuleId);
+      if (mainRule && mainRule.giveHalfDayOvertime && Number(mainRule.halfDayThresholdMinutes) === 0) {
+        const dailyRate = daysInMonth > 0 ? (baseSalary / daysInMonth) : 0;
+        hourlySalary = dailyRate / 2;
+      }
+    }
 
     if (hourlySalary <= 0) {
       earlyOvertimeAmount = 0;
@@ -179,7 +191,7 @@ async function calculateEarlyOvertime(params, orgAccountArg, daysInMonthArg = 30
   }
 
   return {
-    earlyOvertimeMinutes: Math.floor(earlyOvertimeMinutes),
+    earlyOvertimeMinutes: Math.round(earlyOvertimeMinutes),
     earlyOvertimeAmount: parseFloat(earlyOvertimeAmount.toFixed(2)),
     earlyOvertimeRuleId: finalRule.id || null
   };

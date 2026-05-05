@@ -59,9 +59,7 @@ class LatePunchInService {
       const shiftStartTs = new Date(punchedInAt);
       shiftStartTs.setHours(sh, sm, ss || 0, 0);
 
-      if (punchedInAt > shiftStartTs) {
-        latePunchInMinutes = Math.floor((punchedInAt - shiftStartTs) / 60000);
-      }
+      latePunchInMinutes = Math.round((punchedInAt - shiftStartTs) / 60000);
     }
 
     // 2. Resolve applicable Rule for penalty calculation
@@ -151,7 +149,8 @@ class LatePunchInService {
       const threshold = thresholds.find(t => effectiveLateMinutes >= Number(t.minMinutes));
       if (threshold) {
         matchedTier = threshold;
-        const hourlySalary = dailySalary / 8; // Assuming 8-hour workday
+        const shiftHours = (shift?.workMinutes || 480) / 60;
+        const hourlySalary = dailySalary / shiftHours;
         deductionAmount = hourlySalary * Number(threshold.value || 0);
       }
     }
@@ -163,9 +162,9 @@ class LatePunchInService {
       effectiveLateMinutes,
       bufferMinutes: buffer,
       latePunchInAmount: parseFloat(deductionAmount.toFixed(2)),
-      latePunchInRuleId: finalRule.id,
       tier: matchedTier,
-      rule: finalRule
+      rule: finalRule,
+      shiftHours: (shift?.workMinutes || 480) / 60
     };
   }
   /**
@@ -242,7 +241,7 @@ class LatePunchInService {
               rowPenalty = Number(tier.value || 0);
               rowDays = dailySalary > 0 ? (rowPenalty / dailySalary) : 0;
             } else if (pType === 'FIXED_AMOUNT_PER_HOUR') {
-              const hours = Math.ceil(row.latePunchInMinutes / 60);
+              const hours = Math.round(row.latePunchInMinutes / 60);
               rowPenalty = Number(tier.value || 0) * hours;
               rowDays = dailySalary > 0 ? (rowPenalty / dailySalary) : 0;
             } else if (pType === 'HALF_DAY') {
@@ -252,7 +251,8 @@ class LatePunchInService {
               rowDays = 1.0;
               rowPenalty = dailySalary;
             } else if (pType === 'SALARY_MULTIPLIER') {
-              const hourlySalary = dailySalary / 8;
+              const shiftHours = lp.shiftHours || 8;
+              const hourlySalary = dailySalary / shiftHours;
               rowPenalty = hourlySalary * Number(tier.value || 0);
               rowDays = dailySalary > 0 ? (rowPenalty / dailySalary) : 0;
             }

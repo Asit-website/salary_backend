@@ -1,4 +1,4 @@
-const { BreakRule, StaffBreakAssignment, StaffProfile } = require('../models');
+const { BreakRule, StaffBreakAssignment, StaffProfile, ShiftTemplate, StaffShiftAssignment, User, StaffRoster } = require('../models');
 const { Op } = require('sequelize');
 const dayjs = require('dayjs');
 
@@ -39,8 +39,32 @@ async function calculateBreakDeduction(attendance, orgAccount, daysInMonth = 30,
       return { breakDeductionAmount: 0, excessBreakMinutes: 0, breakRuleId: null };
     }
 
+    // 1.5 Fetch Shift Template to get dynamic work hours
+    const { Op } = require('sequelize');
+    let shiftTemplate = null;
+    const roster = await StaffRoster.findOne({ where: { userId, date: dateStr } });
+    if (roster && roster.status === 'SHIFT' && roster.shiftTemplateId) {
+      shiftTemplate = await ShiftTemplate.findByPk(roster.shiftTemplateId);
+    }
+    if (!shiftTemplate) {
+      const asg = await StaffShiftAssignment.findOne({
+        where: {
+          userId,
+          effectiveFrom: { [Op.lte]: dateStr },
+          [Op.or]: [{ effectiveTo: null }, { effectiveTo: { [Op.gte]: dateStr } }]
+        },
+        order: [['effectiveFrom', 'DESC']]
+      });
+      if (asg) shiftTemplate = await ShiftTemplate.findByPk(asg.shiftTemplateId);
+    }
+    if (!shiftTemplate) {
+      const user = await User.findByPk(userId);
+      if (user?.shiftTemplateId) shiftTemplate = await ShiftTemplate.findByPk(user.shiftTemplateId);
+    }
+    const shiftHours = (shiftTemplate?.workMinutes || 480) / 60;
+
     // 2. Calculate Break Duration
-    const totalBreakMinutes = Math.floor((attendance.breakTotalSeconds || 0) / 60);
+    const totalBreakMinutes = Math.round((attendance.breakTotalSeconds || 0) / 60);
     if (totalBreakMinutes <= 0) {
       return { breakDeductionAmount: 0, excessBreakMinutes: 0, breakRuleId: ruleId };
     }
@@ -91,7 +115,7 @@ async function calculateBreakDeduction(attendance, orgAccount, daysInMonth = 30,
           deductionAmount = Number(tier.rewardValue || 0);
         } else if (tier.rewardType === 'SALARY_MULTIPLIER' || (effectiveRule.deductionType === 'SALARY_MULTIPLIER' && !tier.rewardType)) {
           const multiplier = Number(tier.rewardValue || 1);
-          const hourlySalary = dailySalary / 8;
+          const hourlySalary = dailySalary / shiftHours;
           excessBreakMinutes = totalBreakMinutes - Number(tier.minMinutes);
           const durationHours = excessBreakMinutes / 60;
           deductionAmount = hourlySalary * multiplier * durationHours;
