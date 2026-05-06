@@ -227,17 +227,9 @@ class ZktecoService {
                 status = otResult.status.toLowerCase(); // Ensure lowercase: overtime, half_day, present
             }
 
-            // If it's still just present or half_day, but they were late, mark as late
-            // Note: Use case-insensitive check to be safe
-            const currentStatusLower = (status || '').toLowerCase();
-            if (isLate && (currentStatusLower === 'present' || currentStatusLower === 'half_day')) {
-                status = 'late';
-            }
-
             // If single punch (no check-out) AND not on leave/absent, ensure status reflects accurately
             if (!lastOut && !['leave', 'absent'].includes(status.toLowerCase())) {
-                if (isLate) status = 'late';
-                else status = 'present';
+                status = 'present';
             }
 
             breakDeductionAmount = breakResult.breakDeductionAmount;

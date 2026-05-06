@@ -144,7 +144,16 @@ class EarlyExitService {
         if (rewardType === 'FIXED_AMOUNT') {
           deductionAmount = rewardValue;
         } else if (rewardType === 'SALARY_MULTIPLIER') {
-          const shiftHours = (shift?.workMinutes || 480) / 60;
+          let shiftWorkMins = shift?.workMinutes || 0;
+          if (!shiftWorkMins && shift?.startTime && shift?.endTime) {
+            const [sh, sm] = shift.startTime.split(':').map(Number);
+            const [eh, em] = shift.endTime.split(':').map(Number);
+            let startMin = sh * 60 + sm;
+            let endMin = eh * 60 + em;
+            if (endMin <= startMin) endMin += 1440;
+            shiftWorkMins = endMin - startMin;
+          }
+          const shiftHours = (shiftWorkMins || 480) / 60;
           const hourlySalary = dailySalary / shiftHours;
           const durationHours = earlyExitMinutes / 60;
           deductionAmount = hourlySalary * rewardValue * durationHours;

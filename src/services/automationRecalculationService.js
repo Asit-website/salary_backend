@@ -132,9 +132,9 @@ class AutomationRecalculationService {
                     finalStatus = ot.status.toLowerCase();
                 }
 
-                // If late but status is still present, mark as late
+                // If late but status is still present, keep as present (the late details are tracked in other fields)
                 if ((row.latePunchInMinutes || 0) > 0 && finalStatus.toLowerCase() === 'present') {
-                    finalStatus = 'late';
+                    finalStatus = 'present';
                 }
 
                 // Update the database record

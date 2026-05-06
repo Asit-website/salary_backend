@@ -52,6 +52,16 @@ class LatePunchInService {
 
     // 1. Identify Shift Start Time (Always identify shift to get raw minutes)
     const shift = await this.getEffectiveShiftTemplate(userId, dateKey);
+    let shiftWorkMins = shift?.workMinutes || 0;
+    if (!shiftWorkMins && shift?.startTime && shift?.endTime) {
+      const [sh, sm] = shift.startTime.split(':').map(Number);
+      const [eh, em] = shift.endTime.split(':').map(Number);
+      let startMin = sh * 60 + sm;
+      let endMin = eh * 60 + em;
+      if (endMin <= startMin) endMin += 1440;
+      shiftWorkMins = endMin - startMin;
+    }
+    const shiftHours = (shiftWorkMins || 480) / 60;
     let latePunchInMinutes = 0;
 
     if (shift && shift.shiftType !== 'open' && shift.startTime) {
@@ -149,7 +159,6 @@ class LatePunchInService {
       const threshold = thresholds.find(t => effectiveLateMinutes >= Number(t.minMinutes));
       if (threshold) {
         matchedTier = threshold;
-        const shiftHours = (shift?.workMinutes || 480) / 60;
         const hourlySalary = dailySalary / shiftHours;
         deductionAmount = hourlySalary * Number(threshold.value || 0);
       }
@@ -164,7 +173,7 @@ class LatePunchInService {
       latePunchInAmount: parseFloat(deductionAmount.toFixed(2)),
       tier: matchedTier,
       rule: finalRule,
-      shiftHours: (shift?.workMinutes || 480) / 60
+      shiftHours: shiftHours
     };
   }
   /**

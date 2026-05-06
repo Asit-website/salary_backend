@@ -167,7 +167,16 @@ async function calculateEarlyOvertime(params, orgAccountArg, daysInMonthArg = 30
     const da = Number(user?.da || 0) || Number(sv?.earnings?.da || sv?.earnings?.DA || 0);
     const baseSalary = basic + da;
     const daysInMonth = daysInMonthArg || 30;
-    const shiftHours = (shiftTemplate?.workMinutes || 480) / 60;
+    let shiftWorkMins = shiftTemplate?.workMinutes || 0;
+    if (!shiftWorkMins && shiftTemplate?.startTime && shiftTemplate?.endTime) {
+      const [sh, sm] = shiftTemplate.startTime.split(':').map(Number);
+      const [eh, em] = shiftTemplate.endTime.split(':').map(Number);
+      let startMin = sh * 60 + sm;
+      let endMin = eh * 60 + em;
+      if (endMin <= startMin) endMin += 1440;
+      shiftWorkMins = endMin - startMin;
+    }
+    const shiftHours = (shiftWorkMins || 480) / 60;
     let hourlySalary = daysInMonth > 0 ? (baseSalary / (daysInMonth * shiftHours)) : 0;
 
     // CUSTOM: If organization has 'Half Day' bonus enabled at 0 mins in the MAIN overtime rule,

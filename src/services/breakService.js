@@ -61,7 +61,16 @@ async function calculateBreakDeduction(attendance, orgAccount, daysInMonth = 30,
       const user = await User.findByPk(userId);
       if (user?.shiftTemplateId) shiftTemplate = await ShiftTemplate.findByPk(user.shiftTemplateId);
     }
-    const shiftHours = (shiftTemplate?.workMinutes || 480) / 60;
+    let shiftWorkMins = shiftTemplate?.workMinutes || 0;
+    if (!shiftWorkMins && shiftTemplate?.startTime && shiftTemplate?.endTime) {
+      const [sh, sm] = shiftTemplate.startTime.split(':').map(Number);
+      const [eh, em] = shiftTemplate.endTime.split(':').map(Number);
+      let startMin = sh * 60 + sm;
+      let endMin = eh * 60 + em;
+      if (endMin <= startMin) endMin += 1440;
+      shiftWorkMins = endMin - startMin;
+    }
+    const shiftHours = (shiftWorkMins || 480) / 60;
 
     // 2. Calculate Break Duration
     const totalBreakMinutes = Math.round((attendance.breakTotalSeconds || 0) / 60);
