@@ -150,7 +150,7 @@ router.delete('/holiday-work-pay/rules/:id', requireRole(['admin']), async (req,
     const orgId = requireOrg(req, res); if (!orgId) return;
     const rule = await HolidayWorkPayRule.findOne({ where: { id: req.params.id, orgAccountId: orgId } });
     if (!rule) return res.status(404).json({ success: false, message: 'Rule not found' });
-    await rule.update({ active: false });
+    await rule.destroy();
     return res.json({ success: true, message: 'Rule deleted' });
   } catch (e) {
     console.error('Error deleting holiday pay rule:', e);
@@ -211,7 +211,7 @@ router.delete('/holiday-work-pay/assignments/:id', requireRole(['admin']), async
     const orgId = requireOrg(req, res); if (!orgId) return;
     const asg = await StaffHolidayWorkPayAssignment.findOne({ where: { id: req.params.id, orgAccountId: orgId } });
     if (!asg) return res.status(404).json({ success: false, message: 'Assignment not found' });
-    await asg.update({ active: false });
+    await asg.destroy();
     return res.json({ success: true, message: 'Assignment deleted' });
   } catch (e) {
     console.error('Error deleting holiday pay assignment:', e);
@@ -2866,7 +2866,7 @@ router.post('/payroll/:cycleId/compute', async (req, res) => {
           present += 1;
           const activeAsg = payRuleAssignments.filter(a => a.effectiveFrom <= key && (!a.effectiveTo || a.effectiveTo >= key)).pop();
           const rule = activeAsg?.rule;
-          const m = isH ? (rule?.holidayMultiplier || 2) : (rule?.weeklyOffMultiplier || 2);
+          const m = isH ? (rule?.holidayMultiplier || 1) : (rule?.weeklyOffMultiplier || 1);
           if (u.id == 57) console.log(`[Payroll-Dbg] User 57 Day ${key}: s=${s}, isH=${isH}, isWO=${isWO}, m=${m}`);
 
           if (isH || isWO) {
@@ -2892,7 +2892,7 @@ router.post('/payroll/:cycleId/compute', async (req, res) => {
 
           const activeAsg = payRuleAssignments.filter(a => a.effectiveFrom <= key && (!a.effectiveTo || a.effectiveTo >= key)).pop();
           const rule = activeAsg?.rule;
-          const m = isH ? (rule?.holidayMultiplier || 2) : (rule?.weeklyOffMultiplier || 2);
+          const m = isH ? (rule?.holidayMultiplier || 1) : (rule?.weeklyOffMultiplier || 1);
           if (isH || isWO) {
             const added = (m - 1) * 0.5 + 0.5;
             if (isH) holidays += added;
