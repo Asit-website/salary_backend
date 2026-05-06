@@ -18342,7 +18342,7 @@ router.get('/reports/monthly-attendance', async (req, res) => {
       const empInfoRow = worksheet.getRow(currentRow);
       empInfoRow.getCell(1).value = 'Employee:';
       empInfoRow.getCell(1).font = { bold: true };
-      empInfoRow.getCell(2).value = `${staff.id} : ${staff.profile?.name || staff.name}`;
+      empInfoRow.getCell(2).value = `${staff.profile?.staffId || staff.id} : ${staff.profile?.name || staff.name}`;
 
       const summaryText = `Total Work Duration: ${Math.floor(stats.totalDurationMin / 60)}:${String(stats.totalDurationMin % 60).padStart(2, '0')} Hrs.  Total OT: ${Math.floor(stats.totalOtMin / 60)}:${String(stats.totalOtMin % 60).padStart(2, '0')} Hrs.  Present: ${stats.present}  Absent: ${stats.absent}  WeeklyOff: ${stats.wo}  Holidays: ${stats.holiday}  Leaves Taken: ${stats.leave}`;
       worksheet.mergeCells(currentRow, 3, currentRow, daysInMonth + 2);
