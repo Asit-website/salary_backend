@@ -1033,16 +1033,22 @@ router.get('/payroll/monthly-summary-excel', async (req, res) => {
     const orgId = requireOrg(req, res); if (!orgId) return;
     const { PayrollCycle, PayrollLine, User, StaffProfile, OrgAccount } = require('../models');
 
-    const monthKey = req.query.monthKey;
+    const { monthKey, employeeIds } = req.query;
     const groupBy = req.query.groupBy || 'designation';
     if (!monthKey) return res.status(400).json({ success: false, message: 'monthKey is required' });
 
     const cycle = await PayrollCycle.findOne({ where: { monthKey, orgAccountId: orgId } });
     if (!cycle) return res.status(404).json({ success: false, message: 'Payroll cycle not found for this month' });
 
+    let lineWhereClause = { cycleId: cycle.id };
+    if (employeeIds) {
+      const empIds = String(employeeIds).split(',').map(id => parseInt(id.trim())).filter(id => !isNaN(id));
+      if (empIds.length > 0) lineWhereClause.userId = { [Op.in]: empIds };
+    }
+
     const [org, lines] = await Promise.all([
       OrgAccount.findByPk(orgId),
-      PayrollLine.findAll({ where: { cycleId: cycle.id }, order: [['id', 'ASC']] })
+      PayrollLine.findAll({ where: lineWhereClause, order: [['id', 'ASC']] })
     ]);
 
     const userIds = [...new Set(lines.map(l => l.userId))];
@@ -1239,17 +1245,16 @@ router.get('/payroll/salary-register-excel-by-month', async (req, res) => {
     const orgId = requireOrg(req, res); if (!orgId) return;
     const { PayrollCycle, PayrollLine, User, StaffProfile, OrgAccount } = require('../models');
 
-    const monthKey = req.query.monthKey;
+    const { monthKey, employeeIds } = req.query;
     if (!monthKey) return res.status(400).json({ success: false, message: 'monthKey is required' });
 
     const cycle = await PayrollCycle.findOne({ where: { monthKey, orgAccountId: orgId } });
     if (!cycle) return res.status(404).json({ success: false, message: 'Payroll cycle not found for this month' });
 
-    // Reuse the same logic as below (refactored into a helper would be better, but for speed I'll replicate or call internally)
-    // Actually, I'll just redirect or call the same handler. 
-    // Redirect is easiest:
     const groupBy = req.query.groupBy || 'department';
-    return res.redirect(`${req.baseUrl}/payroll/${cycle.id}/salary-register-excel?groupBy=${groupBy}`);
+    let url = `${req.baseUrl}/payroll/${cycle.id}/salary-register-excel?groupBy=${groupBy}`;
+    if (employeeIds) url += `&employeeIds=${employeeIds}`;
+    return res.redirect(url);
   } catch (e) {
     console.error('Salary Register Excel by month error:', e);
     return res.status(500).json({ success: false, message: 'Failed to export Salary Register', error: e.message });
@@ -1263,13 +1268,20 @@ router.get('/payroll/:cycleId/salary-register-excel', async (req, res) => {
     const orgId = requireOrg(req, res); if (!orgId) return;
     const { PayrollCycle, PayrollLine, User, StaffProfile, OrgAccount } = require('../models');
 
+    const { groupBy, employeeIds } = req.query;
     const id = Number(req.params.cycleId);
     const cycle = await PayrollCycle.findOne({ where: { id, orgAccountId: orgId } });
     if (!cycle) return res.status(404).json({ success: false, message: 'Cycle not found' });
 
+    let lineWhereClause = { cycleId: id };
+    if (employeeIds) {
+      const empIds = String(employeeIds).split(',').map(id => parseInt(id.trim())).filter(id => !isNaN(id));
+      if (empIds.length > 0) lineWhereClause.userId = { [Op.in]: empIds };
+    }
+
     const [org, lines] = await Promise.all([
       OrgAccount.findByPk(orgId),
-      PayrollLine.findAll({ where: { cycleId: id }, order: [['id', 'ASC']] })
+      PayrollLine.findAll({ where: lineWhereClause, order: [['id', 'ASC']] })
     ]);
 
     const userIds = [...new Set(lines.map(l => l.userId))];
@@ -1281,7 +1293,7 @@ router.get('/payroll/:cycleId/salary-register-excel', async (req, res) => {
     const userMap = new Map(users.map(u => [u.id, u]));
     const [year, month] = cycle.monthKey.split('-').map(Number);
     const monthName = new Date(year, month - 1, 1).toLocaleString('en-IN', { month: 'long', year: 'numeric' });
-    const groupBy = req.query.groupBy || 'department';
+    const effectiveGroupBy = groupBy || 'department';
 
     // Dynamic Columns Detection
     const earningKeys = new Set();
@@ -1407,7 +1419,7 @@ router.get('/payroll/:cycleId/salary-register-excel', async (req, res) => {
     const grouped = {};
     lines.forEach(line => {
       const u = userMap.get(line.userId);
-      const groupVal = groupBy === 'designation' ? (u?.profile?.designation || 'OTHER') : (u?.profile?.department || 'OTHER');
+      const groupVal = effectiveGroupBy === 'designation' ? (u?.profile?.designation || 'OTHER') : (u?.profile?.department || 'OTHER');
       if (!grouped[groupVal]) grouped[groupVal] = [];
       grouped[groupVal].push(line);
     });
@@ -17919,7 +17931,7 @@ router.get('/reports/org-leave-balance', async (req, res) => {
 router.get('/reports/monthly-attendance', async (req, res) => {
   try {
     const orgId = requireOrg(req, res); if (!orgId) return;
-    const { month, year } = req.query;
+    const { month, year, employeeIds } = req.query;
     if (!month || !year) return res.status(400).json({ success: false, message: 'Month and Year required' });
 
     const startDate = dayjs(`${year}-${month}-01`).startOf('month');
@@ -17929,8 +17941,14 @@ router.get('/reports/monthly-attendance', async (req, res) => {
     const org = await OrgAccount.findByPk(orgId);
     if (!org) return res.status(404).json({ success: false, message: 'Organization not found' });
 
+    let staffWhereClause = { orgAccountId: orgId, role: 'staff', active: true };
+    if (employeeIds) {
+      const empIds = String(employeeIds).split(',').map(id => parseInt(id.trim())).filter(id => !isNaN(id));
+      if (empIds.length > 0) staffWhereClause.id = { [Op.in]: empIds };
+    }
+
     const staffMembers = await User.findAll({
-      where: { orgAccountId: orgId, role: 'staff', active: true },
+      where: staffWhereClause,
       include: [{ model: StaffProfile, as: 'profile' }],
       order: [['id', 'ASC']]
     });
@@ -23940,7 +23958,37 @@ router.post('/settings/overtime-rules/:id/assign', async (req, res) => {
     await StaffOvertimeAssignment.destroy({ where: { userId: userIds, orgAccountId: orgId } });
 
     await StaffOvertimeAssignment.bulkCreate(records);
-    return res.json({ success: true, message: 'Staff assigned successfully' });
+
+    // Trigger recalculation if backdated
+    const today = require('dayjs')().format('YYYY-MM-DD');
+    let recalculationResult = null;
+    if (effectiveFrom < today) {
+      const automationRecalculationService = require('../services/automationRecalculationService');
+      const yesterday = require('dayjs')().subtract(1, 'day').format('YYYY-MM-DD');
+      
+      // Calculate for each user including a cleanup period before effectiveFrom
+      const recalculateFrom = require('dayjs')(effectiveFrom).subtract(2, 'month').startOf('month').format('YYYY-MM-DD');
+      const results = await Promise.all(userIds.map(userId => 
+        automationRecalculationService.recalculateAttendance(userId, orgId, recalculateFrom, yesterday)
+      ));
+      
+      // Aggregate warnings
+      const lockedMonths = new Set();
+      results.forEach(r => {
+        if (r.lockedMonthsSkipped > 0) {
+          // Note: we don't know which months from here, but service logged them.
+          // For the response, we'll just flag that some were locked.
+          recalculationResult = r;
+        }
+      });
+    }
+
+    return res.json({ 
+      success: true, 
+      message: 'Staff assigned successfully',
+      recalculated: !!recalculationResult,
+      payrollWarning: recalculationResult?.lockedMonthsSkipped > 0 ? 'Some backdated months were skipped because payroll is locked or paid.' : null
+    });
   } catch (error) {
     return res.status(500).json({ success: false, message: 'Failed to assign staff' });
   }
@@ -24081,8 +24129,30 @@ router.post('/settings/early-overtime-rules/:id/assign', async (req, res) => {
     }));
 
     await StaffEarlyOvertimeAssignment.destroy({ where: { userId: userIds, orgAccountId: orgId } });
+
     await StaffEarlyOvertimeAssignment.bulkCreate(records);
-    return res.json({ success: true, message: 'Staff assigned successfully' });
+
+    // Trigger recalculation if backdated
+    const today = require('dayjs')().format('YYYY-MM-DD');
+    let recalculationResult = null;
+    if (effectiveFrom < today) {
+      const automationRecalculationService = require('../services/automationRecalculationService');
+      const yesterday = require('dayjs')().subtract(1, 'day').format('YYYY-MM-DD');
+      
+      const recalculateFrom = require('dayjs')(effectiveFrom).subtract(2, 'month').startOf('month').format('YYYY-MM-DD');
+      const results = await Promise.all(userIds.map(userId => 
+        automationRecalculationService.recalculateAttendance(userId, orgId, recalculateFrom, yesterday)
+      ));
+      
+      results.forEach(r => { if (r.lockedMonthsSkipped > 0) recalculationResult = r; });
+    }
+
+    return res.json({ 
+      success: true, 
+      message: 'Staff assigned successfully',
+      recalculated: !!recalculationResult,
+      payrollWarning: recalculationResult?.lockedMonthsSkipped > 0 ? 'Some backdated months were skipped because payroll is locked or paid.' : null
+    });
   } catch (error) {
     console.error('Assign early overtime staff error:', error);
     return res.status(500).json({ success: false, message: 'Failed to assign staff' });
@@ -24208,7 +24278,28 @@ router.post('/settings/early-exit-rules/:id/assign', async (req, res) => {
     await StaffEarlyExitAssignment.destroy({ where: { userId: userIds, orgAccountId: orgId } });
 
     await StaffEarlyExitAssignment.bulkCreate(records);
-    return res.json({ success: true, message: 'Staff assigned successfully' });
+
+    // Trigger recalculation if backdated
+    const today = require('dayjs')().format('YYYY-MM-DD');
+    let recalculationResult = null;
+    if (effectiveFrom < today) {
+      const automationRecalculationService = require('../services/automationRecalculationService');
+      const yesterday = require('dayjs')().subtract(1, 'day').format('YYYY-MM-DD');
+      
+      const recalculateFrom = require('dayjs')(effectiveFrom).subtract(2, 'month').startOf('month').format('YYYY-MM-DD');
+      const results = await Promise.all(userIds.map(userId => 
+        automationRecalculationService.recalculateAttendance(userId, orgId, recalculateFrom, yesterday)
+      ));
+      
+      results.forEach(r => { if (r.lockedMonthsSkipped > 0) recalculationResult = r; });
+    }
+
+    return res.json({ 
+      success: true, 
+      message: 'Staff assigned successfully',
+      recalculated: !!recalculationResult,
+      payrollWarning: recalculationResult?.lockedMonthsSkipped > 0 ? 'Some backdated months were skipped because payroll is locked or paid.' : null
+    });
   } catch (error) {
     return res.status(500).json({ success: false, message: 'Failed to assign staff' });
   }
@@ -24332,7 +24423,28 @@ router.post('/settings/break-rules/:id/assign', async (req, res) => {
     await StaffBreakAssignment.destroy({ where: { userId: userIds, orgAccountId: orgId } });
 
     await StaffBreakAssignment.bulkCreate(records);
-    return res.json({ success: true, message: 'Staff assigned successfully' });
+
+    // Trigger recalculation if backdated
+    const today = require('dayjs')().format('YYYY-MM-DD');
+    let recalculationResult = null;
+    if (effectiveFrom < today) {
+      const automationRecalculationService = require('../services/automationRecalculationService');
+      const yesterday = require('dayjs')().subtract(1, 'day').format('YYYY-MM-DD');
+      
+      const recalculateFrom = require('dayjs')(effectiveFrom).subtract(2, 'month').startOf('month').format('YYYY-MM-DD');
+      const results = await Promise.all(userIds.map(userId => 
+        automationRecalculationService.recalculateAttendance(userId, orgId, recalculateFrom, yesterday)
+      ));
+      
+      results.forEach(r => { if (r.lockedMonthsSkipped > 0) recalculationResult = r; });
+    }
+
+    return res.json({ 
+      success: true, 
+      message: 'Staff assigned successfully',
+      recalculated: !!recalculationResult,
+      payrollWarning: recalculationResult?.lockedMonthsSkipped > 0 ? 'Some backdated months were skipped because payroll is locked or paid.' : null
+    });
   } catch (error) {
     return res.status(500).json({ success: false, message: 'Failed to assign staff' });
   }
@@ -24474,7 +24586,28 @@ router.post('/settings/late-punchin-rules/:id/assign', async (req, res) => {
     await StaffLatePunchInAssignment.destroy({ where: { userId: userIds, orgAccountId: orgId } });
 
     await StaffLatePunchInAssignment.bulkCreate(records);
-    return res.json({ success: true, message: 'Staff assigned successfully' });
+
+    // Trigger recalculation if backdated
+    const today = require('dayjs')().format('YYYY-MM-DD');
+    let recalculationResult = null;
+    if (effectiveFrom < today) {
+      const automationRecalculationService = require('../services/automationRecalculationService');
+      const yesterday = require('dayjs')().subtract(1, 'day').format('YYYY-MM-DD');
+      
+      const recalculateFrom = require('dayjs')(effectiveFrom).subtract(2, 'month').startOf('month').format('YYYY-MM-DD');
+      const results = await Promise.all(userIds.map(userId => 
+        automationRecalculationService.recalculateAttendance(userId, orgId, recalculateFrom, yesterday)
+      ));
+      
+      results.forEach(r => { if (r.lockedMonthsSkipped > 0) recalculationResult = r; });
+    }
+
+    return res.json({ 
+      success: true, 
+      message: 'Staff assigned successfully',
+      recalculated: !!recalculationResult,
+      payrollWarning: recalculationResult?.lockedMonthsSkipped > 0 ? 'Some backdated months were skipped because payroll is locked or paid.' : null
+    });
   } catch (error) {
     console.error('Assign late punch-in staff error:', error);
     return res.status(500).json({ success: false, message: 'Failed to assign staff' });

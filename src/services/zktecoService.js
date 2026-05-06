@@ -113,7 +113,7 @@ class ZktecoService {
         for (let i = 0; i < dayPunches.length - 1; i++) {
             const p1 = dayPunches[i];
             const p2 = dayPunches[i + 1];
-            const duration = Math.max(0, Math.floor((p2.punch_time - p1.punch_time) / 1000));
+            const duration = Math.max(0, Math.round((p2.punch_time - p1.punch_time) / 1000));
 
             // Logic: 
             // - Gap is BREAK ONLY if it starts with Break In (2) AND ends with Break Out (3).
@@ -126,7 +126,7 @@ class ZktecoService {
             }
         }
 
-        const workMinutes = Math.floor(totalWorkSeconds / 60);
+        const workHours = totalWorkSeconds / 3600;
         const shift = await this.getShiftTemplate(userId, date);
 
         // Declare local variables for results
@@ -146,7 +146,7 @@ class ZktecoService {
         let latePunchInAmount = 0;
         let latePunchInRuleId = null;
         let isLate = false;
-        let status = 'PRESENT';
+        let status = 'present';
 
         // Fetch Org ID to get rules
         const staff = await StaffProfile.findOne({ where: { userId } });
@@ -160,7 +160,7 @@ class ZktecoService {
                 userId,
                 orgAccountId: staff.orgAccountId,
                 date,
-                totalWorkHours: (workMinutes / 60),
+                totalWorkHours: workHours,
                 punchedInAt: firstIn,
                 punchedOutAt: lastOut
             }, orgAccountObj, daysInMonth, date);
@@ -220,6 +220,25 @@ class ZktecoService {
             latePunchInAmount = lpResult.latePunchInAmount;
             latePunchInRuleId = lpResult.latePunchInRuleId;
             isLate = lpResult.isLate || (latePunchInMinutes > 0);
+
+            // Final Status Determination Logic
+            // Priority: overtime > late > half_day > present
+            if (otResult.status) {
+                status = otResult.status.toLowerCase(); // Ensure lowercase: overtime, half_day, present
+            }
+
+            // If it's still just present or half_day, but they were late, mark as late
+            // Note: Use case-insensitive check to be safe
+            const currentStatusLower = (status || '').toLowerCase();
+            if (isLate && (currentStatusLower === 'present' || currentStatusLower === 'half_day')) {
+                status = 'late';
+            }
+
+            // If single punch (no check-out) AND not on leave/absent, ensure status reflects accurately
+            if (!lastOut && !['leave', 'absent'].includes(status.toLowerCase())) {
+                if (isLate) status = 'late';
+                else status = 'present';
+            }
 
             breakDeductionAmount = breakResult.breakDeductionAmount;
             breakRuleId = breakResult.breakRuleId;
@@ -297,170 +316,178 @@ class ZktecoService {
         try {
             console.log(`[ZktecoSync] Getting token from: ${url}`);
             const token = await this.getToken(url, username, password);
-            console.log(`[ZktecoSync] Token acquired. Fetching transactions for date: ${targetDate || 'today'}`);
-            const dateStr = targetDate || new Date().toISOString().split('T')[0];
+            // Use IST date for sync
+            const nowIST = dayjs().add(5.5, 'hour');
+            const todayStr = nowIST.format('YYYY-MM-DD');
+            const yesterdayStr = nowIST.subtract(1, 'day').format('YYYY-MM-DD');
 
-            let rawResult = await this.getTransactions(url, token, {
-                start_time: `${dateStr} 00:00:00`,
-                end_time: `${dateStr} 23:59:59`
-            });
+            const datesToSync = targetDate ? [targetDate] : [yesterdayStr, todayStr];
+            console.log(`[ZktecoSync] Dates to sync: ${datesToSync.join(', ')}`);
 
-            // Handle different response shapes
-            let transactions;
-            if (Array.isArray(rawResult)) {
-                transactions = rawResult;
-            } else if (rawResult && Array.isArray(rawResult.data)) {
-                transactions = rawResult.data;
-            } else if (rawResult && Array.isArray(rawResult.results)) {
-                transactions = rawResult.results;
-            } else {
-                console.log(`[ZktecoSync] Unexpected response shape:`, JSON.stringify(rawResult)?.slice(0, 200));
-                transactions = [];
-            }
+            for (const dateStr of datesToSync) {
+                console.log(`[ZktecoSync] Fetching transactions for date: ${dateStr}`);
 
-            if (!transactions || transactions.length === 0) {
-                console.log(`[ZktecoSync] No transactions found for date: ${dateStr}`);
-                return;
-            }
+                let rawResult = await this.getTransactions(url, token, {
+                    start_time: `${dateStr} 00:00:00`,
+                    end_time: `${dateStr} 23:59:59`
+                });
 
-            console.log(`[ZktecoSync] ${transactions.length} total transactions fetched from API.`);
+                console.log(`[ZktecoSync] API Result for ${dateStr}:`, typeof rawResult === 'object' ? 'Object received' : typeof rawResult);
 
-            // Group transactions by staff (emp_code)
-            const staffGroups = {};
-            transactions.forEach(t => {
-                const code = String(t.emp_code).trim().toLowerCase();
-                if (!staffGroups[code]) staffGroups[code] = [];
-                staffGroups[code].push(t);
-            });
-
-            // Fetch staff mappings
-            const empCodes = Object.keys(staffGroups);
-            console.log(`[ZktecoSync] Unique Emp Codes found in transactions:`, empCodes);
-
-            const staffProfiles = await StaffProfile.findAll({
-                where: { staffId: empCodes, orgAccountId: orgId }
-            });
-
-            console.log(`[ZktecoSync] Found ${staffProfiles.length} matching staff profiles`);
-            staffProfiles.forEach(p => console.log(`[ZktecoSync]  staffId="${p.staffId}" -> userId=${p.userId}`));
-
-            const staffMap = new Map();
-            staffProfiles.forEach(p => {
-                if (p.staffId) {
-                    staffMap.set(String(p.staffId).trim().toLowerCase(), p.userId);
-                }
-            });
-
-            console.log(`[ZktecoSync] Staff Map size: ${staffMap.size}`);
-
-            for (const [empCode, punches] of Object.entries(staffGroups)) {
-                const userId = staffMap.get(String(empCode).trim().toLowerCase());
-                if (!userId) {
-                    console.log(`[ZktecoSync] SKIP: No matching StaffProfile for emp_code "${empCode}" (Org ${orgId})`);
-                    continue;
+                // Handle different response shapes
+                let transactions;
+                if (Array.isArray(rawResult)) {
+                    transactions = rawResult;
+                } else if (rawResult && Array.isArray(rawResult.data)) {
+                    transactions = rawResult.data;
+                } else if (rawResult && Array.isArray(rawResult.results)) {
+                    transactions = rawResult.results;
+                } else {
+                    console.log(`[ZktecoSync] Unexpected response shape:`, JSON.stringify(rawResult)?.slice(0, 200));
+                    transactions = [];
                 }
 
-                console.log(`[ZktecoSync] MATCH: emp_code "${empCode}" -> userId ${userId}. Calculating details with ${punches.length} punches.`);
+                if (!transactions || transactions.length === 0) {
+                    console.log(`[ZktecoSync] No transactions found for date: ${dateStr}`);
+                    continue; // Skip to next date
+                }
 
-                // Filter punches for 5-minute throttling (Deduplication)
-                // Logic: Keep first punch, skip any within 5 mins of the last accepted punch.
-                const sortedPunches = [...punches].sort((a, b) => new Date(a.punch_time) - new Date(b.punch_time));
-                const filteredPunches = [];
-                let lastAcceptedMs = 0;
+                console.log(`[ZktecoSync] ${transactions.length} total transactions fetched from API.`);
 
-                for (const p of sortedPunches) {
-                    const punchTimeMs = new Date(p.punch_time).getTime();
-                    if (Number.isNaN(punchTimeMs)) continue;
+                // Group transactions by staff (emp_code)
+                const staffGroups = {};
+                transactions.forEach(t => {
+                    const code = String(t.emp_code).trim().toLowerCase();
+                    if (!staffGroups[code]) staffGroups[code] = [];
+                    staffGroups[code].push(t);
+                });
 
-                    if (!lastAcceptedMs || (punchTimeMs - lastAcceptedMs) >= 5 * 60 * 1000) {
-                        filteredPunches.push(p);
-                        lastAcceptedMs = punchTimeMs;
-                    } else {
-                        const diffSecs = Math.round((punchTimeMs - lastAcceptedMs) / 1000);
-                        console.log(`[ZktecoSync] THROT: Ignoring punch at ${p.punch_time} for userId ${userId} (Only ${diffSecs}s since last accepted punch)`);
+                // Fetch staff mappings
+                const empCodes = Object.keys(staffGroups);
+                console.log(`[ZktecoSync] Unique Emp Codes found in transactions:`, empCodes);
+
+                const staffProfiles = await StaffProfile.findAll({
+                    where: { staffId: empCodes, orgAccountId: orgId }
+                });
+
+                console.log(`[ZktecoSync] Found ${staffProfiles.length} matching staff profiles`);
+                staffProfiles.forEach(p => console.log(`[ZktecoSync]  staffId="${p.staffId}" -> userId=${p.userId}`));
+
+                const staffMap = new Map();
+                staffProfiles.forEach(p => {
+                    if (p.staffId) {
+                        staffMap.set(String(p.staffId).trim().toLowerCase(), p.userId);
                     }
-                }
+                });
 
-                if (filteredPunches.length < punches.length) {
-                    console.log(`[ZktecoSync] Throttled ${punches.length - filteredPunches.length} duplicate/rapid punches for userId ${userId}. Final count: ${filteredPunches.length}`);
-                }
+                console.log(`[ZktecoSync] Staff Map size: ${staffMap.size}`);
 
-                // Fetch existing record to merge with biometric logs (First-In, Last-Out strategy)
-                const existing = await Attendance.findOne({ where: { userId, date: dateStr } });
-                const finalPunches = [...filteredPunches];
+                for (const [empCode, punches] of Object.entries(staffGroups)) {
+                    const userId = staffMap.get(String(empCode).trim().toLowerCase());
+                    if (!userId) {
+                        console.log(`[ZktecoSync] SKIP: No matching StaffProfile for emp_code "${empCode}" (Org ${orgId})`);
+                        continue;
+                    }
 
-                if (existing) {
-                    console.log(`[ZktecoSync] Found existing attendance record for userId ${userId} on ${dateStr}. Merging...`);
-                    if (existing.punchedInAt) {
-                        finalPunches.push({
-                            emp_code: empCode,
-                            punch_time: existing.punchedInAt,
-                            punch_state: '0', // In
-                            latitude: existing.latitude,
-                            longitude: existing.longitude,
-                            gps_location: existing.address
+                    console.log(`[ZktecoSync] MATCH: emp_code "${empCode}" -> userId ${userId}. Calculating details with ${punches.length} punches.`);
+
+                    // Filter punches for 5-minute throttling (Deduplication)
+                    const sortedPunches = [...punches].sort((a, b) => new Date(a.punch_time) - new Date(b.punch_time));
+                    const filteredPunches = [];
+                    let lastAcceptedMs = 0;
+
+                    for (const p of sortedPunches) {
+                        const punchTimeMs = new Date(p.punch_time).getTime();
+                        if (Number.isNaN(punchTimeMs)) continue;
+
+                        if (!lastAcceptedMs || (punchTimeMs - lastAcceptedMs) >= 5 * 60 * 1000) {
+                            filteredPunches.push(p);
+                            lastAcceptedMs = punchTimeMs;
+                        } else {
+                            const diffSecs = Math.round((punchTimeMs - lastAcceptedMs) / 1000);
+                            console.log(`[ZktecoSync] THROT: Ignoring punch at ${p.punch_time} for userId ${userId} (Only ${diffSecs}s since last accepted punch)`);
+                        }
+                    }
+
+                    if (filteredPunches.length < punches.length) {
+                        console.log(`[ZktecoSync] Throttled ${punches.length - filteredPunches.length} duplicate/rapid punches for userId ${userId}. Final count: ${filteredPunches.length}`);
+                    }
+
+                    // Fetch existing record to merge with biometric logs
+                    const existing = await Attendance.findOne({ where: { userId, date: dateStr } });
+                    const finalPunches = [...filteredPunches];
+
+                    if (existing) {
+                        console.log(`[ZktecoSync] Found existing attendance record for userId ${userId} on ${dateStr}. Merging...`);
+                        if (existing.punchedInAt) {
+                            finalPunches.push({
+                                emp_code: empCode,
+                                punch_time: existing.punchedInAt,
+                                punch_state: '0',
+                                latitude: existing.latitude,
+                                longitude: existing.longitude,
+                                gps_location: existing.address
+                            });
+                        }
+                        if (existing.punchedOutAt) {
+                            finalPunches.push({
+                                emp_code: empCode,
+                                punch_time: existing.punchedOutAt,
+                                punch_state: '1',
+                                latitude: existing.punchOutLatitude,
+                                longitude: existing.punchOutLongitude,
+                                gps_location: existing.punchOutAddress
+                            });
+                        }
+                    }
+
+                    const res = await this.calculateDetails(userId, finalPunches, dateStr);
+
+                    if (!res) {
+                        console.log(`[ZktecoSync] FAIL: calculateDetails returned null for userId ${userId}`);
+                        continue;
+                    }
+
+                    // Sync with Attendance table
+                    try {
+                        const finalSource = (existing && existing.source && existing.source !== 'biometric')
+                            ? existing.source
+                            : 'biometric';
+
+                        await Attendance.upsert({
+                            userId,
+                            date: dateStr,
+                            orgAccountId: orgId,
+                            punchedInAt: res.punchedInAt,
+                            punchedOutAt: res.punchedOutAt,
+                            totalWorkHours: res.totalWorkHours,
+                            breakTotalSeconds: res.breakTotalSeconds,
+                            overtimeMinutes: res.overtimeMinutes,
+                            overtimeAmount: res.overtimeAmount,
+                            overtimeRuleId: res.overtimeRuleId,
+                            earlyExitMinutes: res.earlyExitMinutes,
+                            earlyExitAmount: res.earlyExitAmount,
+                            earlyExitRuleId: res.earlyExitRuleId,
+                            latePunchInMinutes: res.latePunchInMinutes,
+                            latePunchInAmount: res.latePunchInAmount,
+                            latePunchInRuleId: res.latePunchInRuleId,
+                            isLate: res.isLate || false,
+                            breakDeductionAmount: res.breakDeductionAmount,
+                            breakRuleId: res.breakRuleId,
+                            excessBreakMinutes: res.excessBreakMinutes,
+                            status: res.status,
+                            source: finalSource,
+                            latitude: res.latitude,
+                            longitude: res.longitude,
+                            address: res.address,
+                            punchOutLatitude: res.punchOutLatitude,
+                            punchOutLongitude: res.punchOutLongitude,
+                            punchOutAddress: res.punchOutAddress,
                         });
+                        console.log(`[ZktecoSync] SUCCESS: Saved attendance for userId ${userId} on ${dateStr}`);
+                    } catch (upsertError) {
+                        console.error(`[ZktecoSync] DB ERROR for userId ${userId}:`, upsertError.message);
                     }
-                    if (existing.punchedOutAt) {
-                        finalPunches.push({
-                            emp_code: empCode,
-                            punch_time: existing.punchedOutAt,
-                            punch_state: '1', // Out
-                            latitude: existing.punchOutLatitude,
-                            longitude: existing.punchOutLongitude,
-                            gps_location: existing.punchOutAddress
-                        });
-                    }
-                }
-
-                const res = await this.calculateDetails(userId, finalPunches, dateStr);
-
-                if (!res) {
-                    console.log(`[ZktecoSync] FAIL: calculateDetails returned null for userId ${userId}`);
-                    continue;
-                }
-
-                // Sync with Attendance table
-                try {
-                    // Decide the source: if it was mobile/kiosk, we keep it as is to allow mobile punch-outs.
-                    // Only set to 'biometric' if it's a new record or already 'biometric'.
-                    const finalSource = (existing && existing.source && existing.source !== 'biometric')
-                        ? existing.source
-                        : 'biometric';
-
-                    await Attendance.upsert({
-                        userId,
-                        date: dateStr,
-                        orgAccountId: orgId,
-                        punchedInAt: res.punchedInAt,
-                        punchedOutAt: res.punchedOutAt,
-                        totalWorkHours: res.totalWorkHours,
-                        breakTotalSeconds: res.breakTotalSeconds,
-                        overtimeMinutes: res.overtimeMinutes,
-                        overtimeAmount: res.overtimeAmount,
-                        overtimeRuleId: res.overtimeRuleId,
-                        earlyExitMinutes: res.earlyExitMinutes,
-                        earlyExitAmount: res.earlyExitAmount,
-                        earlyExitRuleId: res.earlyExitRuleId,
-                        latePunchInMinutes: res.latePunchInMinutes,
-                        latePunchInAmount: res.latePunchInAmount,
-                        latePunchInRuleId: res.latePunchInRuleId,
-                        isLate: res.isLate || false,
-                        breakDeductionAmount: res.breakDeductionAmount,
-                        breakRuleId: res.breakRuleId,
-                        excessBreakMinutes: res.excessBreakMinutes,
-                        status: res.status,
-                        source: finalSource,
-                        latitude: res.latitude,
-                        longitude: res.longitude,
-                        address: res.address,
-                        punchOutLatitude: res.punchOutLatitude,
-                        punchOutLongitude: res.punchOutLongitude,
-                        punchOutAddress: res.punchOutAddress,
-                    });
-                    console.log(`[ZktecoSync] SUCCESS: Saved attendance for userId ${userId} on ${dateStr}`);
-                } catch (upsertError) {
-                    console.error(`[ZktecoSync] DB ERROR for userId ${userId}:`, upsertError.message);
                 }
             }
 
