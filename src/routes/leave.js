@@ -143,18 +143,20 @@ async function getEffectiveLeaveBalance(userId, categoryKey, onDate) {
   return { lb: null, total: totalWithCarry, used, remaining, start, end, cycle: cyc, carriedForward: carry };
 }
 
-// STAFF: get my leave categories and balances for current cycle
-router.get('/categories', requireRole(['staff']), async (req, res) => {
+// STAFF/ADMIN: get leave categories and balances for current cycle
+router.get('/categories', requireRole(['staff', 'admin', 'superadmin']), async (req, res) => {
   try {
     const forDate = typeof req.query.date === 'string' && req.query.date.match(/^\d{4}-\d{2}-\d{2}$/)
       ? req.query.date
       : new Date().toISOString().slice(0, 10);
 
-    const tpl = await getActiveLeaveTemplateForUser(req.user.id, forDate);
+    const isAdmin = ['admin', 'superadmin'].includes(req.user.role);
+    const userId = (isAdmin && req.query.userId) ? Number(req.query.userId) : req.user.id;
+
+    const tpl = await getActiveLeaveTemplateForUser(userId, forDate);
     if (!tpl) {
       const cycle = 'monthly';
       const { start, end } = getCycleRange(cycle, forDate);
-      // Return empty categories if no template assigned (unpaid removed)
       return res.json({
         success: true, cycle: { type: cycle, start, end }, categories: []
       });
@@ -164,7 +166,7 @@ router.get('/categories', requireRole(['staff']), async (req, res) => {
     const { start, end } = getCycleRange(cycle, forDate, tpl);
 
     const categories = await Promise.all((tpl.categories || []).map(async (c) => {
-      const balanceInfo = await getEffectiveLeaveBalance(req.user.id, c.key, forDate);
+      const balanceInfo = await getEffectiveLeaveBalance(userId, c.key, forDate);
       if (!balanceInfo) {
         return { key: c.key, name: c.name, total: Number(c.leaveCount || 0), used: 0, remaining: Number(c.leaveCount || 0) };
       }
@@ -176,8 +178,6 @@ router.get('/categories', requireRole(['staff']), async (req, res) => {
         remaining: balanceInfo.remaining
       };
     }));
-
-    // Unpaid leave option removed as per request
 
     return res.json({ success: true, cycle: { type: cycle, start, end }, categories });
   } catch (e) {
@@ -199,14 +199,18 @@ async function getActiveLeaveTemplateForUser(userId, onDate /* YYYY-MM-DD */) {
   return row.template;
 }
 
-// STAFF: create leave request
-router.post('/', requireRole(['staff']), async (req, res) => {
+// STAFF/ADMIN: create leave request
+router.post('/', requireRole(['staff', 'admin', 'superadmin']), async (req, res) => {
   try {
-    const { startDate, endDate, leaveType, reason, categoryKey } = req.body || {};
+    const { startDate, endDate, leaveType, reason, categoryKey, userId: targetUserId, status: requestedStatus } = req.body || {};
 
     if (!startDate || !endDate || !leaveType) {
       return res.status(400).json({ success: false, message: 'startDate, endDate and leaveType are required' });
     }
+
+    // Determine target user
+    const isAdmin = ['admin', 'superadmin'].includes(req.user.role);
+    const userId = (isAdmin && targetUserId) ? Number(targetUserId) : req.user.id;
 
     const sd = new Date(`${startDate}T00:00:00`);
     const ed = new Date(`${endDate}T00:00:00`);
@@ -217,11 +221,11 @@ router.post('/', requireRole(['staff']), async (req, res) => {
       return res.status(400).json({ success: false, message: 'endDate must be >= startDate' });
     }
 
-    // Compute requested days (simple inclusive count; sandwich/holidays handled later)
+    // Compute requested days
     const days = Math.round((ed - sd) / (24 * 3600 * 1000)) + 1;
 
-    // Load user's leave template on start date
-    const tpl = await getActiveLeaveTemplateForUser(req.user.id, startDate);
+    // Load target user's leave template on start date
+    const tpl = await getActiveLeaveTemplateForUser(userId, startDate);
     let approvalLevelRequired = null;
     let catKey = categoryKey || null;
     if (tpl) {
@@ -232,29 +236,57 @@ router.post('/', requireRole(['staff']), async (req, res) => {
         catKey = String(catKey).toLowerCase();
 
         // CHECK BALANCE BEFORE APPLYING
-        const balanceInfo = await getEffectiveLeaveBalance(req.user.id, catKey, startDate);
+        const balanceInfo = await getEffectiveLeaveBalance(userId, catKey, startDate);
         if (balanceInfo) {
           const totalRequested = days;
           if (balanceInfo.remaining < totalRequested) {
             return res.status(400).json({
               success: false,
-              message: `your leave has finished used total ${balanceInfo.used}`
+              message: `Insufficient balance. Staff has only ${balanceInfo.remaining} leaves remaining.`
             });
           }
         }
       } else {
-        // If no categoryKey provided but a template exists, we usually require one.
-        // But if we want to be strict, we can error out or pick first.
-        // The user wants "only company provided" so catKey must be there.
         return res.status(400).json({ success: false, message: 'Leave category is required' });
       }
     } else {
-      // No template means no paid leaves available
-      return res.status(400).json({ success: false, message: 'No leave template assigned to you. You cannot apply for leave.' });
+      return res.status(400).json({ success: false, message: 'No leave template assigned to target user.' });
+    }
+
+    // Admin created leaves can be pre-approved
+    const finalStatus = (isAdmin && requestedStatus === 'APPROVED') ? 'APPROVED' : 'PENDING';
+    let paidDays = 0;
+    let unpaidDays = 0;
+
+    if (finalStatus === 'APPROVED') {
+        // If pre-approved by admin, we must deduct balance immediately
+        const eff = await getEffectiveLeaveBalance(userId, catKey, startDate);
+        if (!eff) return res.status(400).json({ success: false, message: 'Failed to resolve balance for approval' });
+
+        const { lb, total: totalForCycle, remaining: remainingBefore, start, end, carriedForward } = eff;
+        paidDays = days;
+        
+        if (!lb) {
+            await LeaveBalance.create({
+                userId,
+                categoryKey: catKey,
+                cycleStart: start,
+                cycleEnd: end,
+                allocated: totalForCycle,
+                carriedForward: carriedForward || 0,
+                used: paidDays,
+                remaining: Math.max(0, totalForCycle - paidDays),
+                orgAccountId: req.tenantOrgAccountId
+            });
+        } else {
+            const used = Number(lb.used || 0) + paidDays;
+            const remaining = Math.max(0, Number(lb.remaining || 0) - paidDays);
+            await lb.update({ used, remaining });
+        }
     }
 
     const lr = await LeaveRequest.create({
-      userId: req.user.id,
+      userId,
       orgAccountId: req.tenantOrgAccountId,
       startDate,
       endDate,
@@ -262,8 +294,13 @@ router.post('/', requireRole(['staff']), async (req, res) => {
       categoryKey: catKey,
       days,
       approvalLevelRequired,
-      reason: reason || null,
-      status: 'PENDING',
+      approvalLevelDone: finalStatus === 'APPROVED' ? approvalLevelRequired : 0,
+      reason: reason || 'Created by Admin',
+      status: finalStatus,
+      reviewedBy: finalStatus === 'APPROVED' ? req.user.id : null,
+      reviewedAt: finalStatus === 'APPROVED' ? new Date() : null,
+      paidDays,
+      unpaidDays
     });
 
     return res.json({ success: true, leave: lr });
@@ -272,24 +309,27 @@ router.post('/', requireRole(['staff']), async (req, res) => {
   }
 });
 
-// STAFF: check if range contains weekly off or holiday
-router.get('/check-range', requireRole(['staff']), async (req, res) => {
+// STAFF/ADMIN: check if range contains weekly off or holiday
+router.get('/check-range', requireRole(['staff', 'admin', 'superadmin']), async (req, res) => {
   try {
-    const { start, end } = req.query;
+    const { start, end, userId: targetUserId } = req.query;
     if (!start || !end) return res.json({ success: true, conflict: false });
+
+    const isAdmin = ['admin', 'superadmin'].includes(req.user.role);
+    const userId = (isAdmin && targetUserId) ? Number(targetUserId) : req.user.id;
 
     const s = new Date(`${start}T00:00:00`);
     const e = new Date(`${end}T00:00:00`);
 
     // Fetch Weekly Offs
     const woRows = await StaffWeeklyOffAssignment.findAll({ 
-      where: { userId: req.user.id }, 
+      where: { userId }, 
       include: [{ model: WeeklyOffTemplate, as: 'template' }] 
     });
 
     // Fetch Holidays
     const hAsg = await StaffHolidayAssignment.findOne({
-      where: { userId: req.user.id, effectiveFrom: { [Op.lte]: end } },
+      where: { userId, effectiveFrom: { [Op.lte]: end } },
       order: [['effectiveFrom', 'DESC']],
       include: [{ model: HolidayTemplate, as: 'template', include: [{ model: HolidayDate, as: 'holidays', where: { active: { [Op.ne]: false } }, required: false }] }]
     });

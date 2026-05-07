@@ -188,7 +188,7 @@ async function calculateOvertime(params, orgAccountArg, daysInMonthArg = 30, now
       overtimeMinutes: 0,
       overtimeAmount: 0,
       overtimeRuleId: null,
-      status: (totalWorkMinutes < (shiftTemplate?.halfDayThresholdMinutes || 240)) ? 'half_day' : 'present'
+      status: (!attendance.punchedOutAt) ? 'present' : (totalWorkMinutes < (shiftTemplate?.halfDayThresholdMinutes || 240) ? 'half_day' : 'present')
     };
   } else {
     // Parse thresholds from the actual rule
@@ -205,7 +205,7 @@ async function calculateOvertime(params, orgAccountArg, daysInMonthArg = 30, now
       overtimeMinutes: 0,
       overtimeAmount: 0,
       overtimeRuleId: (finalRule && finalRule.id) || null,
-      status: (attendance.totalWorkHours * 60 < (shiftTemplate?.halfDayThresholdMinutes || 240)) ? 'half_day' : 'present'
+      status: (!attendance.punchedOutAt) ? 'present' : (attendance.totalWorkHours * 60 < (shiftTemplate?.halfDayThresholdMinutes || 240) ? 'half_day' : 'present')
     };
   }
 
@@ -284,7 +284,7 @@ async function calculateOvertime(params, orgAccountArg, daysInMonthArg = 30, now
     overtimeMinutes: Math.round(overtimeMinutes),
     overtimeAmount: assignment ? parseFloat(overtimeAmount.toFixed(2)) : 0,
     overtimeRuleId: finalRule.id || null,
-    status: overtimeMinutes > 0 ? 'overtime' : (totalWorkMinutes < (shiftTemplate?.halfDayThresholdMinutes || 240) ? 'half_day' : 'present')
+    status: overtimeMinutes > 0 ? 'overtime' : ((!attendance.punchedOutAt) ? 'present' : (totalWorkMinutes < (shiftTemplate?.halfDayThresholdMinutes || 240) ? 'half_day' : 'present'))
   };
 }
 

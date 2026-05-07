@@ -223,6 +223,120 @@ router.get('/staff-with-roles', authRequired, tenantEnforce, async (req, res) =>
   }
 });
 
+// Bulk assign roles to multiple staff members
+router.post('/bulk-assign-role', authRequired, tenantEnforce, async (req, res) => {
+  try {
+    const orgAccountId = req.tenantOrgAccountId;
+    const { userIds, roleIds } = req.body;
+
+    console.log('Bulk assign role request:', { userIds, roleIds, orgAccountId });
+
+    if (!userIds || !Array.isArray(userIds) || userIds.length === 0 || !roleIds || !Array.isArray(roleIds)) {
+      return res.status(400).json({ success: false, message: 'User IDs (array) and role IDs (array) are required' });
+    }
+
+    // Verify all users belong to the organization
+    const users = await User.findAll({
+      where: { id: userIds, orgAccountId, role: 'staff' }
+    });
+
+    if (users.length !== userIds.length) {
+      return res.status(404).json({ success: false, message: 'One or more staff members not found or do not belong to your organization' });
+    }
+
+    // Verify roles belong to the organization and include permissions
+    const roles = await Role.findAll({
+      where: {
+        id: roleIds,
+        orgAccountId
+      },
+      include: [{
+        model: Permission,
+        as: 'permissions',
+        through: { attributes: [] }
+      }]
+    });
+
+    if (roles.length !== roleIds.length) {
+      return res.status(400).json({ success: false, message: 'One or more roles not found' });
+    }
+
+    // Geolocation limit check
+    const geoPermission = await Permission.findOne({ where: { name: 'geolocation_access' } });
+    const isAssigningGeo = roles.some(role =>
+      role.permissions?.some(p => p.id === geoPermission?.id)
+    );
+
+    if (isAssigningGeo) {
+      const geolocationEnabled = req.subscriptionInfo?.geolocationEnabled;
+      const maxGeoStaff = req.subscriptionInfo?.maxGeolocationStaff || 0;
+
+      if (geolocationEnabled && maxGeoStaff > 0) {
+        // Count users who ALREADY have geo access but are NOT in the target userIds list
+        const otherStaffWithGeo = await User.findAll({
+          where: {
+            orgAccountId,
+            role: 'staff',
+            active: true,
+            id: { [Sequelize.Op.notIn]: userIds }
+          },
+          include: [{
+            model: Role,
+            as: 'roles',
+            through: { attributes: [] },
+            include: [{
+              model: Permission,
+              as: 'permissions',
+              through: { attributes: [] }
+            }]
+          }]
+        });
+
+        const otherGeoCount = otherStaffWithGeo.filter(u =>
+          u.roles?.some(r => r.permissions?.some(p => p.id === geoPermission.id))
+        ).length;
+
+        // The target users will all have geo access after this assignment
+        const newTotalGeoStaff = otherGeoCount + userIds.length;
+
+        if (newTotalGeoStaff > maxGeoStaff) {
+          return res.status(400).json({
+            success: false,
+            message: `Bulk assignment would exceed geolocation staff limit (${maxGeoStaff}). Currently ${otherGeoCount} other staff have access. Adding ${userIds.length} more would reach ${newTotalGeoStaff}.`
+          });
+        }
+      }
+    }
+
+    // Perform assignments
+    // Use a transaction if possible, or just bulk delete/create
+    const t = await UserRole.sequelize.transaction();
+    try {
+      // Remove existing role assignments for all target users
+      await UserRole.destroy({ where: { userId: userIds } }, { transaction: t });
+
+      // Add new role assignments
+      const bulkUserRoles = [];
+      userIds.forEach(userId => {
+        roleIds.forEach(roleId => {
+          bulkUserRoles.push({ userId, roleId });
+        });
+      });
+
+      await UserRole.bulkCreate(bulkUserRoles, { transaction: t });
+      await t.commit();
+    } catch (err) {
+      await t.rollback();
+      throw err;
+    }
+
+    res.json({ success: true, message: `Successfully assigned roles to ${userIds.length} staff members` });
+  } catch (error) {
+    console.error('Bulk assign role error:', error);
+    res.status(500).json({ success: false, message: 'Internal server error' });
+  }
+});
+
 // Assign role to staff member
 router.post('/assign-role', authRequired, tenantEnforce, async (req, res) => {
   try {

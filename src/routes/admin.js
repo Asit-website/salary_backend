@@ -176,16 +176,24 @@ router.get('/holiday-work-pay/assignments', requireRole(['admin']), async (req, 
 router.post('/holiday-work-pay/assignments', requireRole(['admin']), async (req, res) => {
   try {
     const orgId = requireOrg(req, res); if (!orgId) return;
-    const { userId, ruleId, effectiveFrom, effectiveTo } = req.body;
-    const asg = await StaffHolidayWorkPayAssignment.create({
-      orgAccountId: orgId,
-      userId,
-      ruleId,
-      effectiveFrom,
-      effectiveTo,
-      active: true
-    });
-    return res.json({ success: true, assignment: asg });
+    const { userId, userIds, ruleId, effectiveFrom, effectiveTo } = req.body;
+
+    const ids = Array.isArray(userIds) ? userIds : (userId ? [userId] : []);
+    if (ids.length === 0) return res.status(400).json({ success: false, message: 'User ID(s) required' });
+
+    const results = [];
+    for (const id of ids) {
+      const asg = await StaffHolidayWorkPayAssignment.create({
+        orgAccountId: orgId,
+        userId: id,
+        ruleId,
+        effectiveFrom,
+        effectiveTo,
+        active: true
+      });
+      results.push(asg);
+    }
+    return res.json({ success: true, assignments: results });
   } catch (e) {
     console.error('Error creating holiday pay assignment:', e);
     return res.status(500).json({ success: false, message: 'Failed to create assignment' });
@@ -1558,6 +1566,263 @@ router.get('/payroll/:cycleId/salary-register-excel', async (req, res) => {
     return res.end();
   } catch (e) {
     console.error('Salary Register Excel error:', e);
+    return res.status(500).json({ success: false, message: 'Export failed' });
+  }
+});
+
+// Export Salary Register as Excel Partitioned by Salary Template (by Month)
+router.get('/payroll/salary-register-template-wise-excel', async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
+    const { PayrollCycle, PayrollLine, User, StaffProfile, OrgAccount, SalaryTemplate } = require('../models');
+
+    const { monthKey } = req.query;
+    if (!monthKey) return res.status(400).json({ success: false, message: 'monthKey is required' });
+
+    const cycle = await PayrollCycle.findOne({ where: { monthKey, orgAccountId: orgId } });
+    if (!cycle) return res.status(404).json({ success: false, message: 'Payroll cycle not found for this month' });
+
+    const [org, lines] = await Promise.all([
+      OrgAccount.findByPk(orgId),
+      PayrollLine.findAll({ where: { cycleId: cycle.id }, order: [['id', 'ASC']] })
+    ]);
+
+    const userIds = [...new Set(lines.map(l => l.userId))];
+    const users = await User.findAll({
+      where: { id: userIds },
+      include: [
+        { model: StaffProfile, as: 'profile' },
+        { model: SalaryTemplate, as: 'salaryTemplate' }
+      ]
+    });
+
+    const userMap = new Map(users.map(u => [u.id, u]));
+    const [year, month] = cycle.monthKey.split('-').map(Number);
+    const monthName = new Date(year, month - 1, 1).toLocaleString('en-IN', { month: 'long', year: 'numeric' });
+
+    // Group lines by Salary Template
+    const templateGroups = {}; // templateId -> { template, lines }
+    lines.forEach(line => {
+      const u = userMap.get(line.userId);
+      const tid = u?.salaryTemplateId || 0;
+      if (!templateGroups[tid]) {
+        templateGroups[tid] = {
+          template: u?.salaryTemplate || { name: 'No Template' },
+          lines: []
+        };
+      }
+      templateGroups[tid].lines.push(line);
+    });
+
+    const workbook = new exceljs.Workbook();
+
+    for (const tid in templateGroups) {
+      const group = templateGroups[tid];
+      const templateName = group.template.name || `Template ${tid}`;
+      const worksheet = workbook.addWorksheet(templateName.substring(0, 31).replace(/[\\\?\*\[\]\:\/]/g, ''));
+      
+      const groupLines = group.lines;
+
+      // Dynamic Columns Detection for this group
+      const earningKeys = new Set();
+      const deductionKeys = new Set();
+      const penaltyKeys = new Set();
+      const incentiveKeys = new Set();
+
+      groupLines.forEach(line => {
+        const e = typeof line.earnings === 'string' ? JSON.parse(line.earnings) : (line.earnings || {});
+        const d = typeof line.deductions === 'string' ? JSON.parse(line.deductions) : (line.deductions || {});
+        const s = typeof line.attendanceSummary === 'string' ? JSON.parse(line.attendanceSummary) : (line.attendanceSummary || {});
+        const i = typeof line.incentives === 'string' ? JSON.parse(line.incentives) : (line.incentives || {});
+
+        Object.keys(e).forEach(k => { if (Number(e[k])) earningKeys.add(k); });
+        Object.keys(d).forEach(k => { if (Number(d[k])) deductionKeys.add(k); });
+        Object.keys(i).forEach(k => incentiveKeys.add(k));
+
+        if (Number(s.latePunchInAmount)) penaltyKeys.add('latePunchInAmount');
+        if (Number(s.earlyExitAmount)) penaltyKeys.add('earlyExitAmount');
+        if (Number(s.breakDeductionAmount)) penaltyKeys.add('breakDeductionAmount');
+        if (Number(s.overtimePay)) earningKeys.add('overtimePay');
+        if (Number(s.earlyOvertimePay)) earningKeys.add('earlyOvertimePay');
+      });
+
+      const labelMap = {
+        basic_salary: 'BASIC', da: 'DA', hra: 'HRA', medical_allowance: 'MEDICAL',
+        conveyance: 'CONVEYANCE', conveyance_allowance: 'CONVEYANCE', other_allowance: 'OTHER ALLOW.',
+        overtimePay: 'OT PAY', overtime_pay: 'OT PAY', earlyOvertimePay: 'EARLY OT',
+        special_allowance: 'SPECIAL ALLOW.', travel_allowance: 'TRAVEL ALLOW.',
+        pf: 'P.F.', esi: 'E.S.I.', ptax: 'P.TAX', professional_tax: 'P.TAX', tds: 'T.D.S.', loan_advance: 'LOAN/ADVANCE',
+        advance: 'LOAN/ADVANCE', latePunchInAmount: 'LATE PENALTY', late_punchin_penalty: 'LATE PENALTY', latePunchInPenalty: 'LATE PENALTY', earlyExitAmount: 'EXIT PEN', breakDeductionAmount: 'BREAK PEN'
+      };
+
+      const dE = [...earningKeys].map(k => ({ key: k, label: labelMap[k] || k.replace(/_/g, ' ').toUpperCase() }));
+      const dD = [...deductionKeys, ...penaltyKeys].map(k => ({ key: k, label: labelMap[k] || k.replace(/_/g, ' ').toUpperCase() }));
+      const dI = [...incentiveKeys].map(k => ({ key: k, label: k.replace(/_/g, ' ').toUpperCase() }));
+
+      const uniqueLabels = (arr) => {
+        const seen = new Set();
+        return arr.filter(item => {
+          if (seen.has(item.label)) return false;
+          seen.add(item.label);
+          return true;
+        });
+      };
+      const fdE = uniqueLabels(dE);
+      const fdD = uniqueLabels(dD);
+
+      const cols = [
+        { header: 'SL', key: 'sl', width: 5 },
+        { header: 'NAME OF EMPLOYEE', key: 'name', width: 25 },
+        { header: 'WORK DAYS', key: 'workDays', width: 12 },
+        { header: 'PAID SUNDAY', key: 'paidSun', width: 14 },
+        { header: 'PAID HOLIDAY', key: 'paidHoli', width: 14 },
+        { header: 'ABSENT', key: 'absent', width: 10 },
+        { header: 'TOTAL PAY DAY', key: 'totalPayDay', width: 15 },
+        { header: 'BASIC RATE', key: 'basicRate', width: 12 },
+        ...fdE.map(e => ({ header: e.label, key: `e_${e.key}`, width: 14 })),
+        ...dI.map(i => ({ header: i.label, key: `i_${i.key}`, width: 14 })),
+        { header: 'GROSS PAY', key: 'grossPay', width: 12 },
+        ...fdD.map(d => ({ header: d.label, key: `d_${d.key}`, width: 16 })),
+        { header: 'TOTAL DEDUCTION', key: 'totalDeduction', width: 18 },
+        { header: 'NET PAY', key: 'netPay', width: 15 },
+        { header: 'SIGNATURE/DATE', key: 'signature', width: 20 },
+      ];
+
+      worksheet.columns = cols;
+      worksheet.views = [{ showGridLines: false }];
+
+      // Company Header
+      worksheet.mergeCells(1, 1, 1, cols.length);
+      const companyCell = worksheet.getCell(1, 1);
+      companyCell.value = org.name.toUpperCase();
+      companyCell.font = { bold: true, size: 18 };
+      companyCell.alignment = { horizontal: 'center' };
+
+      worksheet.mergeCells(2, 1, 2, cols.length);
+      const addressCell = worksheet.getCell(2, 1); addressCell.value = org.address || ''; addressCell.alignment = { horizontal: 'center' };
+
+      worksheet.mergeCells(3, 1, 3, cols.length);
+      const titleCell = worksheet.getCell(3, 1);
+      titleCell.value = `Salary Register - ${templateName.toUpperCase()} - ${monthName.toUpperCase()}`;
+      titleCell.font = { bold: true, size: 14 };
+      titleCell.alignment = { horizontal: 'center' };
+
+      // Group Headers (Earnings / Deductions) Row 4
+      const eStart = 9;
+      const eEnd = eStart + fdE.length + dI.length - 1;
+      if (eEnd >= eStart) {
+        worksheet.mergeCells(4, eStart, 4, eEnd);
+        const eH = worksheet.getCell(4, eStart);
+        eH.value = 'E A R N I N G S';
+        eH.alignment = { horizontal: 'center', vertical: 'middle' };
+        eH.font = { bold: true, color: { argb: 'FFFFFFFF' } };
+        eH.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF4F81BD' } };
+        eH.border = { top: { style: 'medium' }, left: { style: 'medium' }, bottom: { style: 'medium' }, right: { style: 'medium' } };
+      }
+      const dStart = eEnd + 2;
+      const dEnd = dStart + fdD.length - 1;
+      if (dEnd >= dStart) {
+        worksheet.mergeCells(4, dStart, 4, dEnd);
+        const dH = worksheet.getCell(4, dStart);
+        dH.value = 'D E D U C T I O N S';
+        dH.alignment = { horizontal: 'center', vertical: 'middle' };
+        dH.font = { bold: true, color: { argb: 'FFFFFFFF' } };
+        dH.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFC0504D' } };
+        dH.border = { top: { style: 'medium' }, left: { style: 'medium' }, bottom: { style: 'medium' }, right: { style: 'medium' } };
+      }
+
+      const headerRow = worksheet.getRow(5);
+      headerRow.values = cols.map(c => c.header);
+      headerRow.font = { bold: true };
+      headerRow.height = 25;
+      headerRow.eachCell(cell => {
+        cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFD9D9D9' } };
+        cell.border = { top: { style: 'thin' }, left: { style: 'thin' }, bottom: { style: 'thin' }, right: { style: 'thin' } };
+        cell.alignment = { horizontal: 'center', vertical: 'middle' };
+      });
+
+      let sl = 1;
+      const totals = { basicRate: 0, grossPay: 0, totalDeduction: 0, netPay: 0, e: {}, d: {}, i: {} };
+      fdE.forEach(dk => totals.e[dk.key] = 0);
+      fdD.forEach(dk => totals.d[dk.key] = 0);
+      dI.forEach(dk => totals.i[dk.key] = 0);
+
+      groupLines.forEach(line => {
+        const u = userMap.get(line.userId);
+        const e = typeof line.earnings === 'string' ? JSON.parse(line.earnings) : (line.earnings || {});
+        const d = typeof line.deductions === 'string' ? JSON.parse(line.deductions) : (line.deductions || {});
+        const i = typeof line.incentives === 'string' ? JSON.parse(line.incentives) : (line.incentives || {});
+        const s = typeof line.attendanceSummary === 'string' ? JSON.parse(line.attendanceSummary) : (line.attendanceSummary || {});
+        const t = typeof line.totals === 'string' ? JSON.parse(line.totals) : (line.totals || {});
+
+        const rowData = {
+          sl: sl++,
+          name: u?.profile?.name || u?.phone || '',
+          workDays: Number(s.present || 0),
+          paidSun: Number(s.weeklyOff || 0),
+          paidHoli: Number(s.holidays || 0),
+          absent: Number(s.absent || 0),
+          totalPayDay: Number(s.present || 0) + Number(s.weeklyOff || 0) + Number(s.holidays || 0) + Number(s.half || 0) * 0.5,
+          basicRate: Number(u?.basicSalary || 0),
+          grossPay: Number(t.grossSalary || 0),
+          totalDeduction: Number(t.totalDeductions || 0),
+          netPay: Number(t.netSalary || 0),
+          signature: line.paidAt ? new Date(line.paidAt).toLocaleDateString('en-IN', { day: '2-digit', month: '2-digit', year: 'numeric' }) : ''
+        };
+
+        fdE.forEach(dk => {
+          const val = (dk.key === 'overtimePay' || dk.key === 'earlyOvertimePay' || dk.key === 'overtime_pay') ? Number(s[dk.key] || e[dk.key] || 0) : Number(e[dk.key] || 0);
+          rowData[`e_${dk.key}`] = val;
+          totals.e[dk.key] += val;
+        });
+        dI.forEach(dk => {
+          const val = Number(i[dk.key] || 0);
+          rowData[`i_${dk.key}`] = val;
+          totals.i[dk.key] += val;
+        });
+        fdD.forEach(dk => {
+          const val = penaltyKeys.has(dk.key) ? Number(s[dk.key] || 0) : Number(d[dk.key] || 0);
+          rowData[`d_${dk.key}`] = val;
+          totals.d[dk.key] += val;
+        });
+
+        totals.basicRate += rowData.basicRate;
+        totals.grossPay += rowData.grossPay;
+        totals.totalDeduction += rowData.totalDeduction;
+        totals.netPay += rowData.netPay;
+
+        const row = worksheet.addRow(rowData);
+        row.eachCell((cell, colNumber) => {
+          cell.border = { top: { style: 'thin' }, left: { style: 'thin' }, bottom: { style: 'thin' }, right: { style: 'thin' } };
+          if (colNumber >= 8 && typeof cell.value === 'number') cell.numFmt = '#,##0.00';
+          if (sl % 2 === 0) cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF9F9F9' } };
+        });
+      });
+
+      // Total Row
+      const totalRowArr = [null, 'Total', null, null, null, null, null, totals.basicRate];
+      fdE.forEach(dk => totalRowArr.push(totals.e[dk.key]));
+      dI.forEach(dk => totalRowArr.push(totals.i[dk.key]));
+      totalRowArr.push(totals.grossPay);
+      fdD.forEach(dk => totalRowArr.push(totals.d[dk.key]));
+      totalRowArr.push(totals.totalDeduction, totals.netPay);
+
+      const totalRow = worksheet.addRow(totalRowArr);
+      totalRow.font = { bold: true };
+      totalRow.eachCell(cell => {
+        cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFEBF1DE' } };
+        cell.border = { top: { style: 'thin' }, left: { style: 'thin' }, bottom: { style: 'thick' }, right: { style: 'thin' } };
+        if (typeof cell.value === 'number') cell.numFmt = '#,##0.00';
+      });
+    }
+
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', `attachment; filename=Salary-Register-Template-Wise-${cycle.monthKey}.xlsx`);
+
+    await workbook.xlsx.write(res);
+    return res.end();
+  } catch (e) {
+    console.error('Salary Register Template-wise Excel error:', e);
     return res.status(500).json({ success: false, message: 'Export failed' });
   }
 });

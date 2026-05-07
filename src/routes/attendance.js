@@ -508,7 +508,7 @@ router.get('/status', async (req, res) => {
     const totalWorkMinutes = Math.floor(workSeconds / 60);
     if (assignedShift) {
       if (Number.isFinite(Number(assignedShift.halfDayThresholdMinutes)) && totalWorkMinutes < assignedShift.halfDayThresholdMinutes) {
-        dayStatus = (key === todayKey() && !record.punchedOutAt) ? 'PRESENT' : 'HALF_DAY';
+        dayStatus = !record.punchedOutAt ? 'PRESENT' : 'HALF_DAY';
       } else {
         dayStatus = 'PRESENT';
       }
@@ -760,7 +760,7 @@ router.get('/history', async (req, res) => {
           // Calculate status based on shift rules for history consistency
           if (shiftTpl) {
             if (Number.isFinite(Number(shiftTpl.halfDayThresholdMinutes)) && totalWorkMinutes < shiftTpl.halfDayThresholdMinutes) {
-              dayStatus = (key === todayStr && !record.punchedOutAt) ? 'PRESENT' : 'HALF_DAY';
+              dayStatus = !record.punchedOutAt ? 'PRESENT' : 'HALF_DAY';
             } else {
               dayStatus = 'PRESENT';
             }
@@ -963,7 +963,7 @@ router.post('/punch-in', upload.single('photo'), async (req, res) => {
       // Holidays rule
       const dateKey = todayKey();
       const hasPayRule = await holidayWorkPayService.getEffectiveRule(req.user.id, dateKey);
-      
+
       if (!hasPayRule && (tpl.holidaysRule ?? tpl.holidays_rule) === 'disallow' && await isPaidHoliday(req.user.id, dateKey)) {
         return res.status(409).json({ success: false, message: 'Punch-in disabled on paid holidays' });
       }
