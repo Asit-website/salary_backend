@@ -2148,7 +2148,7 @@ router.get('/staff/:id/salary-compute', async (req, res) => {
 
 
     // Classify calendar days (for current month, only count till today)
-    let present = 0, half = 0, leave = 0, paidLeave = 0, unpaidLeave = 0, weeklyOff = 0, holidays = 0, absent = 0;
+    let present = 0, actualPresent = 0, half = 0, leave = 0, paidLeave = 0, unpaidLeave = 0, weeklyOff = 0, holidays = 0, absent = 0;
     const daysInMonth = end.getDate();
     const now = new Date();
     const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
@@ -2159,8 +2159,8 @@ router.get('/staff/:id/salary-compute', async (req, res) => {
       const key = `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, '0')}-${String(dnum).padStart(2, '0')}`;
       const s = attMap[key];
 
-      if (s === 'present' || s === 'overtime') { present += 1; continue; }
-      if (s === 'half_day') { half += 1; continue; }
+      if (s === 'present' || s === 'overtime') { present += 1; actualPresent += 1; continue; }
+      if (s === 'half_day') { half += 1; actualPresent += 0.5; continue; }
       if (s === 'leave') { leave += 1; if (paidLeaveSet.has(key)) paidLeave += 1; else if (unpaidLeaveSet.has(key)) unpaidLeave += 1; continue; }
       if (s === 'weekly_off') { weeklyOff += 1; continue; }
       if (s === 'holiday') { holidays += 1; continue; }
@@ -2204,7 +2204,7 @@ router.get('/staff/:id/salary-compute', async (req, res) => {
     totals.netSalary = totals.grossSalary - totals.totalDeductions;
 
     const attendanceSummary = {
-      present, half, leave, paidLeave, unpaidLeave, absent, weeklyOff, holidays, ratio,
+      present: actualPresent, half, leave, paidLeave, unpaidLeave, absent, weeklyOff, holidays, ratio,
       overtimeMinutes,
       overtimeHours: Number(overtimeHours.toFixed(2)),
       overtimeHourlyRate: Number(overtimeHourlyRate.toFixed(2)),
@@ -3122,7 +3122,7 @@ router.post('/payroll/:cycleId/compute', async (req, res) => {
       }
 
       // Category counts: classify calendar days (for current month, only count till today)
-      let present = 0, half = 0, leave = 0, absent = 0, paidLeave = 0, unpaidLeave = 0;
+      let present = 0, actualPresent = 0, half = 0, leave = 0, absent = 0, paidLeave = 0, unpaidLeave = 0;
       let multiplierBreakdown = [];
       let paidLeaveDates = [];
       const daysInMonth = end.getDate();
@@ -3141,6 +3141,7 @@ router.post('/payroll/:cycleId/compute', async (req, res) => {
 
         if (s === 'present' || s === 'overtime' || s === 'work_from_home') {
           present += 1;
+          actualPresent += 1;
           const activeAsg = payRuleAssignments.filter(a => a.effectiveFrom <= key && (!a.effectiveTo || a.effectiveTo >= key)).pop();
           const rule = activeAsg?.rule;
           const m = isH ? (rule?.holidayMultiplier || 1) : (rule?.weeklyOffMultiplier || 1);
@@ -3166,6 +3167,7 @@ router.post('/payroll/:cycleId/compute', async (req, res) => {
 
         if (s === 'half_day') {
           half += 1;
+          actualPresent += 0.5;
 
           const activeAsg = payRuleAssignments.filter(a => a.effectiveFrom <= key && (!a.effectiveTo || a.effectiveTo >= key)).pop();
           const rule = activeAsg?.rule;
@@ -3565,7 +3567,7 @@ router.post('/payroll/:cycleId/compute', async (req, res) => {
 
       const totalAbsent = absent;
       const attendanceSummary = {
-        present, half, leave, paidLeave, paidLeaveDates, unpaidLeave, absent: totalAbsent, weeklyOff, holidays, ratio,
+        present: actualPresent, half, leave, paidLeave, paidLeaveDates, unpaidLeave, absent: totalAbsent, weeklyOff, holidays, ratio,
         payableDays: payableUnits,
         overtimeMinutes: totalOvertimeMinutes,
         overtimeHours: Number(overtimeHours.toFixed(2)),

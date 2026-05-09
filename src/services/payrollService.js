@@ -328,7 +328,8 @@ async function calculateSalary(userId, monthKey) {
       const [yy, mm] = monthKey.split('-').map(Number);
       const daysInMonth = new Date(yy, mm, 0).getDate();
       const payableDays = Math.round(totalsObj.ratio * daysInMonth);
-      attendanceSummary = { present: payableDays, absent: daysInMonth - payableDays };
+      // For legacy lines without summary, we still have to derive, but let's cap it or just set to 0 to avoid confusion
+      attendanceSummary = { present: payableDays, absent: Math.max(0, daysInMonth - payableDays), note: 'Derived from ratio' };
     }
 
     // Backfill overtime and early exit info for legacy lines
@@ -706,7 +707,7 @@ async function calculateSalary(userId, monthKey) {
   }
 
   // Classify calendar days (for current month, only count till today)
-  let present = 0, half = 0, leave = 0, paidLeaveCount = 0, unpaidLeave = 0, weeklyOffCount = 0, holidaysCount = 0, absent = 0;
+  let present = 0, actualPresent = 0, half = 0, leave = 0, paidLeaveCount = 0, unpaidLeave = 0, weeklyOffCount = 0, holidaysCount = 0, absent = 0;
   let paidLeaveDates = [];
   const daysInMonth = end.getDate();
   const now = new Date();
@@ -753,6 +754,7 @@ async function calculateSalary(userId, monthKey) {
       else {
         present += 1;
       }
+      actualPresent += 1;
       continue;
     }
     if (s === 'half_day') {
@@ -768,6 +770,7 @@ async function calculateSalary(userId, monthKey) {
       else if (isWO) val *= (rule?.weeklyOffMultiplier || 1);
 
       present += val;
+      actualPresent += 0.5;
       continue;
     }
     if (s === 'leave') { leave += 1; if (paidLeaveSet.has(key)) { paidLeaveCount += 1; paidLeaveDates.push(key); } else if (unpaidLeaveSet.has(key)) unpaidLeave += 1; continue; }
@@ -1063,7 +1066,7 @@ async function calculateSalary(userId, monthKey) {
       ratio
     },
     attendanceSummary: {
-      present, half, leave, paidLeave: paidLeaveCount, paidLeaveDates,
+      present: actualPresent, half, leave, paidLeave: paidLeaveCount, paidLeaveDates,
       absent, weeklyOff: weeklyOffCount, holidays: holidaysCount, ratio,
       payableDays: payableUnits, // This is the gross payable days (e.g. 28)
       lateCount: lp.lateCount,
