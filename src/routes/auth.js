@@ -761,7 +761,7 @@ router.post('/add-organization', async (req, res) => {
 
   } catch (e) {
     console.error('Add organization failed:', e);
-    return res.status(500).json({ success: false, message: 'Failed to add organization' });
+    return res.status(500).json({ success: false, message: 'Failed to add organization', error: e.message });
   }
 });
 
