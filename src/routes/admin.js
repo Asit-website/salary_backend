@@ -9382,7 +9382,12 @@ router.put('/settings/org', async (req, res) => {
     return res.json({ success: true, config: { industryType, features, smsNotificationSettings: smsSettings } });
   } catch (e) {
     console.error('Failed to save org config:', e);
-    return res.status(500).json({ success: false, message: 'Failed to save org config', error: e.message });
+    return res.status(500).json({ 
+      success: false, 
+      message: 'Failed to save org config', 
+      error: e.message,
+      validationErrors: e.errors ? e.errors.map(err => ({ field: err.path, message: err.message })) : null
+    });
   }
 });
 
