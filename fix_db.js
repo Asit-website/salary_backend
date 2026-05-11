@@ -43,38 +43,38 @@ async function fix() {
     const curAtt = await tableExists('attendance') ? 'attendance' : (await tableExists('Attendance') ? 'Attendance' : null);
 
     if (!curOrg || !curAtt) {
-        console.log('❌ Could not find tables to update columns');
+      console.log('❌ Could not find tables to update columns');
     } else {
-        // 2. Fix OrgAccount columns
-        try {
-          if (await columnExists(curOrg, 'earlyExitRuleId') && !await columnExists(curOrg, 'early_exit_rule_id')) {
-            await sequelize.query(`ALTER TABLE \`${curOrg}\` CHANGE \`earlyExitRuleId\` \`early_exit_rule_id\` BIGINT UNSIGNED DEFAULT NULL`);
-            console.log(`✅ Renamed earlyExitRuleId to early_exit_rule_id in ${curOrg}`);
-          } else if (!await columnExists(curOrg, 'early_exit_rule_id')) {
-            await sequelize.query(`ALTER TABLE \`${curOrg}\` ADD COLUMN \`early_exit_rule_id\` BIGINT UNSIGNED DEFAULT NULL`);
-            console.log(`✅ Added early_exit_rule_id to ${curOrg}`);
-          }
-        } catch (e) { console.log(`⚠️ ${curOrg} error:`, e.message); }
+      // 2. Fix OrgAccount columns
+      try {
+        if (await columnExists(curOrg, 'earlyExitRuleId') && !await columnExists(curOrg, 'early_exit_rule_id')) {
+          await sequelize.query(`ALTER TABLE \`${curOrg}\` CHANGE \`earlyExitRuleId\` \`early_exit_rule_id\` BIGINT UNSIGNED DEFAULT NULL`);
+          console.log(`✅ Renamed earlyExitRuleId to early_exit_rule_id in ${curOrg}`);
+        } else if (!await columnExists(curOrg, 'early_exit_rule_id')) {
+          await sequelize.query(`ALTER TABLE \`${curOrg}\` ADD COLUMN \`early_exit_rule_id\` BIGINT UNSIGNED DEFAULT NULL`);
+          console.log(`✅ Added early_exit_rule_id to ${curOrg}`);
+        }
+      } catch (e) { console.log(`⚠️ ${curOrg} error:`, e.message); }
 
-        // 3. Fix Attendance columns
-        try {
-          const mappings = [
-            { old: 'earlyExitMinutes', new: 'early_exit_minutes', type: 'DECIMAL(10, 2) DEFAULT 0' },
-            { old: 'earlyExitAmount', new: 'early_exit_amount', type: 'DECIMAL(10, 2) DEFAULT 0' },
-            { old: 'earlyExitRuleId', new: 'early_exit_rule_id', type: 'BIGINT UNSIGNED DEFAULT NULL' },
-            { old: 'isAutoMarked', new: 'is_auto_marked', type: 'TINYINT(1) DEFAULT 0' }
-          ];
+      // 3. Fix Attendance columns
+      try {
+        const mappings = [
+          { old: 'earlyExitMinutes', new: 'early_exit_minutes', type: 'DECIMAL(10, 2) DEFAULT 0' },
+          { old: 'earlyExitAmount', new: 'early_exit_amount', type: 'DECIMAL(10, 2) DEFAULT 0' },
+          { old: 'earlyExitRuleId', new: 'early_exit_rule_id', type: 'BIGINT UNSIGNED DEFAULT NULL' },
+          { old: 'isAutoMarked', new: 'is_auto_marked', type: 'TINYINT(1) DEFAULT 0' }
+        ];
 
-          for (const m of mappings) {
-            if (await columnExists(curAtt, m.old) && !await columnExists(curAtt, m.new)) {
-              await sequelize.query(`ALTER TABLE \`${curAtt}\` CHANGE \`${m.old}\` \`${m.new}\` ${m.type}`);
-              console.log(`✅ Renamed ${m.old} to ${m.new} in ${curAtt}`);
-            } else if (!await columnExists(curAtt, m.new)) {
-              await sequelize.query(`ALTER TABLE \`${curAtt}\` ADD COLUMN \`${m.new}\` ${m.type}`);
-              console.log(`✅ Added ${m.new} to ${curAtt}`);
-            }
+        for (const m of mappings) {
+          if (await columnExists(curAtt, m.old) && !await columnExists(curAtt, m.new)) {
+            await sequelize.query(`ALTER TABLE \`${curAtt}\` CHANGE \`${m.old}\` \`${m.new}\` ${m.type}`);
+            console.log(`✅ Renamed ${m.old} to ${m.new} in ${curAtt}`);
+          } else if (!await columnExists(curAtt, m.new)) {
+            await sequelize.query(`ALTER TABLE \`${curAtt}\` ADD COLUMN \`${m.new}\` ${m.type}`);
+            console.log(`✅ Added ${m.new} to ${curAtt}`);
           }
-        } catch (e) { console.log(`⚠️ ${curAtt} error:`, e.message); }
+        }
+      } catch (e) { console.log(`⚠️ ${curAtt} error:`, e.message); }
     }
 
     // 4. Create EarlyExitRules table if not exists (lowercase name)

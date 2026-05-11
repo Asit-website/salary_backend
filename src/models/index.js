@@ -803,6 +803,39 @@ User.hasMany(Lead, { as: 'leads', foreignKey: 'createdBy' });
 OrgAccount.belongsTo(User, { as: 'creator', foreignKey: 'createdBy' });
 User.hasMany(OrgAccount, { as: 'createdOrgs', foreignKey: 'createdBy' });
 
+// Database Schema Fix: Remove restrictive global unique constraints
+(async () => {
+  try {
+    console.log('[DB FIX] Starting aggressive schema repair script...');
+    
+    // Fix 1: Drop restrictive phone unique constraints on users table
+    const phoneIndexes = ['uniq_users_phone', 'users_phone_unique', 'phone_UNIQUE'];
+    for (const idxName of phoneIndexes) {
+      try {
+        await sequelize.query(`ALTER TABLE users DROP INDEX ${idxName}`);
+        console.log(`[DB FIX] Successfully dropped index: users.${idxName}`);
+      } catch (e) {
+        // Ignore errors (like index doesn't exist)
+      }
+    }
+
+    // Fix 2: Drop restrictive key unique constraints on app_settings table
+    const appSettingsIndexes = ['idx_app_settings_key', 'app_settings_key_unique', 'key_UNIQUE'];
+    for (const idxName of appSettingsIndexes) {
+      try {
+        await sequelize.query(`ALTER TABLE app_settings DROP INDEX ${idxName}`);
+        console.log(`[DB FIX] Successfully dropped index: app_settings.${idxName}`);
+      } catch (e) {
+        // Ignore
+      }
+    }
+    
+    console.log('[DB FIX] Schema repair script finished.');
+  } catch (err) {
+    console.error('[DB FIX] Schema repair script error:', err.message);
+  }
+})();
+
 module.exports = {
   sequelize,
   User,

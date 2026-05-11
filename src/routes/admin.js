@@ -9377,8 +9377,12 @@ router.put('/settings/org', async (req, res) => {
     const smsSettings = body.smsNotificationSettings && typeof body.smsNotificationSettings === 'object' ? body.smsNotificationSettings : {};
     const payload = JSON.stringify({ industryType, features, smsNotificationSettings: smsSettings });
 
-    const [row] = await AppSetting.findOrCreate({ where: { key: 'org_config', orgAccountId: orgId }, defaults: { value: payload, orgAccountId: orgId } });
-    if (row.value !== payload) await row.update({ value: payload });
+    let row = await AppSetting.findOne({ where: { key: 'org_config', orgAccountId: orgId } });
+    if (!row) {
+      row = await AppSetting.create({ key: 'org_config', value: payload, orgAccountId: orgId });
+    } else {
+      await row.update({ value: payload });
+    }
     return res.json({ success: true, config: { industryType, features, smsNotificationSettings: smsSettings } });
   } catch (e) {
     console.error('Failed to save org config:', e);

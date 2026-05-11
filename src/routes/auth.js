@@ -195,7 +195,7 @@ router.post('/verify-otp', async (req, res) => {
     });
 
     console.log(`Verify-OTP: hasSuperAccess determined as ${hasSuperAccess}`);
-    
+
     // NEW: Check if any user has 'create_org_tab' permission
     const { Badge, BadgePermission, StaffBadge } = require('../models');
     const createOrgAssignments = await StaffBadge.findAll({
@@ -588,7 +588,7 @@ router.post('/add-organization', async (req, res) => {
       console.log('Linking new org to parent admins. Staff phone:', normalizedPhone);
       // Find organizations where this user is currently a staff member
       const staffMemberships = await User.findAll({
-        where: { 
+        where: {
           [require('sequelize').Op.or]: [
             { phone: String(phone) },
             { phone: String(normalizedPhone) }
@@ -641,7 +641,7 @@ router.post('/add-organization', async (req, res) => {
             name: adminProfile?.name || 'Parent Admin',
             phone: admin.phone
           });
-          
+
           console.log(`Successfully linked new org ${org.id} to parent admin ${admin.phone}`);
         }
       } else {
@@ -761,9 +761,9 @@ router.post('/add-organization', async (req, res) => {
 
   } catch (e) {
     console.error('Add organization failed:', e);
-    return res.status(500).json({ 
-      success: false, 
-      message: 'Failed to add organization', 
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to add organization',
       error: e.message,
       validationErrors: e.errors ? e.errors.map(err => ({ field: err.path, message: err.message })) : null
     });
