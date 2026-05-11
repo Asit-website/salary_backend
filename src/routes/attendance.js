@@ -247,6 +247,9 @@ async function getAssignedHolidayTemplate(userId, dateKey) {
 
 async function isPaidHoliday(userId, dateKey) {
   try {
+    const rosterEntry = await StaffRoster.findOne({ where: { userId, date: dateKey } });
+    if (rosterEntry?.status === 'HOLIDAY') return true;
+
     const tpl = await getAssignedHolidayTemplate(userId, dateKey);
     if (!tpl) return false;
     const list = Array.isArray(tpl.holidays) ? tpl.holidays : [];
@@ -256,6 +259,9 @@ async function isPaidHoliday(userId, dateKey) {
 
 async function isWeeklyOff(userId, dateKey) {
   try {
+    const rosterEntry = await StaffRoster.findOne({ where: { userId, date: dateKey } });
+    if (rosterEntry?.status === 'WEEKLY_OFF') return true;
+
     const woAsg = await StaffWeeklyOffAssignment.findOne({
       where: { userId, effectiveFrom: { [Op.lte]: dateKey } },
       order: [['effectiveFrom', 'DESC']]
@@ -956,14 +962,17 @@ router.post('/end-break', async (req, res) => {
 
 router.post('/punch-in', upload.single('photo'), async (req, res) => {
   try {
+    const dateKey = todayKey();
+    const hasPayRule = await holidayWorkPayService.getEffectiveRule(req.user.id, dateKey);
+    if (!hasPayRule) {
+      return res.status(403).json({ success: false, message: 'Punch-in not allowed: No Holiday/Weekly off Work Pay Rule assigned.' });
+    }
+
     // Enforce template rules
     const tpl = await getEffectiveTemplate(req.user.id);
-    const shiftTpl = await getEffectiveShiftTemplate(req.user.id, todayKey());
+    const shiftTpl = await getEffectiveShiftTemplate(req.user.id, dateKey);
     if (tpl) {
       // Holidays rule
-      const dateKey = todayKey();
-      const hasPayRule = await holidayWorkPayService.getEffectiveRule(req.user.id, dateKey);
-
       if (!hasPayRule && (tpl.holidaysRule ?? tpl.holidays_rule) === 'disallow' && await isPaidHoliday(req.user.id, dateKey)) {
         return res.status(409).json({ success: false, message: 'Punch-in disabled on paid holidays' });
       }
@@ -981,7 +990,6 @@ router.post('/punch-in', upload.single('photo'), async (req, res) => {
       }
     }
     // Block punch-in if approved leave exists for today
-    const dateKey = todayKey();
     if (await hasApprovedLeave(req.user.id, dateKey)) {
       return res.status(409).json({ success: false, message: 'You are on leave today' });
     }

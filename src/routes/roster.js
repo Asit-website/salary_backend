@@ -157,7 +157,7 @@ router.post('/admin/roster', authRequired, requireRole(['admin', 'superadmin', '
 
     const orgId = requireOrg(req, res); if (!orgId) return;
 
-    const { assessments } = req.body; // Array of { userId, date, shiftTemplateId, status }
+    const { assessments, isBulk } = req.body; // Array of { userId, date, shiftTemplateId, status }
 
     if (!Array.isArray(assessments)) {
       return res.status(400).json({ success: false, message: 'assessments array is required' });
@@ -165,6 +165,33 @@ router.post('/admin/roster', authRequired, requireRole(['admin', 'superadmin', '
 
     for (const item of assessments) {
       const { userId, date, shiftTemplateId, status } = item;
+
+      // Validation: Block roster change if staff is already present
+      const attendance = await Attendance.findOne({
+        where: { userId, date, orgAccountId: orgId }
+      });
+
+      if (attendance && attendance.punchedInAt) {
+        if (isBulk) {
+          const staff = await User.findOne({
+            where: { id: userId },
+            include: [{ model: StaffProfile, as: 'profile', attributes: ['name'] }]
+          });
+          const staffName = staff?.profile?.name || 'Staff';
+          const [y, m, d] = date.split('-');
+          const formattedDate = `${d}-${m}-${y}`;
+
+          return res.status(400).json({
+            success: false,
+            message: `THIS STAFF ${staffName.toUpperCase()} IS PRESENT ON THIS DATE ${formattedDate} SO PLEASE CHANGE RANGE`
+          });
+        } else {
+          return res.status(400).json({
+            success: false,
+            message: 'This staff present today so can not assign roster'
+          });
+        }
+      }
 
       if (status === 'DELETE') {
         // Find existing roster to check status before delete

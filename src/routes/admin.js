@@ -13924,7 +13924,7 @@ router.get('/dashboard', async (req, res) => {
       attributes: ['netSalary']
     });
 
-    const dailyWagesPayout = presentStaffSalaries.reduce((sum, s) => sum + (Number(s.netSalary || 0) / daysInMonth), 0);
+    const dailyWagesPayout = expectedMonthlyPayout / daysInMonth;
 
     return res.json({
       success: true,
