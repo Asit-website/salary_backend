@@ -4379,9 +4379,8 @@ router.put('/settings/business-info', async (req, res) => {
     return res.json({ success: true });
 
   } catch (e) {
-
-    return res.status(500).json({ success: false, message: 'Failed to save business info' });
-
+    console.error('Failed to save business info:', e);
+    return res.status(500).json({ success: false, message: 'Failed to save business info', error: e.message });
   }
 
 });
@@ -9363,7 +9362,8 @@ router.get('/settings/org', async (req, res) => {
     }
     return res.json({ success: true, config });
   } catch (e) {
-    return res.status(500).json({ success: false, message: 'Failed to load org config' });
+    console.error('Failed to load org config:', e);
+    return res.status(500).json({ success: false, message: 'Failed to load org config', error: e.message });
   }
 });
 
@@ -9381,7 +9381,8 @@ router.put('/settings/org', async (req, res) => {
     if (row.value !== payload) await row.update({ value: payload });
     return res.json({ success: true, config: { industryType, features, smsNotificationSettings: smsSettings } });
   } catch (e) {
-    return res.status(500).json({ success: false, message: 'Failed to save org config' });
+    console.error('Failed to save org config:', e);
+    return res.status(500).json({ success: false, message: 'Failed to save org config', error: e.message });
   }
 });
 
