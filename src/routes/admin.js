@@ -20,7 +20,7 @@ function getCellValue(cell) {
 
 
 
-const { sequelize, User, StaffProfile, Role, Permission, AppSetting, DocumentType, ShiftTemplate, ShiftBreak, ShiftRotationalSlot, StaffShiftAssignment, SalaryAccess, AttendanceTemplate, StaffAttendanceAssignment, SalaryTemplate, StaffSalaryAssignment, Site, WorkUnit, Route, RouteStop, StaffRouteAssignment, SiteCheckpoint, PatrolLog, LeaveTemplate, LeaveTemplateCategory, StaffLeaveAssignment, LeaveBalance, LeaveRequest, AIAnomaly, ReliabilityScore, SalaryForecast, Attendance, Client, AssignedJob, SalesTarget, HolidayTemplate, HolidayDate, StaffHolidayAssignment, WeeklyOffTemplate, StaffWeeklyOffAssignment, Subscription, Plan, SalesVisit, Asset, AssetAssignment, AssetMaintenance, StaffLoan, StaffAdvance, OrderProduct, StaffOrderProduct, AttendanceAutomationRule, StaffGeofenceAssignment, GeofenceTemplate, GeofenceSite, DeviceInfo, Appraisal, Rating, OrgAccount, OvertimeRule, StaffOvertimeAssignment, EarlyExitRule, StaffEarlyExitAssignment, LatePunchInRule, StaffLatePunchInAssignment, TenureBonusRule, StaffTenureBonusAssignment, StaffBadge, Badge, BadgePermission, PayrollCycle, PayrollLine, HolidayWorkPayRule, StaffHolidayWorkPayAssignment, StaffRoster } = require('../models');
+const { sequelize, User, StaffProfile, Role, Permission, AppSetting, DocumentType, ShiftTemplate, ShiftBreak, ShiftRotationalSlot, StaffShiftAssignment, SalaryAccess, AttendanceTemplate, StaffAttendanceAssignment, SalaryTemplate, StaffSalaryAssignment, Site, WorkUnit, Route, RouteStop, StaffRouteAssignment, SiteCheckpoint, PatrolLog, LeaveTemplate, LeaveTemplateCategory, StaffLeaveAssignment, LeaveBalance, LeaveRequest, AIAnomaly, ReliabilityScore, SalaryForecast, Attendance, Client, AssignedJob, SalesTarget, HolidayTemplate, HolidayDate, StaffHolidayAssignment, WeeklyOffTemplate, StaffWeeklyOffAssignment, Subscription, Plan, SalesVisit, Asset, AssetAssignment, AssetMaintenance, StaffLoan, StaffAdvance, OrderProduct, StaffOrderProduct, AttendanceAutomationRule, StaffGeofenceAssignment, GeofenceTemplate, GeofenceSite, DeviceInfo, Appraisal, Rating, OrgAccount, OvertimeRule, StaffOvertimeAssignment, EarlyExitRule, StaffEarlyExitAssignment, LatePunchInRule, StaffLatePunchInAssignment, TenureBonusRule, StaffTenureBonusAssignment, StaffBadge, Badge, BadgePermission, PayrollCycle, PayrollLine, HolidayWorkPayRule, StaffHolidayWorkPayAssignment, StaffRoster, ClientAssignment } = require('../models');
 
 const multer = require('multer');
 
@@ -1620,7 +1620,7 @@ router.get('/payroll/salary-register-template-wise-excel', async (req, res) => {
       const group = templateGroups[tid];
       const templateName = group.template.name || `Template ${tid}`;
       const worksheet = workbook.addWorksheet(templateName.substring(0, 31).replace(/[\\\?\*\[\]\:\/]/g, ''));
-      
+
       const groupLines = group.lines;
 
       // Dynamic Columns Detection for this group
@@ -9382,9 +9382,9 @@ router.put('/settings/org', async (req, res) => {
     return res.json({ success: true, config: { industryType, features, smsNotificationSettings: smsSettings } });
   } catch (e) {
     console.error('Failed to save org config:', e);
-    return res.status(500).json({ 
-      success: false, 
-      message: 'Failed to save org config', 
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to save org config',
       error: e.message,
       validationErrors: e.errors ? e.errors.map(err => ({ field: err.path, message: err.message })) : null
     });
@@ -14799,15 +14799,57 @@ router.post('/clients', async (req, res) => {
 
     const orgId = requireOrg(req, res); if (!orgId) return;
 
-    const { name, phone, clientType, location, extra } = req.body || {};
+    const { name, phone, clientType, location, extra, staffIds } = req.body || {};
 
     if (!name) return res.status(400).json({ success: false, message: 'name required' });
 
-    const client = await Client.create({ name, phone: phone || null, clientType: clientType || null, location: location || null, extra: extra || null, createdBy: req.user.id, orgAccountId: orgId });
+    
+
+    const client = await Client.create({ 
+
+      name, 
+
+      phone: phone || null, 
+
+      clientType: clientType || null, 
+
+      location: location || null, 
+
+      extra: extra || null, 
+
+      createdBy: req.user.id, 
+
+      orgAccountId: orgId 
+
+    });
+
+
+
+    // Handle staff assignments
+
+    if (Array.isArray(staffIds) && staffIds.length > 0) {
+
+      const assignments = staffIds.map(staffId => ({
+
+        clientId: client.id,
+
+        staffUserId: staffId,
+
+        orgAccountId: orgId
+
+      }));
+
+      await ClientAssignment.bulkCreate(assignments);
+
+    }
+
+
 
     return res.json({ success: true, client });
 
   } catch (e) {
+
+    console.error('Create client error:', e);
 
     return res.status(500).json({ success: false, message: 'Failed to create client' });
 
@@ -14829,7 +14871,9 @@ router.put('/clients/:id', async (req, res) => {
 
     if (!client) return res.status(404).json({ success: false, message: 'Not found' });
 
-    const { name, phone, clientType, location, extra } = req.body || {};
+    
+
+    const { name, phone, clientType, location, extra, staffIds } = req.body || {};
 
     await client.update({
 
@@ -14845,9 +14889,45 @@ router.put('/clients/:id', async (req, res) => {
 
     });
 
+
+
+    // Handle staff assignments update
+
+    if (staffIds !== undefined) {
+
+      // Clear existing assignments
+
+      await ClientAssignment.destroy({ where: { clientId: client.id, orgAccountId: orgId } });
+
+
+
+      // Create new assignments if staffIds is an array
+
+      if (Array.isArray(staffIds) && staffIds.length > 0) {
+
+        const assignments = staffIds.map(staffId => ({
+
+          clientId: client.id,
+
+          staffUserId: staffId,
+
+          orgAccountId: orgId
+
+        }));
+
+        await ClientAssignment.bulkCreate(assignments);
+
+      }
+
+    }
+
+
+
     return res.json({ success: true, client });
 
   } catch (e) {
+
+    console.error('Update client error:', e);
 
     return res.status(500).json({ success: false, message: 'Failed to update client' });
 
@@ -15867,151 +15947,123 @@ router.put('/settings/order-products/staff/:userId', async (req, res) => {
 });
 
 // --- Sales: Clients CRUD --- (org-scoped)
-
 router.get('/sales/clients', async (req, res) => {
-
   try {
-
     const orgId = requireOrg(req, res); if (!orgId) return;
-
-    const rows = await sequelize.models.Client.findAll({ where: { orgAccountId: orgId }, order: [['createdAt', 'DESC']] });
+    const rows = await Client.findAll({ 
+      where: { orgAccountId: orgId }, 
+      include: [{ 
+        model: User, 
+        as: 'assignedStaff', 
+        attributes: ['id'],
+        include: [{
+          model: sequelize.models.StaffProfile,
+          as: 'profile',
+          attributes: ['name']
+        }],
+        through: { attributes: [] }
+      }],
+      order: [['createdAt', 'DESC']] 
+    });
 
     const data = rows.map(r => {
-
       return {
-
         id: r.id,
-
         name: r.name,
-
         phone: r.phone,
-
-        clientType: r.client_type || r.clientType || null,
-
+        clientType: r.clientType || null,
         location: r.location || null,
-
         extra: r.extra || null,
-
         active: r.active !== false,
-
         createdAt: r.createdAt,
-
+        staffIds: (r.assignedStaff || []).map(s => s.id),
+        assignedStaff: (r.assignedStaff || []).map(s => ({
+          id: s.id,
+          name: s.profile?.name || 'Unknown'
+        })),
       };
-
     });
 
     return res.json({ success: true, clients: data });
-
   } catch (e) {
-
+    console.error('Fetch sales clients error:', e);
     return res.status(500).json({ success: false, message: 'Failed to load clients' });
-
   }
-
 });
 
 
 
 router.post('/sales/clients', async (req, res) => {
-
   try {
-
     const orgId = requireOrg(req, res); if (!orgId) return;
-
-    const { name, phone, clientType, location, extra } = req.body || {};
-
+    const { name, phone, clientType, location, extra, staffIds } = req.body || {};
     if (!name) return res.status(400).json({ success: false, message: 'name required' });
 
-    let baseExtra = (extra && typeof extra === 'object') ? extra : {};
-
-    if (typeof extra === 'string') {
-
-      try { baseExtra = JSON.parse(extra); } catch (_) { baseExtra = {}; }
-
-    }
-
-    const row = await sequelize.models.Client.create({
-
+    const client = await Client.create({
       name: String(name),
-
       phone: phone ? String(phone) : null,
-
-      client_type: clientType ? String(clientType) : null,
-
+      clientType: clientType ? String(clientType) : null,
       location: location ? String(location) : null,
-
-      extra: JSON.stringify({ ...baseExtra, active: true }),
-
+      extra: extra || null,
       orgAccountId: orgId,
-
-      created_by: req.user?.id || null,
-
+      createdBy: req.user?.id || null,
     });
 
-    return res.json({ success: true, client: row });
+    // Handle staff assignments
+    if (Array.isArray(staffIds) && staffIds.length > 0) {
+      const assignments = staffIds.map(staffId => ({
+        clientId: client.id,
+        staffUserId: staffId,
+        orgAccountId: orgId
+      }));
+      await ClientAssignment.bulkCreate(assignments);
+    }
 
+    return res.json({ success: true, client });
   } catch (e) {
-
+    console.error('Create sales client error:', e);
     return res.status(500).json({ success: false, message: 'Failed to create client' });
-
   }
-
 });
 
 
 
 router.put('/sales/clients/:id', async (req, res) => {
-
   try {
-
     const orgId = requireOrg(req, res); if (!orgId) return;
-
     const id = Number(req.params.id);
+    const client = await Client.findOne({ where: { id, orgAccountId: orgId } });
+    if (!client) return res.status(404).json({ success: false, message: 'Not found' });
 
-    const row = await sequelize.models.Client.findOne({ where: { id, orgAccountId: orgId } });
+    const { name, phone, clientType, location, extra, active, staffIds } = req.body || {};
+    
+    await client.update({
+      name: name ?? client.name,
+      phone: phone ?? client.phone,
+      clientType: clientType ?? client.clientType,
+      location: location ?? client.location,
+      extra: extra ?? client.extra,
+      active: active !== undefined ? !!active : client.active,
+    });
 
-    if (!row) return res.status(404).json({ success: false, message: 'Not found' });
-
-    const { name, phone, clientType, location, extra, active } = req.body || {};
-
-    const updateData = {};
-
-    if (name !== undefined) updateData.name = String(name);
-
-    if (phone !== undefined) updateData.phone = String(phone);
-
-    if (clientType !== undefined) updateData.clientType = String(clientType);
-
-    if (location !== undefined) updateData.location = String(location);
-
-    if (active !== undefined) updateData.active = !!active;
-
-    if (extra !== undefined) {
-
-      let current = row.extra || {};
-
-      if (typeof current === 'string') { try { current = JSON.parse(current); } catch (_) { current = {}; } }
-
-      let incoming = (extra && typeof extra === 'object') ? extra : {};
-
-      if (typeof extra === 'string') { try { incoming = JSON.parse(extra); } catch (_) { incoming = {}; } }
-
-      updateData.extra = { ...current, ...incoming };
-
+    // Handle staff assignments update
+    if (staffIds !== undefined) {
+      await ClientAssignment.destroy({ where: { clientId: client.id, orgAccountId: orgId } });
+      if (Array.isArray(staffIds) && staffIds.length > 0) {
+        const assignments = staffIds.map(staffId => ({
+          clientId: client.id,
+          staffUserId: staffId,
+          orgAccountId: orgId
+        }));
+        await ClientAssignment.bulkCreate(assignments);
+      }
     }
 
-    if (Object.keys(updateData).length) await row.update(updateData);
-
-    return res.json({ success: true, client: row });
-
+    return res.json({ success: true, client });
   } catch (e) {
-
-    console.error('Update client error:', e);
-
+    console.error('Update sales client error:', e);
     return res.status(500).json({ success: false, message: 'Failed to update client' });
-
   }
-
 });
 
 
@@ -24238,13 +24290,13 @@ router.post('/settings/overtime-rules/:id/assign', async (req, res) => {
     if (effectiveFrom < today) {
       const automationRecalculationService = require('../services/automationRecalculationService');
       const yesterday = require('dayjs')().subtract(1, 'day').format('YYYY-MM-DD');
-      
+
       // Calculate for each user including a cleanup period before effectiveFrom
       const recalculateFrom = require('dayjs')(effectiveFrom).subtract(2, 'month').startOf('month').format('YYYY-MM-DD');
-      const results = await Promise.all(userIds.map(userId => 
+      const results = await Promise.all(userIds.map(userId =>
         automationRecalculationService.recalculateAttendance(userId, orgId, recalculateFrom, yesterday)
       ));
-      
+
       // Aggregate warnings
       const lockedMonths = new Set();
       results.forEach(r => {
@@ -24256,8 +24308,8 @@ router.post('/settings/overtime-rules/:id/assign', async (req, res) => {
       });
     }
 
-    return res.json({ 
-      success: true, 
+    return res.json({
+      success: true,
       message: 'Staff assigned successfully',
       recalculated: !!recalculationResult,
       payrollWarning: recalculationResult?.lockedMonthsSkipped > 0 ? 'Some backdated months were skipped because payroll is locked or paid.' : null
@@ -24411,17 +24463,17 @@ router.post('/settings/early-overtime-rules/:id/assign', async (req, res) => {
     if (effectiveFrom < today) {
       const automationRecalculationService = require('../services/automationRecalculationService');
       const yesterday = require('dayjs')().subtract(1, 'day').format('YYYY-MM-DD');
-      
+
       const recalculateFrom = require('dayjs')(effectiveFrom).subtract(2, 'month').startOf('month').format('YYYY-MM-DD');
-      const results = await Promise.all(userIds.map(userId => 
+      const results = await Promise.all(userIds.map(userId =>
         automationRecalculationService.recalculateAttendance(userId, orgId, recalculateFrom, yesterday)
       ));
-      
+
       results.forEach(r => { if (r.lockedMonthsSkipped > 0) recalculationResult = r; });
     }
 
-    return res.json({ 
-      success: true, 
+    return res.json({
+      success: true,
       message: 'Staff assigned successfully',
       recalculated: !!recalculationResult,
       payrollWarning: recalculationResult?.lockedMonthsSkipped > 0 ? 'Some backdated months were skipped because payroll is locked or paid.' : null
@@ -24558,17 +24610,17 @@ router.post('/settings/early-exit-rules/:id/assign', async (req, res) => {
     if (effectiveFrom < today) {
       const automationRecalculationService = require('../services/automationRecalculationService');
       const yesterday = require('dayjs')().subtract(1, 'day').format('YYYY-MM-DD');
-      
+
       const recalculateFrom = require('dayjs')(effectiveFrom).subtract(2, 'month').startOf('month').format('YYYY-MM-DD');
-      const results = await Promise.all(userIds.map(userId => 
+      const results = await Promise.all(userIds.map(userId =>
         automationRecalculationService.recalculateAttendance(userId, orgId, recalculateFrom, yesterday)
       ));
-      
+
       results.forEach(r => { if (r.lockedMonthsSkipped > 0) recalculationResult = r; });
     }
 
-    return res.json({ 
-      success: true, 
+    return res.json({
+      success: true,
       message: 'Staff assigned successfully',
       recalculated: !!recalculationResult,
       payrollWarning: recalculationResult?.lockedMonthsSkipped > 0 ? 'Some backdated months were skipped because payroll is locked or paid.' : null
@@ -24703,17 +24755,17 @@ router.post('/settings/break-rules/:id/assign', async (req, res) => {
     if (effectiveFrom < today) {
       const automationRecalculationService = require('../services/automationRecalculationService');
       const yesterday = require('dayjs')().subtract(1, 'day').format('YYYY-MM-DD');
-      
+
       const recalculateFrom = require('dayjs')(effectiveFrom).subtract(2, 'month').startOf('month').format('YYYY-MM-DD');
-      const results = await Promise.all(userIds.map(userId => 
+      const results = await Promise.all(userIds.map(userId =>
         automationRecalculationService.recalculateAttendance(userId, orgId, recalculateFrom, yesterday)
       ));
-      
+
       results.forEach(r => { if (r.lockedMonthsSkipped > 0) recalculationResult = r; });
     }
 
-    return res.json({ 
-      success: true, 
+    return res.json({
+      success: true,
       message: 'Staff assigned successfully',
       recalculated: !!recalculationResult,
       payrollWarning: recalculationResult?.lockedMonthsSkipped > 0 ? 'Some backdated months were skipped because payroll is locked or paid.' : null
@@ -24866,17 +24918,17 @@ router.post('/settings/late-punchin-rules/:id/assign', async (req, res) => {
     if (effectiveFrom < today) {
       const automationRecalculationService = require('../services/automationRecalculationService');
       const yesterday = require('dayjs')().subtract(1, 'day').format('YYYY-MM-DD');
-      
+
       const recalculateFrom = require('dayjs')(effectiveFrom).subtract(2, 'month').startOf('month').format('YYYY-MM-DD');
-      const results = await Promise.all(userIds.map(userId => 
+      const results = await Promise.all(userIds.map(userId =>
         automationRecalculationService.recalculateAttendance(userId, orgId, recalculateFrom, yesterday)
       ));
-      
+
       results.forEach(r => { if (r.lockedMonthsSkipped > 0) recalculationResult = r; });
     }
 
-    return res.json({ 
-      success: true, 
+    return res.json({
+      success: true,
       message: 'Staff assigned successfully',
       recalculated: !!recalculationResult,
       payrollWarning: recalculationResult?.lockedMonthsSkipped > 0 ? 'Some backdated months were skipped because payroll is locked or paid.' : null

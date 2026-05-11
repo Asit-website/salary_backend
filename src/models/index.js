@@ -120,6 +120,7 @@ const defineLead = require('./Lead');
 const defineLeadConfig = require('./LeadConfig');
 const defineHolidayWorkPayRule = require('./HolidayWorkPayRule');
 const defineStaffHolidayWorkPayAssignment = require('./StaffHolidayWorkPayAssignment');
+const defineClientAssignment = require('./ClientAssignment');
 
 
 
@@ -245,6 +246,7 @@ const Lead = defineLead(sequelize);
 const LeadConfig = defineLeadConfig(sequelize);
 const HolidayWorkPayRule = defineHolidayWorkPayRule(sequelize);
 const StaffHolidayWorkPayAssignment = defineStaffHolidayWorkPayAssignment(sequelize);
+const ClientAssignment = defineClientAssignment(sequelize);
 
 
 
@@ -357,8 +359,15 @@ SalesVisitAttachment.belongsTo(SalesVisit, { foreignKey: 'visitId', as: 'visit' 
 // Client/AssignedJob associations
 Client.hasMany(AssignedJob, { foreignKey: 'clientId', as: 'assignments' });
 AssignedJob.belongsTo(Client, { foreignKey: 'clientId', as: 'client' });
-User.hasMany(AssignedJob, { foreignKey: 'staffUserId', as: 'assignedJobs' });
 AssignedJob.belongsTo(User, { foreignKey: 'staffUserId', as: 'staff' });
+
+// ClientAssignment associations
+Client.belongsToMany(User, { through: ClientAssignment, foreignKey: 'clientId', otherKey: 'staffUserId', as: 'assignedStaff' });
+User.belongsToMany(Client, { through: ClientAssignment, foreignKey: 'staffUserId', otherKey: 'clientId', as: 'staffClients' });
+ClientAssignment.belongsTo(Client, { foreignKey: 'clientId', as: 'client' });
+ClientAssignment.belongsTo(User, { foreignKey: 'staffUserId', as: 'staff' });
+Client.hasMany(ClientAssignment, { foreignKey: 'clientId', as: 'staffAssignments' });
+User.hasMany(ClientAssignment, { foreignKey: 'staffUserId', as: 'clientAssignments' });
 
 // SalesTarget associations
 User.hasMany(SalesTarget, { foreignKey: 'staffUserId', as: 'salesTargets' });
@@ -915,5 +924,6 @@ module.exports = {
   Lead,
   LeadConfig,
   HolidayWorkPayRule,
-  StaffHolidayWorkPayAssignment
+  StaffHolidayWorkPayAssignment,
+  ClientAssignment,
 };

@@ -20,6 +20,8 @@ const {
   OrderProduct,
   StaffOrderProduct,
   OrgAccount,
+  User,
+  ClientAssignment,
 } = require('../models');
 
 const router = express.Router();
@@ -776,6 +778,37 @@ router.get('/incentives/current', async (req, res) => {
     return res.json({ success: true, incentive: row || null });
   } catch (e) {
     return res.status(500).json({ success: false, message: 'Failed to load incentive' });
+  }
+});
+
+// Get clients assigned to the staff (both formal jobs and direct assignments)
+router.get('/my-clients', async (req, res) => {
+  try {
+    const staffId = req.user.id;
+    const orgId = req.tenantOrgAccountId || req.user?.orgAccountId;
+
+    // Get clients from direct ClientAssignments (ss2)
+    const user = await User.findByPk(staffId, {
+      include: [{
+        model: Client,
+        as: 'staffClients',
+        where: { orgAccountId: orgId, active: { [Op.ne]: false } },
+        through: { attributes: [] },
+        required: false
+      }]
+    });
+    const clients = (user?.staffClients || []).map(c => ({
+      id: c.id,
+      name: c.name,
+      phone: c.phone,
+      clientType: c.clientType || null,
+      location: c.location || null,
+    }));
+
+    return res.json({ success: true, clients });
+  } catch (e) {
+    console.error('Fetch my-clients error:', e);
+    return res.status(500).json({ success: false, message: 'Failed to fetch your clients' });
   }
 });
 
