@@ -53,7 +53,7 @@ async function getEffectiveShiftTemplate(userId, dateKey) {
  * Helper to find minutes exceeding the threshold based on Calculation Type
  */
 async function getOvertimeMinutes(attendance, rule, shiftTemplate) {
-  const totalWorkMinutes = Math.round((attendance.totalWorkHours || 0) * 60);
+  const totalWorkMinutes = Math.floor((attendance.totalWorkHours || 0) * 60);
 
   // 1. Resolve Threshold (Rule > ShiftTemplate > Calculated Shift Time)
   let baseThreshold = (rule.thresholds && rule.thresholds.length > 0) ? rule.thresholds[0].minMinutes : 0;
@@ -110,7 +110,7 @@ async function getOvertimeMinutes(attendance, rule, shiftTemplate) {
     console.log(`[OvertimeService] Rule ID: ${rule.id}, PO (IST): ${istStr}, SE: ${shiftTemplate.endTime}, POSec: ${punchOutSec}, SESec: ${shiftEndSec}`);
 
     if (punchOutSec > shiftEndSec) {
-      overtimeByShift = Math.round((punchOutSec - shiftEndSec) / 60);
+      overtimeByShift = Math.floor((punchOutSec - shiftEndSec) / 60);
     }
   }
 
@@ -144,7 +144,7 @@ async function calculateOvertime(params, orgAccountArg, daysInMonthArg = 30, now
   }
   attendance.totalWorkHours = totalWorkHours;
 
-  const totalWorkMinutes = Math.round(totalWorkHours * 60);
+  const totalWorkMinutes = Math.floor(totalWorkHours * 60);
   const now = nowArg || new Date();
 
   // Ensure we have numbers for IDs
@@ -281,7 +281,7 @@ async function calculateOvertime(params, orgAccountArg, daysInMonthArg = 30, now
   }
 
   return {
-    overtimeMinutes: Math.round(overtimeMinutes),
+    overtimeMinutes: Math.floor(overtimeMinutes),
     overtimeAmount: assignment ? parseFloat(overtimeAmount.toFixed(2)) : 0,
     overtimeRuleId: finalRule.id || null,
     status: overtimeMinutes > 0 ? 'overtime' : ((!attendance.punchedOutAt) ? 'present' : (shiftTemplate?.halfDayThresholdMinutes && totalWorkMinutes < shiftTemplate.halfDayThresholdMinutes ? 'half_day' : 'present'))
