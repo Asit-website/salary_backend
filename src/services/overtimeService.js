@@ -97,20 +97,20 @@ async function getOvertimeMinutes(attendance, rule, shiftTemplate) {
     if (localMatch) {
       const ph = parseInt(localMatch[1]);
       const pm = parseInt(localMatch[2]);
-      const ps = parseInt(localMatch[3]);
+      const ps = 0; // Ignore seconds for OT calculation as per user request
       punchOutSec = ph * 3600 + pm * 60 + ps;
     } else {
       // Fallback to local system time if formatter fails
-      punchOutSec = punchOut.getHours() * 3600 + punchOut.getMinutes() * 60 + punchOut.getSeconds();
+      punchOutSec = punchOut.getHours() * 3600 + punchOut.getMinutes() * 60 + 0;
     }
 
     const [eh, em, es] = shiftTemplate.endTime.split(':').map(Number);
-    const shiftEndSec = (eh * 3600 + em * 60 + (es || 0));
+    const shiftEndSec = (eh * 3600 + em * 60 + 0); // Ignore shift end seconds for consistency
 
     console.log(`[OvertimeService] Rule ID: ${rule.id}, PO (IST): ${istStr}, SE: ${shiftTemplate.endTime}, POSec: ${punchOutSec}, SESec: ${shiftEndSec}`);
 
     if (punchOutSec > shiftEndSec) {
-      overtimeByShift = Math.floor((punchOutSec - shiftEndSec) / 60);
+      overtimeByShift = Math.round((punchOutSec - shiftEndSec) / 60);
     }
   }
 

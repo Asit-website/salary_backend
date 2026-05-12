@@ -2,6 +2,7 @@ const express = require('express');
 const { Op } = require('sequelize');
 const { StaffRoster, ShiftTemplate, User, StaffProfile, StaffShiftAssignment, Badge, BadgePermission, Attendance, LeaveRequest, StaffHolidayAssignment, HolidayDate } = require('../models');
 const { authRequired } = require('../middleware/auth');
+const dayjs = require('dayjs');
 const { requireRole } = require('../middleware/roles');
 const { tenantEnforce } = require('../middleware/tenant');
 
@@ -48,7 +49,7 @@ function formatDateToShort(dateStr) {
   if (day === 1 || day === 21 || day === 31) s = 'st';
   else if (day === 2 || day === 22) s = 'nd';
   else if (day === 3 || day === 23) s = 'rd';
-  
+
   return `${day}${s} ${month}`;
 }
 
@@ -175,6 +176,12 @@ router.post('/admin/roster', authRequired, requireRole(['admin', 'superadmin', '
       return res.status(400).json({ success: false, message: 'assessments array is required' });
     }
 
+    // Create a lookup map for assessments in this request for validation
+    const assessmentMap = {};
+    assessments.forEach(a => {
+      assessmentMap[`${a.userId}_${a.date}`] = a.status;
+    });
+
     for (const item of assessments) {
       const { userId, date, shiftTemplateId, status } = item;
 
@@ -232,7 +239,148 @@ router.post('/admin/roster', authRequired, requireRole(['admin', 'superadmin', '
         }
       }
 
-      // 3. Validation: Block roster change if staff is already present
+      // 3. Validation: Rest Period Rule (Point 4 - 11 Hours Gap)
+      if (status === 'SHIFT') {
+        const currentTemplate = await ShiftTemplate.findByPk(shiftTemplateId);
+        if (currentTemplate) {
+          const checkGap = async (targetDateStr, isNextDay) => {
+            let neighborStatus = assessmentMap[`${userId}_${targetDateStr}`];
+            let neighborTemplateId = null;
+
+            if (neighborStatus === undefined) {
+              const existing = await StaffRoster.findOne({
+                where: { userId, date: targetDateStr, orgAccountId: orgId },
+                include: [{ model: ShiftTemplate, as: 'shiftTemplate' }]
+              });
+              neighborStatus = existing?.status || 'SHIFT'; // Default to shift if not in roster
+              neighborTemplateId = existing?.shiftTemplateId;
+
+              // If no roster record, check StaffShiftAssignment or default
+              if (!existing) {
+                const user = await User.findByPk(userId);
+                neighborTemplateId = user?.shiftTemplateId;
+              }
+            } else if (neighborStatus === 'SHIFT') {
+              // Get from assessmentMap if available, but we need templateId
+              const itemInBatch = assessments.find(a => a.userId === userId && a.date === targetDateStr);
+              neighborTemplateId = itemInBatch?.shiftTemplateId;
+            }
+
+            if (neighborStatus === 'SHIFT' && neighborTemplateId) {
+              const neighborTemplate = await ShiftTemplate.findByPk(neighborTemplateId);
+              if (neighborTemplate) {
+                // Calculate absolute times
+                const getTimes = (dStr, temp) => {
+                  const start = dayjs(`${dStr} ${temp.startTime}`);
+                  let end = dayjs(`${dStr} ${temp.endTime}`);
+                  if (end.isBefore(start)) end = end.add(1, 'day'); // Night shift
+                  return { start, end };
+                };
+
+                const currentTimes = getTimes(date, currentTemplate);
+                const neighborTimes = getTimes(targetDateStr, neighborTemplate);
+
+                let gapHours = 0;
+                if (isNextDay) {
+                  // Current End vs Next Start
+                  gapHours = neighborTimes.start.diff(currentTimes.end, 'hour', true);
+                } else {
+                  // Prev End vs Current Start
+                  gapHours = currentTimes.start.diff(neighborTimes.end, 'hour', true);
+                }
+
+                if (gapHours >= 0 && gapHours < 11) {
+                  return { invalid: true, gap: gapHours.toFixed(1) };
+                }
+              }
+            }
+            return { invalid: false };
+          };
+
+          // Check Previous Day
+          const prevDateStr = dayjs(date).subtract(1, 'day').format('YYYY-MM-DD');
+          const prevResult = await checkGap(prevDateStr, false);
+          if (prevResult.invalid) {
+            return res.status(400).json({
+              success: false,
+              message: `Insufficient Rest Period! Employee needs at least 11 hours of break between shifts. (Current gap with previous day: ${prevResult.gap} hours)`
+            });
+          }
+
+          // Check Next Day
+          const nextDateStr = dayjs(date).add(1, 'day').format('YYYY-MM-DD');
+          const nextResult = await checkGap(nextDateStr, true);
+          if (nextResult.invalid) {
+            return res.status(400).json({
+              success: false,
+              message: `Insufficient Rest Period! Employee needs at least 11 hours of break between shifts. (Current gap with next day: ${nextResult.gap} hours)`
+            });
+          }
+        }
+      }
+
+      // 4. Validation: Maximum Consecutive Working Days (Point 5)
+      if (status === 'SHIFT') {
+        let consecutiveDays = 0;
+        let hasWO = false;
+
+        // Check the 6 days prior to the current date
+        const currentDate = new Date(date);
+        for (let i = 1; i <= 6; i++) {
+          const prevDate = new Date(currentDate);
+          prevDate.setDate(currentDate.getDate() - i);
+          const prevDateStr = prevDate.toISOString().split('T')[0];
+
+          // Check in current request first, then in DB
+          let prevStatus = assessmentMap[`${userId}_${prevDateStr}`];
+          if (!prevStatus) {
+            const existing = await StaffRoster.findOne({
+              where: { userId, date: prevDateStr, orgAccountId: orgId }
+            });
+            prevStatus = existing?.status;
+          }
+
+          if (prevStatus === 'WEEKLY_OFF') {
+            hasWO = true;
+            break;
+          }
+        }
+
+        if (!hasWO) {
+          // If we reached here, it means no WO was found in the last 6 days
+          // Now check if those 6 days were actually shifts (to confirm consecutive working)
+          // Actually, the rule says "cannot work more than 6 days", so if all 6 were shifts, block.
+          let shiftsInRow = 0;
+          for (let i = 1; i <= 6; i++) {
+            const prevDate = new Date(currentDate);
+            prevDate.setDate(currentDate.getDate() - i);
+            const prevDateStr = prevDate.toISOString().split('T')[0];
+
+            let prevStatus = assessmentMap[`${userId}_${prevDateStr}`];
+            if (!prevStatus) {
+              const existing = await StaffRoster.findOne({
+                where: { userId, date: prevDateStr, orgAccountId: orgId }
+              });
+              prevStatus = existing?.status;
+            }
+            if (prevStatus === 'SHIFT') {
+              shiftsInRow++;
+            } else {
+              // If it's WEEKLY_OFF, HOLIDAY, or Blank (not assigned), it's not a consecutive work day
+              break;
+            }
+          }
+
+          if (shiftsInRow >= 6) {
+            return res.status(400).json({
+              success: false,
+              message: "Policy Violation: Employee cannot work more than 6 consecutive days without a Weekly Off."
+            });
+          }
+        }
+      }
+
+      // 4. Validation: Block roster change if staff is already present
       const attendance = await Attendance.findOne({
         where: { userId, date, orgAccountId: orgId }
       });

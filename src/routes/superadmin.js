@@ -43,7 +43,7 @@ router.use((req, res, next) => {
       const parsed = JSON.parse(perms);
       if (parsed === perms) break;
       perms = parsed;
-    } catch(e) { break; }
+    } catch (e) { break; }
     safety++;
   }
   req.user.permissions = perms || {};
@@ -146,7 +146,7 @@ router.get('/channel-partners', async (req, res) => {
   try {
     const user = req.user;
     let where = {};
-    
+
     if (user.role !== 'superadmin') {
       const perms = user.permissions || {};
       if (perms.partners === 'manage_own') {
@@ -154,9 +154,9 @@ router.get('/channel-partners', async (req, res) => {
       }
     }
 
-    const rows = await ChannelPartner.findAll({ 
+    const rows = await ChannelPartner.findAll({
       where,
-      order: [['createdAt', 'DESC']] 
+      order: [['createdAt', 'DESC']]
     });
     return res.json({ success: true, channelPartners: rows });
   } catch (_) {
@@ -359,7 +359,7 @@ router.get('/clients', async (req, res) => {
   try {
     const user = req.user;
     let where = {};
-    
+
     if (user.role !== 'superadmin') {
       const perms = user.permissions || {};
       if (perms.clients === 'manage_own') {
@@ -371,14 +371,14 @@ router.get('/clients', async (req, res) => {
     }
 
     const { User, Subscription, Plan, Role, Permission } = require('../models');
-    const allOrgs = await OrgAccount.findAll({ 
+    const allOrgs = await OrgAccount.findAll({
       where,
       include: [{
         model: User,
         as: 'creator',
         attributes: ['id', 'role', 'orgAccountId']
       }],
-      order: [['createdAt', 'ASC']] 
+      order: [['createdAt', 'ASC']]
     });
     const now = new Date();
 
@@ -389,13 +389,13 @@ router.get('/clients', async (req, res) => {
     allOrgs.forEach(org => {
       const ph = org.phone;
       const creatorOrgId = org.creator?.orgAccountId;
-      
+
       let groupKey = null;
 
       // 1. Try grouping by phone
       if (ph && phoneGroups[ph]) {
         groupKey = ph;
-      } 
+      }
       // 2. Try grouping by creator's org (if creator is not a superadmin)
       else if (creatorOrgId && org.creator?.role !== 'superadmin') {
         // Find which group the creator's org belongs to
@@ -417,7 +417,7 @@ router.get('/clients', async (req, res) => {
 
       if (!phoneGroups[groupKey]) phoneGroups[groupKey] = [];
       phoneGroups[groupKey].push(org);
-      
+
       // Update mapping
       const headId = phoneGroups[groupKey][0].id;
       orgToGroupHead[org.id] = headId;
@@ -527,7 +527,7 @@ router.get('/clients', async (req, res) => {
 router.get('/clients/:id/staff', async (req, res) => {
   try {
     const staff = await User.findAll({
-      where: { 
+      where: {
         orgAccountId: req.params.id,
         role: 'staff' // We only want to promote staff/admin maybe?
       },
@@ -580,7 +580,7 @@ router.get('/clients/:id/plan-details', async (req, res) => {
     const formattedPlans = subscriptions.map(sub => {
       const start = new Date(sub.startAt);
       const end = new Date(sub.endAt);
-      
+
       let status = 'active';
       if (end < now) {
         status = 'expired';
@@ -718,7 +718,7 @@ router.put('/clients/:id', async (req, res) => {
     const user = req.user;
     const row = await OrgAccount.findByPk(req.params.id);
     if (!row) return res.status(404).json({ success: false, message: 'Not found' });
-    
+
     // Permission check
     if (user.role !== 'superadmin') {
       const perms = user.permissions || {};
@@ -749,7 +749,7 @@ router.put('/clients/:id', async (req, res) => {
           id: { [Op.ne]: row.id }
         }
       });
-      
+
       if (existingOrg) {
         return res.status(400).json({
           success: false,
@@ -758,11 +758,11 @@ router.put('/clients/:id', async (req, res) => {
       }
 
       // We only block if the phone is already used by a STAFF member in ANY org.
-      const existingStaff = await User.findOne({ 
-        where: { 
-          phone: String(normalizedPhone), 
-          role: 'staff' 
-        } 
+      const existingStaff = await User.findOne({
+        where: {
+          phone: String(normalizedPhone),
+          role: 'staff'
+        }
       });
 
       if (existingStaff) {
@@ -842,92 +842,92 @@ router.post('/clients/:id/subscription', async (req, res) => {
     const isUpdatingCurrentPlan = existingSubscription && (!planId || planId == existingSubscription.planId) && (new Date(existingSubscription.endAt) > new Date());
 
     if (isUpdatingCurrentPlan) {
-        // If updating limits or feature toggles on the SAME plan that hasn't expired
-        const updateData = {};
-        let messageArr = [];
+      // If updating limits or feature toggles on the SAME plan that hasn't expired
+      const updateData = {};
+      let messageArr = [];
 
-        // Check if Start Date is being updated
-        if (startAt) {
-          const newStart = new Date(startAt);
-          const oldStart = new Date(existingSubscription.startAt);
+      // Check if Start Date is being updated
+      if (startAt) {
+        const newStart = new Date(startAt);
+        const oldStart = new Date(existingSubscription.startAt);
 
-          // Check if difference is significant (> 12 hours)
-          const diff = Math.abs(newStart.getTime() - oldStart.getTime());
-          if (diff > 1000 * 60 * 60 * 12) {
-            const currentPlan = await Plan.findByPk(existingSubscription.planId);
-            if (currentPlan) {
-              const newEnd = new Date(newStart);
-              newEnd.setDate(newEnd.getDate() + Number(currentPlan.periodDays || 0));
-              updateData.startAt = newStart;
-              updateData.endAt = newEnd;
-              messageArr.push(`Subscription period updated (${newStart.toLocaleDateString()} - ${newEnd.toLocaleDateString()})`);
-            }
+        // Check if difference is significant (> 12 hours)
+        const diff = Math.abs(newStart.getTime() - oldStart.getTime());
+        if (diff > 1000 * 60 * 60 * 12) {
+          const currentPlan = await Plan.findByPk(existingSubscription.planId);
+          if (currentPlan) {
+            const newEnd = new Date(newStart);
+            newEnd.setDate(newEnd.getDate() + Number(currentPlan.periodDays || 0));
+            updateData.startAt = newStart;
+            updateData.endAt = newEnd;
+            messageArr.push(`Subscription period updated (${newStart.toLocaleDateString()} - ${newEnd.toLocaleDateString()})`);
           }
         }
+      }
 
-        if (staffLimit !== undefined && staffLimit !== null && Number(staffLimit) !== existingSubscription.staffLimit) {
-          updateData.staffLimit = Number(staffLimit);
-          messageArr.push('Staff limit updated');
-        }
+      if (staffLimit !== undefined && staffLimit !== null && Number(staffLimit) !== existingSubscription.staffLimit) {
+        updateData.staffLimit = Number(staffLimit);
+        messageArr.push('Staff limit updated');
+      }
 
-        if (maxGeolocationStaff !== undefined && maxGeolocationStaff !== null && Number(maxGeolocationStaff) !== existingSubscription.maxGeolocationStaff) {
-          updateData.maxGeolocationStaff = Number(maxGeolocationStaff);
-          messageArr.push('Max geolocation staff updated');
-        }
+      if (maxGeolocationStaff !== undefined && maxGeolocationStaff !== null && Number(maxGeolocationStaff) !== existingSubscription.maxGeolocationStaff) {
+        updateData.maxGeolocationStaff = Number(maxGeolocationStaff);
+        messageArr.push('Max geolocation staff updated');
+      }
 
-        if (salesEnabled !== undefined && !!salesEnabled !== existingSubscription.salesEnabled) {
-          updateData.salesEnabled = !!salesEnabled;
-          messageArr.push(`Sales module ${salesEnabled ? 'enabled' : 'disabled'}`);
-        }
+      if (salesEnabled !== undefined && !!salesEnabled !== existingSubscription.salesEnabled) {
+        updateData.salesEnabled = !!salesEnabled;
+        messageArr.push(`Sales module ${salesEnabled ? 'enabled' : 'disabled'}`);
+      }
 
-        if (geolocationEnabled !== undefined && !!geolocationEnabled !== existingSubscription.geolocationEnabled) {
-          updateData.geolocationEnabled = !!geolocationEnabled;
-          messageArr.push(`Geolocation module ${geolocationEnabled ? 'enabled' : 'disabled'}`);
-        }
+      if (geolocationEnabled !== undefined && !!geolocationEnabled !== existingSubscription.geolocationEnabled) {
+        updateData.geolocationEnabled = !!geolocationEnabled;
+        messageArr.push(`Geolocation module ${geolocationEnabled ? 'enabled' : 'disabled'}`);
+      }
 
-        if (expenseEnabled !== undefined && !!expenseEnabled !== existingSubscription.expenseEnabled) {
-          updateData.expenseEnabled = !!expenseEnabled;
-          messageArr.push(`Expense module ${expenseEnabled ? 'enabled' : 'disabled'}`);
-        }
-        if (payrollEnabled !== undefined && !!payrollEnabled !== existingSubscription.payrollEnabled) {
-          updateData.payrollEnabled = !!payrollEnabled;
-          messageArr.push(`Payroll module ${payrollEnabled ? 'enabled' : 'disabled'}`);
-        }
-        if (performanceEnabled !== undefined && !!performanceEnabled !== existingSubscription.performanceEnabled) {
-          updateData.performanceEnabled = !!performanceEnabled;
-          messageArr.push(`Performance module ${performanceEnabled ? 'enabled' : 'disabled'}`);
-        }
-        if (aiReportsEnabled !== undefined && !!aiReportsEnabled !== existingSubscription.aiReportsEnabled) {
-          updateData.aiReportsEnabled = !!aiReportsEnabled;
-          messageArr.push(`AI Reports module ${aiReportsEnabled ? 'enabled' : 'disabled'}`);
-        }
-        if (aiAssistantEnabled !== undefined && !!aiAssistantEnabled !== existingSubscription.aiAssistantEnabled) {
-          updateData.aiAssistantEnabled = !!aiAssistantEnabled;
-          messageArr.push(`AI Assistant module ${aiAssistantEnabled ? 'enabled' : 'disabled'}`);
-        }
-        if (taskManagementEnabled !== undefined && !!taskManagementEnabled !== existingSubscription.taskManagementEnabled) {
-          updateData.taskManagementEnabled = !!taskManagementEnabled;
-          messageArr.push(`Task Management module ${taskManagementEnabled ? 'enabled' : 'disabled'}`);
-        }
-        if (rosterEnabled !== undefined && !!rosterEnabled !== existingSubscription.rosterEnabled) {
-          updateData.rosterEnabled = !!rosterEnabled;
-          messageArr.push(`Roster module ${rosterEnabled ? 'enabled' : 'disabled'}`);
-        }
-        if (recruitmentEnabled !== undefined && !!recruitmentEnabled !== existingSubscription.recruitmentEnabled) {
-          updateData.recruitmentEnabled = !!recruitmentEnabled;
-          messageArr.push(`Recruitment module ${recruitmentEnabled ? 'enabled' : 'disabled'}`);
-        }
-        if (communityEnabled !== undefined && !!communityEnabled !== existingSubscription.communityEnabled) {
-          updateData.communityEnabled = !!communityEnabled;
-          messageArr.push(`Community module ${communityEnabled ? 'enabled' : 'disabled'}`);
-        }
+      if (expenseEnabled !== undefined && !!expenseEnabled !== existingSubscription.expenseEnabled) {
+        updateData.expenseEnabled = !!expenseEnabled;
+        messageArr.push(`Expense module ${expenseEnabled ? 'enabled' : 'disabled'}`);
+      }
+      if (payrollEnabled !== undefined && !!payrollEnabled !== existingSubscription.payrollEnabled) {
+        updateData.payrollEnabled = !!payrollEnabled;
+        messageArr.push(`Payroll module ${payrollEnabled ? 'enabled' : 'disabled'}`);
+      }
+      if (performanceEnabled !== undefined && !!performanceEnabled !== existingSubscription.performanceEnabled) {
+        updateData.performanceEnabled = !!performanceEnabled;
+        messageArr.push(`Performance module ${performanceEnabled ? 'enabled' : 'disabled'}`);
+      }
+      if (aiReportsEnabled !== undefined && !!aiReportsEnabled !== existingSubscription.aiReportsEnabled) {
+        updateData.aiReportsEnabled = !!aiReportsEnabled;
+        messageArr.push(`AI Reports module ${aiReportsEnabled ? 'enabled' : 'disabled'}`);
+      }
+      if (aiAssistantEnabled !== undefined && !!aiAssistantEnabled !== existingSubscription.aiAssistantEnabled) {
+        updateData.aiAssistantEnabled = !!aiAssistantEnabled;
+        messageArr.push(`AI Assistant module ${aiAssistantEnabled ? 'enabled' : 'disabled'}`);
+      }
+      if (taskManagementEnabled !== undefined && !!taskManagementEnabled !== existingSubscription.taskManagementEnabled) {
+        updateData.taskManagementEnabled = !!taskManagementEnabled;
+        messageArr.push(`Task Management module ${taskManagementEnabled ? 'enabled' : 'disabled'}`);
+      }
+      if (rosterEnabled !== undefined && !!rosterEnabled !== existingSubscription.rosterEnabled) {
+        updateData.rosterEnabled = !!rosterEnabled;
+        messageArr.push(`Roster module ${rosterEnabled ? 'enabled' : 'disabled'}`);
+      }
+      if (recruitmentEnabled !== undefined && !!recruitmentEnabled !== existingSubscription.recruitmentEnabled) {
+        updateData.recruitmentEnabled = !!recruitmentEnabled;
+        messageArr.push(`Recruitment module ${recruitmentEnabled ? 'enabled' : 'disabled'}`);
+      }
+      if (communityEnabled !== undefined && !!communityEnabled !== existingSubscription.communityEnabled) {
+        updateData.communityEnabled = !!communityEnabled;
+        messageArr.push(`Community module ${communityEnabled ? 'enabled' : 'disabled'}`);
+      }
 
-        if (Object.keys(updateData).length > 0) {
-          await existingSubscription.update(updateData);
-          return res.json({ success: true, message: messageArr.join(', '), subscription: existingSubscription });
-        } else {
-          return res.json({ success: true, message: 'Current subscription remains unchanged', subscription: existingSubscription });
-        }
+      if (Object.keys(updateData).length > 0) {
+        await existingSubscription.update(updateData);
+        return res.json({ success: true, message: messageArr.join(', '), subscription: existingSubscription });
+      } else {
+        return res.json({ success: true, message: 'Current subscription remains unchanged', subscription: existingSubscription });
+      }
     }
 
     let plan = null;
@@ -1208,7 +1208,7 @@ router.post('/clients/:id/impersonate', async (req, res) => {
     );
 
     // Fetch all organizations for this phone number
-    const allUsers = await User.findAll({ 
+    const allUsers = await User.findAll({
       where: { phone: admin.phone },
       include: [{ model: OrgAccount, as: 'orgAccount' }]
     });
@@ -1240,7 +1240,7 @@ router.post('/clients/:id/impersonate', async (req, res) => {
     const badge = await Badge.findOne({ where: { name: 'create_org_tab' } });
     if (badge) {
       const assignment = await StaffBadge.findOne({
-        where: { 
+        where: {
           phone: String(admin.phone),
           badgeId: badge.id
         }
@@ -1307,13 +1307,13 @@ router.post('/staff', async (req, res) => {
   try {
     const { phone, permissions, password, userId } = req.body;
     let normalized = normalizePhone(phone);
-    
+
     // We will store the superadmin lead permissions in the user's permissions field
     let basePermissions = permissions;
     if (typeof basePermissions === 'string') {
-      try { basePermissions = JSON.parse(basePermissions); } catch(e) { basePermissions = {}; }
+      try { basePermissions = JSON.parse(basePermissions); } catch (e) { basePermissions = {}; }
     }
-    
+
     const superPermissions = {
       ...(basePermissions || {}),
       superadmin_access: true
@@ -1322,10 +1322,10 @@ router.post('/staff', async (req, res) => {
     if (userId) {
       const user = await User.findByPk(userId);
       if (!user) return res.status(404).json({ success: false, message: 'User not found' });
-      
+
       let currentPerms = user.permissions;
       while (typeof currentPerms === 'string' && currentPerms.startsWith('{')) {
-        try { currentPerms = JSON.parse(currentPerms); } catch(e) { break; }
+        try { currentPerms = JSON.parse(currentPerms); } catch (e) { break; }
       }
       if (typeof currentPerms !== 'object' || currentPerms === null) currentPerms = {};
 
@@ -1334,20 +1334,20 @@ router.post('/staff', async (req, res) => {
         ...(basePermissions || {}),
         superadmin_access: true
       };
-      
+
       await user.update({
         permissions: mergedPerms
       });
       return res.json({ success: true, user });
     }
-    
+
     if (!normalized) return res.status(400).json({ success: false, message: 'Phone required' });
-    
+
     const existing = await User.findOne({ where: { phone: normalized } });
     if (existing) {
       let currentPerms = existing.permissions;
       while (typeof currentPerms === 'string' && currentPerms.startsWith('{')) {
-        try { currentPerms = JSON.parse(currentPerms); } catch(e) { break; }
+        try { currentPerms = JSON.parse(currentPerms); } catch (e) { break; }
       }
       if (typeof currentPerms !== 'object' || currentPerms === null) currentPerms = {};
 
@@ -1385,7 +1385,7 @@ router.get('/staff', async (req, res) => {
       attributes: ['id', 'phone', 'role', 'permissions', 'createdAt'],
       include: [{ model: StaffProfile, as: 'profile', attributes: ['name'] }]
     });
-    
+
     const staff = allUsers.filter(u => {
       let perms = u.permissions;
       let safety = 0;
@@ -1394,7 +1394,7 @@ router.get('/staff', async (req, res) => {
           const parsed = JSON.parse(perms);
           if (parsed === perms) break;
           perms = parsed;
-        } catch(e) { break; }
+        } catch (e) { break; }
         safety++;
       }
       return perms && typeof perms === 'object' && perms.superadmin_access === true;
@@ -1406,7 +1406,7 @@ router.get('/staff', async (req, res) => {
           const parsed = JSON.parse(perms);
           if (parsed === perms) break;
           perms = parsed;
-        } catch(e) { break; }
+        } catch (e) { break; }
         safety++;
       }
       const data = u.toJSON();
@@ -1433,13 +1433,13 @@ router.put('/staff/:id', async (req, res) => {
 
     let perms = permissions;
     if (typeof perms === 'string') {
-      try { perms = JSON.parse(perms); } catch(e) {}
+      try { perms = JSON.parse(perms); } catch (e) { }
     }
-    
+
     // Ensure we don't lose superadmin_access on update
     let currentPerms = user.permissions;
     while (typeof currentPerms === 'string' && currentPerms.startsWith('{')) {
-      try { currentPerms = JSON.parse(currentPerms); } catch(e) { break; }
+      try { currentPerms = JSON.parse(currentPerms); } catch (e) { break; }
     }
     if (typeof currentPerms !== 'object' || currentPerms === null) currentPerms = {};
 
@@ -1448,7 +1448,7 @@ router.put('/staff/:id', async (req, res) => {
       ...(perms || {}),
       superadmin_access: true
     };
-    
+
     const updateData = { permissions: finalPerms };
     if (phone) updateData.phone = normalizePhone(phone);
     if (password) updateData.passwordHash = await bcrypt.hash(password, 10);
@@ -1468,11 +1468,11 @@ router.delete('/staff/:id', async (req, res) => {
     // Revoke superadmin_access
     let perms = user.permissions;
     while (typeof perms === 'string' && (perms.startsWith('{') || perms.startsWith('['))) {
-      try { 
-        const parsed = JSON.parse(perms); 
+      try {
+        const parsed = JSON.parse(perms);
         if (parsed === perms) break;
         perms = parsed;
-      } catch(e) { break; }
+      } catch (e) { break; }
     }
     if (typeof perms !== 'object' || perms === null) perms = {};
 
@@ -1511,16 +1511,16 @@ router.put('/leads/config', async (req, res) => {
   try {
     const { key, options } = req.body;
     if (!key) return res.status(400).json({ success: false, message: 'key required' });
-    
+
     const [config, created] = await LeadConfig.findOrCreate({
       where: { key },
       defaults: { options: JSON.stringify(options || []) }
     });
-    
+
     if (!created) {
       await config.update({ options: JSON.stringify(options || []) });
     }
-    
+
     return res.json({ success: true, config });
   } catch (e) {
     return res.status(500).json({ success: false, message: 'Failed to update lead config' });
@@ -1624,7 +1624,7 @@ router.get('/leads/export', async (req, res) => {
   try {
     const user = req.user;
     let where = {};
-    
+
     if (user.role !== 'superadmin') {
       const perms = user.permissions || {};
       if (perms.leads === 'manage_own') {
@@ -1633,7 +1633,7 @@ router.get('/leads/export', async (req, res) => {
     }
 
     const { company, phone, customerType, category, status, handledBy, serviceRequired } = req.query || {};
-    
+
     if (company) where.companyName = { [Op.like]: `%${company}%` };
     if (phone) where.phone = { [Op.like]: `%${phone}%` };
     if (customerType) where.customerType = customerType;
@@ -1642,10 +1642,10 @@ router.get('/leads/export', async (req, res) => {
     if (handledBy) where.handledBy = handledBy;
     if (serviceRequired) where.serviceRequired = { [Op.like]: `%${serviceRequired}%` };
 
-    const leads = await Lead.findAll({ 
+    const leads = await Lead.findAll({
       where,
       include: [{ model: User, as: 'creator', attributes: ['phone'] }],
-      order: [['createdAt', 'DESC']] 
+      order: [['createdAt', 'DESC']]
     });
 
     const workbook = new ExcelJS.Workbook();
@@ -1691,7 +1691,7 @@ router.get('/leads', async (req, res) => {
   try {
     const user = req.user;
     let where = {};
-    
+
     if (user.role !== 'superadmin') {
       const perms = user.permissions || {};
       if (perms.leads === 'manage_own') {
@@ -1699,12 +1699,12 @@ router.get('/leads', async (req, res) => {
       }
     }
 
-    const leads = await Lead.findAll({ 
+    const leads = await Lead.findAll({
       where,
       include: [
         { model: User, as: 'creator', attributes: ['phone'] }
       ],
-      order: [['createdAt', 'DESC']] 
+      order: [['createdAt', 'DESC']]
     });
     return res.json({ success: true, leads });
   } catch (e) {
