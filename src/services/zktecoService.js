@@ -311,10 +311,15 @@ class ZktecoService {
             const token = await this.getToken(url, username, password);
             
             const nowIST = dayjs().add(5.5, 'hour');
-            const todayStr = nowIST.format('YYYY-MM-DD');
-            const yesterdayStr = nowIST.subtract(1, 'day').format('YYYY-MM-DD');
-
-            const datesToSync = targetDate ? [targetDate] : [yesterdayStr, todayStr];
+            const datesToSync = [];
+            if (targetDate) {
+                datesToSync.push(targetDate);
+            } else {
+                // Sync last 45 days to catch any missed data or machine clock drift
+                for (let i = 0; i <= 45; i++) {
+                    datesToSync.push(nowIST.subtract(i, 'day').format('YYYY-MM-DD'));
+                }
+            }
             console.log(`[ZktecoSync] Dates to sync: ${datesToSync.join(', ')}`);
 
             for (const dateStr of datesToSync) {
@@ -328,11 +333,16 @@ class ZktecoService {
                 // Add company isolation filter to API request if configured
                 if (companyId) {
                     queryParams.company = companyId;
+                    queryParams.company_code = companyId; // Some API versions use this
+                    queryParams.company_id = companyId;   // Some API versions use this
                 }
 
                 let rawResult = await this.getTransactions(url, token, queryParams);
 
-                console.log(`[ZktecoSync] API Result for ${dateStr}:`, typeof rawResult === 'object' ? 'Object received' : typeof rawResult);
+                console.log(`[ZktecoSync] API response for ${dateStr}:`, 
+                    rawResult?.count !== undefined ? `Count: ${rawResult.count}` : 
+                    Array.isArray(rawResult) ? `Array size: ${rawResult.length}` : 
+                    'Unexpected structure');
 
                 // Handle different response shapes
                 let transactions;
