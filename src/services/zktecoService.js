@@ -33,6 +33,7 @@ class ZktecoService {
      */
     async getTransactions(url, token, params = {}) {
         try {
+            console.log(`[ZktecoService] Requesting transactions with params:`, JSON.stringify(params));
             const response = await axios.get(`${url.replace(/\/$/, '')}/iclock/api/transactions/`, {
                 headers: { 'Authorization': `Token ${token}` },
                 params: {
@@ -40,7 +41,7 @@ class ZktecoService {
                     page_size: 2000
                 }
             });
-            return response.data.data || response.data.results || response.data;
+            return response.data;
         } catch (error) {
             console.error('ZKTeco Fetch Error:', error.response?.data || error.message);
             throw new Error('Failed to fetch transactions from ZKTeco API');
@@ -291,13 +292,13 @@ class ZktecoService {
             return;
         }
 
-        console.log(`[ZktecoSync] Config loaded:`, JSON.stringify({ ...config, password: '***' }));
+        console.log(`[ZktecoSync] Config loaded for Org ${orgId}. Company Isolation ID: ${config?.companyId || 'NONE'}`);
 
         const {
             url = 'http://15.206.144.225:8081/',
             username = 'admin',
             password = 'Admin@123',
-            companyId // Optional: for multi-tenant ZKTeco setups
+            companyId // Hex company ID from EasyTime Pro for isolation
         } = config || {};
 
         if (!url || !username || !password) {
@@ -308,7 +309,7 @@ class ZktecoService {
         try {
             console.log(`[ZktecoSync] Getting token from: ${url}`);
             const token = await this.getToken(url, username, password);
-            // Use IST date for sync
+            
             const nowIST = dayjs().add(5.5, 'hour');
             const todayStr = nowIST.format('YYYY-MM-DD');
             const yesterdayStr = nowIST.subtract(1, 'day').format('YYYY-MM-DD');
@@ -319,10 +320,17 @@ class ZktecoService {
             for (const dateStr of datesToSync) {
                 console.log(`[ZktecoSync] Fetching transactions for date: ${dateStr}`);
 
-                let rawResult = await this.getTransactions(url, token, {
+                const queryParams = {
                     start_time: `${dateStr} 00:00:00`,
                     end_time: `${dateStr} 23:59:59`
-                });
+                };
+
+                // Add company isolation filter to API request if configured
+                if (companyId) {
+                    queryParams.company = companyId;
+                }
+
+                let rawResult = await this.getTransactions(url, token, queryParams);
 
                 console.log(`[ZktecoSync] API Result for ${dateStr}:`, typeof rawResult === 'object' ? 'Object received' : typeof rawResult);
 
@@ -346,9 +354,14 @@ class ZktecoService {
 
                 console.log(`[ZktecoSync] ${transactions.length} total transactions fetched from API.`);
 
-                // Group transactions by staff (emp_code)
+                // Group transactions by staff (emp_code) and apply secondary company isolation
                 const staffGroups = {};
                 transactions.forEach(t => {
+                    // Safety check: skip if companyId is configured but doesn't match
+                    if (companyId && String(t.company) !== String(companyId)) {
+                        return;
+                    }
+
                     const code = String(t.emp_code).trim().toLowerCase();
                     if (!staffGroups[code]) staffGroups[code] = [];
                     staffGroups[code].push(t);
