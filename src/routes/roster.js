@@ -1,6 +1,6 @@
 const express = require('express');
 const { Op } = require('sequelize');
-const { StaffRoster, ShiftTemplate, User, StaffProfile, StaffShiftAssignment, Badge, BadgePermission, Attendance } = require('../models');
+const { StaffRoster, ShiftTemplate, User, StaffProfile, StaffShiftAssignment, Badge, BadgePermission, Attendance, LeaveRequest, StaffHolidayAssignment, HolidayDate } = require('../models');
 const { authRequired } = require('../middleware/auth');
 const { requireRole } = require('../middleware/roles');
 const { tenantEnforce } = require('../middleware/tenant');
@@ -38,6 +38,18 @@ function todayKey(d = new Date()) {
   const mm = String(d.getMonth() + 1).padStart(2, '0');
   const dd = String(d.getDate()).padStart(2, '0');
   return `${yyyy}-${mm}-${dd}`;
+}
+
+function formatDateToShort(dateStr) {
+  const d = new Date(dateStr);
+  const day = d.getDate();
+  const month = d.toLocaleString('default', { month: 'long' });
+  let s = 'th';
+  if (day === 1 || day === 21 || day === 31) s = 'st';
+  else if (day === 2 || day === 22) s = 'nd';
+  else if (day === 3 || day === 23) s = 'rd';
+  
+  return `${day}${s} ${month}`;
 }
 
 function requireOrg(req, res) {
@@ -166,7 +178,61 @@ router.post('/admin/roster', authRequired, requireRole(['admin', 'superadmin', '
     for (const item of assessments) {
       const { userId, date, shiftTemplateId, status } = item;
 
-      // Validation: Block roster change if staff is already present
+      // 1. Validation: Block if employee is on approved leave (Point 7: Leave vs Roster Sync)
+      if (status !== 'DELETE') {
+        const overlappingLeave = await LeaveRequest.findOne({
+          where: {
+            userId,
+            status: 'APPROVED',
+            startDate: { [Op.lte]: date },
+            endDate: { [Op.gte]: date }
+          }
+        });
+
+        if (overlappingLeave) {
+          const fromStr = formatDateToShort(overlappingLeave.startDate);
+          const toStr = formatDateToShort(overlappingLeave.endDate);
+          return res.status(400).json({
+            success: false,
+            message: `Cannot assign shift. Employee is on approved leave from ${fromStr} to ${toStr}`
+          });
+        }
+      }
+
+      // 2. Validation: Alert if employee is on Public Holiday (Point 6: Public Holiday Conflict)
+      if (status === 'SHIFT' && !req.body.forceHoliday) {
+        const assignment = await StaffHolidayAssignment.findOne({
+          where: {
+            userId,
+            effectiveFrom: { [Op.lte]: date },
+            [Op.or]: [
+              { effectiveTo: null },
+              { effectiveTo: { [Op.gte]: date } }
+            ]
+          },
+          order: [['effectiveFrom', 'DESC']]
+        });
+
+        if (assignment) {
+          const holiday = await HolidayDate.findOne({
+            where: {
+              holidayTemplateId: assignment.holidayTemplateId,
+              date,
+              active: true
+            }
+          });
+
+          if (holiday) {
+            return res.status(400).json({
+              success: false,
+              isHolidayWarning: true,
+              message: `Alert: You are assigning a shift on a Public Holiday (${holiday.name}). Special Overtime rates may apply. Do you want to continue?`
+            });
+          }
+        }
+      }
+
+      // 3. Validation: Block roster change if staff is already present
       const attendance = await Attendance.findOne({
         where: { userId, date, orgAccountId: orgId }
       });

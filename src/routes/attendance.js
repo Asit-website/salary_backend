@@ -963,8 +963,11 @@ router.post('/end-break', async (req, res) => {
 router.post('/punch-in', upload.single('photo'), async (req, res) => {
   try {
     const dateKey = todayKey();
+    const isH = await isPaidHoliday(req.user.id, dateKey);
+    const isWO = await isWeeklyOff(req.user.id, dateKey);
     const hasPayRule = await holidayWorkPayService.getEffectiveRule(req.user.id, dateKey);
-    if (!hasPayRule) {
+
+    if ((isH || isWO) && !hasPayRule) {
       return res.status(403).json({ success: false, message: 'Punch-in not allowed: No Holiday/Weekly off Work Pay Rule assigned.' });
     }
 
@@ -973,11 +976,11 @@ router.post('/punch-in', upload.single('photo'), async (req, res) => {
     const shiftTpl = await getEffectiveShiftTemplate(req.user.id, dateKey);
     if (tpl) {
       // Holidays rule
-      if (!hasPayRule && (tpl.holidaysRule ?? tpl.holidays_rule) === 'disallow' && await isPaidHoliday(req.user.id, dateKey)) {
+      if (!hasPayRule && (tpl.holidaysRule ?? tpl.holidays_rule) === 'disallow' && isH) {
         return res.status(409).json({ success: false, message: 'Punch-in disabled on paid holidays' });
       }
 
-      if (!hasPayRule && await isWeeklyOff(req.user.id, dateKey)) {
+      if (!hasPayRule && isWO) {
         return res.status(409).json({ success: false, message: 'Punch-in disabled on weekly off' });
       }
     }
