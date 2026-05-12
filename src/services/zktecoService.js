@@ -73,21 +73,20 @@ class ZktecoService {
     async calculateDetails(userId, punches, date) {
         if (!punches || punches.length < 1) return null;
 
-        const sorted = punches.map(p => ({
-            ...p,
-            punch_time: new Date(p.punch_time),
-            state: parseInt(p.punch_state)
-        })).sort((a, b) => a.punch_time - b.punch_time);
+        const sorted = punches.map(p => {
+            const dt = new Date(p.punch_time);
+            dt.setSeconds(0);
+            dt.setMilliseconds(0);
+            return {
+                ...p,
+                punch_time: dt,
+                state: parseInt(p.punch_state)
+            };
+        }).sort((a, b) => a.punch_time - b.punch_time);
 
-        // Identify boundaries: First In (0) and Last Out (1)
-        const firstInIdx = sorted.findIndex(p => p.state === 0);
-        const reversed = [...sorted].reverse();
-        const lastOutIdxRaw = reversed.findIndex(p => p.state === 1);
-        const lastOutIdx = lastOutIdxRaw === -1 ? -1 : (sorted.length - 1 - lastOutIdxRaw);
-
-        // Fallback to absolute first/last if master states are missing
-        const startIdx = firstInIdx === -1 ? 0 : firstInIdx;
-        const endIdx = lastOutIdx === -1 ? sorted.length - 1 : lastOutIdx;
+        // Identify boundaries: Absolute First and Absolute Last
+        const startIdx = 0;
+        const endIdx = sorted.length - 1;
 
         const dayPunches = sorted.slice(startIdx, endIdx + 1);
         if (dayPunches.length === 0) return null;
