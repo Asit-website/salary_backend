@@ -12162,6 +12162,7 @@ router.post('/attendance', async (req, res) => {
       punchedInAt: joinDateTime(checkIn),
       punchedOutAt: joinDateTime(checkOut),
       status,
+      source: 'manual',
     };
     if (status === 'leave') {
       payload = { punchedInAt: null, punchedOutAt: null, breakTotalSeconds: -1, status };
@@ -12414,7 +12415,7 @@ router.post('/attendance/bulk', async (req, res) => {
 
     const joinDateTime = (t) => (t ? new Date(`${dateIso}T${normalizeTime(t)}+05:30`) : null);
 
-    let basePayload = { punchedInAt: joinDateTime(checkIn), punchedOutAt: joinDateTime(checkOut), status };
+    let basePayload = { punchedInAt: joinDateTime(checkIn), punchedOutAt: joinDateTime(checkOut), status, source: 'manual' };
     if (status === 'leave') basePayload = { punchedInAt: null, punchedOutAt: null, breakTotalSeconds: -1, status };
     else if (status === 'absent') basePayload = { punchedInAt: null, punchedOutAt: null, breakTotalSeconds: 0, status };
     else if (status === 'half_day') basePayload.breakTotalSeconds = 0;

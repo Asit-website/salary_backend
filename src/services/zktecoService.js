@@ -369,7 +369,19 @@ class ZktecoService {
 
                     if (!res) continue;
 
+                    // Sync with Attendance table
                     try {
+                        const existing = await Attendance.findOne({ where: { userId, date: dateStr } });
+                        
+                        // PROTECT MANUAL EDITS: 
+                        // If a record already exists and its source is NOT 'biometric', 
+                        // it means it was manually edited or marked via mobile. 
+                        // In this case, we SKIP the ZKTeco overwrite.
+                        if (existing && existing.source !== 'biometric') {
+                            console.log(`[ZktecoSync] SKIP: Manual/Mobile record found for ${empCode} on ${dateStr}. Protecting edits.`);
+                            continue;
+                        }
+
                         await Attendance.upsert({
                             userId,
                             date: dateStr,
