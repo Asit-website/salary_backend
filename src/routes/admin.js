@@ -46,7 +46,7 @@ const earlyOvertimeService = require('../services/earlyOvertimeService');
 const { runAttendanceReminderManual } = require('../jobs');
 const { getScopedStaffIds } = require('../utils/scoping');
 const holidayWorkPayService = require('../services/holidayWorkPayService');
-
+const shiftService = require('../services/shiftService');
 const { enrollFace } = require('../services/awsService');
 
 
@@ -5657,15 +5657,15 @@ router.get('/shifts/effective/:userId', async (req, res) => {
     const orgId = requireOrg(req, res); if (!orgId) return;
     const { userId } = req.params;
     const uid = Number(userId);
-    const dateIso = toIsoDateOnly(new Date());
+    
+    // Parse the requested date or default to today in IST
+    const dateQuery = req.query.date;
+    const dateStr = dateQuery && dayjs(dateQuery).isValid() ? dayjs(dateQuery).format('YYYY-MM-DD') : dayjs().format('YYYY-MM-DD');
 
-    const asg = await StaffShiftAssignment.findOne({
-      where: { userId: uid, effectiveFrom: { [Op.lte]: dateIso } },
-      order: [['effectiveFrom', 'DESC']],
-      include: [{ model: ShiftTemplate, as: 'template' }]
-    });
+    // Use centralized shiftService which correctly prioritizes StaffRoster over Assignments
+    const shift = await shiftService.getEffectiveShiftTemplate(uid, dateStr);
 
-    return res.json({ success: true, shift: asg?.template || null });
+    return res.json({ success: true, shift });
   } catch (e) {
     console.error('Effective shift error:', e);
     return res.status(500).json({ success: false, message: 'Failed to fetch effective shift' });
@@ -10858,8 +10858,7 @@ router.get('/attendance', async (req, res) => {
     // Support both date and month parameters
     if (!date && !month) return res.status(400).json({ success: false, message: 'date or month required' });
 
-    let whereClause;
-
+    let startDate, endDate;
     if (month) {
       // Handle month parameter (YYYY-MM format)
       const monthStr = String(month).trim();
@@ -10871,8 +10870,8 @@ router.get('/attendance', async (req, res) => {
         return res.status(400).json({ success: false, message: 'Invalid month values' });
       }
 
-      const startDate = new Date(year, monthNum - 1, 1);
-      const endDate = new Date(year, monthNum, 0); // Last day of month
+      startDate = new Date(year, monthNum - 1, 1);
+      endDate = new Date(year, monthNum, 0); // Last day of month
 
       whereClause = {
         date: {
@@ -10959,6 +10958,19 @@ router.get('/attendance', async (req, res) => {
       order: [['effectiveFrom', 'DESC']]
     });
 
+    const rosters = await StaffRoster.findAll({
+      where: { 
+        userId: userIds, 
+        date: month ? { 
+          [Op.between]: [
+            startDate.toISOString().split('T')[0], 
+            endDate.toISOString().split('T')[0]
+          ] 
+        } : String(date) 
+      },
+      include: [{ model: ShiftTemplate, as: 'shiftTemplate' }]
+    });
+
     const { LatePunchInRule, StaffLatePunchInAssignment } = require('../models');
     const latePunchInAssignments = await StaffLatePunchInAssignment.findAll({
       where: { userId: userIds, orgAccountId: orgId, active: true },
@@ -10995,8 +11007,29 @@ router.get('/attendance', async (req, res) => {
       const isPresentLike = (status === 'present' || status === 'half_day' || status === 'overtime');
 
       if (r.punchedInAt && isPresentLike) {
-        const dayShiftAsg = shiftAssignments.find(asg => asg.userId === r.userId && r.date >= asg.effectiveFrom && (!asg.effectiveTo || r.date <= asg.effectiveTo));
-        let shiftTpl = dayShiftAsg?.template || (r.user?.shiftTemplateId ? shiftTemplateMap[r.user.shiftTemplateId] : null);
+        // 1. Check Roster Override (Highest Priority)
+        const rosterEntry = rosters.find(ros => 
+          Number(ros.userId) === Number(r.userId) && 
+          String(ros.date) === String(r.date)
+        );
+        let shiftTpl = rosterEntry?.shiftTemplate;
+
+        // 2. Check Staff Assignment
+        if (!shiftTpl) {
+          const dayShiftAsg = shiftAssignments.find(asg => 
+            Number(asg.userId) === Number(r.userId) && 
+            String(r.date) >= String(asg.effectiveFrom) && 
+            (!asg.effectiveTo || String(r.date) <= String(asg.effectiveTo))
+          );
+          shiftTpl = dayShiftAsg?.template;
+        }
+
+        // 3. Check Default Template
+        if (!shiftTpl && r.user?.shiftTemplateId) {
+          shiftTpl = shiftTemplateMap[Number(r.user.shiftTemplateId)];
+        }
+
+        // 4. Check Profile Selection
         if (!shiftTpl && r.user?.profile?.shiftSelection) {
           shiftTpl = shiftTemplateMap[Number(r.user.profile.shiftSelection)];
         }
@@ -11005,8 +11038,8 @@ router.get('/attendance', async (req, res) => {
           // Late Calculation (Unconditional)
           if (shiftTpl.startTime) {
             const punchIn = new Date(r.punchedInAt);
-            const istDate = new Date(punchIn.getTime() + (5.5 * 3600 * 1000));
-            const punchInSec = istDate.getUTCHours() * 3600 + istDate.getUTCMinutes() * 60 + istDate.getUTCSeconds();
+            // Adjust for potential timezone shift if needed, but here we assume r.punchedInAt is already correct
+            const punchInSec = punchIn.getHours() * 3600 + punchIn.getMinutes() * 60 + punchIn.getSeconds();
             const [sh, sm, ss] = shiftTpl.startTime.split(':').map(Number);
             const shiftStartSec = sh * 3600 + sm * 60 + (ss || 0);
 
@@ -11018,8 +11051,7 @@ router.get('/attendance', async (req, res) => {
           // Early Exit Calculation (Unconditional, on the fly for reporting)
           if (shiftTpl.endTime && r.punchedOutAt) {
             const punchOut = new Date(r.punchedOutAt);
-            const istDateOut = new Date(punchOut.getTime() + (5.5 * 3600 * 1000));
-            const punchOutSec = istDateOut.getUTCHours() * 3600 + istDateOut.getUTCMinutes() * 60 + istDateOut.getUTCSeconds();
+            const punchOutSec = punchOut.getHours() * 3600 + punchOut.getMinutes() * 60 + punchOut.getSeconds();
             const [eh, em, es] = shiftTpl.endTime.split(':').map(Number);
             const shiftEndSec = eh * 3600 + em * 60 + (es || 0);
 
@@ -12102,6 +12134,8 @@ router.post('/attendance', async (req, res) => {
       return res.status(404).json({ success: false, message: 'Staff not found' });
     }
 
+    // [Validation relaxed as per user request #2]
+    /*
     // Check for approved leave on this date
     const approvedLeave = await LeaveRequest.findOne({
       where: {
@@ -12148,22 +12182,36 @@ router.post('/attendance', async (req, res) => {
         }
       }
     }
+    */
 
 
 
     // Prepare fields for model (punchedInAt/punchedOutAt), and encode leave as sentinel
+    const joinDateTime = (t, addDay = false) => {
+      if (!t) return null;
+      const normalized = normalizeTime(t);
+      const d = new Date(`${dateIso}T${normalized}+05:30`);
+      if (addDay) d.setDate(d.getDate() + 1);
+      return d;
+    };
 
-    const joinDateTime = (t) => (t ? new Date(`${dateIso}T${normalizeTime(t)}+05:30`) : null);
+    const inTime = normalizeTime(checkIn);
+    const outTime = normalizeTime(checkOut);
+    const isNightShift = inTime && outTime && outTime < inTime;
 
     let payload = {
       userId: uid,
       orgAccountId: orgId,
       date: dateIso,
       punchedInAt: joinDateTime(checkIn),
-      punchedOutAt: joinDateTime(checkOut),
+      punchedOutAt: joinDateTime(checkOut, isNightShift),
       status,
       source: 'manual',
     };
+
+    if (payload.punchedInAt && payload.punchedOutAt) {
+      payload.totalWorkHours = Math.max(0, (new Date(payload.punchedOutAt) - new Date(payload.punchedInAt)) / 3600000);
+    }
     if (status === 'leave') {
       payload = { punchedInAt: null, punchedOutAt: null, breakTotalSeconds: -1, status };
     } else if (status === 'absent') {
@@ -12183,7 +12231,7 @@ router.post('/attendance', async (req, res) => {
 
         console.log(`[AdminAttendance] User: ${uid}, Org: ${orgId}, In: ${punchedInAt}, Out: ${punchedOutAt}`);
         if (punchedInAt && punchedOutAt) {
-          const totalWorkHours = Math.max(0, (new Date(punchedOutAt) - new Date(punchedInAt)) / 3600000);
+          const totalWorkHours = payload.totalWorkHours || 0;
           console.log(`[AdminAttendance] Calling calculateOvertime for ${uid} with totalWorkHours: ${totalWorkHours}`);
           const _d = new Date(dateIso);
           const daysInMonth = new Date(_d.getFullYear(), _d.getMonth() + 1, 0).getDate();
@@ -12197,8 +12245,6 @@ router.post('/attendance', async (req, res) => {
           }, orgAccount, daysInMonth, punchedOutAt);
 
           payload.overtimeMinutes = otResult.overtimeMinutes;
-          payload.overtimeAmount = otResult.overtimeAmount;
-          payload.overtimeRuleId = otResult.overtimeRuleId;
           payload.punchedInAt = punchedInAt;
           payload.punchedOutAt = punchedOutAt;
 
@@ -12413,9 +12459,28 @@ router.post('/attendance/bulk', async (req, res) => {
       return res.status(400).json({ success: false, message: 'Valid date required' });
     }
 
-    const joinDateTime = (t) => (t ? new Date(`${dateIso}T${normalizeTime(t)}+05:30`) : null);
+    const joinDateTime = (t, addDay = false) => {
+      if (!t) return null;
+      const normalized = normalizeTime(t);
+      const d = new Date(`${dateIso}T${normalized}+05:30`);
+      if (addDay) d.setDate(d.getDate() + 1);
+      return d;
+    };
 
-    let basePayload = { punchedInAt: joinDateTime(checkIn), punchedOutAt: joinDateTime(checkOut), status, source: 'manual' };
+    const inTime = normalizeTime(checkIn);
+    const outTime = normalizeTime(checkOut);
+    const isNightShift = inTime && outTime && outTime < inTime;
+
+    let basePayload = {
+      punchedInAt: joinDateTime(checkIn),
+      punchedOutAt: joinDateTime(checkOut, isNightShift),
+      status,
+      source: 'manual'
+    };
+
+    if (basePayload.punchedInAt && basePayload.punchedOutAt) {
+      basePayload.totalWorkHours = Math.max(0, (new Date(basePayload.punchedOutAt) - new Date(basePayload.punchedInAt)) / 3600000);
+    }
     if (status === 'leave') basePayload = { punchedInAt: null, punchedOutAt: null, breakTotalSeconds: -1, status };
     else if (status === 'absent') basePayload = { punchedInAt: null, punchedOutAt: null, breakTotalSeconds: 0, status };
     else if (status === 'half_day') basePayload.breakTotalSeconds = 0;
@@ -12426,6 +12491,8 @@ router.post('/attendance/bulk', async (req, res) => {
       const user = await User.findOne({ where: { id: uid, orgAccountId: orgId, role: 'staff' } });
       if (!user) continue;
 
+      // [Validation relaxed as per user request #3]
+      /*
       // Skip if staff has approved leave on this date
       const approvedLeave = await LeaveRequest.findOne({
         where: {
@@ -12474,6 +12541,7 @@ router.post('/attendance/bulk', async (req, res) => {
           }
         }
       }
+      */
 
       const payload = { ...basePayload };
       // Overtime calculation using Automation Rules (Bulk)
@@ -12482,7 +12550,7 @@ router.post('/attendance/bulk', async (req, res) => {
         const punchedInAt = payload.punchedInAt;
         const punchedOutAt = payload.punchedOutAt;
         if (punchedInAt && punchedOutAt) {
-          const totalWorkHours = Math.max(0, (new Date(punchedOutAt) - new Date(punchedInAt)) / 3600000);
+          const totalWorkHours = payload.totalWorkHours || 0;
           const _d = new Date(dateIso);
           const daysInMonth = new Date(_d.getFullYear(), _d.getMonth() + 1, 0).getDate();
           const otResult = await calculateOvertime({
@@ -18428,27 +18496,28 @@ router.get('/reports/monthly-attendance', async (req, res) => {
 
 
 
-    const shiftAssignments = await StaffShiftAssignment.findAll({
-
-      where: {
-
-        userId: staffMembers.map(s => s.id),
-
-        [Op.or]: [
-
-          { effectiveTo: null },
-
-          { effectiveTo: { [Op.gte]: startDate.format('YYYY-MM-DD') } }
-
-        ],
-
-        effectiveFrom: { [Op.lte]: endDate.format('YYYY-MM-DD') }
-
-      },
-
-      include: [{ model: ShiftTemplate, as: 'template' }]
-
-    });
+    const [shiftAssignments, rosters] = await Promise.all([
+      StaffShiftAssignment.findAll({
+        where: {
+          userId: staffMembers.map(s => s.id),
+          [Op.or]: [
+            { effectiveTo: null },
+            { effectiveTo: { [Op.gte]: startDate.format('YYYY-MM-DD') } }
+          ],
+          effectiveFrom: { [Op.lte]: endDate.format('YYYY-MM-DD') }
+        },
+        include: [{ model: ShiftTemplate, as: 'template' }]
+      }),
+      StaffRoster.findAll({
+        where: {
+          userId: staffMembers.map(s => s.id),
+          date: {
+            [Op.between]: [startDate.format('YYYY-MM-DD'), endDate.format('YYYY-MM-DD')]
+          }
+        },
+        include: [{ model: ShiftTemplate, as: 'shiftTemplate' }]
+      })
+    ]);
 
 
 
@@ -18459,6 +18528,8 @@ router.get('/reports/monthly-attendance', async (req, res) => {
     allShiftTemplates.forEach(t => { shiftTemplateMap[t.id] = t; });
 
 
+
+    const shiftContext = { rosters, shiftAssignments, staffMembers, shiftTemplateMap };
 
     // Helper functions for WO/Holiday/Leave (Re-implement or reuse)
 
@@ -18603,15 +18674,16 @@ router.get('/reports/monthly-attendance', async (req, res) => {
 
     // HELPER: Calculate statistics for a staff member
     const getStaffStats = (staffId) => {
+      const sId = String(staffId);
       let present = 0, absent = 0, wo = 0, holiday = 0, leave = 0;
       let totalDurationMin = 0, totalOtMin = 0;
       let lateDays = 0, earlyDays = 0;
-      const userHolAsg = holidayAssignments.filter(a => a.userId === staffId);
+      const userHolAsg = holidayAssignments.filter(a => String(a.userId) === sId);
+
 
       for (let i = 1; i <= daysInMonth; i++) {
-        const dateObj = startDate.date(i);
-        const dStr = dateObj.format('YYYY-MM-DD');
-        const att = attendanceMap[staffId]?.[dStr];
+        const dStr = startDate.clone().date(i).format('YYYY-MM-DD');
+        const att = attendanceMap[sId]?.[dStr];
 
         if (att) {
           const statusCode = toStatusCode(att);
@@ -18626,34 +18698,25 @@ router.get('/reports/monthly-attendance', async (req, res) => {
           }
           totalOtMin += (att.overtimeMinutes || 0);
 
-          // Late/Early Counts logic
-          const dayShiftAsg = shiftMap[staffId]?.filter(asg => dStr >= dayjs(asg.effectiveFrom).format('YYYY-MM-DD') && (!asg.effectiveTo || dStr <= dayjs(asg.effectiveTo).format('YYYY-MM-DD')))
-            .sort((a, b) => dayjs(b.effectiveFrom).diff(dayjs(a.effectiveFrom)))[0];
-          const staff = staffMembers.find(s => s.id === staffId);
-          let shiftTpl = dayShiftAsg?.template || staff?.shiftTemplate;
-          if (!shiftTpl && staff?.profile?.shiftSelection) shiftTpl = shiftTemplateMap[Number(staff.profile.shiftSelection)];
-
+          const shiftTpl = shiftService.resolveShift(sId, dStr, shiftContext);
           if (shiftTpl) {
             if (att.punchedInAt && shiftTpl.startTime) {
-              const punchIn = new Date(att.punchedInAt);
-              const istDate = new Date(punchIn.getTime() + (5.5 * 3600 * 1000));
-              const punchInSec = istDate.getUTCHours() * 3600 + istDate.getUTCMinutes() * 60 + istDate.getUTCSeconds();
-              const [sh, sm] = shiftTpl.startTime.split(':').map(Number);
-              const shiftStartSec = sh * 3600 + sm * 60;
+              const istPunchIn = new Date(att.punchedInAt.getTime() + (5.5 * 3600 * 1000));
+              const punchInSec = istPunchIn.getUTCHours() * 3600 + istPunchIn.getUTCMinutes() * 60 + istPunchIn.getUTCSeconds();
+              const [sh, sm, ss] = shiftTpl.startTime.split(':').map(Number);
+              const shiftStartSec = sh * 3600 + sm * 60 + (ss || 0);
               if (punchInSec > shiftStartSec) lateDays++;
             }
             if (att.punchedOutAt && shiftTpl.endTime) {
-              const punchOut = new Date(att.punchedOutAt);
-              const istDate = new Date(punchOut.getTime() + (5.5 * 3600 * 1000));
-              const punchOutSec = istDate.getUTCHours() * 3600 + istDate.getUTCMinutes() * 60 + istDate.getUTCSeconds();
-              const [eh, em] = shiftTpl.endTime.split(':').map(Number);
-              const shiftEndSec = eh * 3600 + em * 60;
+              const istPunchOut = new Date(att.punchedOutAt.getTime() + (5.5 * 3600 * 1000));
+              const punchOutSec = istPunchOut.getUTCHours() * 3600 + istPunchOut.getUTCMinutes() * 60 + istPunchOut.getUTCSeconds();
+              const [eh, em, es] = shiftTpl.endTime.split(':').map(Number);
+              const shiftEndSec = eh * 3600 + em * 60 + (es || 0);
               if (punchOutSec < shiftEndSec) earlyDays++;
             }
           }
         } else {
-          // Check Holiday/WO/Leave
-          const isL = leaveMap[staffId]?.find(l => {
+          const isL = leaveMap[sId]?.find(l => {
             const s = dayjs(l.startDate).format('YYYY-MM-DD');
             const e = dayjs(l.endDate).format('YYYY-MM-DD');
             return (dStr >= s && dStr <= e);
@@ -18664,10 +18727,9 @@ router.get('/reports/monthly-attendance', async (req, res) => {
               if (asg.template?.holidays?.some(hd => hd.date === dStr)) { isH = true; break; }
             }
           }
-
           if (isL) leave++;
           else if (isH) holiday++;
-          else if (checkIsWeeklyOff(staffId, dStr)) wo++;
+          else if (checkIsWeeklyOff(sId, dStr)) wo++;
           else absent++;
         }
       }
@@ -18708,20 +18770,18 @@ router.get('/reports/monthly-attendance', async (req, res) => {
         r.getCell(1).border = { left: { style: 'thin' }, top: { style: 'thin' }, bottom: { style: 'thin' } };
 
         for (let i = 1; i <= daysInMonth; i++) {
-          const dStr = startDate.date(i).format('YYYY-MM-DD');
+          const dStr = startDate.clone().date(i).format('YYYY-MM-DD');
           const att = attendanceMap[staff.id]?.[dStr];
           const cell = r.getCell(i + 2);
           cell.border = { top: { style: 'thin' }, left: { style: 'thin' }, bottom: { style: 'thin' }, right: { style: 'thin' } };
           cell.font = { size: 8 };
           cell.alignment = { horizontal: 'center' };
 
+          const shiftTpl = shiftService.resolveShift(staff.id, dStr, shiftContext);
+
           // Highlight Weekly Off columns
-          if (checkIsWeeklyOff(staff.id, dStr)) {
-            cell.fill = {
-              type: 'pattern',
-              pattern: 'solid',
-              fgColor: { argb: 'FFFFF2CC' }
-            };
+          if (checkIsWeeklyOff(String(staff.id), dStr)) {
+            cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFF2CC' } };
           }
 
           if (h === 'Status') {
@@ -18730,20 +18790,15 @@ router.get('/reports/monthly-attendance', async (req, res) => {
               let lateIndicator = '';
               const otMin = Math.max(0, Number(att.overtimeMinutes || 0) || 0);
 
-              if (lateRuleActive && ['p', 'hd'].includes(statusCode.toLowerCase())) {
-                const dayShiftAsg = shiftMap[staff.id]?.filter(asg => dStr >= dayjs(asg.effectiveFrom).format('YYYY-MM-DD') && (!asg.effectiveTo || dStr <= dayjs(asg.effectiveTo).format('YYYY-MM-DD')))
-                  .sort((a, b) => dayjs(b.effectiveFrom).diff(dayjs(a.effectiveFrom)))[0];
-                let shiftTpl = dayShiftAsg?.template || staff.shiftTemplate;
-                if (!shiftTpl && staff.profile?.shiftSelection) shiftTpl = shiftTemplateMap[Number(staff.profile.shiftSelection)];
+              if (shiftTpl?.startTime && att.punchedInAt) {
+                const istPunchIn = new Date(att.punchedInAt.getTime() + (5.5 * 3600 * 1000));
+                const punchInSec = istPunchIn.getUTCHours() * 3600 + istPunchIn.getUTCMinutes() * 60 + istPunchIn.getUTCSeconds();
+                const [sh, sm, ss] = shiftTpl.startTime.split(':').map(Number);
+                const shiftStartSec = sh * 3600 + sm * 60 + (ss || 0);
 
-                if (shiftTpl?.startTime && att.punchedInAt) {
-                  const punchIn = new Date(att.punchedInAt);
-                  const istDate = new Date(punchIn.getTime() + (5.5 * 3600 * 1000));
-                  const punchInSec = istDate.getUTCHours() * 3600 + istDate.getUTCMinutes() * 60 + istDate.getUTCSeconds();
-                  const [sh, sm] = shiftTpl.startTime.split(':').map(Number);
-                  const shiftStartSec = sh * 3600 + sm * 60;
-
-                  if (punchInSec > shiftStartSec) {
+                if (punchInSec > shiftStartSec) {
+                  lateIndicator = ' (L)';
+                  if (lateRuleActive) {
                     const lateMins = Math.floor((punchInSec - shiftStartSec) / 60);
                     for (let tIdx = 0; tIdx < lateTiers.length; tIdx++) {
                       const tier = lateTiers[tIdx];
@@ -18752,8 +18807,6 @@ router.get('/reports/monthly-attendance', async (req, res) => {
                         const freq = Number(tier.frequency);
                         if (freq > 0 && staffTierCounts[tIdx] % freq === 0) {
                           lateIndicator = ' (Penalty)';
-                        } else {
-                          lateIndicator = ' (L)';
                         }
                         break;
                       }
@@ -18763,15 +18816,15 @@ router.get('/reports/monthly-attendance', async (req, res) => {
               }
               cell.value = otMin > 0 ? `${statusCode}${lateIndicator} OT${otMin}m` : `${statusCode}${lateIndicator}`;
             } else {
-              // Check Holiday/WO/Leave
-              const userHolAsg = holidayAssignments.filter(a => a.userId === staff.id);
+              const sId = String(staff.id);
+              const userHolAsg = holidayAssignments.filter(a => String(a.userId) === sId);
               let isH = false;
               for (const asg of userHolAsg) {
                 if (dStr >= dayjs(asg.effectiveFrom).format('YYYY-MM-DD') && (!asg.effectiveTo || dStr <= dayjs(asg.effectiveTo).format('YYYY-MM-DD'))) {
                   if (asg.template?.holidays?.some(hd => hd.date === dStr)) { isH = true; break; }
                 }
               }
-              const isL = leaveMap[staff.id]?.find(l => {
+              const isL = leaveMap[sId]?.find(l => {
                 const s = dayjs(l.startDate).format('YYYY-MM-DD');
                 const e = dayjs(l.endDate).format('YYYY-MM-DD');
                 return (dStr >= s && dStr <= e);
@@ -18779,7 +18832,7 @@ router.get('/reports/monthly-attendance', async (req, res) => {
               const todayStr = dayjs().format('YYYY-MM-DD');
               if (isL) cell.value = 'L';
               else if (isH) cell.value = 'H';
-              else if (checkIsWeeklyOff(staff.id, dStr)) cell.value = 'WO';
+              else if (checkIsWeeklyOff(sId, dStr)) cell.value = 'WO';
               else cell.value = (dStr <= todayStr ? 'A' : '-');
             }
           } else if (h === 'InTime') {
@@ -18789,35 +18842,27 @@ router.get('/reports/monthly-attendance', async (req, res) => {
           } else if (h === 'Duration' && att?.punchedInAt && att?.punchedOutAt) {
             const diff = dayjs(att.punchedOutAt).diff(dayjs(att.punchedInAt), 'minute');
             cell.value = `${Math.floor(diff / 60)}:${String(diff % 60).padStart(2, '0')}`;
-          } else if (h === 'Late By' || h === 'Early By') {
-            // Calculate Late/Early if shift info available
-            const dateObj = startDate.date(i);
-            const dStr = dateObj.format('YYYY-MM-DD');
-            const dayShiftAsg = shiftMap[staff.id]?.filter(asg => dStr >= dayjs(asg.effectiveFrom).format('YYYY-MM-DD') && (!asg.effectiveTo || dStr <= dayjs(asg.effectiveTo).format('YYYY-MM-DD')))
-              .sort((a, b) => dayjs(b.effectiveFrom).diff(dayjs(a.effectiveFrom)))[0];
-            const shiftTpl = dayShiftAsg?.template || staff.shiftTemplate;
-
-            if (shiftTpl) {
-              if (h === 'Late By' && att?.punchedInAt && shiftTpl.startTime) {
-                const [sh, sm] = shiftTpl.startTime.split(':').map(Number);
-                const shiftStartTime = dayjs(att.punchedInAt).hour(sh).minute(sm).second(0);
-                const diff = dayjs(att.punchedInAt).diff(shiftStartTime, 'minute');
-                if (diff > 0) cell.value = `${diff}m`;
-              } else if (h === 'Early By' && att?.punchedOutAt && shiftTpl.endTime) {
-                const [eh, em] = shiftTpl.endTime.split(':').map(Number);
-                const shiftEndTime = dayjs(att.punchedOutAt).hour(eh).minute(em).second(0);
-                const diff = shiftEndTime.diff(dayjs(att.punchedOutAt), 'minute');
-                if (diff > 0) cell.value = `${diff}m`;
-              }
+          } else if (h === 'Late By') {
+            if (att?.punchedInAt && shiftTpl?.startTime) {
+              const istPunchIn = new Date(att.punchedInAt.getTime() + (5.5 * 3600 * 1000));
+              const punchInSec = istPunchIn.getUTCHours() * 3600 + istPunchIn.getUTCMinutes() * 60 + istPunchIn.getUTCSeconds();
+              const [sh, sm, ss] = shiftTpl.startTime.split(':').map(Number);
+              const shiftStartSec = sh * 3600 + sm * 60 + (ss || 0);
+              const diff = Math.floor((punchInSec - shiftStartSec) / 60);
+              if (diff > 0) cell.value = `${diff}m`;
+            }
+          } else if (h === 'Early By') {
+            if (att?.punchedOutAt && shiftTpl?.endTime) {
+              const istPunchOut = new Date(att.punchedOutAt.getTime() + (5.5 * 3600 * 1000));
+              const punchOutSec = istPunchOut.getUTCHours() * 3600 + istPunchOut.getUTCMinutes() * 60 + istPunchOut.getUTCSeconds();
+              const [eh, em, es] = shiftTpl.endTime.split(':').map(Number);
+              const shiftEndSec = eh * 3600 + em * 60 + (es || 0);
+              const diff = Math.floor((shiftEndSec - punchOutSec) / 60);
+              if (diff > 0) cell.value = `${diff}m`;
             }
           } else if (h === 'OT') {
             cell.value = att?.overtimeMinutes ? `${Math.floor(att.overtimeMinutes / 60)}:${String(att.overtimeMinutes % 60).padStart(2, '0')}` : '';
           } else if (h === 'Shift') {
-            const dateObj = startDate.date(i);
-            const dStr = dateObj.format('YYYY-MM-DD');
-            const dayShiftAsg = shiftMap[staff.id]?.filter(asg => dStr >= dayjs(asg.effectiveFrom).format('YYYY-MM-DD') && (!asg.effectiveTo || dStr <= dayjs(asg.effectiveTo).format('YYYY-MM-DD')))
-              .sort((a, b) => dayjs(b.effectiveFrom).diff(dayjs(a.effectiveFrom)))[0];
-            const shiftTpl = dayShiftAsg?.template || staff.shiftTemplate;
             cell.value = shiftTpl?.name || 'GS';
           }
         }
@@ -19169,12 +19214,13 @@ router.get('/reports/org-attendance-matrix', async (req, res) => {
     const orgId = requireOrg(req, res); if (!orgId) return;
     const { month, year, format, employeeIds } = req.query;
 
-    const startDate = month && year ? new Date(year, month - 1, 1) : new Date(new Date().getFullYear(), new Date().getMonth(), 1);
-    const endDate = new Date(startDate.getFullYear(), startDate.getMonth() + 1, 0);
-    const daysInMonth = endDate.getDate();
+    const startDate = month && year ? dayjs(`${year}-${month}-01`) : dayjs().startOf('month');
+    const endDate = startDate.endOf('month');
+    const daysInMonth = startDate.daysInMonth();
 
     // Helper to format date as YYYY-MM-DD in local time
     const formatLocalISO = (date) => {
+      if (dayjs.isDayjs(date)) return date.format('YYYY-MM-DD');
       const y = date.getFullYear();
       const m = String(date.getMonth() + 1).padStart(2, '0');
       const d = String(date.getDate()).padStart(2, '0');
@@ -19272,25 +19318,65 @@ router.get('/reports/org-attendance-matrix', async (req, res) => {
     } catch (_) { }
 
     // Fetch Shift Assignments for all staff in range
-    const shiftAssignments = await StaffShiftAssignment.findAll({
-      where: {
-        userId: staffList.map(s => s.id),
-        [Op.or]: [
-          { effectiveTo: null },
-          { effectiveTo: { [Op.gte]: formatLocalISO(startDate) } }
-        ],
-        effectiveFrom: { [Op.lte]: formatLocalISO(endDate) }
-      },
-      include: [{ model: ShiftTemplate, as: 'template' }],
-      order: [['effectiveFrom', 'ASC']]
-    });
-
+    const [shiftAssignments, rosters] = await Promise.all([
+      StaffShiftAssignment.findAll({
+        where: {
+          userId: staffList.map(s => s.id),
+          [Op.or]: [
+            { effectiveTo: null },
+            { effectiveTo: { [Op.gte]: formatLocalISO(startDate) } }
+          ],
+          effectiveFrom: { [Op.lte]: formatLocalISO(endDate) }
+        },
+        include: [{ model: ShiftTemplate, as: 'template' }],
+        order: [['effectiveFrom', 'ASC']]
+      }),
+      StaffRoster.findAll({
+        where: {
+          userId: staffList.map(s => s.id),
+          date: {
+            [Op.between]: [formatLocalISO(startDate), formatLocalISO(endDate)]
+          }
+        },
+        include: [{ model: ShiftTemplate, as: 'shiftTemplate' }]
+      })
+    ]);
     const allShiftTemplates = await ShiftTemplate.findAll({ where: { orgAccountId: orgId, active: true } });
     const shiftTemplateMap = {};
     allShiftTemplates.forEach(t => { shiftTemplateMap[t.id] = t; });
 
+    const attendanceMap = {};
+    attendanceData.forEach(a => {
+      const uId = String(a.userId);
+      const dKey = dayjs(a.date).format('YYYY-MM-DD');
+      if (!attendanceMap[uId]) attendanceMap[uId] = {};
+      attendanceMap[uId][dKey] = a;
+    });
+
     const matrix = {};
     const summary = {};
+    const details = {};
+
+    const woMap = {};
+    woAssignments.forEach(asg => {
+      const uId = String(asg.userId);
+      if (!woMap[uId]) woMap[uId] = [];
+      woMap[uId].push(asg);
+    });
+
+    const holidayMap = {};
+    holidayAssignments.forEach(asg => {
+      const uId = String(asg.userId);
+      if (!holidayMap[uId]) holidayMap[uId] = [];
+      holidayMap[uId].push(asg);
+    });
+
+    const shiftMap = {};
+    shiftAssignments.forEach(asg => {
+      const uId = String(asg.userId);
+      if (!shiftMap[uId]) shiftMap[uId] = [];
+      shiftMap[uId].push(asg);
+    });
 
     const toStatusCode = (att) => {
       const s = String(att?.status || '').toLowerCase();
@@ -19304,25 +19390,25 @@ router.get('/reports/org-attendance-matrix', async (req, res) => {
       return null;
     };
 
-    const details = {};
     staffList.forEach((s) => {
       matrix[s.id] = {};
       summary[s.id] = { halfDays: 0, overtimeMinutes: 0, lateDays: 0, penaltyDays: 0, lateMinutes: 0 };
       details[s.id] = {};
     });
 
-
+    const shiftContext = { rosters, shiftAssignments, staffMembers: staffList, shiftTemplateMap };
 
     // Map all days (explicit records, late status, WO, and Holidays) in one pass per staff
     staffList.forEach(staff => {
-      const userWoAsg = woAssignments.filter(a => a.userId === staff.id);
-      const userHolAsg = holidayAssignments.filter(a => a.userId === staff.id);
+      const sId = String(staff.id);
+      const userWoAsg = woMap[sId] || [];
+      const userHolAsg = holidayMap[sId] || [];
       let staffTierCounts = new Array(lateTiers.length).fill(0);
 
       for (let i = 1; i <= daysInMonth; i++) {
-        const d = new Date(startDate.getFullYear(), startDate.getMonth(), i);
-        const dateKey = formatLocalISO(d);
-        const record = attendanceData.find(a => a.userId === staff.id && a.date === dateKey);
+        const dObj = startDate.clone().date(i);
+        const dateKey = dObj.format('YYYY-MM-DD');
+        const record = attendanceMap[sId]?.[dateKey];
 
         // Initialize daily details
         details[staff.id][dateKey] = { late: 0, ot: 0, status: '-' };
@@ -19341,14 +19427,7 @@ router.get('/reports/org-attendance-matrix', async (req, res) => {
           const isPresentLike = s === 'p' || s === 'hd' || s === 'overtime' || (!s && (record.punchedInAt || record.checkIn));
 
           if (isPresentLike) {
-            const dayShiftAsg = shiftAssignments
-              .filter(asg => asg.userId === staff.id && dateKey >= asg.effectiveFrom && (!asg.effectiveTo || dateKey <= asg.effectiveTo))
-              .sort((a, b) => b.effectiveFrom.localeCompare(a.effectiveFrom))[0];
-
-            let shiftTpl = dayShiftAsg?.template || staff.shiftTemplate;
-            if (!shiftTpl && staff.profile?.shiftSelection) {
-              shiftTpl = shiftTemplateMap[Number(staff.profile.shiftSelection)];
-            }
+            const shiftTpl = shiftService.resolveShift(staff.id, dateKey, shiftContext);
 
             // Late Punch In Minutes (Unconditional)
             if (shiftTpl?.startTime && (record.punchedInAt || record.checkIn)) {
@@ -19361,6 +19440,7 @@ router.get('/reports/org-attendance-matrix', async (req, res) => {
               const shiftStartSec = sh * 3600 + sm * 60 + (ss || 0);
 
               if (punchInSec > shiftStartSec) {
+                lateIndicator = ' (L)';
                 const lateMins = Math.floor((punchInSec - shiftStartSec) / 60);
                 summary[staff.id].lateMinutes += lateMins;
                 details[staff.id][dateKey].late = lateMins;
@@ -19375,8 +19455,6 @@ router.get('/reports/org-attendance-matrix', async (req, res) => {
                       if (freq > 0 && staffTierCounts[tIdx] % freq === 0) {
                         summary[staff.id].penaltyDays += Number(tier.deduction);
                         lateIndicator = ' (Penalty)';
-                      } else {
-                        lateIndicator = ' (L)';
                       }
                       break;
                     }
@@ -19390,7 +19468,7 @@ router.get('/reports/org-attendance-matrix', async (req, res) => {
           // Check Holidays first
           let isHoliday = false;
           for (const asg of userHolAsg) {
-            if (dateKey >= asg.effectiveFrom && (!asg.effectiveTo || dateKey <= asg.effectiveTo)) {
+            if (dateKey >= dayjs(asg.effectiveFrom).format('YYYY-MM-DD') && (!asg.effectiveTo || dateKey <= dayjs(asg.effectiveTo).format('YYYY-MM-DD'))) {
               if (asg.template?.holidays?.some(hd => hd.date === dateKey)) {
                 isHoliday = true;
                 break;
@@ -19407,7 +19485,7 @@ router.get('/reports/org-attendance-matrix', async (req, res) => {
           // Check Weekly Off
           let isWO = false;
           for (const asg of userWoAsg) {
-            if (dateKey >= asg.effectiveFrom && (!asg.effectiveTo || dateKey <= asg.effectiveTo)) {
+            if (dateKey >= dayjs(asg.effectiveFrom).format('YYYY-MM-DD') && (!asg.effectiveTo || dateKey <= dayjs(asg.effectiveTo).format('YYYY-MM-DD'))) {
               let config = asg.template?.config || [];
               if (typeof config === 'string') {
                 try { config = JSON.parse(config); } catch (_) {
@@ -19415,8 +19493,8 @@ router.get('/reports/org-attendance-matrix', async (req, res) => {
                 }
               }
               const configArr = Array.isArray(config) ? config : [];
-              const dayOfWeek = d.getDay();
-              const weekOfMonth = Math.ceil(d.getDate() / 7);
+              const dayOfWeek = dObj.day();
+              const weekOfMonth = Math.ceil(dObj.date() / 7);
 
               const match = configArr.find(c =>
                 c && Number(c.day) === dayOfWeek &&
@@ -19429,7 +19507,7 @@ router.get('/reports/org-attendance-matrix', async (req, res) => {
             }
           }
 
-          const todayStr = formatLocalISO(new Date());
+          const todayStr = dayjs().format('YYYY-MM-DD');
           const displayStatus = isWO ? 'WO' : (dateKey <= todayStr ? 'A' : '-');
           matrix[staff.id][dateKey] = displayStatus;
           details[staff.id][dateKey].status = displayStatus;
@@ -23973,7 +24051,7 @@ router.get('/staff/:id/attendance-overview', async (req, res) => {
     const endDateStr = `${month}-${String(lastDay).padStart(2, '0')}`;
 
     // 1. Fetch data in parallel
-    const [atts, leaves, hAssignment, wAssignment, automationRule, shiftAsg] = await Promise.all([
+    const [atts, leaves, hAssignment, wAssignment, automationRule, shiftAsg, rosters] = await Promise.all([
       Attendance.findAll({
         where: { userId, date: { [Op.between]: [startDateStr, endDateStr] } },
         attributes: [
@@ -23988,7 +24066,8 @@ router.get('/staff/:id/attendance-overview', async (req, res) => {
       StaffHolidayAssignment.findOne({ where: { userId, effectiveFrom: { [Op.lte]: endDateStr }, [Op.or]: [{ effectiveTo: null }, { effectiveTo: { [Op.gte]: startDateStr } }] }, order: [['effectiveFrom', 'DESC']], include: [{ model: HolidayTemplate, as: 'template', include: [{ model: HolidayDate, as: 'holidays' }] }] }),
       StaffWeeklyOffAssignment.findOne({ where: { userId, effectiveFrom: { [Op.lte]: endDateStr }, [Op.or]: [{ effectiveTo: null }, { effectiveTo: { [Op.gte]: startDateStr } }] }, order: [['effectiveFrom', 'DESC']], include: [{ model: WeeklyOffTemplate, as: 'template' }] }),
       AttendanceAutomationRule.findOne({ where: { key: 'late_punchin_penalty', orgAccountId: orgId, active: true } }),
-      StaffShiftAssignment.findOne({ where: { userId }, include: [{ model: ShiftTemplate, as: 'template' }], order: [['effectiveFrom', 'DESC'], ['id', 'DESC']] })
+      StaffShiftAssignment.findAll({ where: { userId }, include: [{ model: ShiftTemplate, as: 'template' }], order: [['effectiveFrom', 'DESC'], ['id', 'DESC']] }),
+      StaffRoster.findAll({ where: { userId, date: { [Op.between]: [startDateStr, endDateStr] } }, include: [{ model: ShiftTemplate, as: 'shiftTemplate' }] })
     ]);
 
     // 2. Map data for lookups
@@ -24106,29 +24185,68 @@ router.get('/staff/:id/attendance-overview', async (req, res) => {
           stats.present++;
         }
 
-        // Late Check Logic
-        let isLate = !!att.lateArrival;
-        if (lateRuleActive && shiftStart && att.punchedInAt) {
-          const punchIn = new Date(att.punchedInAt);
-          const istDate = new Date(punchIn.getTime() + (5.5 * 3600 * 1000));
-          const punchInSec = istDate.getUTCHours() * 3600 + istDate.getUTCMinutes() * 60 + istDate.getUTCSeconds();
-          const [sh, sm, ss] = shiftStart.split(':').map(Number);
-          const shiftStartSec = (sh * 3600 + sm * 60 + (ss || 0));
+        // Resolve shift for this day
+        const dDateStr = dayjs(dateStr).format('YYYY-MM-DD');
+        // 1. Roster
+        const rosterEntry = rosters.find(ros => 
+          Number(ros.userId) === Number(userId) && 
+          String(ros.date) === dDateStr
+        );
+        let shiftTpl = rosterEntry?.shiftTemplate;
 
-          if (punchInSec > shiftStartSec) {
-            const lateMins = Math.floor((punchInSec - shiftStartSec) / 60);
-            for (let tIdx = 0; tIdx < lateTiers.length; tIdx++) {
-              const t = lateTiers[tIdx];
-              if (lateMins >= Number(t.minMinutes) && lateMins <= Number(t.maxMinutes)) {
-                isLate = true;
-                if (status === 'present' || status === 'half_day' || status === 'overtime') {
-                  tierCounts[tIdx]++;
+        // 2. Assignment
+        if (!shiftTpl) {
+          const dayShiftAsg = shiftAsg?.filter(asg => 
+            dDateStr >= dayjs(asg.effectiveFrom).format('YYYY-MM-DD') && 
+            (!asg.effectiveTo || dDateStr <= dayjs(asg.effectiveTo).format('YYYY-MM-DD'))
+          ).sort((a, b) => dayjs(b.effectiveFrom).diff(dayjs(a.effectiveFrom)))[0];
+          shiftTpl = dayShiftAsg?.template;
+        }
+
+        // 3. Profile/Default
+        if (!shiftTpl && user.shiftTemplateId) shiftTpl = await ShiftTemplate.findByPk(user.shiftTemplateId);
+        if (!shiftTpl && user.profile?.shiftSelection) shiftTpl = await ShiftTemplate.findByPk(user.profile.shiftSelection);
+
+        let isLate = !!att.lateArrival;
+        let lateMinutes = 0;
+        let earlyExitMinutes = 0;
+
+        if (shiftTpl) {
+          if (att.punchedInAt && shiftTpl.startTime) {
+            const punchIn = new Date(att.punchedInAt);
+            const punchInSec = punchIn.getHours() * 3600 + punchIn.getMinutes() * 60 + punchIn.getSeconds();
+            const [sh, sm, ss] = shiftTpl.startTime.split(':').map(Number);
+            const shiftStartSec = sh * 3600 + sm * 60 + (ss || 0);
+
+            if (punchInSec > shiftStartSec) {
+              lateMinutes = Math.floor((punchInSec - shiftStartSec) / 60);
+              if (lateRuleActive) {
+                for (let tIdx = 0; tIdx < lateTiers.length; tIdx++) {
+                  const t = lateTiers[tIdx];
+                  if (lateMinutes >= Number(t.minMinutes) && lateMinutes <= Number(t.maxMinutes)) {
+                    isLate = true;
+                    if (status === 'present' || status === 'half_day' || status === 'overtime') {
+                      tierCounts[tIdx]++;
+                    }
+                    break;
+                  }
                 }
-                break;
+              } else {
+                isLate = lateMinutes > 0;
               }
             }
           }
+          if (att.punchedOutAt && shiftTpl.endTime) {
+            const punchOut = new Date(att.punchedOutAt);
+            const punchOutSec = punchOut.getHours() * 3600 + punchOut.getMinutes() * 60 + punchOut.getSeconds();
+            const [eh, em, es] = shiftTpl.endTime.split(':').map(Number);
+            const shiftEndSec = eh * 3600 + em * 60 + (es || 0);
+            if (punchOutSec < shiftEndSec) {
+              earlyExitMinutes = Math.floor((shiftEndSec - punchOutSec) / 60);
+            }
+          }
         }
+
         if (isLate) stats.late++;
 
         info = {
@@ -24140,6 +24258,8 @@ router.get('/staff/:id/attendance-overview', async (req, res) => {
             : (att.totalWorkSeconds ? Math.floor(att.totalWorkSeconds / 60) : 0),
           breakMinutes: Math.round((att.breakTotalSeconds || 0) / 60),
           overtimeMinutes: att.overtimeMinutes || 0,
+          lateMinutes,
+          earlyExitMinutes,
           isLate,
           source: att.source || 'mobile'
         };

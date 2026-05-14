@@ -1,48 +1,12 @@
 const { LatePunchInRule, StaffLatePunchInAssignment, User, StaffShiftAssignment, ShiftTemplate, StaffRoster } = require('../models');
 const { Op } = require('sequelize');
+const dayjs = require('dayjs');
+const shiftService = require('./shiftService');
 
 /**
  * Service to handle automated Late Punch-In calculations and penalties
  */
 class LatePunchInService {
-  /**
-   * Helper to get effective shift template for a user on a specific date
-   */
-  async getEffectiveShiftTemplate(userId, dateKey) {
-    try {
-      const roster = await StaffRoster.findOne({ where: { userId, date: dateKey } });
-      if (roster && roster.status === 'SHIFT' && roster.shiftTemplateId) {
-        const tpl = await ShiftTemplate.findByPk(roster.shiftTemplateId);
-        if (tpl && tpl.active !== false) return tpl;
-      }
-
-      const asg = await StaffShiftAssignment.findOne({
-        where: {
-          userId,
-          effectiveFrom: { [Op.lte]: dateKey },
-          [Op.or]: [{ effectiveTo: null }, { effectiveTo: { [Op.gte]: dateKey } }]
-        },
-        order: [['effectiveFrom', 'DESC']]
-      });
-
-      if (asg) {
-        const tpl = await ShiftTemplate.findByPk(asg.shiftTemplateId);
-        if (tpl && tpl.active !== false) return tpl;
-      }
-
-      const user = await User.findByPk(userId);
-      if (user?.shiftTemplateId) {
-        const tpl = await ShiftTemplate.findByPk(user.shiftTemplateId);
-        if (tpl && tpl.active !== false) return tpl;
-      }
-
-      return null;
-    } catch (error) {
-      console.error('[LatePunchInService] Error getting shift:', error);
-      return null;
-    }
-  }
-
   /**
    * Main calculation logic for Late Punch-In penalty
    */
@@ -51,7 +15,7 @@ class LatePunchInService {
     if (!punchedInAt) return { latePunchInMinutes: 0, latePunchInAmount: 0, latePunchInRuleId: null };
 
     // 1. Identify Shift Start Time (Always identify shift to get raw minutes)
-    const shift = await this.getEffectiveShiftTemplate(userId, dateKey);
+    const shift = await shiftService.getEffectiveShiftTemplate(userId, dateKey);
     let shiftWorkMins = shift?.workMinutes || 0;
     if (!shiftWorkMins && shift?.startTime && shift?.endTime) {
       const [sh, sm] = shift.startTime.split(':').map(Number);
@@ -66,10 +30,15 @@ class LatePunchInService {
 
     if (shift && shift.shiftType !== 'open' && shift.startTime) {
       const [sh, sm, ss] = shift.startTime.split(':').map(Number);
-      const shiftStartTs = new Date(punchedInAt);
-      shiftStartTs.setHours(sh, sm, ss || 0, 0);
-
-      latePunchInMinutes = Math.round((punchedInAt - shiftStartTs) / 60000);
+      
+      // Robust Time Comparison:
+      // We assume shift.startTime is in the Organization's Local Time (IST).
+      // Build shift start time based on the attendance date (dateKey).
+      const inAtLocal = dayjs(punchedInAt); 
+      const shiftDate = dayjs(dateKey);
+      const shiftStartLocal = shiftDate.hour(sh).minute(sm).second(ss || 0).millisecond(0);
+      
+      latePunchInMinutes = Math.round(inAtLocal.diff(shiftStartLocal, 'minute', true));
     }
 
     // 2. Resolve applicable Rule for penalty calculation

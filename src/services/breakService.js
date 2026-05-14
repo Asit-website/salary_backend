@@ -40,27 +40,8 @@ async function calculateBreakDeduction(attendance, orgAccount, daysInMonth = 30,
     }
 
     // 1.5 Fetch Shift Template to get dynamic work hours
-    const { Op } = require('sequelize');
-    let shiftTemplate = null;
-    const roster = await StaffRoster.findOne({ where: { userId, date: dateStr } });
-    if (roster && roster.status === 'SHIFT' && roster.shiftTemplateId) {
-      shiftTemplate = await ShiftTemplate.findByPk(roster.shiftTemplateId);
-    }
-    if (!shiftTemplate) {
-      const asg = await StaffShiftAssignment.findOne({
-        where: {
-          userId,
-          effectiveFrom: { [Op.lte]: dateStr },
-          [Op.or]: [{ effectiveTo: null }, { effectiveTo: { [Op.gte]: dateStr } }]
-        },
-        order: [['effectiveFrom', 'DESC']]
-      });
-      if (asg) shiftTemplate = await ShiftTemplate.findByPk(asg.shiftTemplateId);
-    }
-    if (!shiftTemplate) {
-      const user = await User.findByPk(userId);
-      if (user?.shiftTemplateId) shiftTemplate = await ShiftTemplate.findByPk(user.shiftTemplateId);
-    }
+    const shiftService = require('./shiftService');
+    const shiftTemplate = await shiftService.getEffectiveShiftTemplate(userId, dateStr);
     let shiftWorkMins = shiftTemplate?.workMinutes || 0;
     if (!shiftWorkMins && shiftTemplate?.startTime && shiftTemplate?.endTime) {
       const [sh, sm] = shiftTemplate.startTime.split(':').map(Number);

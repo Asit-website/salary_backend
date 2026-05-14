@@ -11,6 +11,7 @@ const earlyOvertimeService = require('../services/earlyOvertimeService');
 const latePunchInService = require('../services/latePunchInService');
 const holidayWorkPayService = require('../services/holidayWorkPayService');
 const { formatDate: isoDate, todayKey } = require('../utils/dateUtils');
+const shiftService = require('../services/shiftService');
 
 const router = express.Router();
 
@@ -177,50 +178,7 @@ function cmpTime(a, b) {
   return String(a).localeCompare(String(b));
 }
 
-async function getEffectiveShiftTemplate(userId, dateKey) {
-  try {
-    const where = { userId };
-    if (dateKey) {
-      where.effectiveFrom = { [Op.lte]: dateKey };
-      where[Op.or] = [
-        { effectiveTo: null },
-        { effectiveTo: { [Op.gte]: dateKey } },
-      ];
-    }
-    // 1. Check for specific Roster assignment for this date
-    if (userId && dateKey) {
-      const roster = await StaffRoster.findOne({ where: { userId, date: dateKey } });
-      if (roster) {
-        if (roster.status === 'SHIFT' && roster.shiftTemplateId) {
-          const tpl = await ShiftTemplate.findByPk(roster.shiftTemplateId);
-          if (tpl && tpl.active !== false) return tpl;
-        }
-        // If status is WEEKLY_OFF or HOLIDAY, we return null so the status logic handles it
-        if (roster.status === 'WEEKLY_OFF' || roster.status === 'HOLIDAY') return null;
-      }
-    }
-
-    // 2. Check for StaffShiftAssignment
-    const asg = await StaffShiftAssignment.findOne({ where, order: [['effectiveFrom', 'DESC']] });
-    if (asg) {
-      const tpl = await ShiftTemplate.findByPk(asg.shiftTemplateId);
-      if (tpl && tpl.active !== false) return tpl;
-    }
-
-    // Fallback to user's default shiftTemplateId or profile shiftSelection
-    const user = await User.findByPk(userId, { include: [{ model: StaffProfile, as: 'profile' }] });
-    if (user?.shiftTemplateId) {
-      const tpl = await ShiftTemplate.findByPk(user.shiftTemplateId);
-      if (tpl && tpl.active !== false) return tpl;
-    }
-    if (user?.profile?.shiftSelection) {
-      const tpl = await ShiftTemplate.findOne({ where: { id: Number(user.profile.shiftSelection), active: true } });
-      if (tpl) return tpl;
-    }
-
-    return null;
-  } catch (_) { return null; }
-}
+// Removed local getEffectiveShiftTemplate in favor of centralized shiftService
 
 async function getEffectiveTemplate(userId) {
   try {
@@ -282,7 +240,7 @@ async function getRequiredWorkSecondsFor(userId, dateKey) {
   try {
     // If a shift is assigned, prefer its requirements
     if (userId) {
-      const tpl = await getEffectiveShiftTemplate(userId, dateKey || todayKey());
+      const tpl = await shiftService.getEffectiveShiftTemplate(userId, dateKey || todayKey());
       if (tpl) {
         if (tpl.shiftType === 'open' && Number.isFinite(Number(tpl.workMinutes))) {
           const mins = Number(tpl.workMinutes) || 0;
@@ -390,24 +348,42 @@ async function touchDeviceInfo(req) {
 router.get('/status', async (req, res) => {
   const key = typeof req.query.date === 'string' && req.query.date.trim() ? String(req.query.date).trim() : todayKey();
   const userId = req.user.id;
-  const record = await Attendance.findOne({ where: { userId, date: key } });
+  let effectiveKey = key;
+  let record = await Attendance.findOne({ where: { userId, date: key } });
 
-  const REQUIRED_WORK_SECONDS = await getRequiredWorkSecondsFor(userId, key);
+  // Night Shift Look-back: If no record for today and checking "today", check yesterday for an open night shift
+  if (!record && key === todayKey()) {
+    const yesterday = isoDate(addDays(new Date(), -1));
+    const prevRecord = await Attendance.findOne({ where: { userId, date: yesterday, punchedOutAt: null } });
+    if (prevRecord) {
+      const prevShift = await shiftService.getEffectiveShiftTemplate(userId, yesterday);
+      if (prevShift && prevShift.startTime && prevShift.endTime) {
+        const [sh] = prevShift.startTime.split(':').map(Number);
+        const [eh] = prevShift.endTime.split(':').map(Number);
+        if (sh > eh || (sh === eh && prevShift.startTime > prevShift.endTime)) { // Basic overnight check
+          record = prevRecord;
+          effectiveKey = yesterday;
+        }
+      }
+    }
+  }
+
+  const REQUIRED_WORK_SECONDS = await getRequiredWorkSecondsFor(userId, effectiveKey);
   // Load max allowed paid break minutes
   const maxBreakSetting = await AppSetting.findOne({ where: { key: 'MAX_BREAK_DURATION' } });
   const maxBreakMinutes = maxBreakSetting ? parseInt(maxBreakSetting.value) : 0;
   const tpl = await getEffectiveTemplate(userId);
   const effectiveHoursRule = tpl ? (tpl.effectiveHoursRule ?? tpl.effective_hours_rule ?? null) : null;
-  const assignedShift = await getEffectiveShiftTemplate(userId, key);
+  const assignedShift = await shiftService.getEffectiveShiftTemplate(userId, effectiveKey);
 
   const now = new Date();
 
-  const isApprovedLeave = await hasApprovedLeave(userId, key);
-  const isHoliday = await isPaidHoliday(userId, key);
+  const isApprovedLeave = await hasApprovedLeave(userId, effectiveKey);
+  const isHoliday = await isPaidHoliday(userId, effectiveKey);
 
   // Weekly Off Check
   const woAsg = await StaffWeeklyOffAssignment.findOne({
-    where: { userId, effectiveFrom: { [Op.lte]: key } },
+    where: { userId, effectiveFrom: { [Op.lte]: effectiveKey } },
     order: [['effectiveFrom', 'DESC']]
   });
   let isWO = false;
@@ -418,11 +394,11 @@ router.get('/status', async (req, res) => {
       try { raw = JSON.parse(raw); } catch (_) { break; }
     }
     const woConfig = Array.isArray(raw) ? raw : [];
-    isWO = isWeeklyOffForDate(woConfig, new Date(key));
+    isWO = isWeeklyOffForDate(woConfig, new Date(effectiveKey));
   }
 
   // 0. Roster override check
-  const rosterEntry = await StaffRoster.findOne({ where: { userId, date: key } });
+  const rosterEntry = await StaffRoster.findOne({ where: { userId, date: effectiveKey } });
   const isRosterWO = rosterEntry?.status === 'WEEKLY_OFF';
   const isRosterHoliday = rosterEntry?.status === 'HOLIDAY';
 
@@ -432,7 +408,7 @@ router.get('/status', async (req, res) => {
       return res.json({
         success: true,
         status: {
-          date: key, punchedInAt: null, punchedOutAt: null, punchInPhotoUrl: null, punchOutPhotoUrl: null,
+          date: effectiveKey, punchedInAt: null, punchedOutAt: null, punchInPhotoUrl: null, punchOutPhotoUrl: null,
           isOnBreak: false, breakStartedAt: null, breakSeconds: 0, workingSeconds: 0, overtimeSeconds: 0,
           requiredWorkSeconds: REQUIRED_WORK_SECONDS, dayStatus: 'HOLIDAY',
         },
@@ -442,7 +418,7 @@ router.get('/status', async (req, res) => {
       return res.json({
         success: true,
         status: {
-          date: key, punchedInAt: null, punchedOutAt: null, punchInPhotoUrl: null, punchOutPhotoUrl: null,
+          date: effectiveKey, punchedInAt: null, punchedOutAt: null, punchInPhotoUrl: null, punchOutPhotoUrl: null,
           isOnBreak: false, breakStartedAt: null, breakSeconds: 0, workingSeconds: 0, overtimeSeconds: 0,
           requiredWorkSeconds: REQUIRED_WORK_SECONDS, dayStatus: 'WEEKLY_OFF',
         },
@@ -452,7 +428,7 @@ router.get('/status', async (req, res) => {
       return res.json({
         success: true,
         status: {
-          date: key, punchedInAt: null, punchedOutAt: null, punchInPhotoUrl: null, punchOutPhotoUrl: null,
+          date: effectiveKey, punchedInAt: null, punchedOutAt: null, punchInPhotoUrl: null, punchOutPhotoUrl: null,
           isOnBreak: false, breakStartedAt: null, breakSeconds: 0, workingSeconds: 0, overtimeSeconds: 0,
           requiredWorkSeconds: REQUIRED_WORK_SECONDS, dayStatus: 'LEAVE',
         },
@@ -553,8 +529,7 @@ router.get('/status', async (req, res) => {
       const [sh, sm, ss] = assignedShift.startTime.split(':').map(Number);
       const shiftStartSeconds = sh * 3600 + sm * 60 + (ss || 0);
 
-      const istDate = new Date(punchedInAt.getTime() + (5.5 * 3600 * 1000));
-      const punchInSeconds = istDate.getUTCHours() * 3600 + istDate.getUTCMinutes() * 60 + istDate.getUTCSeconds();
+      const punchInSeconds = punchedInAt.getHours() * 3600 + punchedInAt.getMinutes() * 60 + punchedInAt.getSeconds();
 
       if (punchInSeconds > shiftStartSeconds) {
         const lateMins = Math.floor((punchInSeconds - shiftStartSeconds) / 60);
@@ -571,7 +546,7 @@ router.get('/status', async (req, res) => {
   return res.json({
     success: true,
     status: {
-      date: key,
+      date: effectiveKey,
       punchedInAt: punchedInAt ? punchedInAt.toISOString() : null,
       punchedOutAt: punchedOutAt ? punchedOutAt.toISOString() : null,
       punchInPhotoUrl: record?.punchInPhotoUrl || null,
@@ -737,7 +712,7 @@ router.get('/history', async (req, res) => {
       const isRosterWO = rosterEntry?.status === 'WEEKLY_OFF';
       const isRosterHoliday = rosterEntry?.status === 'HOLIDAY';
 
-      const shiftTpl = await getEffectiveShiftTemplate(userId, key);
+      const shiftTpl = await shiftService.getEffectiveShiftTemplate(userId, key);
 
       if (record?.punchedInAt && !isAdminLeave && !isAdminHalf) {
         const inAt = new Date(record.punchedInAt);
@@ -835,13 +810,11 @@ router.get('/history', async (req, res) => {
       if (lateMins === 0 && record?.punchedInAt && shiftTpl?.startTime && !isAdminLeave && !isAdminHalf) {
         try {
           const [sh, sm, ss] = shiftTpl.startTime.split(':').map(Number);
-          const inAt = new Date(record.punchedInAt);
-          // Create a comparison date for shift start on the same day as the punch-in
-          const shiftStart = new Date(inAt);
-          shiftStart.setHours(sh, sm, ss || 0, 0);
+          const inAtLocal = dayjs(record.punchedInAt);
+          const shiftStartLocal = inAtLocal.startOf('day').hour(sh).minute(sm).second(ss || 0).millisecond(0);
 
-          if (inAt > shiftStart) {
-            const diff = Math.floor((inAt.getTime() - shiftStart.getTime()) / 60000);
+          if (inAtLocal.isAfter(shiftStartLocal)) {
+            const diff = Math.round(inAtLocal.diff(shiftStartLocal, 'minute', true));
             if (diff > 0) {
               lateMins = diff;
               isLateThisDay = true;
@@ -973,7 +946,7 @@ router.post('/punch-in', upload.single('photo'), async (req, res) => {
 
     // Enforce template rules
     const tpl = await getEffectiveTemplate(req.user.id);
-    const shiftTpl = await getEffectiveShiftTemplate(req.user.id, dateKey);
+    const shiftTpl = await shiftService.getEffectiveShiftTemplate(req.user.id, dateKey);
     if (tpl) {
       // Holidays rule
       if (!hasPayRule && (tpl.holidaysRule ?? tpl.holidays_rule) === 'disallow' && isH) {
@@ -1130,7 +1103,7 @@ router.post('/punch-out', upload.single('photo'), async (req, res) => {
   try {
     // Enforce template rules
     const tpl = await getEffectiveTemplate(req.user.id);
-    const shiftTpl = await getEffectiveShiftTemplate(req.user.id, todayKey());
+    const shiftTpl = await shiftService.getEffectiveShiftTemplate(req.user.id, todayKey());
     const trackInOutEnabled = tpl ? (tpl.trackInOutEnabled ?? tpl.track_in_out_enabled ?? false) : false;
     const requirePunchOut = tpl ? (tpl.requirePunchOut ?? tpl.require_punch_out ?? false) : false;
     const allowMultiplePunches = tpl ? (tpl.allowMultiplePunches ?? tpl.allow_multiple_punches ?? false) : true;
@@ -1143,7 +1116,7 @@ router.post('/punch-out', upload.single('photo'), async (req, res) => {
     // const photoUrl = req.file ? `/uploads/${req.file.filename}` : null;
 
 
-    const key = todayKey();
+    let key = todayKey();
     const lat = Number(req.body?.lat ?? req.body?.latitude);
     const lng = Number(req.body?.lng ?? req.body?.longitude);
     const geoCheck = await validateAssignedGeofence(req.user.id, key, lat, lng);
@@ -1154,7 +1127,24 @@ router.post('/punch-out', upload.single('photo'), async (req, res) => {
         geofence: geoCheck.nearest || null,
       });
     }
-    const record = await Attendance.findOne({ where: { userId: req.user.id, date: key } });
+    let record = await Attendance.findOne({ where: { userId: req.user.id, date: key } });
+
+    // Night Shift Look-back: If no open record today, look back at yesterday
+    if (!record || record.punchedOutAt) {
+      const yesterday = isoDate(addDays(new Date(), -1));
+      const prevRecord = await Attendance.findOne({ where: { userId: req.user.id, date: yesterday, punchedOutAt: null } });
+      if (prevRecord) {
+        const prevShift = await shiftService.getEffectiveShiftTemplate(req.user.id, yesterday);
+        if (prevShift && prevShift.startTime && prevShift.endTime) {
+          const [sh] = prevShift.startTime.split(':').map(Number);
+          const [eh] = prevShift.endTime.split(':').map(Number);
+          if (sh > eh || (sh === eh && prevShift.startTime > prevShift.endTime)) {
+            record = prevRecord;
+            key = yesterday;
+          }
+        }
+      }
+    }
 
     if (record?.source === 'biometric') {
       return res.status(409).json({ success: false, message: 'You have already punched in using biometric device. Mobile punch is disabled for today.' });

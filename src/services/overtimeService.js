@@ -1,4 +1,6 @@
 const { sequelize, OvertimeRule, ShiftTemplate, StaffShiftAssignment, User, StaffProfile, StaffRoster, OrgAccount, StaffOvertimeAssignment } = require('../models');
+const dayjs = require('dayjs');
+const shiftService = require('./shiftService');
 
 /**
  * Calculates overtime based on a specific Rule or fallback ShiftTemplate.
@@ -7,47 +9,6 @@ const { sequelize, OvertimeRule, ShiftTemplate, StaffShiftAssignment, User, Staf
  * @param {Object} orgAccount - The organization account object (to find activeOvertimeRule)
  * @param {Date} now - Current time for Shift End calculations
  */
-async function getEffectiveShiftTemplate(userId, dateKey) {
-  try {
-    const { Op } = require('sequelize');
-    const where = { userId };
-    if (dateKey) {
-      where.effectiveFrom = { [Op.lte]: dateKey };
-      where[Op.or] = [{ effectiveTo: null }, { effectiveTo: { [Op.gte]: dateKey } }];
-    }
-    // 1. Roster check
-    if (userId && dateKey) {
-      const roster = await StaffRoster.findOne({ where: { userId, date: dateKey } });
-      if (roster) {
-        if (roster.status === 'SHIFT' && roster.shiftTemplateId) {
-          const tpl = await ShiftTemplate.findByPk(roster.shiftTemplateId);
-          if (tpl && tpl.active !== false) return tpl;
-        }
-        if (roster.status === 'WEEKLY_OFF' || roster.status === 'HOLIDAY') return null;
-      }
-    }
-    // 2. Assignment check
-    const asg = await StaffShiftAssignment.findOne({ where, order: [['effectiveFrom', 'DESC'], ['id', 'DESC']] });
-    if (asg) {
-      const tpl = await ShiftTemplate.findByPk(asg.shiftTemplateId);
-      if (tpl && tpl.active !== false) return tpl;
-    }
-    // 3. Profile check
-    const user = await User.findByPk(userId, { include: [{ model: StaffProfile, as: 'profile' }] });
-    if (user?.shiftTemplateId) {
-      const tpl = await ShiftTemplate.findByPk(user.shiftTemplateId);
-      if (tpl && tpl.active !== false) return tpl;
-    }
-    if (user?.profile?.shiftSelection) {
-      const tpl = await ShiftTemplate.findOne({ where: { id: Number(user.profile.shiftSelection), active: true } });
-      if (tpl) return tpl;
-    }
-    return null;
-  } catch (e) {
-    console.error('[OvertimeService] Error getting shift template:', e.message);
-    return null;
-  }
-}
 
 /**
  * Helper to find minutes exceeding the threshold based on Calculation Type
@@ -87,31 +48,27 @@ async function getOvertimeMinutes(attendance, rule, shiftTemplate) {
   overtimeByPeriod = Math.max(0, totalWorkMinutes - baseThreshold);
 
   if (attendance.punchedOutAt && shiftTemplate && shiftTemplate.endTime) {
-    const punchOut = new Date(attendance.punchedOutAt);
-
-    // Timezone safe extraction (IST - Asia/Kolkata)
-    const istStr = punchOut.toLocaleString('en-US', { timeZone: 'Asia/Kolkata', hour12: false });
-    const localMatch = istStr.match(/(\d{1,2}):(\d{2}):(\d{2})/);
-    let punchOutSec = 0;
-
-    if (localMatch) {
-      const ph = parseInt(localMatch[1]);
-      const pm = parseInt(localMatch[2]);
-      const ps = 0; // Ignore seconds for OT calculation as per user request
-      punchOutSec = ph * 3600 + pm * 60 + ps;
-    } else {
-      // Fallback to local system time if formatter fails
-      punchOutSec = punchOut.getHours() * 3600 + punchOut.getMinutes() * 60 + 0;
-    }
-
+    const [sh, sm] = (shiftTemplate.startTime || '00:00').split(':').map(Number);
     const [eh, em, es] = shiftTemplate.endTime.split(':').map(Number);
-    const shiftEndSec = (eh * 3600 + em * 60 + 0); // Ignore shift end seconds for consistency
+    
+    // Robust Time Comparison:
+    // Build shift start and end times based on the attendance date.
+    const punchOutLocal = dayjs(attendance.punchedOutAt);
+    const shiftDate = dayjs(attendance.date || attendance.punchedInAt || attendance.punchedOutAt);
 
-    console.log(`[OvertimeService] Rule ID: ${rule.id}, PO (IST): ${istStr}, SE: ${shiftTemplate.endTime}, POSec: ${punchOutSec}, SESec: ${shiftEndSec}`);
+    let shiftStartLocal = shiftDate.hour(sh).minute(sm).second(0).millisecond(0);
+    let shiftEndLocal = shiftDate.hour(eh).minute(em).second(es || 0).millisecond(0);
 
-    if (punchOutSec > shiftEndSec) {
-      overtimeByShift = Math.round((punchOutSec - shiftEndSec) / 60);
+    // Overnight logic
+    if (shiftEndLocal.isBefore(shiftStartLocal)) {
+        shiftEndLocal = shiftEndLocal.add(1, 'day');
     }
+
+    if (punchOutLocal.isAfter(shiftEndLocal)) {
+      overtimeByShift = Math.round(punchOutLocal.diff(shiftEndLocal, 'minute', true));
+    }
+
+    console.log(`[OvertimeService] Rule ID: ${rule.id}, PO(Local): ${punchOutLocal.format()}, SE(Local): ${shiftEndLocal.format()}, OT: ${overtimeByShift}`);
   }
 
   console.log(`[OvertimeService] Debug - Total min: ${totalWorkMinutes}, Threshold min: ${baseThreshold}, Shift OT: ${overtimeByShift}, Rule Type: ${rule.calculationType}`);
@@ -164,7 +121,7 @@ async function calculateOvertime(params, orgAccountArg, daysInMonthArg = 30, now
   }
 
   // 1. Resolve effective Shift Template
-  const shiftTemplate = await getEffectiveShiftTemplate(userId, dateKey);
+  const shiftTemplate = await shiftService.getEffectiveShiftTemplate(userId, dateKey);
 
   // 2. Resolve Automation Rule (Assignment > Org Default)
   const { Op } = require('sequelize');

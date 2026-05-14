@@ -1,48 +1,12 @@
 const { EarlyExitRule, StaffEarlyExitAssignment, User, StaffShiftAssignment, ShiftTemplate, StaffRoster } = require('../models');
 const { Op } = require('sequelize');
+const dayjs = require('dayjs');
+const shiftService = require('./shiftService');
 
 /**
  * Service to handle automated Early Exit calculations and penalties
  */
 class EarlyExitService {
-  /**
-   * Helper to get effective shift template for a user on a specific date
-   */
-  async getEffectiveShiftTemplate(userId, dateKey) {
-    try {
-      const roster = await StaffRoster.findOne({ where: { userId, date: dateKey } });
-      if (roster && roster.status === 'SHIFT' && roster.shiftTemplateId) {
-        const tpl = await ShiftTemplate.findByPk(roster.shiftTemplateId);
-        if (tpl && tpl.active !== false) return tpl;
-      }
-
-      const asg = await StaffShiftAssignment.findOne({
-        where: {
-          userId,
-          effectiveFrom: { [Op.lte]: dateKey },
-          [Op.or]: [{ effectiveTo: null }, { effectiveTo: { [Op.gte]: dateKey } }]
-        },
-        order: [['effectiveFrom', 'DESC']]
-      });
-
-      if (asg) {
-        const tpl = await ShiftTemplate.findByPk(asg.shiftTemplateId);
-        if (tpl && tpl.active !== false) return tpl;
-      }
-
-      const user = await User.findByPk(userId);
-      if (user?.shiftTemplateId) {
-        const tpl = await ShiftTemplate.findByPk(user.shiftTemplateId);
-        if (tpl && tpl.active !== false) return tpl;
-      }
-
-      return null;
-    } catch (error) {
-      console.error('[EarlyExitService] Error getting shift:', error);
-      return null;
-    }
-  }
-
   /**
    * Main calculation logic for Early Exit
    */
@@ -51,24 +15,29 @@ class EarlyExitService {
     if (!punchedOutAt) return { earlyExitMinutes: 0, earlyExitAmount: 0, earlyExitRuleId: null };
 
     // 1. Identify Shift End Time (Always identify shift to get raw minutes)
-    const shift = await this.getEffectiveShiftTemplate(userId, dateKey);
+    const shift = await shiftService.getEffectiveShiftTemplate(userId, dateKey);
     let earlyExitMinutes = 0;
 
     if (shift && shift.shiftType !== 'open' && shift.endTime) {
-      const [eh, em, es] = shift.endTime.split(':').map(Number);
-      const shiftEndTs = new Date(punchedOutAt);
-      shiftEndTs.setHours(eh, em, es || 0, 0);
-
-      // Handle overnight shift if necessary (basic check)
       const [sh, sm] = (shift.startTime || '00:00').split(':').map(Number);
-      if (sh > eh) {
-        // If start hour > end hour, shift ends next day. 
-        // However, for pure early exit calculation at punch out, 
-        // we usually compare against the current day's projected end.
+      const [eh, em, es] = shift.endTime.split(':').map(Number);
+      
+      // Robust Time Comparison:
+      // We assume shift times are in Local Time (IST).
+      // Build shift start and end times based on the attendance date (dateKey).
+      const outAtLocal = dayjs(punchedOutAt);
+      const shiftDate = dayjs(dateKey);
+      
+      let shiftStartLocal = shiftDate.hour(sh).minute(sm).second(0).millisecond(0);
+      let shiftEndLocal = shiftDate.hour(eh).minute(em).second(es || 0).millisecond(0);
+
+      // If end time is before start time (e.g. 10 PM to 6 AM), end is on the next day relative to start.
+      if (shiftEndLocal.isBefore(shiftStartLocal)) {
+          shiftEndLocal = shiftEndLocal.add(1, 'day');
       }
 
-      if (punchedOutAt < shiftEndTs) {
-        earlyExitMinutes = Math.round((shiftEndTs - punchedOutAt) / 60000);
+      if (outAtLocal.isBefore(shiftEndLocal)) {
+        earlyExitMinutes = Math.round(shiftEndLocal.diff(outAtLocal, 'minute', true));
       }
     }
 

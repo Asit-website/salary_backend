@@ -6,6 +6,7 @@ const overtimeService = require('./overtimeService');
 const earlyExitService = require('./earlyExitService');
 const earlyOvertimeService = require('./earlyOvertimeService');
 const latePunchInService = require('./latePunchInService');
+const shiftService = require('./shiftService');
 
 /**
  * ZKTeco EasyTimePro Service
@@ -47,20 +48,33 @@ class ZktecoService {
         }
     }
 
-    /**
-     * Helper to get effective shift template
-     */
-    async getShiftTemplate(userId, date) {
-        const { StaffShiftAssignment, ShiftTemplate } = require('../models');
-        const asg = await StaffShiftAssignment.findOne({
-            where: {
-                userId,
-                effectiveFrom: { [Op.lte]: date }
-            },
-            order: [['effectiveFrom', 'DESC']],
-            include: [{ model: ShiftTemplate, as: 'template' }]
+    isNightShift(shift) {
+        if (!shift || !shift.startTime || !shift.endTime) return false;
+        const [sh] = shift.startTime.split(':').map(Number);
+        const [eh] = shift.endTime.split(':').map(Number);
+        return sh > eh || (sh === eh && shift.startTime > shift.endTime);
+    }
+
+    filterPunchesForShift(punches, dateStr, shift) {
+        const [sh, sm] = (shift?.startTime || '09:00').split(':').map(Number);
+        const [eh, em] = (shift?.endTime || '18:00').split(':').map(Number);
+        
+        let startTs = dayjs(dateStr).hour(sh).minute(sm).subtract(4, 'hour');
+        let endTs = dayjs(dateStr).hour(eh).minute(em).add(4, 'hour');
+        
+        if (this.isNightShift(shift)) {
+            endTs = endTs.add(1, 'day');
+        }
+        
+        const parseTime = (str) => {
+            const d = dayjs(str);
+            return d.isValid() ? d.toDate() : new Date(str);
+        };
+
+        return punches.filter(p => {
+            const pt = dayjs(p.punch_time);
+            return pt.isAfter(startTs) && pt.isBefore(endTs);
         });
-        return asg?.template;
     }
 
     /**
@@ -115,7 +129,7 @@ class ZktecoService {
         }
 
         const workMinutes = totalWorkSeconds / 60;
-        const shift = await this.getShiftTemplate(userId, date);
+        const shift = await shiftService.getEffectiveShiftTemplate(userId, date);
 
         // Declare local variables for results
         let overtimeMinutes = 0;
@@ -151,7 +165,7 @@ class ZktecoService {
                 totalWorkHours: (workMinutes / 60),
                 punchedInAt: firstIn,
                 punchedOutAt: lastOut
-            }, orgAccountObj, date, daysInMonth);
+            }, orgAccountObj, daysInMonth, new Date(date));
 
             overtimeMinutes = otResult.overtimeMinutes;
             overtimeAmount = otResult.overtimeAmount;
@@ -167,7 +181,7 @@ class ZktecoService {
                 orgAccountId: staff.orgAccountId,
                 date,
                 punchedInAt: firstIn
-            }, orgAccountObj, date, daysInMonth);
+            }, orgAccountObj, daysInMonth, new Date(date));
 
             earlyOvertimeMinutes = eotResult.earlyOvertimeMinutes;
             earlyOvertimeAmount = eotResult.earlyOvertimeAmount;
@@ -179,7 +193,7 @@ class ZktecoService {
                 orgAccountId: staff.orgAccountId,
                 date,
                 punchedOutAt: lastOut
-            }, orgAccountObj, date, daysInMonth);
+            }, orgAccountObj, daysInMonth, new Date(date));
 
             // 4. Late Punch-In Calculation
             const lpResult = await latePunchInService.calculateLatePenalty({
@@ -187,7 +201,7 @@ class ZktecoService {
                 orgAccountId: staff.orgAccountId,
                 date,
                 punchedInAt: firstIn
-            }, orgAccountObj, date, daysInMonth);
+            }, orgAccountObj, daysInMonth, new Date(date));
 
             // 5. Break Deduction Calculation
             const breakService = require('./breakService');
@@ -301,9 +315,10 @@ class ZktecoService {
             for (const dateStr of datesToSync) {
                 console.log(`[ZktecoSync] Fetching transactions for date: ${dateStr}`);
 
+                const lookAheadEnd = dayjs(dateStr).add(1, 'day').hour(12).minute(0).format('YYYY-MM-DD HH:mm:ss');
                 let rawResult = await this.getTransactions(url, token, {
                     start_time: `${dateStr} 00:00:00`,
-                    end_time: `${dateStr} 23:59:59`
+                    end_time: lookAheadEnd
                 });
 
                 // Handle different response shapes
@@ -364,7 +379,10 @@ class ZktecoService {
                     }
 
                     // Merging logic removed as requested. Using filtered biometric punches only.
-                    const res = await this.calculateDetails(userId, filteredPunches, dateStr);
+                    const shift = await shiftService.getEffectiveShiftTemplate(userId, dateStr);
+                    const punchesForShift = this.filterPunchesForShift(filteredPunches, dateStr, shift);
+                    
+                    const res = await this.calculateDetails(userId, punchesForShift, dateStr);
 
                     if (!res) continue;
 

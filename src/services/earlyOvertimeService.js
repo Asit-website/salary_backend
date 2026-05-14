@@ -1,49 +1,6 @@
+const dayjs = require('dayjs');
 const { sequelize, EarlyOvertimeRule, ShiftTemplate, StaffShiftAssignment, User, StaffProfile, StaffRoster, OrgAccount, StaffEarlyOvertimeAssignment } = require('../models');
-
-/**
- * Resolves the effective Shift Template for a user on a given date.
- */
-async function getEffectiveShiftTemplate(userId, dateKey) {
-  try {
-    const { Op } = require('sequelize');
-    const where = { userId };
-    if (dateKey) {
-      where.effectiveFrom = { [Op.lte]: dateKey };
-      where[Op.or] = [{ effectiveTo: null }, { effectiveTo: { [Op.gte]: dateKey } }];
-    }
-    // 1. Roster check
-    if (userId && dateKey) {
-      const roster = await StaffRoster.findOne({ where: { userId, date: dateKey } });
-      if (roster) {
-        if (roster.status === 'SHIFT' && roster.shiftTemplateId) {
-          const tpl = await ShiftTemplate.findByPk(roster.shiftTemplateId);
-          if (tpl && tpl.active !== false) return tpl;
-        }
-        if (roster.status === 'WEEKLY_OFF' || roster.status === 'HOLIDAY') return null;
-      }
-    }
-    // 2. Assignment check
-    const asg = await StaffShiftAssignment.findOne({ where, order: [['effectiveFrom', 'DESC'], ['id', 'DESC']] });
-    if (asg) {
-      const tpl = await ShiftTemplate.findByPk(asg.shiftTemplateId);
-      if (tpl && tpl.active !== false) return tpl;
-    }
-    // 3. Profile check
-    const user = await User.findByPk(userId, { include: [{ model: StaffProfile, as: 'profile' }] });
-    if (user?.shiftTemplateId) {
-      const tpl = await ShiftTemplate.findByPk(user.shiftTemplateId);
-      if (tpl && tpl.active !== false) return tpl;
-    }
-    if (user?.profile?.shiftSelection) {
-      const tpl = await ShiftTemplate.findOne({ where: { id: Number(user.profile.shiftSelection), active: true } });
-      if (tpl) return tpl;
-    }
-    return null;
-  } catch (e) {
-    console.error('[EarlyOvertimeService] Error getting shift template:', e.message);
-    return null;
-  }
-}
+const shiftService = require('./shiftService');
 
 /**
  * Helper to find minutes worked before shift start.
@@ -54,29 +11,15 @@ async function getEarlyOvertimeMinutes(attendance, rule, shiftTemplate) {
     return 0;
   }
 
-  const punchIn = new Date(attendance.punchedInAt);
-
-  // Timezone safe extraction (IST - Asia/Kolkata)
-  const istStr = punchIn.toLocaleString('en-US', { timeZone: 'Asia/Kolkata', hour12: false });
-  const localMatch = istStr.match(/(\d{1,2}):(\d{2}):(\d{2})/);
-  let punchInSec = 0;
-
-  if (localMatch) {
-    const ph = parseInt(localMatch[1]);
-    const pm = parseInt(localMatch[2]);
-    const ps = parseInt(localMatch[3]);
-    punchInSec = ph * 3600 + pm * 60 + ps;
-  } else {
-    punchInSec = punchIn.getHours() * 3600 + punchIn.getMinutes() * 60 + punchIn.getSeconds();
-  }
-
+  const punchInLocal = dayjs(attendance.punchedInAt);
   const [sh, sm, ss] = shiftTemplate.startTime.split(':').map(Number);
-  const shiftStartSec = (sh * 3600 + sm * 60 + (ss || 0));
+  
+  // Use the attendance dateKey as the base for the shift start
+  const shiftDate = dayjs(attendance.date || attendance.punchedInAt);
+  const shiftStartLocal = shiftDate.hour(sh).minute(sm).second(ss || 0).millisecond(0);
 
-  console.log(`[EarlyOvertimeService] Rule ID: ${rule.id}, PI (IST): ${istStr}, SS: ${shiftTemplate.startTime}, PISec: ${punchInSec}, SSSec: ${shiftStartSec}`);
-
-  if (punchInSec < shiftStartSec) {
-    const earlyMin = Math.round((shiftStartSec - punchInSec) / 60);
+  if (punchInLocal.isBefore(shiftStartLocal)) {
+    const earlyMin = Math.round(shiftStartLocal.diff(punchInLocal, 'minute', true));
 
     // Check against minimum threshold for Early OT to count (fallback to 0)
     const baseThreshold = (rule.thresholds && rule.thresholds.length > 0) ? rule.thresholds[0].minMinutes : 0;
@@ -109,7 +52,7 @@ async function calculateEarlyOvertime(params, orgAccountArg, daysInMonthArg = 30
     orgAccount = await OrgAccount.findByPk(orgAccountId);
   }
 
-  const shiftTemplate = await getEffectiveShiftTemplate(userId, dateKey);
+  const shiftTemplate = await shiftService.getEffectiveShiftTemplate(userId, dateKey);
 
   const { Op } = require('sequelize');
   const assignment = await StaffEarlyOvertimeAssignment.findOne({

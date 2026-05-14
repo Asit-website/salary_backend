@@ -4,8 +4,15 @@ const { searchFace, listFaces } = require('../services/awsService');
 const jwt = require('jsonwebtoken');
 const { User, StaffProfile, Attendance, AppSetting, StaffAttendanceAssignment, AttendanceTemplate, StaffShiftAssignment, ShiftTemplate, StaffRoster, OrgAccount } = require('../models');
 const { Op } = require('sequelize');
+const { formatDate: isoDate, todayKey } = require('../utils/dateUtils');
 const earlyOvertimeService = require('../services/earlyOvertimeService');
 const latePunchInService = require('../services/latePunchInService');
+const shiftService = require('../services/shiftService');
+function addDays(d, n) {
+  const res = new Date(d);
+  res.setDate(res.getDate() + n);
+  return res;
+}
 
 const router = express.Router();
 const storage = multer.memoryStorage();
@@ -36,48 +43,10 @@ const kioskAuth = (req, res, next) => {
   return res.status(401).json({ success: false, message: 'Unauthorized Kiosk Access' });
 };
 
-// ... Utility functions (todayKey, diffSeconds, getEffectiveShiftTemplate) ...
-function todayKey() {
-  const d = new Date();
-  const yyyy = d.getFullYear();
-  const mm = String(d.getMonth() + 1).padStart(2, '0');
-  const dd = String(d.getDate()).padStart(2, '0');
-  return `${yyyy}-${mm}-${dd}`;
-}
-
+// Utility functions removed in favor of centralized services
 function diffSeconds(a, b) {
   if (!a || !b) return 0;
   return Math.max(0, Math.floor((b.getTime() - a.getTime()) / 1000));
-}
-
-async function getEffectiveShiftTemplate(userId, dateKey) {
-  try {
-    const where = { userId };
-    if (dateKey) {
-      where.effectiveFrom = { [Op.lte]: dateKey };
-      where[Op.or] = [{ effectiveTo: null }, { effectiveTo: { [Op.gte]: dateKey } }];
-    }
-    const roster = await StaffRoster.findOne({ where: { userId, date: dateKey } });
-    if (roster && roster.status === 'SHIFT' && roster.shiftTemplateId) {
-      const tpl = await ShiftTemplate.findByPk(roster.shiftTemplateId);
-      if (tpl && tpl.active !== false) return tpl;
-    }
-    const asg = await StaffShiftAssignment.findOne({ where, order: [['effectiveFrom', 'DESC']] });
-    if (asg) {
-      const tpl = await ShiftTemplate.findByPk(asg.shiftTemplateId);
-      if (tpl && tpl.active !== false) return tpl;
-    }
-    const user = await User.findByPk(userId, { include: [{ model: StaffProfile, as: 'profile' }] });
-    if (user?.shiftTemplateId) {
-      const tpl = await ShiftTemplate.findByPk(user.shiftTemplateId);
-      if (tpl && tpl.active !== false) return tpl;
-    }
-    if (user?.profile?.shiftSelection) {
-      const tpl = await ShiftTemplate.findOne({ where: { id: Number(user.profile.shiftSelection), active: true } });
-      if (tpl) return tpl;
-    }
-    return null;
-  } catch (_) { return null; }
 }
 
 // Diagnostic API: List all enrolled faces
@@ -170,11 +139,28 @@ router.post('/face-recognition', kioskAuth, upload.single('photo'), async (req, 
       return res.status(403).json({ success: false, message: 'Access denied: Staff member belongs to another organization' });
     }
 
-    const dateKey = todayKey();
+    let dateKey = todayKey();
     const now = new Date();
 
     // 2. Check current attendance record
     let record = await Attendance.findOne({ where: { userId, date: dateKey } });
+
+    // Night Shift Look-back: If no open record today, look back at yesterday
+    if (!record || record.punchedOutAt) {
+      const yesterday = isoDate(addDays(new Date(), -1));
+      const prevRecord = await Attendance.findOne({ where: { userId, date: yesterday, punchedOutAt: null } });
+      if (prevRecord) {
+        const prevShift = await shiftService.getEffectiveShiftTemplate(userId, yesterday);
+        if (prevShift && prevShift.startTime && prevShift.endTime) {
+          const [sh] = prevShift.startTime.split(':').map(Number);
+          const [eh] = prevShift.endTime.split(':').map(Number);
+          if (sh > eh || (sh === eh && prevShift.startTime > prevShift.endTime)) {
+            record = prevRecord;
+            dateKey = yesterday;
+          }
+        }
+      }
+    }
 
     let action = '';
     let responseData = {};
@@ -240,7 +226,7 @@ router.post('/face-recognition', kioskAuth, upload.single('photo'), async (req, 
     } else {
       // PUNCH OUT (or UPDATE PUNCH OUT) - Calculate status and total work hours
       const inAt = new Date(record.punchedInAt);
-      const shiftTpl = await getEffectiveShiftTemplate(userId, dateKey);
+      const shiftTpl = await shiftService.getEffectiveShiftTemplate(userId, dateKey);
 
       const breakTotalSeconds = Number(record.breakTotalSeconds || 0);
       const totalWorkSeconds = diffSeconds(inAt, now) - breakTotalSeconds;
