@@ -382,52 +382,58 @@ router.get('/clients', async (req, res) => {
     });
     const now = new Date();
 
-    // Group organizations by phone number OR creator's organization to identify parent/children
-    const phoneGroups = {};
-    const orgToGroupHead = {}; // orgId -> parentOrgId
+    // Group organizations by Root Owner Phone to identify parent/children
+    const rootGroups = {}; // rootPhone -> OrgAccount[]
+    const userToRootPhone = {}; // userId -> rootPhone
 
-    allOrgs.forEach(org => {
-      const ph = org.phone;
-      const creatorOrgId = org.creator?.orgAccountId;
+    for (const org of allOrgs) {
+      let rootPhone = org.phone;
 
-      let groupKey = null;
-
-      // 1. Try grouping by phone
-      if (ph && phoneGroups[ph]) {
-        groupKey = ph;
-      }
-      // 2. Try grouping by creator's org (if creator is not a superadmin)
-      else if (creatorOrgId && org.creator?.role !== 'superadmin') {
-        // Find which group the creator's org belongs to
-        const headId = orgToGroupHead[creatorOrgId] || creatorOrgId;
-        // Find the group that contains this headId
-        for (const k in phoneGroups) {
-          if (phoneGroups[k].some(o => o.id === headId)) {
-            groupKey = k;
-            break;
+      // 1. If creator is known, try to find their root phone
+      if (org.createdBy && !userToRootPhone[org.createdBy]) {
+        try {
+          const creator = await User.findByPk(org.createdBy);
+          if (creator) {
+            // Find the oldest admin record for this person's phone
+            const firstAdmin = await User.findOne({ 
+              where: { phone: creator.phone, role: 'admin' }, 
+              order: [['id', 'ASC']] 
+            });
+            if (firstAdmin) {
+              const rootOrg = await OrgAccount.findByPk(firstAdmin.orgAccountId);
+              if (rootOrg) rootPhone = rootOrg.phone;
+            }
           }
+          userToRootPhone[org.createdBy] = rootPhone;
+        } catch (e) { console.error('Grouping logic error:', e); }
+      } else if (org.createdBy) {
+        rootPhone = userToRootPhone[org.createdBy];
+      }
+
+      // 2. Cross-link via Admin Phone (if phone itself is an admin in another org)
+      if (rootPhone) {
+        const adminCheck = await User.findOne({ 
+          where: { phone: rootPhone, role: 'admin' }, 
+          order: [['id', 'ASC']] 
+        });
+        if (adminCheck && adminCheck.orgAccountId) {
+           const adminOrg = await OrgAccount.findByPk(adminCheck.orgAccountId);
+           if (adminOrg && adminOrg.phone) rootPhone = adminOrg.phone;
         }
-        // If no phone group found for headId, create a new group keyed by headId
-        if (!groupKey) groupKey = `org-${headId}`;
       }
 
-      if (!groupKey) {
-        groupKey = ph ? ph : `no-phone-${org.id}`;
-      }
+      // Fallback: If no root phone found yet, use current org phone
+      const groupKey = rootPhone || `no-identity-${org.id}`;
 
-      if (!phoneGroups[groupKey]) phoneGroups[groupKey] = [];
-      phoneGroups[groupKey].push(org);
-
-      // Update mapping
-      const headId = phoneGroups[groupKey][0].id;
-      orgToGroupHead[org.id] = headId;
-    });
+      if (!rootGroups[groupKey]) rootGroups[groupKey] = [];
+      rootGroups[groupKey].push(org);
+    }
 
     const geoPermission = await Permission.findOne({ where: { name: 'geolocation_access' } });
     const finalClients = [];
 
-    for (const ph in phoneGroups) {
-      const groupOrgs = phoneGroups[ph];
+    for (const ph in rootGroups) {
+      const groupOrgs = rootGroups[ph];
       const parentOrg = groupOrgs[0]; // Oldest is the parent
       const childrenOrgs = groupOrgs.slice(1);
       const linkedOrgIds = groupOrgs.map(o => o.id);
@@ -639,23 +645,7 @@ router.post('/clients', async (req, res) => {
     const normalizedPhone = normalizePhone(phone);
 
     if (normalizedPhone) {
-      // Check if phone already exists as an OrgAccount phone
-      const existingOrgPhone = await OrgAccount.findOne({ where: { phone: String(normalizedPhone) } });
-      if (existingOrgPhone) {
-        return res.status(400).json({
-          success: false,
-          message: `Phone number is already registered for organization: ${existingOrgPhone.name}.`
-        });
-      }
-
-      // Check if phone already exists as a STAFF member.
-      const existingStaff = await User.findOne({ where: { phone: String(normalizedPhone), role: 'staff' } });
-      if (existingStaff) {
-        return res.status(400).json({
-          success: false,
-          message: 'Phone number is already registered as a staff member.'
-        });
-      }
+      // Note: We allow the same phone number to be an Admin here even if it exists as Staff elsewhere.
     }
 
     await validateChannelPartnerMapping({ phone: normalizedPhone, channelPartnerId });
@@ -680,6 +670,20 @@ router.post('/clients', async (req, res) => {
       extra: extra || null,
       createdBy: createdBy || null,
     });
+
+    // Auto-save business info and brand on creation
+    try {
+      await sequelize.models.OrgBrand.create({ displayName: name, active: true, orgAccountId: row.id });
+      await sequelize.models.OrgBusinessInfo.create({
+        state: state || null,
+        city: city || null,
+        addressLine1: address || null,
+        active: true,
+        orgAccountId: row.id
+      });
+    } catch (e) {
+      console.error('Failed to sync business info on client creation:', e);
+    }
 
     try {
       if (normalizedPhone) {
@@ -741,38 +745,6 @@ router.put('/clients/:id', async (req, res) => {
     // Check if phone number already exists in either OrgAccount or User table (excluding current client)
     const normalizedPhone = normalizePhone(phone);
 
-    if (normalizedPhone) {
-      // Check for other organizations using the same phone
-      const existingOrg = await OrgAccount.findOne({
-        where: {
-          phone: normalizedPhone,
-          id: { [Op.ne]: row.id }
-        }
-      });
-
-      if (existingOrg) {
-        return res.status(400).json({
-          success: false,
-          message: `Phone number is already registered for another organization: ${existingOrg.name}.`
-        });
-      }
-
-      // We only block if the phone is already used by a STAFF member in ANY org.
-      const existingStaff = await User.findOne({
-        where: {
-          phone: String(normalizedPhone),
-          role: 'staff'
-        }
-      });
-
-      if (existingStaff) {
-        return res.status(400).json({
-          success: false,
-          message: 'Phone number is already registered as a staff member.'
-        });
-      }
-    }
-
     if (phone !== undefined) {
       await validateChannelPartnerMapping({ phone: normalizedPhone, channelPartnerId });
     }
@@ -796,6 +768,70 @@ router.put('/clients/:id', async (req, res) => {
       gstNumber: gstNumber !== undefined ? gstNumber : row.gstNumber,
       extra: extra !== undefined ? extra : row.extra,
     });
+
+    // Sync business info and brand on update
+    try {
+      const currentName = row.name;
+      const currentState = row.state;
+      const currentCity = row.city;
+      const currentAddress = row.address;
+      
+      console.log(`[SYNC CLIENT] Syncing client ${row.id} - ${currentName}`);
+
+      if (currentName) {
+        const brand = await sequelize.models.OrgBrand.findOne({ where: { active: true, orgAccountId: row.id } });
+        if (brand) {
+          console.log(`[SYNC CLIENT] Updating existing OrgBrand for ${row.id}`);
+          await brand.update({ displayName: currentName });
+        } else {
+          console.log(`[SYNC CLIENT] Creating new OrgBrand for ${row.id}`);
+          await sequelize.models.OrgBrand.create({ displayName: currentName, active: true, orgAccountId: row.id });
+        }
+      }
+      
+      const info = await sequelize.models.OrgBusinessInfo.findOne({ where: { active: true, orgAccountId: row.id } });
+      const infoUpdates = {
+        state: currentState || null,
+        city: currentCity || null,
+        addressLine1: currentAddress || null
+      };
+      
+      if (info) {
+        console.log(`[SYNC CLIENT] Updating existing OrgBusinessInfo for ${row.id}`);
+        await info.update(infoUpdates);
+      } else {
+        console.log(`[SYNC CLIENT] Creating new OrgBusinessInfo for ${row.id}`);
+        await sequelize.models.OrgBusinessInfo.create({ ...infoUpdates, active: true, orgAccountId: row.id });
+      }
+      console.log(`[SYNC CLIENT] Sync completed successfully for ${row.id}`);
+
+      // Sync admin user email in StaffProfile
+      if (row.businessEmail) {
+        try {
+          const admins = await User.findAll({ where: { orgAccountId: row.id, role: 'admin' } });
+          for (const admin of admins) {
+            const profile = await StaffProfile.findOne({ where: { userId: admin.id } });
+            if (profile) {
+              if (!profile.email) {
+                await profile.update({ email: row.businessEmail });
+              }
+            } else {
+              await StaffProfile.create({
+                userId: admin.id,
+                orgAccountId: row.id,
+                name: admin.name || 'Admin',
+                email: row.businessEmail
+              });
+            }
+          }
+        } catch (adminSyncError) {
+          console.error('[SYNC CLIENT] Failed to sync admin email:', adminSyncError);
+        }
+      }
+    } catch (e) {
+      console.error('[SYNC CLIENT] Failed to sync business info on client update:', e);
+    }
+
     return res.json({ success: true, client: row });
   } catch (e) {
     if (e?.statusCode) {
@@ -986,10 +1022,21 @@ router.post('/clients/:id/subscription', async (req, res) => {
     try {
       const normalizedPhone = org.phone ? String(org.phone).replace(/[^0-9]/g, '').slice(-10) : null;
       if (normalizedPhone) {
-        let admin = await User.findOne({ where: { phone: String(normalizedPhone) } });
+        let admin = await User.findOne({ where: { phone: String(normalizedPhone), orgAccountId: org.id } });
         if (!admin) {
           const hash = await bcrypt.hash('123456', 10);
           admin = await User.create({ role: 'admin', orgAccountId: org.id, phone: String(normalizedPhone), passwordHash: hash, active: true });
+          
+          try {
+            await StaffProfile.create({
+              userId: admin.id,
+              orgAccountId: org.id,
+              name: org.name || 'Admin',
+              email: org.businessEmail || null
+            });
+          } catch (profileError) {
+            console.error('Failed to create profile in superadmin subscription assignment:', profileError);
+          }
 
           // Send account activation email to business email when admin is created
           if (org.businessEmail) {
@@ -1007,6 +1054,24 @@ router.post('/clients/:id/subscription', async (req, res) => {
           }
         } else {
           await admin.update({ orgAccountId: org.id, role: 'admin', active: true });
+          
+          try {
+            const profile = await StaffProfile.findOne({ where: { userId: admin.id } });
+            if (profile) {
+              if (!profile.email && org.businessEmail) {
+                await profile.update({ email: org.businessEmail });
+              }
+            } else {
+              await StaffProfile.create({
+                userId: admin.id,
+                orgAccountId: org.id,
+                name: org.name || 'Admin',
+                email: org.businessEmail || null
+              });
+            }
+          } catch (profileError) {
+            console.error('Failed to update profile in superadmin subscription assignment:', profileError);
+          }
 
           // Send account activation email to business email for existing admin
           if (org.businessEmail) {
@@ -1294,6 +1359,46 @@ router.post('/clients/:id/toggle-status', async (req, res) => {
     }
 
     await org.update({ status: newStatus });
+
+    // Sync business info and brand on status toggle
+    try {
+      const currentName = org.name;
+      const currentState = org.state;
+      const currentCity = org.city;
+      const currentAddress = org.address;
+      
+      console.log(`[SYNC CLIENT] Syncing client ${org.id} - ${currentName} from toggle-status`);
+
+      if (currentName) {
+        const brand = await sequelize.models.OrgBrand.findOne({ where: { active: true, orgAccountId: org.id } });
+        if (brand) {
+          console.log(`[SYNC CLIENT] Updating existing OrgBrand for ${org.id}`);
+          await brand.update({ displayName: currentName });
+        } else {
+          console.log(`[SYNC CLIENT] Creating new OrgBrand for ${org.id}`);
+          await sequelize.models.OrgBrand.create({ displayName: currentName, active: true, orgAccountId: org.id });
+        }
+      }
+      
+      const info = await sequelize.models.OrgBusinessInfo.findOne({ where: { active: true, orgAccountId: org.id } });
+      const infoUpdates = {
+        state: currentState || null,
+        city: currentCity || null,
+        addressLine1: currentAddress || null
+      };
+      
+      if (info) {
+        console.log(`[SYNC CLIENT] Updating existing OrgBusinessInfo for ${org.id}`);
+        await info.update(infoUpdates);
+      } else {
+        console.log(`[SYNC CLIENT] Creating new OrgBusinessInfo for ${org.id}`);
+        await sequelize.models.OrgBusinessInfo.create({ ...infoUpdates, active: true, orgAccountId: org.id });
+      }
+      console.log(`[SYNC CLIENT] Sync completed successfully for ${org.id}`);
+    } catch (e) {
+      console.error('[SYNC CLIENT] Failed to sync business info on client status toggle:', e);
+    }
+
     return res.json({ success: true, status: newStatus });
   } catch (e) {
     return res.status(500).json({ success: false, message: 'Failed to toggle status' });

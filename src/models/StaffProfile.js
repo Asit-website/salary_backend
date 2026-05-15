@@ -15,7 +15,6 @@ module.exports = (sequelize) => {
       staffId: {
         type: DataTypes.STRING(50),
         allowNull: true,
-        unique: true,
         field: 'staff_id'
       },
       name: { type: DataTypes.STRING(150), allowNull: true },

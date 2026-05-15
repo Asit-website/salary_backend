@@ -15,6 +15,7 @@ module.exports = (sequelize) => {
     },
     date: { type: DataTypes.DATEONLY, allowNull: false },
     turnAroundTime: { type: DataTypes.STRING(50), allowNull: true },
+    turnAroundDate: { type: DataTypes.DATEONLY, allowNull: true, field: 'turn_around_date' },
     isClosed: { type: DataTypes.BOOLEAN, defaultValue: false, field: 'is_closed' },
     closedById: { type: DataTypes.BIGINT.UNSIGNED, allowNull: true, field: 'closed_by_id' },
     transferredToId: { type: DataTypes.BIGINT.UNSIGNED, allowNull: true, field: 'transferred_to_id' },

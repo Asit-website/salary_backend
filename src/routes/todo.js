@@ -12,7 +12,7 @@ router.use(tenantEnforce);
 // Create activity
 router.post('/', async (req, res) => {
   try {
-    const { title, description, remarks, status, date, turnAroundTime } = req.body || {};
+    const { title, description, remarks, status, date, turnAroundTime, turnAroundDate } = req.body || {};
     if (!title || !date) {
       return res.status(400).json({ success: false, message: 'Title and date are required' });
     }
@@ -26,6 +26,7 @@ router.post('/', async (req, res) => {
       status: status || 'SCHEDULE',
       date,
       turnAroundTime,
+      turnAroundDate,
       allocatedById: req.user.id,
     });
 
@@ -162,10 +163,10 @@ router.patch('/:id', async (req, res) => {
       return res.status(403).json({ success: false, message: 'Activity is closed and cannot be edited' });
     }
 
-    const { title, description, remarks, date, turnAroundTime } = req.body || {};
+    const { title, description, remarks, date, turnAroundTime, turnAroundDate } = req.body || {};
     const oldStatus = activity.status;
 
-    await activity.update({ title, description, remarks, date, turnAroundTime });
+    await activity.update({ title, description, remarks, date, turnAroundTime, turnAroundDate });
 
     await ActivityHistory.create({
       activityId: activity.id,

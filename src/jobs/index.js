@@ -2,6 +2,7 @@ const cron = require('node-cron');
 const { checkSubscriptionExpiryReminders } = require('./subscriptionExpiryReminder');
 const { scheduleZktecoSync, runZktecoSyncAllOrgs } = require('./zktecoSync');
 const { checkMissingAttendanceAndNotify } = require('./attendanceReminder');
+const { checkMissingCheckoutAndNotify } = require('./missingCheckoutReminder');
 const { processMailQueue } = require('./mailCampaignJob');
 const { checkAndPostCelebrations } = require('./socialJob');
 
@@ -32,6 +33,15 @@ const scheduleSocialCelebrations = () => {
     await checkAndPostCelebrations();
   });
   console.log('📅 Social celebrations job scheduled to run daily at 8:00 AM');
+};
+
+// Schedule missing checkout email at 2:00 PM daily
+const scheduleMissingCheckoutReminders = () => {
+  cron.schedule('0 14 * * *', async () => {
+    console.log('⏰ Running scheduled missing check-out reminder...');
+    await checkMissingCheckoutAndNotify();
+  });
+  console.log('📅 Missing checkout email job scheduled to run daily at 2:00 PM');
 };
 
 // Schedule bulk mail processing to run every minute
@@ -68,5 +78,6 @@ module.exports = {
   runAttendanceReminderManual,
   scheduleBulkMailJob,
   scheduleSocialCelebrations,
-  runSocialCelebrationsManual
+  runSocialCelebrationsManual,
+  scheduleMissingCheckoutReminders
 };

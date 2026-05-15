@@ -66,10 +66,9 @@ router.get('/activities', async (req, res) => {
     }
 });
 
-// Admin: Create Activity
 router.post('/activities', async (req, res) => {
     try {
-        const { userId, title, description, date, turnAroundTime } = req.body;
+        const { userId, title, description, date, turnAroundTime, turnAroundDate } = req.body;
         
         if (!userId || !title || !date) {
             return res.status(400).json({ success: false, message: 'Staff, Title and Date are required' });
@@ -82,6 +81,7 @@ router.post('/activities', async (req, res) => {
             description,
             date,
             turnAroundTime,
+            turnAroundDate,
             status: 'SCHEDULE',
             allocatedById: req.user.id
         });
@@ -103,12 +103,12 @@ router.post('/activities', async (req, res) => {
 // Admin: Update Activity
 router.patch('/activities/:id', async (req, res) => {
     try {
-        const { userId, title, description, date, turnAroundTime } = req.body;
+        const { userId, title, description, date, turnAroundTime, turnAroundDate } = req.body;
         const activity = await Activity.findOne({ where: { id: req.params.id, orgAccountId: req.tenantOrgAccountId } });
         if (!activity) return res.status(404).json({ success: false, message: 'Activity not found' });
 
         const oldStatus = activity.status;
-        await activity.update({ userId, title, description, date, turnAroundTime });
+        await activity.update({ userId, title, description, date, turnAroundTime, turnAroundDate });
 
         await ActivityHistory.create({
             activityId: activity.id,

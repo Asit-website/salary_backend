@@ -147,8 +147,8 @@ router.put('/phone', async (req, res) => {
     const me = await User.findByPk(req.user.id);
     if (!me) return res.status(404).json({ success: false, message: 'User not found' });
 
-    // Ensure uniqueness
-    const existing = await User.findOne({ where: { phone: nextPhone, id: { [Op.ne]: me.id } } });
+    // Ensure global uniqueness — phone cannot be used if already active in any organization
+    const existing = await User.findOne({ where: { phone: nextPhone, active: true, id: { [Op.ne]: me.id } } });
     if (existing) return res.status(409).json({ success: false, message: 'Phone number already in use' });
 
     await me.update({ phone: nextPhone });

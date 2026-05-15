@@ -62,6 +62,71 @@ async function validateChannelPartnerMapping({ phone, channelPartnerId }) {
   }
 }
 
+/**
+ * Syncs organization metadata (Brand, BusinessInfo, Admin Profile) from OrgAccount.
+ * Used to repair/update legacy organizations during login.
+ */
+async function syncOrgMetadata(orgId, sequelize) {
+  if (!orgId) return;
+  try {
+    const { OrgAccount, OrgBrand, OrgBusinessInfo, User, StaffProfile } = require('../models');
+    const org = await OrgAccount.findByPk(orgId);
+    if (!org) return;
+
+    // 1. Sync OrgBrand
+    const brand = await OrgBrand.findOne({ where: { orgAccountId: org.id } });
+    if (!brand) {
+      await OrgBrand.create({ displayName: org.name, active: true, orgAccountId: org.id });
+    } else if (!brand.displayName || brand.displayName === 'Your Company Name') {
+      await brand.update({ displayName: org.name });
+    }
+
+    // 2. Sync OrgBusinessInfo
+    const info = await OrgBusinessInfo.findOne({ where: { orgAccountId: org.id } });
+    const infoData = {
+      state: org.state || null,
+      city: org.city || null,
+      addressLine1: org.address || null,
+      active: true,
+      orgAccountId: org.id
+    };
+    if (!info) {
+      await OrgBusinessInfo.create(infoData);
+    } else {
+      // Update if missing critical info
+      if (!info.state || !info.city || !info.addressLine1) {
+        await info.update({
+          state: info.state || org.state || null,
+          city: info.city || org.city || null,
+          addressLine1: info.addressLine1 || org.address || null
+        });
+      }
+    }
+
+    // 3. Sync Admin StaffProfile Email
+    if (org.businessEmail) {
+      const admins = await User.findAll({ where: { orgAccountId: org.id, role: 'admin' } });
+      for (const admin of admins) {
+        const profile = await StaffProfile.findOne({ where: { userId: admin.id } });
+        if (profile) {
+          if (!profile.email) {
+            await profile.update({ email: org.businessEmail });
+          }
+        } else {
+          await StaffProfile.create({
+            userId: admin.id,
+            orgAccountId: org.id,
+            name: admin.name || 'Admin',
+            email: org.businessEmail
+          });
+        }
+      }
+    }
+  } catch (err) {
+    console.error(`[SYNC ORG METADATA] Failed for org ${orgId}:`, err);
+  }
+}
+
 router.post('/send-otp', async (req, res) => {
   try {
     const { phone } = req.body || {};
@@ -267,6 +332,8 @@ router.post('/verify-otp', async (req, res) => {
               name: u.orgAccount?.name || `Organization ${u.orgAccountId}`,
               role: u.role
             });
+            // NEW: Sync metadata for each organization identified
+            syncOrgMetadata(u.orgAccountId, req.app.get('sequelize')).catch(() => { });
           }
         });
 
@@ -341,7 +408,8 @@ router.post('/verify-otp', async (req, res) => {
           const userId = orgId.split('-')[1];
           user = allUsers.find(u => String(u.id) === String(userId));
         } else {
-          user = allUsers.find(u => String(u.orgAccountId) === String(orgId) || (orgId === 'null' && !u.orgAccountId));
+          user = allUsers.find(u => (String(u.orgAccountId) === String(orgId) || (orgId === 'null' && !u.orgAccountId)) && u.active) || 
+                 allUsers.find(u => String(u.orgAccountId) === String(orgId) || (orgId === 'null' && !u.orgAccountId));
         }
 
         if (!user) {
@@ -460,7 +528,8 @@ router.post('/switch-account', async (req, res) => {
       const userId = orgId.split('-')[1];
       user = allUsers.find(u => String(u.id) === String(userId));
     } else {
-      user = allUsers.find(u => String(u.orgAccountId) === String(orgId) || (orgId === 'null' && !u.orgAccountId));
+      user = allUsers.find(u => (String(u.orgAccountId) === String(orgId) || (orgId === 'null' && !u.orgAccountId)) && u.active) || 
+             allUsers.find(u => String(u.orgAccountId) === String(orgId) || (orgId === 'null' && !u.orgAccountId));
     }
 
     if (!user) {
@@ -469,6 +538,11 @@ router.post('/switch-account', async (req, res) => {
     }
 
     if (user.active === false) return res.status(403).json({ success: false, message: 'User disabled' });
+
+    // Sync metadata on switch
+    if (user.orgAccountId) {
+      syncOrgMetadata(user.orgAccountId, req.app.get('sequelize')).catch(() => { });
+    }
 
     // Issue new token
     const profile = await StaffProfile.findOne({ where: { userId: user.id } });
@@ -533,6 +607,85 @@ router.post('/add-organization', async (req, res) => {
     // 1. Normalize phone (last 10 digits to be safe)
     const normalizedPhone = phone.length > 10 ? phone.slice(-10) : phone;
 
+    // Identify the owner phone for the new organization
+    let ownerPhone = String(normalizedPhone);
+    let parentAdminUser = null;
+
+    // Robust Inheritance: Find all organizations this phone belongs to
+    const allMemberships = await User.findAll({
+      where: {
+        [require('sequelize').Op.or]: [
+          { phone: String(phone) },
+          { phone: String(normalizedPhone) }
+        ]
+      }
+    });
+
+    // Strategy:
+    // 1. If currently in an organization (decoded.orgAccountId), prioritize that parent.
+    // 2. Otherwise, check if user is an 'admin' in ANY organization (they are a parent themselves).
+    // 3. Otherwise, check if user is a 'staff' in ANY organization (they are a child of some parent).
+
+    const currentOrgId = decoded.orgAccountId;
+    const currentMembership = currentOrgId ? allMemberships.find(m => String(m.orgAccountId) === String(currentOrgId)) : null;
+
+    // A. Identify Owner Phone via Current Context (Most Reliable)
+    if (currentOrgId) {
+      try {
+        const currentOrg = await OrgAccount.findByPk(currentOrgId);
+        if (currentOrg && currentOrg.phone) {
+          ownerPhone = currentOrg.phone;
+          console.log(`Inheriting owner phone ${ownerPhone} from current organization ${currentOrgId}`);
+        }
+      } catch (e) { console.error('Error fetching current org for inheritance:', e); }
+    }
+
+    // B. Fallback Strategy (Legacy/Outside Context)
+    if (!ownerPhone || ownerPhone === normalizedPhone) {
+      if (currentMembership && currentMembership.role === 'staff') {
+        // User is staff of the current org, inherit from its admin
+        parentAdminUser = await User.findOne({
+          where: { orgAccountId: currentOrgId, role: 'admin' },
+          order: [['createdAt', 'ASC']]
+        });
+        if (parentAdminUser && parentAdminUser.phone) {
+          ownerPhone = String(parentAdminUser.phone);
+        }
+      } else {
+        // Selection screen or unknown context: PRIORITIZE STAFF ROLE for inheritance
+        const staffRole = allMemberships.find(m => m.role === 'staff' && m.orgAccountId);
+        if (staffRole) {
+          parentAdminUser = await User.findOne({
+            where: { orgAccountId: staffRole.orgAccountId, role: 'admin' },
+            order: [['createdAt', 'ASC']]
+          });
+          if (parentAdminUser && parentAdminUser.phone) {
+            ownerPhone = String(parentAdminUser.phone);
+          }
+        } else {
+          // If not a staff anywhere, check if they are an admin of an EXISTING org
+          const adminRole = allMemberships.find(m => m.role === 'admin' && m.orgAccountId);
+          if (adminRole) {
+            const existingOrg = await OrgAccount.findByPk(adminRole.orgAccountId);
+            if (existingOrg && existingOrg.phone) {
+               ownerPhone = existingOrg.phone;
+            } else {
+               ownerPhone = String(normalizedPhone);
+            }
+            parentAdminUser = adminRole;
+          }
+        }
+      }
+    }
+
+    // Resolve Parent Admin User for Subscription Inheritance if not already found
+    if (!parentAdminUser && ownerPhone) {
+       parentAdminUser = await User.findOne({
+         where: { phone: ownerPhone, role: 'admin' },
+         order: [['createdAt', 'ASC']]
+       });
+    }
+
     // Find an existing user to copy password hash and name
     // Search both exact and normalized
     const existingUser = await User.findOne({
@@ -551,22 +704,72 @@ router.post('/add-organization', async (req, res) => {
 
     const profile = await StaffProfile.findOne({ where: { userId: existingUser.id } });
 
-    console.log('Creating organization for phone:', normalizedPhone);
+    console.log('Creating organization. Owner phone:', ownerPhone, 'Created by:', normalizedPhone);
 
-    // Create Org
+    // Create Org with the owner's phone (Parent Admin's phone if staff created it)
     const org = await OrgAccount.create({
       name,
       address,
       businessEmail,
-      phone: String(normalizedPhone),
+      phone: ownerPhone,
       status: 'ACTIVE',
       createdBy: decoded.id
     });
 
     console.log('New Org created:', org.id);
 
-    // Create User record for this phone + new Org
-    const newUser = await User.create({
+    // Plan/Subscription Inheritance
+    if (parentAdminUser && parentAdminUser.orgAccountId) {
+      try {
+        const { Subscription } = require('../models');
+        const parentSub = await Subscription.findOne({
+          where: { orgAccountId: parentAdminUser.orgAccountId, status: 'ACTIVE' },
+          order: [['createdAt', 'DESC']]
+        });
+
+        if (parentSub) {
+          console.log(`Inheriting subscription from Parent Org ${parentAdminUser.orgAccountId} to New Org ${org.id}`);
+          await Subscription.create({
+            orgAccountId: org.id,
+            planId: parentSub.planId,
+            startAt: new Date(),
+            endAt: parentSub.endAt || new Date(new Date().setFullYear(new Date().getFullYear() + 1)), // Default 1 year if missing
+            status: 'ACTIVE',
+            staffLimit: parentSub.staffLimit,
+            maxGeolocationStaff: parentSub.maxGeolocationStaff,
+            salesEnabled: parentSub.salesEnabled,
+            geolocationEnabled: parentSub.geolocationEnabled,
+            expenseEnabled: parentSub.expenseEnabled,
+            payrollEnabled: parentSub.payrollEnabled,
+            performanceEnabled: parentSub.performanceEnabled,
+            aiReportsEnabled: parentSub.aiReportsEnabled,
+            aiAssistantEnabled: parentSub.aiAssistantEnabled,
+            taskManagementEnabled: parentSub.taskManagementEnabled,
+            rosterEnabled: parentSub.rosterEnabled,
+            recruitmentEnabled: parentSub.recruitmentEnabled,
+            communityEnabled: parentSub.communityEnabled
+          });
+        }
+      } catch (subError) {
+        console.error('Failed to inherit subscription:', subError);
+      }
+    }
+
+    // Sync business info and brand on creation
+    try {
+      const { OrgBrand, OrgBusinessInfo } = require('../models');
+      await OrgBrand.create({ displayName: name, active: true, orgAccountId: org.id });
+      await OrgBusinessInfo.create({
+        addressLine1: address || null,
+        active: true,
+        orgAccountId: org.id
+      });
+    } catch (e) {
+      console.error('Failed to sync business info on add-organization:', e);
+    }
+
+    // Create User record for the CREATOR (Staff or Admin)
+    const creatorUser = await User.create({
       role: 'admin',
       orgAccountId: org.id,
       phone: String(normalizedPhone),
@@ -574,14 +777,41 @@ router.post('/add-organization', async (req, res) => {
       active: true
     });
 
-    console.log('New User created:', newUser.id);
+    console.log('Creator User created:', creatorUser.id);
 
-    // Create StaffProfile for new user
+    // Create StaffProfile for the creator
     await StaffProfile.create({
-      userId: newUser.id,
+      userId: creatorUser.id,
       orgAccountId: org.id,
-      name: profile?.name || 'Admin'
+      name: profile?.name || 'Admin',
+      email: businessEmail || null
     });
+
+    // If creator is NOT the owner (staff creating for parent admin), create user for owner too
+    if (ownerPhone !== String(normalizedPhone)) {
+      try {
+        const ownerUser = await User.create({
+          role: 'admin',
+          orgAccountId: org.id,
+          phone: ownerPhone,
+          passwordHash: parentAdminUser?.passwordHash || existingUser.passwordHash,
+          active: true
+        });
+
+        // Create a basic profile for the owner
+        const ownerProfileSource = await StaffProfile.findOne({ where: { phone: ownerPhone } });
+        await StaffProfile.create({
+          userId: ownerUser.id,
+          orgAccountId: org.id,
+          name: ownerProfileSource?.name || 'Parent Admin',
+          phone: ownerPhone,
+          email: businessEmail || null
+        });
+        console.log('Owner User created and linked:', ownerUser.id);
+      } catch (ownerError) {
+        console.error('Failed to create user for owner during inheritance:', ownerError);
+      }
+    }
 
     // NEW: Link this organization to the parent admin(s)
     try {
@@ -897,14 +1127,8 @@ router.post('/signup-admin', async (req, res) => {
 
     const normalizedPhone = normalizePhone(phone);
 
-    // Check if phone number already exists as a staff member
-    const existingStaff = await User.findOne({ where: { phone: String(normalizedPhone), role: 'staff' } });
-    if (existingStaff) {
-      return res.status(400).json({
-        success: false,
-        message: 'Phone number is already registered as a staff member.'
-      });
-    }
+    // Note: We allow multiple ADMINS or STAFF with the same phone for DIFFERENT organizations.
+    // The selection screen during login handles account disambiguation.
 
     // Note: We allow multiple ADMINS with same phone for DIFFERENT organizations.
     // We will check if an admin already exists for THIS specific signup attempt (though signup creates a new org)
@@ -929,9 +1153,24 @@ router.post('/signup-admin', async (req, res) => {
       gstNumber: gstNumber || null,
     });
 
+    // Sync business info and brand on signup
+    try {
+      const { OrgBrand, OrgBusinessInfo } = require('../models');
+      await OrgBrand.create({ displayName: String(businessName), active: true, orgAccountId: org.id });
+      await OrgBusinessInfo.create({
+        state: state || null,
+        city: city || null,
+        addressLine1: address || null,
+        active: true,
+        orgAccountId: org.id
+      });
+    } catch (e) {
+      console.error('Failed to sync business info on signup-admin:', e);
+    }
+
     const hash = await bcrypt.hash(String(password || '123456'), 10);
     const admin = await User.create({ role: 'admin', orgAccountId: org.id, phone: String(normalizedPhone), passwordHash: hash, active: true });
-    try { await StaffProfile.create({ userId: admin.id, orgAccountId: org.id, name: String(name) }); } catch (_) { }
+    try { await StaffProfile.create({ userId: admin.id, orgAccountId: org.id, name: String(name), email: businessEmail || null }); } catch (_) { }
 
     // Send admin signup review email to business email
     if (businessEmail) {

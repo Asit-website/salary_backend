@@ -41,7 +41,7 @@ const socialRoutes = require('./src/routes/social');
 
 const { tenantEnforce } = require('./src/middleware/tenant');
 const { scheduleSubscriptionSweep } = require('./src/jobs/subscriptionSweep');
-const { scheduleSubscriptionExpiryReminders, scheduleZktecoSync, scheduleAttendanceReminders, scheduleSocialCelebrations } = require('./src/jobs');
+const { scheduleSubscriptionExpiryReminders, scheduleZktecoSync, scheduleAttendanceReminders, scheduleSocialCelebrations, scheduleMissingCheckoutReminders } = require('./src/jobs');
 const { ensureCollectionExists } = require('./src/services/awsService');
 const { scheduleBulkMailJob } = require('./src/jobs');
 
@@ -174,6 +174,9 @@ initDb()
 
     // Start Social Celebrations job
     try { scheduleSocialCelebrations(); } catch (_) { }
+
+    // Start Missing Check-Out Email job
+    try { scheduleMissingCheckoutReminders(); } catch (_) { }
     // app.listen(port, () => {
     //   console.log(`Backend running on http://localhost:${port}`);
     // });

@@ -1354,6 +1354,8 @@ router.get('/payroll/:cycleId/salary-register-excel', async (req, res) => {
     const cols = [
       { header: 'SL', key: 'sl', width: 5 },
       { header: 'NAME OF EMPLOYEE', key: 'name', width: 25 },
+      { header: 'BANK NAME', key: 'bankName', width: 18 },
+      { header: 'ACCOUNT NUMBER', key: 'bankAccount', width: 18 },
       { header: 'WORK DAYS', key: 'workDays', width: 12 },
       { header: 'PAID SUNDAY', key: 'paidSun', width: 14 },
       { header: 'PAID HOLIDAY', key: 'paidHoli', width: 14 },
@@ -1456,6 +1458,8 @@ router.get('/payroll/:cycleId/salary-register-excel', async (req, res) => {
         const rowData = {
           sl: sl++,
           name: u?.profile?.name || u?.phone || '',
+          bankName: u?.profile?.bankName || '',
+          bankAccount: u?.profile?.bankAccountNumber || '',
           workDays: Number(s.present || 0),
           paidSun: Number(s.weeklyOff || 0),
           paidHoli: Number(s.holidays || 0),
@@ -1673,6 +1677,8 @@ router.get('/payroll/salary-register-template-wise-excel', async (req, res) => {
       const cols = [
         { header: 'SL', key: 'sl', width: 5 },
         { header: 'NAME OF EMPLOYEE', key: 'name', width: 25 },
+        { header: 'BANK NAME', key: 'bankName', width: 18 },
+        { header: 'ACCOUNT NUMBER', key: 'bankAccount', width: 18 },
         { header: 'WORK DAYS', key: 'workDays', width: 12 },
         { header: 'PAID SUNDAY', key: 'paidSun', width: 14 },
         { header: 'PAID HOLIDAY', key: 'paidHoli', width: 14 },
@@ -1758,6 +1764,8 @@ router.get('/payroll/salary-register-template-wise-excel', async (req, res) => {
         const rowData = {
           sl: sl++,
           name: u?.profile?.name || u?.phone || '',
+          bankName: u?.profile?.bankName || '',
+          bankAccount: u?.profile?.bankAccountNumber || '',
           workDays: Number(s.present || 0),
           paidSun: Number(s.weeklyOff || 0),
           paidHoli: Number(s.holidays || 0),
@@ -2624,7 +2632,7 @@ router.post('/payroll/:cycleId/compute', async (req, res) => {
     let staff;
     if (staffId) {
       staff = await User.findAll({
-        where: { id: staffId, role: 'staff', active: true, orgAccountId: orgId },
+        where: { id: staffId, role: 'staff', orgAccountId: orgId },
         include: [
           { model: SalaryTemplate, as: 'salaryTemplate' },
           { model: StaffProfile, as: 'profile' }
@@ -2632,7 +2640,7 @@ router.post('/payroll/:cycleId/compute', async (req, res) => {
       });
     } else {
       staff = await User.findAll({
-        where: { role: 'staff', active: true, orgAccountId: orgId },
+        where: { role: 'staff', orgAccountId: orgId },
         include: [
           { model: SalaryTemplate, as: 'salaryTemplate' },
           { model: StaffProfile, as: 'profile' }
@@ -6805,17 +6813,22 @@ router.post('/staff/import', uploadMemory.single('file'), async (req, res) => {
           continue;
         }
 
-        // Check duplicate phone
-        const existing = await User.findOne({ where: { phone } });
+        // Check duplicate phone (normalize to last 10 digits for consistency)
+        const normalizedBulkPhone = String(phone).replace(/[^0-9]/g, '').slice(-10);
+        // Global check: block only if an ACTIVE staff with this phone exists in a DIFFERENT org
+        const existing = await User.findOne({ where: { phone: normalizedBulkPhone, active: true, role: 'staff' } });
         if (existing) {
+          console.warn(`[Bulk Import] Phone conflict: phone=${normalizedBulkPhone}, existingUser.id=${existing.id}, existingUser.orgAccountId=${existing.orgAccountId}, existing.active=${existing.active}, requestingOrg=${orgId}`);
+        }
+        if (existing && existing.orgAccountId !== orgId) {
           results.skipped++;
-          results.errors.push(`Row ${data.rowNumber}: phone number can not be same`);
+          results.errors.push(`Row ${data.rowNumber}: An active staff member with this phone number already exists in another organization`);
           continue;
         }
 
         // Check duplicate staffId
         if (data.staffId) {
-          const existingSid = await StaffProfile.findOne({ where: { staffId: String(data.staffId) } });
+          const existingSid = await StaffProfile.findOne({ where: { staffId: String(data.staffId), orgAccountId: orgId } });
           if (existingSid) {
             results.skipped++;
             results.errors.push(`Row ${data.rowNumber}: staff id can not be same`);
@@ -10831,11 +10844,13 @@ router.put('/staff/:id/profile', async (req, res) => {
       const existingUser = await User.findOne({
         where: {
           phone: String(req.body.phone),
+          active: true,
+          role: 'staff',
           id: { [Op.ne]: user.id }
         }
       });
       if (existingUser) {
-        return res.status(400).json({ success: false, message: 'Phone number already exists' });
+        return res.status(400).json({ success: false, message: 'An active staff member with this phone number already exists' });
       }
       await user.update({ phone: String(req.body.phone) });
     }
@@ -12134,6 +12149,10 @@ router.post('/attendance', async (req, res) => {
       return res.status(404).json({ success: false, message: 'Staff not found' });
     }
 
+    if (user.active === false) {
+      return res.status(403).json({ success: false, message: 'This staff member is deactivated' });
+    }
+
     // [Validation relaxed as per user request #2]
     /*
     // Check for approved leave on this date
@@ -12486,10 +12505,31 @@ router.post('/attendance/bulk', async (req, res) => {
     else if (status === 'half_day') basePayload.breakTotalSeconds = 0;
     else basePayload.breakTotalSeconds = 0; // Clear sentinel for present/overtime
 
+    // Pre-validate all selected staff for active status
+    const deactivatedStaff = [];
+    const staffCheckList = await User.findAll({
+      where: { id: staffIds, orgAccountId: orgId },
+      include: [{ model: StaffProfile, as: 'profile', attributes: ['name'] }]
+    });
+
+    for (const u of staffCheckList) {
+      if (u.active === false) {
+        deactivatedStaff.push(u.profile?.name || `Staff #${u.id}`);
+      }
+    }
+
+    if (deactivatedStaff.length > 0) {
+      return res.status(403).json({
+        success: false,
+        message: `The following staff members are deactivated and cannot have attendance marked: ${deactivatedStaff.join(', ')}`
+      });
+    }
+
     const results = [];
     for (const uid of staffIds) {
-      const user = await User.findOne({ where: { id: uid, orgAccountId: orgId, role: 'staff' } });
+      const user = staffCheckList.find(u => u.id === uid);
       if (!user) continue;
+
 
       // [Validation relaxed as per user request #3]
       /*
@@ -12875,6 +12915,7 @@ If you receive this email, the email system is working properly!`
 router.post('/staff', requireRole(['admin', 'staff']), async (req, res) => {
 
   try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
 
     // Debug: log incoming body once (can be removed later)
 
@@ -12939,21 +12980,31 @@ router.post('/staff', requireRole(['admin', 'staff']), async (req, res) => {
 
     }
 
+    // Normalize phone: strip non-digits, keep last 10 digits for consistent lookup and storage
+    const normalizedPhone = String(phoneInput).replace(/[^0-9]/g, '').slice(-10) || String(phoneInput);
 
+    // Global check: block if ANY active staff with this phone exists (same or different org)
+    const existingUser = await User.findOne({ where: { phone: normalizedPhone, active: true, role: 'staff' } });
 
-    const existingUser = await User.findOne({ where: { phone: String(phoneInput) } });
-
+    // Enhanced debug: log who is blocking to help diagnose false conflicts
     if (existingUser) {
+      console.warn(`[POST /staff] Phone conflict detected: phone=${normalizedPhone}, existingUser.id=${existingUser.id}, existingUser.orgAccountId=${existingUser.orgAccountId}, existingUser.active=${existingUser.active}, existingUser.role=${existingUser.role}, requestingOrg=${orgId}`);
+    }
 
-      return res.status(409).json({ success: false, message: 'Phone already exists' });
-
+    // Block if any active staff member with this phone already exists
+    if (existingUser) {
+      const sameOrg = existingUser.orgAccountId === orgId;
+      const msg = sameOrg
+        ? 'An active staff member with this phone number already exists in this organization'
+        : 'An active staff member with this phone number already exists in another organization';
+      return res.status(409).json({ success: false, message: msg });
     }
 
 
 
     if (staffId) {
 
-      const existingStaffId = await StaffProfile.findOne({ where: { staffId: String(staffId) } });
+      const existingStaffId = await StaffProfile.findOne({ where: { staffId: String(staffId), orgAccountId: orgId } });
 
       if (existingStaffId) {
 
@@ -12982,16 +13033,6 @@ router.post('/staff', requireRole(['admin', 'staff']), async (req, res) => {
     }
 
 
-
-    // Tenancy & staff limit enforcement
-
-    const orgId = req.tenantOrgAccountId || null;
-
-    if (!orgId) {
-
-      return res.status(403).json({ success: false, message: 'No organization in context' });
-
-    }
 
     const activeSub = req.activeSubscription || null;
 
@@ -13081,7 +13122,7 @@ router.post('/staff', requireRole(['admin', 'staff']), async (req, res) => {
 
       role: 'staff',
 
-      phone: String(phoneInput),
+      phone: normalizedPhone, // Always store normalized phone for consistent lookups
 
       passwordHash,
 
@@ -13379,7 +13420,7 @@ router.post('/staff', requireRole(['admin', 'staff']), async (req, res) => {
       userId: staffUser.id,
       orgAccountId: orgId,
       staffId: staffId ? String(staffId) : null,
-      phone: String(phoneInput),
+      phone: normalizedPhone, // Store normalized phone consistently
       name: name ? String(name) : null,
       email: email ? String(email) : null,
       department: department ? String(department) : null,
@@ -13464,14 +13505,9 @@ router.post('/staff', requireRole(['admin', 'staff']), async (req, res) => {
 
 
 
-    // Send notification to admin (optional - you can get admin email from organization settings)
-
     try {
-
-      // Use the current user's email or fallback to the organization email
-
-      const adminEmail = org?.businessEmail || req.user?.email || emailFrom.address;
-
+      const orgAccount = await OrgAccount.findByPk(orgId);
+      const adminEmail = orgAccount?.businessEmail || req.user?.email || (emailFrom && emailFrom.address);
       const adminNotificationResult = await sendAdminNotification(
 
         adminEmail,
@@ -13704,17 +13740,22 @@ router.put('/staff/:id', requireRole(['admin', 'staff']), async (req, res) => {
     const staff = await User.findOne({ where: { id: Number(id), orgAccountId: orgId, role: 'staff' } });
     if (!staff) return res.status(404).json({ success: false, message: 'Staff not found' });
 
-    // Check if phone unique
-    if (phone && phone !== staff.phone) {
-      const existingUser = await User.findOne({ where: { phone: String(phone) } });
-      if (existingUser) return res.status(409).json({ success: false, message: 'Phone already exists' });
+    // Check if phone unique (normalize to last 10 digits)
+    const normalizedEditPhone = phone ? (String(phone).replace(/[^0-9]/g, '').slice(-10) || String(phone)) : null;
+    const normalizedCurrentPhone = staff.phone ? (String(staff.phone).replace(/[^0-9]/g, '').slice(-10) || String(staff.phone)) : null;
+    if (normalizedEditPhone && normalizedEditPhone !== normalizedCurrentPhone) {
+      // Global active-staff uniqueness check, excluding this staff's own record
+      const existingUser = await User.findOne({ where: { phone: normalizedEditPhone, active: true, role: 'staff' } });
+      if (existingUser && existingUser.id !== staff.id) {
+        return res.status(409).json({ success: false, message: 'An active staff member with this phone number already exists' });
+      }
     }
 
     // Check if staffId unique
     if (newStaffId) {
       const profile = await StaffProfile.findOne({ where: { userId: staff.id } });
       if (profile && profile.staffId !== newStaffId) {
-        const existingStaffId = await StaffProfile.findOne({ where: { staffId: String(newStaffId) } });
+        const existingStaffId = await StaffProfile.findOne({ where: { staffId: String(newStaffId), orgAccountId: orgId } });
         if (existingStaffId) return res.status(409).json({ success: false, message: 'Staff ID already exists' });
       }
     }
@@ -14437,103 +14478,133 @@ router.get('/dashboard/late-arrivals', async (req, res) => {
 
 
 router.get('/dashboard/department-distribution', async (req, res) => {
-
   try {
-
     const orgId = requireOrg(req, res); if (!orgId) return;
 
-
-
     // Get all business function values for "department" type
-
-    const { BusinessFunction, BusinessFunctionValue } = sequelize.models;
-
+    const { BusinessFunction, BusinessFunctionValue, Attendance, LeaveRequest } = sequelize.models;
     let deptFunction = null;
-
     if (BusinessFunction) {
-
       deptFunction = await BusinessFunction.findOne({
-
         where: { name: { [Op.like]: '%department%' }, orgAccountId: orgId },
-
         include: [{ model: BusinessFunctionValue, as: 'values' }]
-
       });
-
     }
-
     const validDepts = deptFunction?.values?.map(v => v.value) || [];
 
+    // Get current month range
+    const now = new Date();
+    const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+    const endOfMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0);
+    const daysInMonth = endOfMonth.getDate();
+    const todayStr = now.toISOString().split('T')[0];
 
-
-    // Get staff distribution by department from profile
-
-    const staffByDept = await User.findAll({
-
+    // Get active staff with their department and netSalary
+    const staffList = await User.findAll({
       where: { role: 'staff', active: true, orgAccountId: orgId },
-
       include: [{ model: StaffProfile, as: 'profile', attributes: ['department'] }],
-
-      attributes: ['id']
-
+      attributes: ['id', 'netSalary']
     });
 
+    const staffIds = staffList.map(s => s.id);
 
+    // Fetch attendance for the current month
+    const attendanceRecords = await Attendance.findAll({
+      where: {
+        userId: staffIds,
+        date: { [Op.between]: [startOfMonth.toISOString().split('T')[0], todayStr] },
+        orgAccountId: orgId
+      },
+      attributes: ['userId', 'status']
+    });
+
+    // Fetch approved leaves for the current month
+    const approvedLeaves = await LeaveRequest.findAll({
+      where: {
+        userId: staffIds,
+        status: 'APPROVED',
+        [Op.or]: [
+          { startDate: { [Op.between]: [startOfMonth.toISOString().split('T')[0], endOfMonth.toISOString().split('T')[0]] } },
+          { endDate: { [Op.between]: [startOfMonth.toISOString().split('T')[0], endOfMonth.toISOString().split('T')[0]] } }
+        ]
+      },
+      attributes: ['userId', 'startDate', 'endDate', 'paidDays']
+    });
+
+    // Map data for easy access
+    const staffDataMap = {};
+    staffList.forEach(s => {
+      staffDataMap[s.id] = {
+        dept: s.profile?.department || 'General',
+        netSalary: Number(s.netSalary || 0),
+        payableDays: 0
+      };
+    });
+
+    // Calculate payable days from attendance
+    attendanceRecords.forEach(att => {
+      if (staffDataMap[att.userId]) {
+        const s = att.status?.toLowerCase();
+        if (['present', 'overtime', 'late', 'early', 'work_from_home', 'weekly_off', 'holiday'].includes(s)) {
+          staffDataMap[att.userId].payableDays += 1;
+        } else if (s === 'half_day') {
+          staffDataMap[att.userId].payableDays += 0.5;
+        }
+      }
+    });
+
+    // Add paid leaves to payable days (rough estimate)
+    approvedLeaves.forEach(lr => {
+      if (staffDataMap[lr.userId]) {
+        staffDataMap[lr.userId].payableDays += Number(lr.paidDays || 0);
+      }
+    });
 
     const deptCounts = {};
+    const deptWages = {};
+    const deptExpectedWages = {};
 
-    // Initialize counts for all defined departments
-
-    validDepts.forEach(d => { deptCounts[d] = 0; });
-
-
-
-    staffByDept.forEach(staff => {
-
-      const dept = staff.profile?.department || 'General';
-
-      deptCounts[dept] = (deptCounts[dept] || 0) + 1;
-
+    // Initialize
+    validDepts.forEach(d => { 
+      deptCounts[d] = 0; 
+      deptWages[d] = 0; 
+      deptExpectedWages[d] = 0;
     });
+    if (!deptCounts['General']) { 
+      deptCounts['General'] = 0; 
+      deptWages['General'] = 0; 
+      deptExpectedWages['General'] = 0;
+    }
 
-
-
-    const totalStaff = staffByDept.length;
+    Object.values(staffDataMap).forEach(data => {
+      const dept = data.dept;
+      deptCounts[dept] = (deptCounts[dept] || 0) + 1;
+      
+      const monthlyWage = data.netSalary;
+      const accruedWage = (data.payableDays / daysInMonth) * monthlyWage;
+      deptWages[dept] = (deptWages[dept] || 0) + accruedWage;
+      deptExpectedWages[dept] = (deptExpectedWages[dept] || 0) + monthlyWage;
+    });
 
     const departmentData = Object.entries(deptCounts).map(([dept, count]) => ({
-
       department: dept,
-
       count,
-
-      percentage: totalStaff > 0 ? Math.round((count / totalStaff) * 100) : 0
-
-    })).sort((a, b) => b.count - a.count);
-
-
+      totalWages: Math.round(deptWages[dept] || 0),
+      totalExpectedMonthlyWages: Math.round(deptExpectedWages[dept] || 0),
+      percentage: staffList.length > 0 ? Math.round((count / staffList.length) * 100) : 0
+    })).sort((a, b) => b.totalExpectedMonthlyWages - a.totalExpectedMonthlyWages);
 
     return res.json({
-
       success: true,
-
       data: {
-
         departments: departmentData,
-
-        totalStaff
-
+        totalStaff: staffList.length
       }
-
     });
-
   } catch (error) {
-
     console.error('Department distribution error:', error);
-
     return res.status(500).json({ success: false, message: 'Failed to fetch department distribution' });
-
   }
-
 });
 
 

@@ -33,14 +33,17 @@ async function tenantEnforce(req, res, next) {
     if (org.status !== 'ACTIVE') return res.status(403).json({ success: false, message: 'Organization disabled' });
 
     // SHARED SUBSCRIPTION LOGIC: 
-    // All organizations for the same phone number share the Parent (Oldest) organization's plan.
-    const normalizedPhone = user.phone;
-    const firstAdmin = await User.findOne({ 
-      where: { phone: String(normalizedPhone), role: 'admin' }, 
-      order: [['id', 'ASC']] 
+    // Organizations share the Parent (Primary) organization's plan based on the OrgAccount's phone number.
+    const ownerPhone = org.phone;
+    if (!ownerPhone) return res.status(403).json({ success: false, message: 'Organization has no owner identity' });
+
+    // Find the oldest organization for this owner phone (the Parent)
+    const primaryOrg = await OrgAccount.findOne({
+      where: { phone: ownerPhone },
+      order: [['id', 'ASC']]
     });
 
-    const effectiveOrgId = (firstAdmin && firstAdmin.orgAccountId) ? firstAdmin.orgAccountId : orgAccountId;
+    const effectiveOrgId = primaryOrg ? primaryOrg.id : orgAccountId;
 
     // Find all active subscriptions for the EFFECTIVE organization (Parent)
     const now = new Date();
@@ -74,25 +77,23 @@ async function tenantEnforce(req, res, next) {
       return res.status(402).json({ success: false, message: 'your Plan Expired pls renew' });
     }
 
-    if (new Date(sub.endAt) < now) {
-       return res.status(402).json({ success: false, message: 'your Plan Expired pls renew' });
-    }
+    // SHARED STAFF COUNT: Count unique staff phone numbers across ALL organizations linked to this owner phone
+    // We find all org IDs linked to this owner phone first
+    const linkedOrgs = await OrgAccount.findAll({
+      where: { phone: ownerPhone },
+      attributes: ['id']
+    });
+    const linkedOrgIds = linkedOrgs.map(o => o.id);
 
-    // SHARED STAFF COUNT: Count unique active staff phone numbers across ALL organizations for this phone number
     const totalStaffCount = await User.count({
       distinct: true,
       col: 'phone',
       where: {
-        phone: { [Op.ne]: normalizedPhone }, // Don't count the admin themselves
         role: 'staff',
         active: true,
-        // Find all users with any of the orgAccountId's that belong to this phone
-        orgAccountId: {
-          [Op.in]: (await User.findAll({ 
-            where: { phone: String(normalizedPhone), role: 'admin' },
-            attributes: ['orgAccountId']
-          })).map(u => u.orgAccountId).filter(id => id !== null)
-        }
+        orgAccountId: { [Op.in]: linkedOrgIds },
+        // Don't count the owner's phone as staff (unlikely but safe)
+        phone: { [Op.ne]: ownerPhone }
       }
     });
 
