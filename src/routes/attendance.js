@@ -104,6 +104,41 @@ function diffSeconds(a, b) {
   return Math.max(0, Math.floor((b.getTime() - a.getTime()) / 1000));
 }
 
+async function getMobilePunchRestriction(userId, orgAccountId) {
+  let globalRestricted = false;
+  const orgConfigRow = await AppSetting.findOne({ where: { key: 'org_config', orgAccountId } });
+  if (orgConfigRow?.value) {
+    try {
+      const config = JSON.parse(orgConfigRow.value);
+      globalRestricted = !!config.mobilePunchRestricted;
+    } catch (_) { }
+  }
+
+  const user = await User.findOne({
+    where: { id: userId, orgAccountId },
+    attributes: ['id', 'mobilePunchEnabled'],
+  });
+  const individualRestricted = user?.mobilePunchEnabled === false;
+
+  return {
+    restricted: globalRestricted || individualRestricted,
+    globalRestricted,
+    individualRestricted,
+    message: globalRestricted
+      ? 'Mobile punch is currently restricted for your organization. Please use the office biometric device.'
+      : 'Mobile punch is disabled for your account. Please use the office biometric device.',
+  };
+}
+
+async function enforceMobilePunchAllowed(req, res) {
+  const access = await getMobilePunchRestriction(req.user.id, req.user.orgAccountId);
+  if (access.restricted) {
+    res.status(403).json({ success: false, message: access.message });
+    return false;
+  }
+  return true;
+}
+
 function parseMonth(monthStr) {
   const m = String(monthStr || '').trim();
   if (!/^\d{4}-\d{2}$/.test(m)) return null;
@@ -376,6 +411,9 @@ router.get('/status', async (req, res) => {
   const effectiveHoursRule = tpl ? (tpl.effectiveHoursRule ?? tpl.effective_hours_rule ?? null) : null;
   const assignedShift = await shiftService.getEffectiveShiftTemplate(userId, effectiveKey);
 
+  const mobilePunchAccess = await getMobilePunchRestriction(userId, req.user.orgAccountId);
+  const mobilePunchRestricted = mobilePunchAccess.restricted;
+
   const now = new Date();
 
   const isApprovedLeave = await hasApprovedLeave(userId, effectiveKey);
@@ -410,7 +448,7 @@ router.get('/status', async (req, res) => {
         status: {
           date: effectiveKey, punchedInAt: null, punchedOutAt: null, punchInPhotoUrl: null, punchOutPhotoUrl: null,
           isOnBreak: false, breakStartedAt: null, breakSeconds: 0, workingSeconds: 0, overtimeSeconds: 0,
-          requiredWorkSeconds: REQUIRED_WORK_SECONDS, dayStatus: 'HOLIDAY',
+          requiredWorkSeconds: REQUIRED_WORK_SECONDS, dayStatus: 'HOLIDAY', mobilePunchRestricted,
         },
       });
     }
@@ -420,7 +458,7 @@ router.get('/status', async (req, res) => {
         status: {
           date: effectiveKey, punchedInAt: null, punchedOutAt: null, punchInPhotoUrl: null, punchOutPhotoUrl: null,
           isOnBreak: false, breakStartedAt: null, breakSeconds: 0, workingSeconds: 0, overtimeSeconds: 0,
-          requiredWorkSeconds: REQUIRED_WORK_SECONDS, dayStatus: 'WEEKLY_OFF',
+          requiredWorkSeconds: REQUIRED_WORK_SECONDS, dayStatus: 'WEEKLY_OFF', mobilePunchRestricted,
         },
       });
     }
@@ -430,7 +468,7 @@ router.get('/status', async (req, res) => {
         status: {
           date: effectiveKey, punchedInAt: null, punchedOutAt: null, punchInPhotoUrl: null, punchOutPhotoUrl: null,
           isOnBreak: false, breakStartedAt: null, breakSeconds: 0, workingSeconds: 0, overtimeSeconds: 0,
-          requiredWorkSeconds: REQUIRED_WORK_SECONDS, dayStatus: 'LEAVE',
+          requiredWorkSeconds: REQUIRED_WORK_SECONDS, dayStatus: 'LEAVE', mobilePunchRestricted,
         },
       });
     }
@@ -451,7 +489,7 @@ router.get('/status', async (req, res) => {
       status: {
         date: key, punchedInAt: null, punchedOutAt: null, punchInPhotoUrl: null, punchOutPhotoUrl: null,
         isOnBreak: false, breakStartedAt: null, breakSeconds: 0, workingSeconds: 0, overtimeSeconds: 0,
-        requiredWorkSeconds: REQUIRED_WORK_SECONDS, dayStatus: 'LEAVE',
+        requiredWorkSeconds: REQUIRED_WORK_SECONDS, dayStatus: 'LEAVE', mobilePunchRestricted,
       },
     });
   }
@@ -568,6 +606,7 @@ router.get('/status', async (req, res) => {
         earliestPunchInTime: assignedShift.earliestPunchInTime, latestPunchOutTime: assignedShift.latestPunchOutTime,
         minPunchOutAfterMinutes: assignedShift.minPunchOutAfterMinutes, maxPunchOutAfterMinutes: assignedShift.maxPunchOutAfterMinutes,
       } : null,
+      mobilePunchRestricted,
     },
   });
 });
@@ -880,6 +919,8 @@ router.post('/start-break', async (req, res) => {
     const key = todayKey();
     const record = await Attendance.findOne({ where: { userId: req.user.id, date: key } });
 
+    if (!await enforceMobilePunchAllowed(req, res)) return;
+
     if (record?.source === 'biometric') {
       return res.status(409).json({ success: false, message: 'You have already punched in using biometric device. Mobile punch is disabled for today.' });
     }
@@ -909,6 +950,8 @@ router.post('/end-break', async (req, res) => {
     const key = todayKey();
     const record = await Attendance.findOne({ where: { userId: req.user.id, date: key } });
 
+    if (!await enforceMobilePunchAllowed(req, res)) return;
+
     if (record?.source === 'biometric') {
       return res.status(409).json({ success: false, message: 'You have already punched in using biometric device. Mobile punch is disabled for today.' });
     }
@@ -936,11 +979,13 @@ router.post('/end-break', async (req, res) => {
 router.post('/punch-in', upload.single('photo'), async (req, res) => {
   try {
     const dateKey = todayKey();
+    if (!await enforceMobilePunchAllowed(req, res)) return;
+
     const isH = await isPaidHoliday(req.user.id, dateKey);
     const isWO = await isWeeklyOff(req.user.id, dateKey);
     const hasPayRule = await holidayWorkPayService.getEffectiveRule(req.user.id, dateKey);
 
-    if ((isH || isWO) && !hasPayRule) {
+    if (!hasPayRule && (isH || isWO)) {
       return res.status(403).json({ success: false, message: 'Punch-in not allowed: No Holiday/Weekly off Work Pay Rule assigned.' });
     }
 
@@ -1101,6 +1146,8 @@ router.post('/location/ping', async (req, res) => {
 
 router.post('/punch-out', upload.single('photo'), async (req, res) => {
   try {
+    if (!await enforceMobilePunchAllowed(req, res)) return;
+
     // Enforce template rules
     const tpl = await getEffectiveTemplate(req.user.id);
     const shiftTpl = await shiftService.getEffectiveShiftTemplate(req.user.id, todayKey());

@@ -44,6 +44,12 @@ module.exports = (sequelize) => {
       
       giveFullDayOvertime: { type: DataTypes.BOOLEAN, defaultValue: false },
       fullDayThresholdMinutes: { type: DataTypes.INTEGER, allowNull: true },
+      giveExtraFullDayBonus: { type: DataTypes.BOOLEAN, defaultValue: false },
+      extraFullDayBonusAmount: { type: DataTypes.INTEGER, defaultValue: 25 },
+
+
+      includeEarlyArrival: { type: DataTypes.BOOLEAN, defaultValue: false },
+      calculateOnGross: { type: DataTypes.BOOLEAN, defaultValue: false },
 
       active: { type: DataTypes.BOOLEAN, defaultValue: true },
       orgAccountId: { type: DataTypes.BIGINT.UNSIGNED, allowNull: false, field: 'org_account_id' }

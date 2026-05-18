@@ -309,6 +309,7 @@ class ZktecoService {
                 for (let i = 0; i <= 12; i++) {
                     datesToSync.push(nowIST.subtract(i, 'day').format('YYYY-MM-DD'));
                 }
+                datesToSync.reverse(); // Reverse to process oldest first (chronological order)
             }
             console.log(`[ZktecoSync] Dates to sync: ${datesToSync.join(', ')}`);
 
@@ -382,9 +383,48 @@ class ZktecoService {
                     const shift = await shiftService.getEffectiveShiftTemplate(userId, dateStr);
                     const punchesForShift = this.filterPunchesForShift(filteredPunches, dateStr, shift);
                     
-                    const res = await this.calculateDetails(userId, punchesForShift, dateStr);
+                    // Night Shift Duplicate Punch Fix:
+                    // Fetch the previous day's attendance record.
+                    // If it exists and has a non-null punchedOutAt time, check if any of the punches
+                    // in punchesForShift match that checkout time within 1 minute.
+                    // If so, filter them out so they aren't processed as fresh check-ins today.
+                    let finalPunchesForShift = punchesForShift;
+                    try {
+                        const prevDateStr = dayjs(dateStr).subtract(1, 'day').format('YYYY-MM-DD');
+                        const prevAttendance = await Attendance.findOne({ where: { userId, date: prevDateStr } });
+                        if (prevAttendance && prevAttendance.punchedOutAt) {
+                            const prevOutTime = dayjs(prevAttendance.punchedOutAt);
+                            finalPunchesForShift = punchesForShift.filter(p => {
+                                const pt = dayjs(p.punch_time);
+                                const diffMin = Math.abs(pt.diff(prevOutTime, 'minute'));
+                                if (diffMin <= 1) {
+                                    console.log(`[ZktecoSync] Filtered out punch at ${p.punch_time} for user ${userId} because it was used as punch-out on ${prevDateStr}`);
+                                    return false;
+                                }
+                                return true;
+                            });
+                        }
+                    } catch (err) {
+                        console.error(`[ZktecoSync] Error checking prev day checkout for user ${userId}:`, err.message);
+                    }
 
-                    if (!res) continue;
+                    const res = await this.calculateDetails(userId, finalPunchesForShift, dateStr);
+
+                    if (!res) {
+                        // If no valid punches remain (e.g. they were all filtered out as yesterday's checkout)
+                        // and there is an existing biometric record, we should clean it up (delete it)
+                        // to correct the false check-in from previous sync runs!
+                        try {
+                            const existing = await Attendance.findOne({ where: { userId, date: dateStr } });
+                            if (existing && existing.source === 'biometric') {
+                                console.log(`[ZktecoSync] CLEANUP: Deleting false check-in record for user ${userId} on ${dateStr} since all punches were deduplicated.`);
+                                await existing.destroy();
+                            }
+                        } catch (err) {
+                            console.error(`[ZktecoSync] Error cleaning up false check-in for user ${userId} on ${dateStr}:`, err.message);
+                        }
+                        continue;
+                    }
 
                     // Sync with Attendance table
                     try {

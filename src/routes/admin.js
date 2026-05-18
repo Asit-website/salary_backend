@@ -1269,6 +1269,41 @@ router.get('/payroll/salary-register-excel-by-month', async (req, res) => {
   }
 });
 
+async function buildSalaryRegisterOtMeta(userIds, monthKey, orgAccount, daysInMonth) {
+  const meta = new Map();
+  const ids = Array.from(new Set((userIds || []).map(id => Number(id)).filter(Number.isFinite)));
+  ids.forEach(id => meta.set(id, { otDays: 0, otMinutes: 0, otPay: 0, fooding: 0 }));
+  if (!ids.length || !monthKey) return meta;
+
+  const [year, month] = String(monthKey).split('-').map(Number);
+  const last = new Date(year, month, 0);
+  const fromDate = `${monthKey}-01`;
+  const toDate = `${year}-${String(month).padStart(2, '0')}-${String(last.getDate()).padStart(2, '0')}`;
+  const rows = await Attendance.findAll({
+    where: { userId: { [Op.in]: ids }, date: { [Op.between]: [fromDate, toDate] } },
+    order: [['date', 'ASC']],
+  });
+
+  for (const row of rows) {
+    const plain = row.toJSON ? row.toJSON() : row;
+    const userId = Number(plain.userId || plain.user_id);
+    const current = meta.get(userId) || { otDays: 0, otMinutes: 0, otPay: 0, fooding: 0 };
+    const otRes = await calculateOvertime(plain, orgAccount, daysInMonth, plain.punchedOutAt || null);
+    const amount = Number(otRes.overtimeAmount || 0);
+    const fooding = Number(otRes.extraFullDayBonusAmount || 0);
+    if (otRes.fullDayOvertimeApplied) {
+      current.otDays += 1;
+    } else {
+      current.otMinutes += Number(otRes.overtimeMinutes || 0);
+    }
+    current.otPay += Math.max(0, amount - fooding);
+    current.fooding += fooding;
+    meta.set(userId, current);
+  }
+
+  return meta;
+}
+
 
 // Export Salary Register as Excel (formatted)
 router.get('/payroll/:cycleId/salary-register-excel', async (req, res) => {
@@ -1301,6 +1336,8 @@ router.get('/payroll/:cycleId/salary-register-excel', async (req, res) => {
     const userMap = new Map(users.map(u => [u.id, u]));
     const [year, month] = cycle.monthKey.split('-').map(Number);
     const monthName = new Date(year, month - 1, 1).toLocaleString('en-IN', { month: 'long', year: 'numeric' });
+    const daysInMonth = new Date(year, month, 0).getDate();
+    const salaryRegisterOtMeta = await buildSalaryRegisterOtMeta(userIds, cycle.monthKey, org, daysInMonth);
     const effectiveGroupBy = groupBy || 'department';
 
     // Dynamic Columns Detection
@@ -1322,14 +1359,16 @@ router.get('/payroll/:cycleId/salary-register-excel', async (req, res) => {
       if (Number(s.latePunchInAmount)) penaltyKeys.add('latePunchInAmount');
       if (Number(s.earlyExitAmount)) penaltyKeys.add('earlyExitAmount');
       if (Number(s.breakDeductionAmount)) penaltyKeys.add('breakDeductionAmount');
-      if (Number(s.overtimePay)) earningKeys.add('overtimePay');
+      const otMeta = salaryRegisterOtMeta.get(Number(line.userId)) || {};
+      if (Number(otMeta.otPay || s.overtimePay)) earningKeys.add('overtimePay');
+      earningKeys.add('fooding');
       if (Number(s.earlyOvertimePay)) earningKeys.add('earlyOvertimePay');
     });
 
     const labelMap = {
       basic_salary: 'BASIC', da: 'DA', hra: 'HRA', medical_allowance: 'MEDICAL',
       conveyance: 'CONVEYANCE', conveyance_allowance: 'CONVEYANCE', other_allowance: 'OTHER ALLOW.',
-      overtimePay: 'OT PAY', overtime_pay: 'OT PAY', earlyOvertimePay: 'EARLY OT',
+      overtimePay: 'OT PAY', overtime_pay: 'OT PAY', earlyOvertimePay: 'EARLY OT', fooding: 'FOODING',
       special_allowance: 'SPECIAL ALLOW.', travel_allowance: 'TRAVEL ALLOW.',
       pf: 'P.F.', esi: 'E.S.I.', ptax: 'P.TAX', professional_tax: 'P.TAX', tds: 'T.D.S.', loan_advance: 'LOAN/ADVANCE',
       advance: 'LOAN/ADVANCE', latePunchInAmount: 'LATE PENALTY', late_punchin_penalty: 'LATE PENALTY', latePunchInPenalty: 'LATE PENALTY', earlyExitAmount: 'EXIT PEN', breakDeductionAmount: 'BREAK PEN'
@@ -1361,6 +1400,8 @@ router.get('/payroll/:cycleId/salary-register-excel', async (req, res) => {
       { header: 'PAID HOLIDAY', key: 'paidHoli', width: 14 },
       { header: 'ABSENT', key: 'absent', width: 10 },
       { header: 'TOTAL PAY DAY', key: 'totalPayDay', width: 15 },
+      { header: 'OT DAYS', key: 'otDays', width: 10 },
+      { header: 'OT HOUR', key: 'otHours', width: 10 },
       { header: 'BASIC RATE', key: 'basicRate', width: 12 },
       ...fdE.map(e => ({ header: e.label, key: `e_${e.key}`, width: 14 })),
       ...dI.map(i => ({ header: i.label, key: `i_${i.key}`, width: 14 })),
@@ -1393,9 +1434,9 @@ router.get('/payroll/:cycleId/salary-register-excel', async (req, res) => {
     titleCell.alignment = { horizontal: 'center' };
 
     // Group Headers (Earnings / Deductions) Row 4
-    const eStart = 9;
+    const eStart = cols.findIndex(c => String(c.key).startsWith('e_') || String(c.key).startsWith('i_')) + 1;
     const eEnd = eStart + fdE.length + dI.length - 1;
-    if (eEnd >= eStart) {
+    if (eStart > 0 && eEnd >= eStart) {
       worksheet.mergeCells(4, eStart, 4, eEnd);
       const eH = worksheet.getCell(4, eStart);
       eH.value = 'E A R N I N G S';
@@ -1404,9 +1445,9 @@ router.get('/payroll/:cycleId/salary-register-excel', async (req, res) => {
       eH.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF4F81BD' } };
       eH.border = { top: { style: 'medium' }, left: { style: 'medium' }, bottom: { style: 'medium' }, right: { style: 'medium' } };
     }
-    const dStart = eEnd + 2;
+    const dStart = cols.findIndex(c => String(c.key).startsWith('d_')) + 1;
     const dEnd = dStart + fdD.length - 1;
-    if (dEnd >= dStart) {
+    if (dStart > 0 && dEnd >= dStart) {
       worksheet.mergeCells(4, dStart, 4, dEnd);
       const dH = worksheet.getCell(4, dStart);
       dH.value = 'D E D U C T I O N S';
@@ -1436,13 +1477,13 @@ router.get('/payroll/:cycleId/salary-register-excel', async (req, res) => {
 
     let sl = 1;
     let currRow = 6;
-    const grandTotals = { basicRate: 0, grossPay: 0, totalDeduction: 0, netPay: 0, e: {}, d: {}, i: {} };
+    const grandTotals = { basicRate: 0, otDays: 0, otHours: 0, grossPay: 0, totalDeduction: 0, netPay: 0, e: {}, d: {}, i: {} };
     fdE.forEach(dk => grandTotals.e[dk.key] = 0);
     fdD.forEach(dk => grandTotals.d[dk.key] = 0);
     dI.forEach(dk => grandTotals.i[dk.key] = 0);
 
     for (const [groupVal, groupLines] of Object.entries(grouped)) {
-      const subTotals = { basicRate: 0, grossPay: 0, totalDeduction: 0, netPay: 0, e: {}, d: {}, i: {} };
+      const subTotals = { basicRate: 0, otDays: 0, otHours: 0, grossPay: 0, totalDeduction: 0, netPay: 0, e: {}, d: {}, i: {} };
       fdE.forEach(dk => subTotals.e[dk.key] = 0);
       fdD.forEach(dk => subTotals.d[dk.key] = 0);
       dI.forEach(dk => subTotals.i[dk.key] = 0);
@@ -1454,6 +1495,7 @@ router.get('/payroll/:cycleId/salary-register-excel', async (req, res) => {
         const i = typeof line.incentives === 'string' ? JSON.parse(line.incentives) : (line.incentives || {});
         const s = typeof line.attendanceSummary === 'string' ? JSON.parse(line.attendanceSummary) : (line.attendanceSummary || {});
         const t = typeof line.totals === 'string' ? JSON.parse(line.totals) : (line.totals || {});
+        const otMeta = salaryRegisterOtMeta.get(Number(line.userId)) || {};
 
         const rowData = {
           sl: sl++,
@@ -1465,6 +1507,8 @@ router.get('/payroll/:cycleId/salary-register-excel', async (req, res) => {
           paidHoli: Number(s.holidays || 0),
           absent: Number(s.absent || 0),
           totalPayDay: Number(s.present || 0) + Number(s.weeklyOff || 0) + Number(s.holidays || 0) + Number(s.half || 0) * 0.5,
+          otDays: Number(otMeta.otDays || 0),
+          otHours: Number((Number(otMeta.otMinutes || 0) / 60).toFixed(2)),
           basicRate: Number(u?.basicSalary || 0),
           grossPay: Number(t.grossSalary || 0),
           totalDeduction: Number(t.totalDeductions || 0),
@@ -1473,7 +1517,14 @@ router.get('/payroll/:cycleId/salary-register-excel', async (req, res) => {
         };
 
         fdE.forEach(dk => {
-          const val = (dk.key === 'overtimePay' || dk.key === 'earlyOvertimePay' || dk.key === 'overtime_pay') ? Number(s[dk.key] || e[dk.key] || 0) : Number(e[dk.key] || 0);
+          const hasFreshOtMeta = Number(otMeta.otMinutes || 0) > 0 || Number(otMeta.otPay || 0) > 0 || Number(otMeta.fooding || 0) > 0;
+          const val = dk.key === 'fooding'
+            ? Number(otMeta.fooding || 0)
+            : (dk.key === 'overtimePay' || dk.key === 'overtime_pay')
+              ? Number(hasFreshOtMeta ? otMeta.otPay : (s.overtimePay || s[dk.key] || e[dk.key] || 0))
+              : (dk.key === 'earlyOvertimePay')
+                ? Number(s[dk.key] || e[dk.key] || 0)
+                : Number(e[dk.key] || 0);
           rowData[`e_${dk.key}`] = val;
           subTotals.e[dk.key] += val; grandTotals.e[dk.key] += val;
         });
@@ -1489,6 +1540,8 @@ router.get('/payroll/:cycleId/salary-register-excel', async (req, res) => {
         });
 
         subTotals.basicRate += rowData.basicRate; grandTotals.basicRate += rowData.basicRate;
+        subTotals.otDays += rowData.otDays; grandTotals.otDays += rowData.otDays;
+        subTotals.otHours += rowData.otHours; grandTotals.otHours += rowData.otHours;
         subTotals.grossPay += rowData.grossPay; grandTotals.grossPay += rowData.grossPay;
         subTotals.totalDeduction += rowData.totalDeduction; grandTotals.totalDeduction += rowData.totalDeduction;
         subTotals.netPay += rowData.netPay; grandTotals.netPay += rowData.netPay;
@@ -1513,36 +1566,25 @@ router.get('/payroll/:cycleId/salary-register-excel', async (req, res) => {
       currRow++;
 
       // Sub-total for group
-      worksheet.mergeCells(currRow, 1, currRow, 8);
-      const groupCell = worksheet.getCell(currRow, 1);
-      groupCell.value = `TOTAL: ${groupVal.toUpperCase()}`;
-      groupCell.font = { bold: true };
-      groupCell.alignment = { horizontal: 'right' };
-      const subRow = worksheet.getRow(currRow);
-      let colIdx = 9;
-      fdE.forEach(dk => {
-        const c = subRow.getCell(colIdx++);
-        c.value = subTotals.e[dk.key];
-        c.numFmt = '#,##0.00';
-      });
-      dI.forEach(dk => {
-        const c = subRow.getCell(colIdx++);
-        c.value = subTotals.i[dk.key];
-        c.numFmt = '#,##0.00';
-      });
-      const grossCell = subRow.getCell(colIdx++); grossCell.value = subTotals.grossPay; grossCell.numFmt = '#,##0.00';
-      fdD.forEach(dk => {
-        const c = subRow.getCell(colIdx++);
-        c.value = subTotals.d[dk.key];
-        c.numFmt = '#,##0.00';
-      });
-      const totalDeducCell = subRow.getCell(colIdx++); totalDeducCell.value = subTotals.totalDeduction; totalDeducCell.numFmt = '#,##0.00';
-      const netPayCell = subRow.getCell(colIdx++); netPayCell.value = subTotals.netPay; netPayCell.numFmt = '#,##0.00';
+      const subRowData = {
+        name: `TOTAL: ${groupVal.toUpperCase()}`,
+        otDays: subTotals.otDays,
+        otHours: subTotals.otHours,
+        basicRate: subTotals.basicRate,
+        grossPay: subTotals.grossPay,
+        totalDeduction: subTotals.totalDeduction,
+        netPay: subTotals.netPay,
+      };
+      fdE.forEach(dk => { subRowData[`e_${dk.key}`] = subTotals.e[dk.key]; });
+      dI.forEach(dk => { subRowData[`i_${dk.key}`] = subTotals.i[dk.key]; });
+      fdD.forEach(dk => { subRowData[`d_${dk.key}`] = subTotals.d[dk.key]; });
+      const subRow = worksheet.addRow(subRowData);
 
       subRow.font = { bold: true };
       subRow.eachCell(cell => {
         cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFEBF1DE' } };
         cell.border = { top: { style: 'thin' }, left: { style: 'thin' }, bottom: { style: 'thin' }, right: { style: 'thin' } };
+        if (typeof cell.value === 'number') cell.numFmt = '#,##0.00';
       });
       currRow++;
 
@@ -1552,16 +1594,25 @@ router.get('/payroll/:cycleId/salary-register-excel', async (req, res) => {
     }
 
     // Grand Total Row
-    const grandRowArr = [null, 'Grand Total', null, null, null, null, null, grandTotals.basicRate];
-    fdE.forEach(dk => grandRowArr.push(grandTotals.e[dk.key]));
-    dI.forEach(dk => grandRowArr.push(grandTotals.i[dk.key]));
-    grandRowArr.push(grandTotals.grossPay);
-    fdD.forEach(dk => grandRowArr.push(grandTotals.d[dk.key]));
-    grandRowArr.push(grandTotals.totalDeduction, grandTotals.netPay);
+    const grandRowData = {
+      name: 'Grand Total',
+      otDays: grandTotals.otDays,
+      otHours: grandTotals.otHours,
+      basicRate: grandTotals.basicRate,
+      grossPay: grandTotals.grossPay,
+      totalDeduction: grandTotals.totalDeduction,
+      netPay: grandTotals.netPay,
+    };
+    fdE.forEach(dk => { grandRowData[`e_${dk.key}`] = grandTotals.e[dk.key]; });
+    dI.forEach(dk => { grandRowData[`i_${dk.key}`] = grandTotals.i[dk.key]; });
+    fdD.forEach(dk => { grandRowData[`d_${dk.key}`] = grandTotals.d[dk.key]; });
 
-    const grandRow = worksheet.addRow(grandRowArr);
+    const grandRow = worksheet.addRow(grandRowData);
     grandRow.font = { bold: true };
-    grandRow.eachCell(cell => cell.border = { top: { style: 'thin' }, left: { style: 'thin' }, bottom: { style: 'thick' }, right: { style: 'thin' } });
+    grandRow.eachCell(cell => {
+      cell.border = { top: { style: 'thin' }, left: { style: 'thin' }, bottom: { style: 'thick' }, right: { style: 'thin' } };
+      if (typeof cell.value === 'number') cell.numFmt = '#,##0.00';
+    });
 
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
     res.setHeader('Content-Disposition', `attachment; filename=Salary-Register-${cycle.monthKey}.xlsx`);
@@ -1603,6 +1654,8 @@ router.get('/payroll/salary-register-template-wise-excel', async (req, res) => {
     const userMap = new Map(users.map(u => [u.id, u]));
     const [year, month] = cycle.monthKey.split('-').map(Number);
     const monthName = new Date(year, month - 1, 1).toLocaleString('en-IN', { month: 'long', year: 'numeric' });
+    const daysInMonth = new Date(year, month, 0).getDate();
+    const salaryRegisterOtMeta = await buildSalaryRegisterOtMeta(userIds, cycle.monthKey, org, daysInMonth);
 
     // Group lines by Salary Template
     const templateGroups = {}; // templateId -> { template, lines }
@@ -1646,14 +1699,16 @@ router.get('/payroll/salary-register-template-wise-excel', async (req, res) => {
         if (Number(s.latePunchInAmount)) penaltyKeys.add('latePunchInAmount');
         if (Number(s.earlyExitAmount)) penaltyKeys.add('earlyExitAmount');
         if (Number(s.breakDeductionAmount)) penaltyKeys.add('breakDeductionAmount');
-        if (Number(s.overtimePay)) earningKeys.add('overtimePay');
+        const otMeta = salaryRegisterOtMeta.get(Number(line.userId)) || {};
+        if (Number(otMeta.otPay || s.overtimePay)) earningKeys.add('overtimePay');
+        earningKeys.add('fooding');
         if (Number(s.earlyOvertimePay)) earningKeys.add('earlyOvertimePay');
       });
 
       const labelMap = {
         basic_salary: 'BASIC', da: 'DA', hra: 'HRA', medical_allowance: 'MEDICAL',
         conveyance: 'CONVEYANCE', conveyance_allowance: 'CONVEYANCE', other_allowance: 'OTHER ALLOW.',
-        overtimePay: 'OT PAY', overtime_pay: 'OT PAY', earlyOvertimePay: 'EARLY OT',
+        overtimePay: 'OT PAY', overtime_pay: 'OT PAY', earlyOvertimePay: 'EARLY OT', fooding: 'FOODING',
         special_allowance: 'SPECIAL ALLOW.', travel_allowance: 'TRAVEL ALLOW.',
         pf: 'P.F.', esi: 'E.S.I.', ptax: 'P.TAX', professional_tax: 'P.TAX', tds: 'T.D.S.', loan_advance: 'LOAN/ADVANCE',
         advance: 'LOAN/ADVANCE', latePunchInAmount: 'LATE PENALTY', late_punchin_penalty: 'LATE PENALTY', latePunchInPenalty: 'LATE PENALTY', earlyExitAmount: 'EXIT PEN', breakDeductionAmount: 'BREAK PEN'
@@ -1684,6 +1739,8 @@ router.get('/payroll/salary-register-template-wise-excel', async (req, res) => {
         { header: 'PAID HOLIDAY', key: 'paidHoli', width: 14 },
         { header: 'ABSENT', key: 'absent', width: 10 },
         { header: 'TOTAL PAY DAY', key: 'totalPayDay', width: 15 },
+        { header: 'OT DAYS', key: 'otDays', width: 10 },
+        { header: 'OT HOUR', key: 'otHours', width: 10 },
         { header: 'BASIC RATE', key: 'basicRate', width: 12 },
         ...fdE.map(e => ({ header: e.label, key: `e_${e.key}`, width: 14 })),
         ...dI.map(i => ({ header: i.label, key: `i_${i.key}`, width: 14 })),
@@ -1714,9 +1771,9 @@ router.get('/payroll/salary-register-template-wise-excel', async (req, res) => {
       titleCell.alignment = { horizontal: 'center' };
 
       // Group Headers (Earnings / Deductions) Row 4
-      const eStart = 9;
+      const eStart = cols.findIndex(c => String(c.key).startsWith('e_') || String(c.key).startsWith('i_')) + 1;
       const eEnd = eStart + fdE.length + dI.length - 1;
-      if (eEnd >= eStart) {
+      if (eStart > 0 && eEnd >= eStart) {
         worksheet.mergeCells(4, eStart, 4, eEnd);
         const eH = worksheet.getCell(4, eStart);
         eH.value = 'E A R N I N G S';
@@ -1725,9 +1782,9 @@ router.get('/payroll/salary-register-template-wise-excel', async (req, res) => {
         eH.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF4F81BD' } };
         eH.border = { top: { style: 'medium' }, left: { style: 'medium' }, bottom: { style: 'medium' }, right: { style: 'medium' } };
       }
-      const dStart = eEnd + 2;
+      const dStart = cols.findIndex(c => String(c.key).startsWith('d_')) + 1;
       const dEnd = dStart + fdD.length - 1;
-      if (dEnd >= dStart) {
+      if (dStart > 0 && dEnd >= dStart) {
         worksheet.mergeCells(4, dStart, 4, dEnd);
         const dH = worksheet.getCell(4, dStart);
         dH.value = 'D E D U C T I O N S';
@@ -1748,7 +1805,7 @@ router.get('/payroll/salary-register-template-wise-excel', async (req, res) => {
       });
 
       let sl = 1;
-      const totals = { basicRate: 0, grossPay: 0, totalDeduction: 0, netPay: 0, e: {}, d: {}, i: {} };
+      const totals = { basicRate: 0, otDays: 0, otHours: 0, grossPay: 0, totalDeduction: 0, netPay: 0, e: {}, d: {}, i: {} };
       fdE.forEach(dk => totals.e[dk.key] = 0);
       fdD.forEach(dk => totals.d[dk.key] = 0);
       dI.forEach(dk => totals.i[dk.key] = 0);
@@ -1760,6 +1817,7 @@ router.get('/payroll/salary-register-template-wise-excel', async (req, res) => {
         const i = typeof line.incentives === 'string' ? JSON.parse(line.incentives) : (line.incentives || {});
         const s = typeof line.attendanceSummary === 'string' ? JSON.parse(line.attendanceSummary) : (line.attendanceSummary || {});
         const t = typeof line.totals === 'string' ? JSON.parse(line.totals) : (line.totals || {});
+        const otMeta = salaryRegisterOtMeta.get(Number(line.userId)) || {};
 
         const rowData = {
           sl: sl++,
@@ -1771,6 +1829,8 @@ router.get('/payroll/salary-register-template-wise-excel', async (req, res) => {
           paidHoli: Number(s.holidays || 0),
           absent: Number(s.absent || 0),
           totalPayDay: Number(s.present || 0) + Number(s.weeklyOff || 0) + Number(s.holidays || 0) + Number(s.half || 0) * 0.5,
+          otDays: Number(otMeta.otDays || 0),
+          otHours: Number((Number(otMeta.otMinutes || 0) / 60).toFixed(2)),
           basicRate: Number(u?.basicSalary || 0),
           grossPay: Number(t.grossSalary || 0),
           totalDeduction: Number(t.totalDeductions || 0),
@@ -1779,7 +1839,14 @@ router.get('/payroll/salary-register-template-wise-excel', async (req, res) => {
         };
 
         fdE.forEach(dk => {
-          const val = (dk.key === 'overtimePay' || dk.key === 'earlyOvertimePay' || dk.key === 'overtime_pay') ? Number(s[dk.key] || e[dk.key] || 0) : Number(e[dk.key] || 0);
+          const hasFreshOtMeta = Number(otMeta.otMinutes || 0) > 0 || Number(otMeta.otPay || 0) > 0 || Number(otMeta.fooding || 0) > 0;
+          const val = dk.key === 'fooding'
+            ? Number(otMeta.fooding || 0)
+            : (dk.key === 'overtimePay' || dk.key === 'overtime_pay')
+              ? Number(hasFreshOtMeta ? otMeta.otPay : (s.overtimePay || s[dk.key] || e[dk.key] || 0))
+              : (dk.key === 'earlyOvertimePay')
+                ? Number(s[dk.key] || e[dk.key] || 0)
+                : Number(e[dk.key] || 0);
           rowData[`e_${dk.key}`] = val;
           totals.e[dk.key] += val;
         });
@@ -1795,6 +1862,8 @@ router.get('/payroll/salary-register-template-wise-excel', async (req, res) => {
         });
 
         totals.basicRate += rowData.basicRate;
+        totals.otDays += rowData.otDays;
+        totals.otHours += rowData.otHours;
         totals.grossPay += rowData.grossPay;
         totals.totalDeduction += rowData.totalDeduction;
         totals.netPay += rowData.netPay;
@@ -1808,14 +1877,20 @@ router.get('/payroll/salary-register-template-wise-excel', async (req, res) => {
       });
 
       // Total Row
-      const totalRowArr = [null, 'Total', null, null, null, null, null, totals.basicRate];
-      fdE.forEach(dk => totalRowArr.push(totals.e[dk.key]));
-      dI.forEach(dk => totalRowArr.push(totals.i[dk.key]));
-      totalRowArr.push(totals.grossPay);
-      fdD.forEach(dk => totalRowArr.push(totals.d[dk.key]));
-      totalRowArr.push(totals.totalDeduction, totals.netPay);
+      const totalRowData = {
+        name: 'Total',
+        otDays: totals.otDays,
+        otHours: totals.otHours,
+        basicRate: totals.basicRate,
+        grossPay: totals.grossPay,
+        totalDeduction: totals.totalDeduction,
+        netPay: totals.netPay,
+      };
+      fdE.forEach(dk => { totalRowData[`e_${dk.key}`] = totals.e[dk.key]; });
+      dI.forEach(dk => { totalRowData[`i_${dk.key}`] = totals.i[dk.key]; });
+      fdD.forEach(dk => { totalRowData[`d_${dk.key}`] = totals.d[dk.key]; });
 
-      const totalRow = worksheet.addRow(totalRowArr);
+      const totalRow = worksheet.addRow(totalRowData);
       totalRow.font = { bold: true };
       totalRow.eachCell(cell => {
         cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFEBF1DE' } };
@@ -6597,6 +6672,35 @@ router.delete('/settings/attendance-templates/assign/:assignmentId', async (req,
   }
 });
 
+// Mobile Punch Access Settings
+router.get('/settings/mobile-punch-access', async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
+    const staff = await User.findAll({
+      where: { orgAccountId: orgId, role: 'staff', active: true },
+      include: [{ model: StaffProfile, as: 'profile' }],
+      attributes: ['id', 'phone', 'mobilePunchEnabled']
+    });
+    return res.json({ success: true, staff });
+  } catch (error) {
+    return res.status(500).json({ success: false, message: 'Failed to fetch mobile punch settings' });
+  }
+});
+
+router.put('/settings/mobile-punch-access/:userId', async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
+    const { enabled } = req.body;
+    const user = await User.findOne({ where: { id: req.params.userId, orgAccountId: orgId } });
+    if (!user) return res.status(404).json({ success: false, message: 'User not found' });
+    
+    await user.update({ mobilePunchEnabled: !!enabled });
+    return res.json({ success: true, message: 'Mobile punch setting updated' });
+  } catch (error) {
+    return res.status(500).json({ success: false, message: 'Failed to update mobile punch setting' });
+  }
+});
+
 
 
 // Staff list (full details) (org-scoped)
@@ -6672,6 +6776,7 @@ router.get('/staff', requireRole(['admin', 'staff']), async (req, res) => {
         photoUrl: u.profile?.photoUrl || null,
         education: u.profile?.education || null,
         experience: u.profile?.experience || null,
+        mobilePunchEnabled: !!u.mobilePunchEnabled,
       };
     });
 
@@ -6685,6 +6790,25 @@ router.get('/staff', requireRole(['admin', 'staff']), async (req, res) => {
     return res.status(500).json({ success: false, message: 'Failed to load staff list' });
   }
 });
+
+router.post('/staff/bulk-mobile-punch', requireRole(['admin']), async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
+    const { userIds, enabled } = req.body;
+    if (!Array.isArray(userIds) || userIds.length === 0) {
+      return res.status(400).json({ success: false, message: 'User ID(s) required' });
+    }
+    await User.update(
+      { mobilePunchEnabled: !!enabled },
+      { where: { id: userIds, orgAccountId: orgId, role: 'staff' } }
+    );
+    return res.json({ success: true, message: 'Staff mobile punch status updated' });
+  } catch (e) {
+    console.error('Bulk update mobile punch error:', e);
+    return res.status(500).json({ success: false, message: 'Failed to update staff mobile punch status' });
+  }
+});
+
 
 router.get('/staff/import-template', async (req, res) => {
   try {
@@ -8498,6 +8622,9 @@ router.get('/attendance/month', async (req, res) => {
         earlyExitMinutes: eeRes.earlyExitMinutes, earlyExitAmount: eeRes.earlyExitAmount,
         excessBreakMinutes: breakRes.excessBreakMinutes, breakDeductionAmount: breakRes.breakDeductionAmount,
         overtimeMinutes: r.overtimeMinutes, overtimeAmount: r.overtimeAmount,
+        fullDayOvertimeApplied: false,
+        extraFullDayBonusApplied: false,
+        extraFullDayBonusAmount: 0,
         earlyOvertimeMinutes: r.earlyOvertimeMinutes, earlyOvertimeAmount: r.earlyOvertimeAmount,
       });
     }
@@ -8576,6 +8703,9 @@ router.get('/staff/:id/attendance', async (req, res) => {
         earlyExitMinutes: eeRes.earlyExitMinutes, earlyExitAmount: eeRes.earlyExitAmount,
         excessBreakMinutes: breakRes.excessBreakMinutes, breakDeductionAmount: breakRes.breakDeductionAmount,
         overtimeMinutes: otRes.overtimeMinutes, overtimeAmount: otRes.overtimeAmount,
+        fullDayOvertimeApplied: !!otRes.fullDayOvertimeApplied,
+        extraFullDayBonusApplied: !!otRes.extraFullDayBonusApplied,
+        extraFullDayBonusAmount: Number(otRes.extraFullDayBonusAmount || 0),
         earlyOvertimeMinutes: r.earlyOvertimeMinutes, earlyOvertimeAmount: r.earlyOvertimeAmount,
       });
     }
@@ -9388,7 +9518,8 @@ router.put('/settings/org', async (req, res) => {
     const industryType = allowedIndustries.includes(String(body.industryType)) ? String(body.industryType) : 'field_sales';
     const features = body.features && typeof body.features === 'object' ? body.features : {};
     const smsSettings = body.smsNotificationSettings && typeof body.smsNotificationSettings === 'object' ? body.smsNotificationSettings : {};
-    const payload = JSON.stringify({ industryType, features, smsNotificationSettings: smsSettings });
+    const mobilePunchRestricted = !!body.mobilePunchRestricted;
+    const payload = JSON.stringify({ industryType, features, smsNotificationSettings: smsSettings, mobilePunchRestricted });
 
     let row = await AppSetting.findOne({ where: { key: 'org_config', orgAccountId: orgId } });
     if (!row) {
@@ -9396,7 +9527,7 @@ router.put('/settings/org', async (req, res) => {
     } else {
       await row.update({ value: payload });
     }
-    return res.json({ success: true, config: { industryType, features, smsNotificationSettings: smsSettings } });
+    return res.json({ success: true, config: { industryType, features, smsNotificationSettings: smsSettings, mobilePunchRestricted } });
   } catch (e) {
     console.error('Failed to save org config:', e);
     return res.status(500).json({
@@ -9405,6 +9536,48 @@ router.put('/settings/org', async (req, res) => {
       error: e.message,
       validationErrors: e.errors ? e.errors.map(err => ({ field: err.path, message: err.message })) : null
     });
+  }
+});
+
+// Mobile punch restriction staff management (org-scoped)
+router.get('/settings/mobile-punch/staff', async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
+    const staff = await User.findAll({
+      where: { orgAccountId: orgId, role: { [Op.in]: ['staff', 'admin'] } },
+      attributes: ['id', 'phone', 'mobilePunchEnabled'],
+      include: [{ model: StaffProfile, as: 'profile', attributes: ['name'] }],
+    });
+    
+    const data = staff.map(s => ({
+      id: s.id,
+      name: s.profile?.name || s.phone || `Staff #${s.id}`,
+      phone: s.phone,
+      restricted: s.mobilePunchEnabled === false
+    })).sort((a, b) => a.name.localeCompare(b.name));
+    
+    return res.json({ success: true, staff: data });
+  } catch (e) {
+    console.error('Error loading mobile punch staff:', e);
+    return res.status(500).json({ success: false, message: 'Failed to load staff list' });
+  }
+});
+
+router.post('/settings/mobile-punch/staff/update', async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
+    const { userIds, restricted } = req.body;
+    if (!Array.isArray(userIds)) return res.status(400).json({ success: false, message: 'userIds array required' });
+    
+    await User.update(
+      { mobilePunchEnabled: !restricted },
+      { where: { id: userIds, orgAccountId: orgId } }
+    );
+    
+    return res.json({ success: true, message: `Updated restriction for ${userIds.length} staff members` });
+  } catch (e) {
+    console.error('Error updating mobile punch restrictions:', e);
+    return res.status(500).json({ success: false, message: 'Failed to update restrictions' });
   }
 });
 
@@ -9842,6 +10015,34 @@ router.put('/settings/brand', async (req, res) => {
     return res.json({ success: true, brand: { displayName: created.displayName } });
   } catch (e) {
     return res.status(500).json({ success: false, message: 'Failed to save brand settings' });
+  }
+});
+
+// Mobile Punch Restriction settings
+router.get('/settings/mobile-restriction', async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
+    const row = await AppSetting.findOne({ where: { key: 'mobile_punch_restricted', orgAccountId: orgId } });
+    return res.json({ success: true, restricted: row?.value === 'true' });
+  } catch (e) {
+    return res.status(500).json({ success: false, message: 'Failed to load mobile restriction settings' });
+  }
+});
+
+router.put('/settings/mobile-restriction', async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
+    const restricted = !!req.body.restricted;
+    const [row, created] = await AppSetting.findOrCreate({
+      where: { key: 'mobile_punch_restricted', orgAccountId: orgId },
+      defaults: { value: String(restricted), orgAccountId: orgId }
+    });
+    if (!created) {
+      await row.update({ value: String(restricted) });
+    }
+    return res.json({ success: true, restricted });
+  } catch (e) {
+    return res.status(500).json({ success: false, message: 'Failed to update mobile restriction settings' });
   }
 });
 
@@ -12962,6 +13163,7 @@ router.post('/staff', requireRole(['admin', 'staff']), async (req, res) => {
       allowCurrentCycleSalaryAccess,
 
       active,
+      mobilePunchEnabled,
       dateOfJoining,
       photoUrl,
       education,
@@ -13165,6 +13367,8 @@ router.post('/staff', requireRole(['admin', 'staff']), async (req, res) => {
     if (salaryDetailAccess !== undefined) userData.salaryDetailAccess = salaryDetailAccess;
 
     if (allowCurrentCycleSalaryAccess !== undefined) userData.allowCurrentCycleSalaryAccess = allowCurrentCycleSalaryAccess;
+
+    if (mobilePunchEnabled !== undefined) userData.mobilePunchEnabled = !!mobilePunchEnabled;
 
 
 
@@ -13731,6 +13935,7 @@ router.put('/staff/:id', requireRole(['admin', 'staff']), async (req, res) => {
       salaryDetailAccess,
       allowCurrentCycleSalaryAccess,
       active,
+      mobilePunchEnabled,
       dateOfJoining,
       photoUrl,
       education,
@@ -13789,6 +13994,8 @@ router.put('/staff/:id', requireRole(['admin', 'staff']), async (req, res) => {
     if (openingBalance !== undefined) patchUser.openingBalance = openingBalance;
     if (salaryDetailAccess !== undefined) patchUser.salaryDetailAccess = !!salaryDetailAccess;
     if (allowCurrentCycleSalaryAccess !== undefined) patchUser.allowCurrentCycleSalaryAccess = !!allowCurrentCycleSalaryAccess;
+
+    if (mobilePunchEnabled !== undefined) patchUser.mobilePunchEnabled = !!mobilePunchEnabled;
 
     // Handle salary recalculation if values are provided
     if (salaryValues && (salaryValues.earnings || salaryValues.deductions)) {
@@ -18744,10 +18951,11 @@ router.get('/reports/monthly-attendance', async (req, res) => {
     };
 
     // HELPER: Calculate statistics for a staff member
-    const getStaffStats = (staffId) => {
+    const getStaffStats = async (staffId) => {
       const sId = String(staffId);
       let present = 0, absent = 0, wo = 0, holiday = 0, leave = 0;
-      let totalDurationMin = 0, totalOtMin = 0;
+      let totalDurationMin = 0, totalOtMin = 0, otFullDays = 0, extraPresent = 0;
+      const otResultsMap = {};
       let lateDays = 0, earlyDays = 0;
       const userHolAsg = holidayAssignments.filter(a => String(a.userId) === sId);
 
@@ -18757,7 +18965,20 @@ router.get('/reports/monthly-attendance', async (req, res) => {
         const att = attendanceMap[sId]?.[dStr];
 
         if (att) {
-          const statusCode = toStatusCode(att);
+          
+          // Check for Extra Present (Working on WO or Holiday)
+          let isExtra = false;
+          if (checkIsWeeklyOff(sId, dStr)) {
+            isExtra = true;
+          } else {
+            for (const asg of userHolAsg) {
+              if (dStr >= dayjs(asg.effectiveFrom).format('YYYY-MM-DD') && (!asg.effectiveTo || dStr <= dayjs(asg.effectiveTo).format('YYYY-MM-DD'))) {
+                if (asg.template?.holidays?.some(hd => hd.date === dStr)) { isExtra = true; break; }
+              }
+            }
+          }
+          if (isExtra) extraPresent++;
+const statusCode = toStatusCode(att);
           const s = (statusCode || '').toLowerCase();
           if (['p', 'hd'].includes(s)) present++;
           else if (s === 'a') absent++;
@@ -18767,7 +18988,18 @@ router.get('/reports/monthly-attendance', async (req, res) => {
             const diff = dayjs(att.punchedOutAt).diff(dayjs(att.punchedInAt), 'minute');
             totalDurationMin += diff;
           }
-          totalOtMin += (att.overtimeMinutes || 0);
+          
+          // Apply User's requested OT logic
+          const otRes = await calculateOvertime(att, org, daysInMonth, att.punchedOutAt || null);
+          // Trust the saved overtimeMinutes for consistency with the status row
+          const savedOtMins = Number(att.overtimeMinutes || 0);
+          if (otRes.fullDayOvertimeApplied) {
+            otFullDays++;
+            otResultsMap[dStr] = { minutes: 0, isFullDay: true, actualMinutes: savedOtMins };
+          } else {
+            totalOtMin += savedOtMins;
+            otResultsMap[dStr] = { minutes: savedOtMins, isFullDay: false };
+          }
 
           const shiftTpl = shiftService.resolveShift(sId, dStr, shiftContext);
           if (shiftTpl) {
@@ -18804,12 +19036,12 @@ router.get('/reports/monthly-attendance', async (req, res) => {
           else absent++;
         }
       }
-      return { present, absent, wo, holiday, leave, totalDurationMin, totalOtMin, lateDays, earlyDays };
+      return { present, absent, wo, holiday, leave, totalDurationMin, totalOtMin, otFullDays, otResultsMap, extraPresent, lateDays, earlyDays };
     };
 
     // Row Generation per Staff
-    staffMembers.forEach((staff) => {
-      const stats = getStaffStats(staff.id);
+    for (const staff of staffMembers) {
+      const stats = await getStaffStats(staff.id);
       const staffTierCounts = new Array(lateTiers.length).fill(0);
 
       // Department Row
@@ -18825,7 +19057,7 @@ router.get('/reports/monthly-attendance', async (req, res) => {
       empInfoRow.getCell(1).font = { bold: true };
       empInfoRow.getCell(2).value = `${staff.profile?.staffId || staff.id} : ${staff.profile?.name || staff.name}`;
 
-      const summaryText = `Total Work Duration: ${Math.floor(stats.totalDurationMin / 60)}:${String(stats.totalDurationMin % 60).padStart(2, '0')} Hrs.  Total OT: ${Math.floor(stats.totalOtMin / 60)}:${String(stats.totalOtMin % 60).padStart(2, '0')} Hrs.  Present: ${stats.present}  Absent: ${stats.absent}  WeeklyOff: ${stats.wo}  Holidays: ${stats.holiday}  Leaves Taken: ${stats.leave}`;
+      const summaryText = `Total Work Duration: ${Math.floor(stats.totalDurationMin / 60)}:${String(stats.totalDurationMin % 60).padStart(2, '0')} Hrs.  OT Hour: ${Math.floor(stats.totalOtMin / 60)}:${String(stats.totalOtMin % 60).padStart(2, '0')} Hrs.  Extra OT Days: ${stats.otFullDays}  Present (including present on weekly off and holiday): ${stats.present}  Absent: ${stats.absent}  WeeklyOff: ${stats.wo}  Holidays: ${stats.holiday}  Leaves Taken: ${stats.leave}  Extra Present on Weekly Off/Holiday: ${stats.extraPresent}`;
       worksheet.mergeCells(currentRow, 3, currentRow, daysInMonth + 2);
       empInfoRow.getCell(3).value = summaryText;
       empInfoRow.getCell(3).font = { size: 9 };
@@ -18850,9 +19082,22 @@ router.get('/reports/monthly-attendance', async (req, res) => {
 
           const shiftTpl = shiftService.resolveShift(staff.id, dStr, shiftContext);
 
-          // Highlight Weekly Off columns
+          // Highlight Weekly Off columns (Yellow)
           if (checkIsWeeklyOff(String(staff.id), dStr)) {
             cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFF2CC' } };
+          }
+
+          // Highlight Holiday columns (Red)
+          const sId = String(staff.id);
+          const userHolAsg = holidayAssignments.filter(a => String(a.userId) === sId);
+          let isH = false;
+          for (const asg of userHolAsg) {
+            if (dStr >= dayjs(asg.effectiveFrom).format('YYYY-MM-DD') && (!asg.effectiveTo || dStr <= dayjs(asg.effectiveTo).format('YYYY-MM-DD'))) {
+              if (asg.template?.holidays?.some(hd => hd.date === dStr)) { isH = true; break; }
+            }
+          }
+          if (isH) {
+            cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFC6EFCE' } };
           }
 
           if (h === 'Status') {
@@ -18932,7 +19177,18 @@ router.get('/reports/monthly-attendance', async (req, res) => {
               if (diff > 0) cell.value = `${diff}m`;
             }
           } else if (h === 'OT') {
-            cell.value = att?.overtimeMinutes ? `${Math.floor(att.overtimeMinutes / 60)}:${String(att.overtimeMinutes % 60).padStart(2, '0')}` : '';
+            const otRes = stats.otResultsMap[dStr];
+            if (otRes) {
+              const mins = otRes.isFullDay ? (otRes.actualMinutes || 0) : (otRes.minutes || 0);
+              if (mins > 0) {
+                const timeStr = `${Math.floor(mins / 60)}:${String(mins % 60).padStart(2, '0')}`;
+                cell.value = otRes.isFullDay ? `${timeStr} (1 day)` : timeStr;
+              } else {
+                cell.value = '';
+              }
+            } else {
+              cell.value = '';
+            }
           } else if (h === 'Shift') {
             cell.value = shiftTpl?.name || 'GS';
           }
@@ -18940,7 +19196,7 @@ router.get('/reports/monthly-attendance', async (req, res) => {
       });
 
       currentRow += 10; // Next employee block
-    });
+    }
 
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
     res.setHeader('Content-Disposition', `attachment; filename=monthly-attendance-${year}-${month}.xlsx`);
@@ -24386,7 +24642,7 @@ router.get('/settings/overtime-rules', async (req, res) => {
 router.post('/settings/overtime-rules', async (req, res) => {
   try {
     const orgId = requireOrg(req, res); if (!orgId) return;
-    const { name, calculationType, rewardType, thresholds, giveHalfDayOvertime, halfDayThresholdMinutes, giveFullDayOvertime, fullDayThresholdMinutes } = req.body;
+    const { name, calculationType, rewardType, thresholds, giveHalfDayOvertime, halfDayThresholdMinutes, giveFullDayOvertime, fullDayThresholdMinutes, includeEarlyArrival, calculateOnGross, giveExtraFullDayBonus, extraFullDayBonusAmount } = req.body;
 
     const rule = await OvertimeRule.create({
       orgAccountId: orgId,
@@ -24397,8 +24653,13 @@ router.post('/settings/overtime-rules', async (req, res) => {
       giveHalfDayOvertime,
       halfDayThresholdMinutes,
       giveFullDayOvertime,
-      fullDayThresholdMinutes
+      fullDayThresholdMinutes,
+      includeEarlyArrival,
+      calculateOnGross,
+      giveExtraFullDayBonus,
+      extraFullDayBonusAmount
     });
+
 
     // Automatically set as active rule for the organization
     await OrgAccount.update({ overtimeRuleId: rule.id }, { where: { id: orgId } });

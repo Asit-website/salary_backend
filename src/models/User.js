@@ -155,6 +155,12 @@ module.exports = (sequelize) => {
         defaultValue: false,
         field: 'is_task_observer'
       },
+      mobilePunchEnabled: {
+        type: DataTypes.BOOLEAN,
+        allowNull: false,
+        defaultValue: true,
+        field: 'mobile_punch_enabled'
+      },
     },
     {
       tableName: 'users',

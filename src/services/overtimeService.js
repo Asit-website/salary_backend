@@ -14,7 +14,23 @@ const shiftService = require('./shiftService');
  * Helper to find minutes exceeding the threshold based on Calculation Type
  */
 async function getOvertimeMinutes(attendance, rule, shiftTemplate) {
-  const totalWorkMinutes = Math.floor((attendance.totalWorkHours || 0) * 60);
+  let totalWorkMinutes = Math.floor((attendance.totalWorkHours || 0) * 60);
+
+  // If includeEarlyArrival is false, exclude minutes worked before shift start from total work minutes
+  // to ensure they don't contribute to reaching thresholds.
+  if (!rule.includeEarlyArrival && attendance.punchedInAt && shiftTemplate && shiftTemplate.startTime) {
+    const punchInLocal = dayjs(attendance.punchedInAt);
+    const shiftDate = dayjs(attendance.date || attendance.punchedInAt);
+    const [sh, sm] = shiftTemplate.startTime.split(':').map(Number);
+    let shiftStartLocal = shiftDate.hour(sh).minute(sm).second(0).millisecond(0);
+
+    if (punchInLocal.isBefore(shiftStartLocal)) {
+      const earlyMins = Math.round(shiftStartLocal.diff(punchInLocal, 'minute', true));
+      if (earlyMins > 0) {
+        totalWorkMinutes = Math.max(0, totalWorkMinutes - earlyMins);
+      }
+    }
+  }
 
   // 1. Resolve Threshold (Rule > ShiftTemplate > Calculated Shift Time)
   let baseThreshold = (rule.thresholds && rule.thresholds.length > 0) ? rule.thresholds[0].minMinutes : 0;
@@ -51,8 +67,7 @@ async function getOvertimeMinutes(attendance, rule, shiftTemplate) {
     const [sh, sm] = (shiftTemplate.startTime || '00:00').split(':').map(Number);
     const [eh, em, es] = shiftTemplate.endTime.split(':').map(Number);
     
-    // Robust Time Comparison:
-    // Build shift start and end times based on the attendance date.
+    const punchInLocal = dayjs(attendance.punchedInAt);
     const punchOutLocal = dayjs(attendance.punchedOutAt);
     const shiftDate = dayjs(attendance.date || attendance.punchedInAt || attendance.punchedOutAt);
 
@@ -64,11 +79,20 @@ async function getOvertimeMinutes(attendance, rule, shiftTemplate) {
         shiftEndLocal = shiftEndLocal.add(1, 'day');
     }
 
+    // Late Stay Overtime
     if (punchOutLocal.isAfter(shiftEndLocal)) {
-      overtimeByShift = Math.round(punchOutLocal.diff(shiftEndLocal, 'minute', true));
+      overtimeByShift += Math.round(punchOutLocal.diff(shiftEndLocal, 'minute', true));
     }
 
-    console.log(`[OvertimeService] Rule ID: ${rule.id}, PO(Local): ${punchOutLocal.format()}, SE(Local): ${shiftEndLocal.format()}, OT: ${overtimeByShift}`);
+    // Early Arrival Overtime (if enabled)
+    if (rule.includeEarlyArrival && punchInLocal.isBefore(shiftStartLocal)) {
+      const earlyMins = Math.round(shiftStartLocal.diff(punchInLocal, 'minute', true));
+      if (earlyMins > 0) {
+        overtimeByShift += earlyMins;
+      }
+    }
+
+    console.log(`[OvertimeService] Rule ID: ${rule.id}, EarlyIncl: ${rule.includeEarlyArrival}, OT_Shift: ${overtimeByShift}`);
   }
 
   console.log(`[OvertimeService] Debug - Total min: ${totalWorkMinutes}, Threshold min: ${baseThreshold}, Shift OT: ${overtimeByShift}, Rule Type: ${rule.calculationType}`);
@@ -179,9 +203,22 @@ async function calculateOvertime(params, orgAccountArg, daysInMonthArg = 30, now
   if (user?.salaryValues) {
     try { sv = typeof user.salaryValues === 'string' ? JSON.parse(user.salaryValues) : user.salaryValues; } catch (e) { sv = {}; }
   }
-  const basic = Number(user?.basicSalary || 0) || Number(sv?.earnings?.basic_salary || sv?.earnings?.BASIC_SALARY || 0);
-  const da = Number(user?.da || 0) || Number(sv?.earnings?.da || sv?.earnings?.DA || 0);
-  const baseSalary = basic + da;
+
+  let baseSalary = 0;
+  if (finalRule.calculateOnGross) {
+    // Use Gross Salary if enabled
+    baseSalary = Number(user?.grossSalary || 0) || Number(sv?.gross_salary || sv?.GROSS_SALARY || 0);
+    // Fallback to total earnings if gross is 0
+    if (baseSalary <= 0) {
+      baseSalary = Number(user?.totalEarnings || 0) || Number(sv?.total_earnings || sv?.TOTAL_EARNINGS || 0);
+    }
+  } else {
+    // Default: Basic + DA
+    const basic = Number(user?.basicSalary || 0) || Number(sv?.earnings?.basic_salary || sv?.earnings?.BASIC_SALARY || 0);
+    const da = Number(user?.da || 0) || Number(sv?.earnings?.da || sv?.earnings?.DA || 0);
+    baseSalary = basic + da;
+  }
+
   const daysInMonth = daysInMonthArg || 30;
 
   if (rewardType === 'FIXED_AMOUNT') {
@@ -219,12 +256,24 @@ async function calculateOvertime(params, orgAccountArg, daysInMonthArg = 30, now
 
   // Handle Half/Full Day Bonuses - These should OVERRIDE the base amount if they result in more pay,
   // or as per user request: "lekin agar 4 hour... to full day milega" implies override.
+  let fullDayOvertimeApplied = false;
+  let extraFullDayBonusApplied = false;
+  let extraFullDayBonusAmount = 0;
   if (finalRule && finalRule.id) {
     const dailyRate = daysInMonth > 0 ? (baseSalary / daysInMonth) : 0;
 
     if (finalRule.giveFullDayOvertime && finalRule.fullDayThresholdMinutes) {
       if (overtimeMinutes >= finalRule.fullDayThresholdMinutes) {
+        fullDayOvertimeApplied = true;
         overtimeAmount = Math.max(overtimeAmount, dailyRate);
+        
+        // Add extra bonus if configured
+        if (finalRule.giveExtraFullDayBonus) {
+          extraFullDayBonusAmount = Number(finalRule.extraFullDayBonusAmount || 25);
+          overtimeAmount += extraFullDayBonusAmount;
+          extraFullDayBonusApplied = extraFullDayBonusAmount > 0;
+        }
+
       } else if (finalRule.giveHalfDayOvertime && finalRule.halfDayThresholdMinutes) {
         if (overtimeMinutes >= finalRule.halfDayThresholdMinutes) {
           overtimeAmount = Math.max(overtimeAmount, dailyRate / 2);
@@ -241,6 +290,9 @@ async function calculateOvertime(params, orgAccountArg, daysInMonthArg = 30, now
     overtimeMinutes: Math.floor(overtimeMinutes),
     overtimeAmount: assignment ? parseFloat(overtimeAmount.toFixed(2)) : 0,
     overtimeRuleId: finalRule.id || null,
+    fullDayOvertimeApplied,
+    extraFullDayBonusApplied,
+    extraFullDayBonusAmount: extraFullDayBonusApplied ? extraFullDayBonusAmount : 0,
     status: overtimeMinutes > 0 ? 'overtime' : ((!attendance.punchedOutAt) ? 'present' : (shiftTemplate?.halfDayThresholdMinutes && totalWorkMinutes < shiftTemplate.halfDayThresholdMinutes ? 'half_day' : 'present'))
   };
 }

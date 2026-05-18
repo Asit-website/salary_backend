@@ -1145,6 +1145,92 @@ const sendMissingCheckoutEmail = async (adminEmail, adminName, organizationName,
   }
 };
 
+// Send email for absent staff
+const sendAbsentStaffEmail = async (adminEmail, adminName, organizationName, absentList, dateStr) => {
+  try {
+    console.log(`📧 Sending absent staff email to: ${adminEmail}`);
+
+    // Create table rows for the absent list
+    const rows = absentList.map(staff => `
+      <tr>
+        <td style="padding: 10px; border: 1px solid #ddd;">${staff.name}</td>
+        <td style="padding: 10px; border: 1px solid #ddd;">${staff.staffId || 'N/A'}</td>
+        <td style="padding: 10px; border: 1px solid #ddd;">${staff.phone || 'N/A'}</td>
+        <td style="padding: 10px; border: 1px solid #ddd;">${staff.department || 'N/A'}</td>
+      </tr>
+    `).join('');
+
+    const mailOptions = {
+      from: emailFrom,
+      to: adminEmail,
+      subject: `Daily Absent Report: ${dateStr}`,
+      html: `
+        <!DOCTYPE html>
+        <html>
+        <head>
+          <meta charset="utf-8">
+          <meta name="viewport" content="width=device-width, initial-scale=1.0">
+          <title>Absent Staff Report - Vetansutra</title>
+          <style>
+            body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; line-height: 1.6; color: #333; max-width: 600px; margin: 0 auto; padding: 20px; background-color: #f4f4f4; }
+            .container { background-color: white; padding: 30px; border-radius: 10px; box-shadow: 0 0 20px rgba(0,0,0,0.1); }
+            .header { text-align: center; padding-bottom: 20px; border-bottom: 2px solid #6c757d; }
+            .header h1 { color: #343a40; margin: 0; font-size: 24px; }
+            .content { padding: 20px 0; }
+            table { width: 100%; border-collapse: collapse; margin-top: 20px; }
+            th { background-color: #f8f9fa; padding: 10px; border: 1px solid #ddd; text-align: left; }
+            .footer { text-align: center; padding-top: 20px; border-top: 1px solid #eee; color: #666; font-size: 14px; }
+          </style>
+        </head>
+        <body>
+          <div class="container">
+            <div class="header">
+              <h1>Daily Absent Report</h1>
+            </div>
+            
+            <div class="content">
+              <p>Hello <strong>${adminName}</strong>,</p>
+              
+              <p>The following staff members at <strong>${organizationName}</strong> were absent on <strong>${dateStr}</strong> (no attendance recorded):</p>
+              
+              <table>
+                <thead>
+                  <tr>
+                    <th>Staff Name</th>
+                    <th>Staff ID</th>
+                    <th>Phone Number</th>
+                    <th>Department</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  ${rows}
+                </tbody>
+              </table>
+              
+              <p style="margin-top: 20px;">This report excludes staff members on approved leave, weekly off, or holidays.</p>
+              
+              <p>Best regards,<br>
+              <strong>Vetansutra Team</strong></p>
+            </div>
+            
+            <div class="footer">
+              <p>This is an automated message. Please do not reply to this email.</p>
+            </div>
+          </div>
+        </body>
+        </html>
+      `
+    };
+
+    const info = await transporter.sendMail(mailOptions);
+    console.log('✅ Absent staff email sent successfully:', info.messageId);
+    return { success: true, messageId: info.messageId };
+  } catch (error) {
+    console.error('Error sending absent staff email:', error);
+    return { success: false, error: error.message };
+  }
+};
+
 module.exports = {
   verifyEmailConfig,
   sendWelcomeEmail,
@@ -1156,6 +1242,7 @@ module.exports = {
   sendStaffLetterEmail,
   sendMeetingInviteEmail,
   sendMissingCheckoutEmail,
+  sendAbsentStaffEmail,
   transporter,
   emailFrom
 };
