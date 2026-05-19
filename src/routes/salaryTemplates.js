@@ -47,7 +47,7 @@ router.put('/:id', authRequired, requireRole(['admin', 'superadmin']), async (re
     if (!template) {
       return res.status(404).json({ success: false, message: 'Salary template not found' });
     }
-    
+
     await template.update(req.body);
     return res.json({ success: true, data: template });
   } catch (error) {
@@ -62,7 +62,7 @@ router.delete('/:id', authRequired, requireRole(['admin', 'superadmin']), async 
     if (!template) {
       return res.status(404).json({ success: false, message: 'Salary template not found' });
     }
-    
+
     await template.update({ active: false });
     return res.json({ success: true, message: 'Salary template deleted successfully' });
   } catch (error) {
@@ -84,7 +84,7 @@ router.post('/:id/calculate', authRequired, async (req, res) => {
     // Calculate earnings
     let earnings = {};
     let totalEarnings = 0;
-    
+
     template.earnings.forEach(item => {
       let value = 0;
       if (item.type === 'fixed') {
@@ -100,7 +100,7 @@ router.post('/:id/calculate', authRequired, async (req, res) => {
     // Calculate incentives
     let incentives = {};
     let totalIncentives = 0;
-    
+
     template.incentives.forEach(item => {
       let value = 0;
       if (item.type === 'fixed') {
@@ -116,14 +116,14 @@ router.post('/:id/calculate', authRequired, async (req, res) => {
     // Calculate deductions
     let deductions = {};
     let totalDeductions = 0;
-    
+
     template.deductions.forEach(item => {
       let value = 0;
       if (item.type === 'fixed') {
         value = item.valueNumber;
       } else if (item.type === 'percent') {
-        const baseValue = item.meta?.basedOn === 'gross_salary' ? 
-          totalEarnings + totalIncentives : 
+        const baseValue = item.meta?.basedOn === 'gross_salary' ?
+          totalEarnings + totalIncentives :
           earnings[item.meta?.basedOn] || 0;
         value = (baseValue * item.valueNumber) / 100;
       }

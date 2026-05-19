@@ -28,7 +28,7 @@ const router = express.Router();
 
 const aiController = require('../controllers/aiController');
 
-router.post('/ask', aiController.askAI);
+router.post('/ask', authRequired, tenantEnforce, aiController.askAI);
 
 router.use(authRequired);
 router.use(requireRole(['admin', 'superadmin']));

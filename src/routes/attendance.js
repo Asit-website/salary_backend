@@ -896,7 +896,9 @@ router.get('/history', async (req, res) => {
         isPenaltyDay: lateAmt > 0,
         latePunchInAmount: lateAmt,
         latePunchInMinutes: lateMins,
-        reason: lateReason
+        reason: lateReason,
+        punchedInAt: record?.punchedInAt || null,
+        punchedOutAt: record?.punchedOutAt || null
       });
     }
 

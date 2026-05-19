@@ -600,6 +600,21 @@ router.get('/payroll-status', async (req, res) => {
   }
 });
 
+// Get all expense claims for current logged-in user
+router.get('/expenses', async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const claims = await ExpenseClaim.findAll({
+      where: { userId },
+      order: [['createdAt', 'DESC']]
+    });
+    return res.json({ success: true, claims });
+  } catch (e) {
+    console.error('List my expenses error:', e);
+    return res.status(500).json({ success: false, message: 'Failed to fetch expense claims' });
+  }
+});
+
 // Create expense claim for current logged-in user
 router.post('/expenses', upload.single('attachment'), async (req, res) => {
   try {

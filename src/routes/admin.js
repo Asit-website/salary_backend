@@ -65,6 +65,46 @@ function requireOrg(req, res) {
   return Number(orgId);
 }
 
+async function checkSettingsPermission(req) {
+  if (req.user?.role === 'admin' || req.user?.role === 'superadmin') return true;
+  if (req.user?.role !== 'staff') return false;
+
+  const user = await User.findOne({
+    where: { id: req.user.id, orgAccountId: req.tenantOrgAccountId },
+    include: [
+      {
+        model: Badge,
+        as: 'badges',
+        where: { isActive: true },
+        required: false,
+        through: { where: { isActive: true }, attributes: [] },
+        include: [{
+          model: BadgePermission,
+          as: 'permissions',
+          where: { permissionKey: 'settings_tab' }
+        }],
+      },
+    ],
+  });
+
+  const hasPerm = (user?.badges || []).some(b => (b.permissions || []).length > 0);
+  return hasPerm;
+}
+
+async function requireSettingsAccess(req, res, next) {
+  try {
+    const hasAccess = await checkSettingsPermission(req);
+    if (!hasAccess) {
+      return res.status(403).json({ success: false, message: 'Forbidden' });
+    }
+    return next();
+  } catch (err) {
+    console.error('Settings access check error:', err);
+    return res.status(500).json({ success: false, message: 'Internal server error during authorization' });
+  }
+}
+
+
 
 
 router.use(authRequired);
@@ -103,7 +143,7 @@ function dateOnlySafe(input) {
 }
 
 // --- Holiday Work Pay Rules ---
-router.get('/holiday-work-pay/rules', requireRole(['admin']), async (req, res) => {
+router.get('/holiday-work-pay/rules', requireSettingsAccess, async (req, res) => {
   try {
     const orgId = requireOrg(req, res); if (!orgId) return;
     const rules = await HolidayWorkPayRule.findAll({ where: { orgAccountId: orgId, active: true } });
@@ -114,7 +154,7 @@ router.get('/holiday-work-pay/rules', requireRole(['admin']), async (req, res) =
   }
 });
 
-router.post('/holiday-work-pay/rules', requireRole(['admin']), async (req, res) => {
+router.post('/holiday-work-pay/rules', requireSettingsAccess, async (req, res) => {
   try {
     const orgId = requireOrg(req, res); if (!orgId) return;
     const { name, holidayMultiplier, weeklyOffMultiplier } = req.body;
@@ -131,7 +171,7 @@ router.post('/holiday-work-pay/rules', requireRole(['admin']), async (req, res) 
   }
 });
 
-router.put('/holiday-work-pay/rules/:id', requireRole(['admin']), async (req, res) => {
+router.put('/holiday-work-pay/rules/:id', requireSettingsAccess, async (req, res) => {
   try {
     const orgId = requireOrg(req, res); if (!orgId) return;
     const { name, holidayMultiplier, weeklyOffMultiplier, active } = req.body;
@@ -145,7 +185,7 @@ router.put('/holiday-work-pay/rules/:id', requireRole(['admin']), async (req, re
   }
 });
 
-router.delete('/holiday-work-pay/rules/:id', requireRole(['admin']), async (req, res) => {
+router.delete('/holiday-work-pay/rules/:id', requireSettingsAccess, async (req, res) => {
   try {
     const orgId = requireOrg(req, res); if (!orgId) return;
     const rule = await HolidayWorkPayRule.findOne({ where: { id: req.params.id, orgAccountId: orgId } });
@@ -159,7 +199,7 @@ router.delete('/holiday-work-pay/rules/:id', requireRole(['admin']), async (req,
 });
 
 // --- Holiday Work Pay Assignments ---
-router.get('/holiday-work-pay/assignments', requireRole(['admin']), async (req, res) => {
+router.get('/holiday-work-pay/assignments', requireSettingsAccess, async (req, res) => {
   try {
     const orgId = requireOrg(req, res); if (!orgId) return;
     const asgs = await StaffHolidayWorkPayAssignment.findAll({
@@ -173,7 +213,7 @@ router.get('/holiday-work-pay/assignments', requireRole(['admin']), async (req, 
   }
 });
 
-router.post('/holiday-work-pay/assignments', requireRole(['admin']), async (req, res) => {
+router.post('/holiday-work-pay/assignments', requireSettingsAccess, async (req, res) => {
   try {
     const orgId = requireOrg(req, res); if (!orgId) return;
     const { userId, userIds, ruleId, effectiveFrom, effectiveTo } = req.body;
@@ -200,7 +240,7 @@ router.post('/holiday-work-pay/assignments', requireRole(['admin']), async (req,
   }
 });
 
-router.put('/holiday-work-pay/assignments/:id', requireRole(['admin']), async (req, res) => {
+router.put('/holiday-work-pay/assignments/:id', requireSettingsAccess, async (req, res) => {
   try {
     const orgId = requireOrg(req, res); if (!orgId) return;
     const { userId, ruleId, effectiveFrom, effectiveTo } = req.body;
@@ -214,7 +254,7 @@ router.put('/holiday-work-pay/assignments/:id', requireRole(['admin']), async (r
   }
 });
 
-router.delete('/holiday-work-pay/assignments/:id', requireRole(['admin']), async (req, res) => {
+router.delete('/holiday-work-pay/assignments/:id', requireSettingsAccess, async (req, res) => {
   try {
     const orgId = requireOrg(req, res); if (!orgId) return;
     const asg = await StaffHolidayWorkPayAssignment.findOne({ where: { id: req.params.id, orgAccountId: orgId } });
@@ -3929,6 +3969,390 @@ router.get('/sales/visits', async (req, res) => {
 
 
 
+// Export Sales Visits as Excel (org-scoped)
+router.get('/sales/visits/export', async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
+    const { SalesVisit, User, OrgAccount } = sequelize.models;
+
+    const orgStaffIds = (await User.findAll({ where: { orgAccountId: orgId, role: 'staff' }, attributes: ['id'] })).map(u => u.id);
+
+    const rows = await SalesVisit.findAll({
+      where: { userId: orgStaffIds },
+      order: [['visitDate', 'DESC'], ['id', 'DESC']],
+      limit: 2000
+    });
+
+    const userIds = Array.from(new Set(rows.map(r => (r.userId ?? r.user_id)).filter(v => Number.isFinite(Number(v))))).map(Number);
+    const userMap = {};
+    if (User && userIds.length > 0) {
+      try {
+        const users = await User.findAll({ where: { id: userIds }, attributes: ['id', 'name', 'phone'] });
+        for (const u of users) userMap[u.id] = u.name || u.phone || `User #${u.id}`;
+      } catch (_) { }
+    }
+
+    const org = await OrgAccount.findByPk(orgId);
+    const companyName = org?.name || 'THINKTECH SOFTWARE';
+
+    const workbook = new exceljs.Workbook();
+    const worksheet = workbook.addWorksheet('Sales Visits');
+    worksheet.views = [{ showGridLines: true }];
+
+    // Company Header
+    worksheet.mergeCells(1, 1, 1, 9);
+    const companyRow = worksheet.getRow(1);
+    companyRow.height = 35;
+    const companyCell = worksheet.getCell(1, 1);
+    companyCell.value = companyName.toUpperCase();
+    companyCell.font = { bold: true, size: 16, color: { argb: 'FFFFFFFF' } };
+    companyCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF125EC9' } };
+    companyCell.alignment = { horizontal: 'center', vertical: 'middle' };
+
+    // Subheader/Report Title
+    worksheet.mergeCells(2, 1, 2, 9);
+    const titleRow = worksheet.getRow(2);
+    titleRow.height = 25;
+    const titleCell = worksheet.getCell(2, 1);
+    titleCell.value = `SALES VISITS REPORT - GENERATED ON ${dayjs().format('DD MMM YYYY hh:mm A')}`;
+    titleCell.font = { bold: true, size: 11, color: { argb: 'FF374151' } };
+    titleCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF3F4F6' } };
+    titleCell.alignment = { horizontal: 'center', vertical: 'middle' };
+
+    // Empty row for breathing room
+    worksheet.getRow(3).height = 15;
+
+    // Headers
+    const headers = [
+      'ID', 'Date & Time', 'Staff Member', 'Client Name', 
+      'Visit Type', 'Check-In Address', 'Coordinates', 'Verified', 'Order Placed'
+    ];
+    worksheet.getRow(4).values = headers;
+    const headerRow = worksheet.getRow(4);
+    headerRow.height = 25;
+    headerRow.eachCell((cell) => {
+      cell.font = { bold: true, size: 10, color: { argb: 'FFFFFFFF' } };
+      cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF1E293B' } };
+      cell.alignment = { vertical: 'middle', horizontal: 'center' };
+      cell.border = {
+        top: { style: 'thin', color: { argb: 'FFCBD5E1' } },
+        bottom: { style: 'thin', color: { argb: 'FFCBD5E1' } },
+        left: { style: 'thin', color: { argb: 'FFCBD5E1' } },
+        right: { style: 'thin', color: { argb: 'FFCBD5E1' } }
+      };
+    });
+
+    let rowIndex = 5;
+    for (const r of rows) {
+      const staffName = (() => { const uid = r.userId ?? r.user_id; return (uid && userMap[uid]) ? userMap[uid] : 'N/A'; })();
+      const dateStr = r.visitDate ? dayjs(r.visitDate).format('DD MMM YYYY hh:mm A') : dayjs(r.createdAt).format('DD MMM YYYY hh:mm A');
+      const hasGeo = Number.isFinite(Number(r.checkInLat)) && Number.isFinite(Number(r.checkInLng));
+      const coords = hasGeo ? `${r.checkInLat}, ${r.checkInLng}` : 'N/A';
+
+      const rowValues = [
+        r.id,
+        dateStr,
+        staffName,
+        r.clientName || 'N/A',
+        r.visitType || 'N/A',
+        r.checkInAddress || r.location || 'N/A',
+        coords,
+        r.verified ? 'YES' : 'NO',
+        r.madeOrder ? 'YES' : 'NO'
+      ];
+
+      worksheet.getRow(rowIndex).values = rowValues;
+      const dataRow = worksheet.getRow(rowIndex);
+      dataRow.height = 22;
+      dataRow.eachCell((cell, colNum) => {
+        cell.font = { size: 10, color: { argb: 'FF334155' } };
+        cell.border = {
+          top: { style: 'thin', color: { argb: 'FFE2E8F0' } },
+          bottom: { style: 'thin', color: { argb: 'FFE2E8F0' } },
+          left: { style: 'thin', color: { argb: 'FFE2E8F0' } },
+          right: { style: 'thin', color: { argb: 'FFE2E8F0' } }
+        };
+        // Alternating background colors for readability
+        if (rowIndex % 2 === 0) {
+          cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF8FAFC' } };
+        }
+        
+        // Alignment
+        if (colNum === 1 || colNum === 8 || colNum === 9) {
+          cell.alignment = { horizontal: 'center', vertical: 'middle' };
+        } else {
+          cell.alignment = { horizontal: 'left', vertical: 'middle' };
+        }
+
+        // Color specific status column
+        if (colNum === 8) {
+          cell.font = { bold: true, size: 10, color: { argb: r.verified ? 'FF16A34A' : 'FFDC2626' } };
+        }
+        if (colNum === 9) {
+          cell.font = { bold: true, size: 10, color: { argb: r.madeOrder ? 'FF2563EB' : 'FF64748B' } };
+        }
+      });
+
+      rowIndex++;
+    }
+
+    // Set widths dynamically
+    worksheet.columns.forEach((col, idx) => {
+      let maxLen = headers[idx].length;
+      col.eachCell({ includeEmpty: false }, (cell, rowNum) => {
+        if (rowNum > 3) {
+          const val = String(cell.value || '');
+          if (val.length > maxLen) maxLen = val.length;
+        }
+      });
+      col.width = Math.min(45, Math.max(12, maxLen + 4));
+    });
+
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', `attachment; filename=sales-visits-${dayjs().format('YYYY-MM-DD')}.xlsx`);
+    await workbook.xlsx.write(res);
+    return res.end();
+
+  } catch (e) {
+    console.error('Visits export error:', e);
+    return res.status(500).json({ success: false, message: 'Failed to export visits' });
+  }
+});
+
+// Export Sales Orders as Excel (org-scoped)
+router.get('/sales/orders/export', async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
+    const { Order, User, Client, OrgAccount, OrderItem } = sequelize.models;
+
+    const orgStaffIds = (await User.findAll({ where: { orgAccountId: orgId, role: 'staff' }, attributes: ['id'] })).map(u => u.id);
+
+    const rows = await Order.findAll({
+      where: { userId: orgStaffIds },
+      order: [['orderDate', 'DESC'], ['id', 'DESC']],
+      limit: 2000
+    });
+
+    const userIds = Array.from(new Set(rows.map(r => (r.userId ?? r.user_id)).filter(v => Number.isFinite(Number(v))))).map(Number);
+    const clientIds = Array.from(new Set(rows.map(r => r.clientId).filter(v => Number.isFinite(Number(v))))).map(Number);
+
+    const userMap = {}; const clientMap = {}; const orderItemsMap = {};
+
+    if (User && userIds.length > 0) {
+      try {
+        const users = await User.findAll({ where: { id: userIds }, attributes: ['id', 'name', 'phone'] });
+        for (const u of users) userMap[u.id] = u.name || u.phone || `User #${u.id}`;
+      } catch (_) { }
+    }
+
+    if (Client && clientIds.length > 0) {
+      try {
+        const clients = await Client.findAll({ where: { id: clientIds }, attributes: ['id', 'name', 'phone', 'location'] });
+        for (const c of clients) clientMap[c.id] = c.name || c.phone || `Client #${c.id}`;
+      } catch (_) { }
+    }
+
+    if (OrderItem && rows.length > 0) {
+      try {
+        const orderIds = rows.map(r => r.id);
+        const allItems = await OrderItem.findAll({ where: { orderId: orderIds } });
+        for (const item of allItems) {
+          const oid = item.orderId ?? item.order_id;
+          if (!orderItemsMap[oid]) orderItemsMap[oid] = [];
+          orderItemsMap[oid].push(item);
+        }
+      } catch (e) {
+        console.error('Error fetching export order items:', e);
+      }
+    }
+
+    const org = await OrgAccount.findByPk(orgId);
+    const companyName = org?.name || 'THINKTECH SOFTWARE';
+
+    const workbook = new exceljs.Workbook();
+    const worksheet = workbook.addWorksheet('Sales Orders');
+    worksheet.views = [{ showGridLines: true }];
+
+    // Company Header
+    worksheet.mergeCells(1, 1, 1, 12);
+    const companyRow = worksheet.getRow(1);
+    companyRow.height = 35;
+    const companyCell = worksheet.getCell(1, 1);
+    companyCell.value = companyName.toUpperCase();
+    companyCell.font = { bold: true, size: 16, color: { argb: 'FFFFFFFF' } };
+    companyCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF125EC9' } };
+    companyCell.alignment = { horizontal: 'center', vertical: 'middle' };
+
+    // Subheader/Report Title
+    worksheet.mergeCells(2, 1, 2, 12);
+    const titleRow = worksheet.getRow(2);
+    titleRow.height = 25;
+    const titleCell = worksheet.getCell(2, 1);
+    titleCell.value = `SALES ORDERS REPORT - GENERATED ON ${dayjs().format('DD MMM YYYY hh:mm A')}`;
+    titleCell.font = { bold: true, size: 11, color: { argb: 'FF374151' } };
+    titleCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF3F4F6' } };
+    titleCell.alignment = { horizontal: 'center', vertical: 'middle' };
+
+    // Empty row for breathing room
+    worksheet.getRow(3).height = 15;
+
+    // Headers
+    const headers = [
+      'Order ID', 'Date & Time', 'Staff Member', 'Client Name', 
+      'Products Ordered', 'Check-In Address', 'Coordinates', 'Net Amount', 
+      'GST Amount', 'Total Amount', 'Payment Method', 'Remarks'
+    ];
+    worksheet.getRow(4).values = headers;
+    const headerRow = worksheet.getRow(4);
+    headerRow.height = 25;
+    headerRow.eachCell((cell) => {
+      cell.font = { bold: true, size: 10, color: { argb: 'FFFFFFFF' } };
+      cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF1E293B' } };
+      cell.alignment = { vertical: 'middle', horizontal: 'center' };
+      cell.border = {
+        top: { style: 'thin', color: { argb: 'FFCBD5E1' } },
+        bottom: { style: 'thin', color: { argb: 'FFCBD5E1' } },
+        left: { style: 'thin', color: { argb: 'FFCBD5E1' } },
+        right: { style: 'thin', color: { argb: 'FFCBD5E1' } }
+      };
+    });
+
+    let rowIndex = 5;
+    let grandTotal = 0;
+    let netTotal = 0;
+    let gstTotal = 0;
+
+    for (const r of rows) {
+      const staffName = (() => { const uid = r.userId ?? r.user_id; return (uid && userMap[uid]) ? userMap[uid] : 'N/A'; })();
+      const dateStr = r.orderDate ? dayjs(r.orderDate).format('DD MMM YYYY hh:mm A') : dayjs(r.createdAt).format('DD MMM YYYY hh:mm A');
+      
+      const net = Number(r.netAmount || r.net_amount || 0);
+      const gst = Number(r.gstAmount || r.gst_amount || 0);
+      const total = Number(r.totalAmount || r.total_amount || 0);
+
+      netTotal += net;
+      gstTotal += gst;
+      grandTotal += total;
+
+      const itemsStr = (orderItemsMap[r.id] || []).map(it => {
+        return `${it.name || 'N/A'}${it.size ? ` (${it.size})` : ''} x ${it.qty || 1}`;
+      }).join('\n');
+
+      const hasGeo = Number.isFinite(Number(r.checkInLat)) && Number.isFinite(Number(r.checkInLng));
+      const coordsStr = hasGeo ? `${r.checkInLat}, ${r.checkInLng}` : 'N/A';
+
+      const rowValues = [
+        r.id,
+        dateStr,
+        staffName,
+        (r.clientId && clientMap[r.clientId]) ? clientMap[r.clientId] : 'N/A',
+        itemsStr,
+        r.checkInAddress || 'N/A',
+        coordsStr,
+        net,
+        gst,
+        total,
+        String(r.paymentMethod || 'N/A').toUpperCase(),
+        r.remarks || 'N/A'
+      ];
+
+      worksheet.getRow(rowIndex).values = rowValues;
+      const dataRow = worksheet.getRow(rowIndex);
+      // Auto row height based on products list length
+      const itemsCount = (orderItemsMap[r.id] || []).length || 1;
+      dataRow.height = Math.max(22, itemsCount * 16);
+
+      dataRow.eachCell((cell, colNum) => {
+        cell.font = { size: 10, color: { argb: 'FF334155' } };
+        cell.border = {
+          top: { style: 'thin', color: { argb: 'FFE2E8F0' } },
+          bottom: { style: 'thin', color: { argb: 'FFE2E8F0' } },
+          left: { style: 'thin', color: { argb: 'FFE2E8F0' } },
+          right: { style: 'thin', color: { argb: 'FFE2E8F0' } }
+        };
+        // Alternating background colors for readability
+        if (rowIndex % 2 === 0) {
+          cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF8FAFC' } };
+        }
+        
+        // Alignment & Formatting
+        if (colNum === 1 || colNum === 11) {
+          cell.alignment = { horizontal: 'center', vertical: 'middle' };
+        } else if (colNum === 5) {
+          cell.alignment = { wrapText: true, vertical: 'middle', horizontal: 'left' };
+        } else if (colNum >= 8 && colNum <= 10) {
+          cell.alignment = { horizontal: 'right', vertical: 'middle' };
+          cell.numFmt = '₹#,##0.00';
+        } else {
+          cell.alignment = { horizontal: 'left', vertical: 'middle' };
+        }
+      });
+
+      rowIndex++;
+    }
+
+    // Grand Summary Row
+    worksheet.mergeCells(rowIndex, 1, rowIndex, 7);
+    const summaryLabelCell = worksheet.getCell(rowIndex, 1);
+    summaryLabelCell.value = 'GRAND TOTAL';
+    summaryLabelCell.font = { bold: true, size: 10, color: { argb: 'FF1E293B' } };
+    summaryLabelCell.alignment = { horizontal: 'right', vertical: 'middle' };
+    
+    const summaryNetCell = worksheet.getCell(rowIndex, 8);
+    summaryNetCell.value = netTotal;
+    summaryNetCell.font = { bold: true, size: 10, color: { argb: 'FF1E293B' } };
+    summaryNetCell.numFmt = '₹#,##0.00';
+    summaryNetCell.alignment = { horizontal: 'right', vertical: 'middle' };
+
+    const summaryGstCell = worksheet.getCell(rowIndex, 9);
+    summaryGstCell.value = gstTotal;
+    summaryGstCell.font = { bold: true, size: 10, color: { argb: 'FF1E293B' } };
+    summaryGstCell.numFmt = '₹#,##0.00';
+    summaryGstCell.alignment = { horizontal: 'right', vertical: 'middle' };
+
+    const summaryTotalCell = worksheet.getCell(rowIndex, 10);
+    summaryTotalCell.value = grandTotal;
+    summaryTotalCell.font = { bold: true, size: 10, color: { argb: 'FF1E293B' } };
+    summaryTotalCell.numFmt = '₹#,##0.00';
+    summaryTotalCell.alignment = { horizontal: 'right', vertical: 'middle' };
+
+    const totalRow = worksheet.getRow(rowIndex);
+    totalRow.height = 25;
+    totalRow.eachCell((cell) => {
+      cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF1F5F9' } };
+      cell.border = {
+        top: { style: 'thin', color: { argb: 'FF94A3B8' } },
+        bottom: { style: 'double', color: { argb: 'FF94A3B8' } },
+        left: { style: 'thin', color: { argb: 'FFE2E8F0' } },
+        right: { style: 'thin', color: { argb: 'FFE2E8F0' } }
+      };
+    });
+
+    // Set widths dynamically
+    worksheet.columns.forEach((col, idx) => {
+      let maxLen = headers[idx] ? headers[idx].length : 12;
+      col.eachCell({ includeEmpty: false }, (cell, rowNum) => {
+        if (rowNum > 3 && rowNum < rowIndex) {
+          const val = String(cell.value || '');
+          if (val.length > maxLen) maxLen = val.length;
+        }
+      });
+      col.width = Math.min(45, Math.max(12, maxLen + 4));
+    });
+
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', `attachment; filename=sales-orders-${dayjs().format('YYYY-MM-DD')}.xlsx`);
+    await workbook.xlsx.write(res);
+    return res.end();
+
+  } catch (e) {
+    console.error('Orders export error:', e);
+    return res.status(500).json({ success: false, message: 'Failed to export orders' });
+  }
+});
+
+
+
 // Get a single sales visit detail (org-scoped)
 
 router.get('/sales/visits/:id', async (req, res) => {
@@ -4106,25 +4530,45 @@ router.get('/sales/orders', async (req, res) => {
 
     }
 
+    const orderItemsMap = {};
+
     if (OrderItem && rows.length > 0) {
 
       try {
 
         const orderIds = rows.map(r => r.id);
 
-        // Use snake_case column names as per DB schema
+        const allItems = await OrderItem.findAll({ where: { orderId: orderIds } });
 
-        const [counts] = await sequelize.query(
+        for (const item of allItems) {
 
-          `SELECT order_id AS id, COUNT(*) AS cnt FROM order_items WHERE order_id IN (${orderIds.map(() => '?').join(',')}) GROUP BY order_id`,
+          const oid = item.orderId ?? item.order_id;
 
-          { replacements: orderIds }
+          if (!orderItemsMap[oid]) orderItemsMap[oid] = [];
 
-        );
+          orderItemsMap[oid].push({
 
-        for (const k of counts) itemsCount[Number(k.id)] = Number(k.cnt) || 0;
+            id: item.id,
 
-      } catch (_) { }
+            name: item.name || item.productName || null,
+
+            size: item.size || null,
+
+            qty: Number(item.qty || 1),
+
+            price: Number(item.price || 0),
+
+            amount: Number(item.amount || 0)
+
+          });
+
+        }
+
+      } catch (e) {
+
+        console.error('Error fetching order items list:', e);
+
+      }
 
     }
 
@@ -4146,7 +4590,7 @@ router.get('/sales/orders', async (req, res) => {
 
       totalAmount: Number(r.totalAmount || r.total_amount || 0),
 
-      items: itemsCount[r.id] || 0,
+      items: orderItemsMap[r.id] || [],
 
       checkInLat: r.checkInLat || null,
 
@@ -4167,8 +4611,6 @@ router.get('/sales/orders', async (req, res) => {
   }
 
 });
-
-
 
 
 
@@ -5740,7 +6182,7 @@ router.get('/shifts/effective/:userId', async (req, res) => {
     const orgId = requireOrg(req, res); if (!orgId) return;
     const { userId } = req.params;
     const uid = Number(userId);
-    
+
     // Parse the requested date or default to today in IST
     const dateQuery = req.query.date;
     const dateStr = dateQuery && dayjs(dateQuery).isValid() ? dayjs(dateQuery).format('YYYY-MM-DD') : dayjs().format('YYYY-MM-DD');
@@ -6693,7 +7135,7 @@ router.put('/settings/mobile-punch-access/:userId', async (req, res) => {
     const { enabled } = req.body;
     const user = await User.findOne({ where: { id: req.params.userId, orgAccountId: orgId } });
     if (!user) return res.status(404).json({ success: false, message: 'User not found' });
-    
+
     await user.update({ mobilePunchEnabled: !!enabled });
     return res.json({ success: true, message: 'Mobile punch setting updated' });
   } catch (error) {
@@ -6791,8 +7233,13 @@ router.get('/staff', requireRole(['admin', 'staff']), async (req, res) => {
   }
 });
 
-router.post('/staff/bulk-mobile-punch', requireRole(['admin']), async (req, res) => {
+router.post('/staff/bulk-mobile-punch', requireRole(['admin', 'staff']), async (req, res) => {
   try {
+    const hasAccess = await checkSettingsPermission(req);
+    if (!hasAccess) {
+      return res.status(403).json({ success: false, message: 'Forbidden' });
+    }
+
     const orgId = requireOrg(req, res); if (!orgId) return;
     const { userIds, enabled } = req.body;
     if (!Array.isArray(userIds) || userIds.length === 0) {
@@ -9548,14 +9995,14 @@ router.get('/settings/mobile-punch/staff', async (req, res) => {
       attributes: ['id', 'phone', 'mobilePunchEnabled'],
       include: [{ model: StaffProfile, as: 'profile', attributes: ['name'] }],
     });
-    
+
     const data = staff.map(s => ({
       id: s.id,
       name: s.profile?.name || s.phone || `Staff #${s.id}`,
       phone: s.phone,
       restricted: s.mobilePunchEnabled === false
     })).sort((a, b) => a.name.localeCompare(b.name));
-    
+
     return res.json({ success: true, staff: data });
   } catch (e) {
     console.error('Error loading mobile punch staff:', e);
@@ -9568,12 +10015,12 @@ router.post('/settings/mobile-punch/staff/update', async (req, res) => {
     const orgId = requireOrg(req, res); if (!orgId) return;
     const { userIds, restricted } = req.body;
     if (!Array.isArray(userIds)) return res.status(400).json({ success: false, message: 'userIds array required' });
-    
+
     await User.update(
       { mobilePunchEnabled: !restricted },
       { where: { id: userIds, orgAccountId: orgId } }
     );
-    
+
     return res.json({ success: true, message: `Updated restriction for ${userIds.length} staff members` });
   } catch (e) {
     console.error('Error updating mobile punch restrictions:', e);
@@ -11175,14 +11622,14 @@ router.get('/attendance', async (req, res) => {
     });
 
     const rosters = await StaffRoster.findAll({
-      where: { 
-        userId: userIds, 
-        date: month ? { 
+      where: {
+        userId: userIds,
+        date: month ? {
           [Op.between]: [
-            startDate.toISOString().split('T')[0], 
+            startDate.toISOString().split('T')[0],
             endDate.toISOString().split('T')[0]
-          ] 
-        } : String(date) 
+          ]
+        } : String(date)
       },
       include: [{ model: ShiftTemplate, as: 'shiftTemplate' }]
     });
@@ -11224,17 +11671,17 @@ router.get('/attendance', async (req, res) => {
 
       if (r.punchedInAt && isPresentLike) {
         // 1. Check Roster Override (Highest Priority)
-        const rosterEntry = rosters.find(ros => 
-          Number(ros.userId) === Number(r.userId) && 
+        const rosterEntry = rosters.find(ros =>
+          Number(ros.userId) === Number(r.userId) &&
           String(ros.date) === String(r.date)
         );
         let shiftTpl = rosterEntry?.shiftTemplate;
 
         // 2. Check Staff Assignment
         if (!shiftTpl) {
-          const dayShiftAsg = shiftAssignments.find(asg => 
-            Number(asg.userId) === Number(r.userId) && 
-            String(r.date) >= String(asg.effectiveFrom) && 
+          const dayShiftAsg = shiftAssignments.find(asg =>
+            Number(asg.userId) === Number(r.userId) &&
+            String(r.date) >= String(asg.effectiveFrom) &&
             (!asg.effectiveTo || String(r.date) <= String(asg.effectiveTo))
           );
           shiftTpl = dayShiftAsg?.template;
@@ -14772,21 +15219,21 @@ router.get('/dashboard/department-distribution', async (req, res) => {
     const deptExpectedWages = {};
 
     // Initialize
-    validDepts.forEach(d => { 
-      deptCounts[d] = 0; 
-      deptWages[d] = 0; 
+    validDepts.forEach(d => {
+      deptCounts[d] = 0;
+      deptWages[d] = 0;
       deptExpectedWages[d] = 0;
     });
-    if (!deptCounts['General']) { 
-      deptCounts['General'] = 0; 
-      deptWages['General'] = 0; 
+    if (!deptCounts['General']) {
+      deptCounts['General'] = 0;
+      deptWages['General'] = 0;
       deptExpectedWages['General'] = 0;
     }
 
     Object.values(staffDataMap).forEach(data => {
       const dept = data.dept;
       deptCounts[dept] = (deptCounts[dept] || 0) + 1;
-      
+
       const monthlyWage = data.netSalary;
       const accruedWage = (data.payableDays / daysInMonth) * monthlyWage;
       deptWages[dept] = (deptWages[dept] || 0) + accruedWage;
@@ -15154,23 +15601,23 @@ router.post('/clients', async (req, res) => {
 
     if (!name) return res.status(400).json({ success: false, message: 'name required' });
 
-    
 
-    const client = await Client.create({ 
 
-      name, 
+    const client = await Client.create({
 
-      phone: phone || null, 
+      name,
 
-      clientType: clientType || null, 
+      phone: phone || null,
 
-      location: location || null, 
+      clientType: clientType || null,
 
-      extra: extra || null, 
+      location: location || null,
 
-      createdBy: req.user.id, 
+      extra: extra || null,
 
-      orgAccountId: orgId 
+      createdBy: req.user.id,
+
+      orgAccountId: orgId
 
     });
 
@@ -15222,7 +15669,7 @@ router.put('/clients/:id', async (req, res) => {
 
     if (!client) return res.status(404).json({ success: false, message: 'Not found' });
 
-    
+
 
     const { name, phone, clientType, location, extra, staffIds } = req.body || {};
 
@@ -16301,11 +16748,11 @@ router.put('/settings/order-products/staff/:userId', async (req, res) => {
 router.get('/sales/clients', async (req, res) => {
   try {
     const orgId = requireOrg(req, res); if (!orgId) return;
-    const rows = await Client.findAll({ 
-      where: { orgAccountId: orgId }, 
-      include: [{ 
-        model: User, 
-        as: 'assignedStaff', 
+    const rows = await Client.findAll({
+      where: { orgAccountId: orgId },
+      include: [{
+        model: User,
+        as: 'assignedStaff',
         attributes: ['id'],
         include: [{
           model: sequelize.models.StaffProfile,
@@ -16314,7 +16761,7 @@ router.get('/sales/clients', async (req, res) => {
         }],
         through: { attributes: [] }
       }],
-      order: [['createdAt', 'DESC']] 
+      order: [['createdAt', 'DESC']]
     });
 
     const data = rows.map(r => {
@@ -16387,7 +16834,7 @@ router.put('/sales/clients/:id', async (req, res) => {
     if (!client) return res.status(404).json({ success: false, message: 'Not found' });
 
     const { name, phone, clientType, location, extra, active, staffIds } = req.body || {};
-    
+
     await client.update({
       name: name ?? client.name,
       phone: phone ?? client.phone,
@@ -18965,7 +19412,7 @@ router.get('/reports/monthly-attendance', async (req, res) => {
         const att = attendanceMap[sId]?.[dStr];
 
         if (att) {
-          
+
           // Check for Extra Present (Working on WO or Holiday)
           let isExtra = false;
           if (checkIsWeeklyOff(sId, dStr)) {
@@ -18978,7 +19425,7 @@ router.get('/reports/monthly-attendance', async (req, res) => {
             }
           }
           if (isExtra) extraPresent++;
-const statusCode = toStatusCode(att);
+          const statusCode = toStatusCode(att);
           const s = (statusCode || '').toLowerCase();
           if (['p', 'hd'].includes(s)) present++;
           else if (s === 'a') absent++;
@@ -18988,7 +19435,7 @@ const statusCode = toStatusCode(att);
             const diff = dayjs(att.punchedOutAt).diff(dayjs(att.punchedInAt), 'minute');
             totalDurationMin += diff;
           }
-          
+
           // Apply User's requested OT logic
           const otRes = await calculateOvertime(att, org, daysInMonth, att.punchedOutAt || null);
           // Trust the saved overtimeMinutes for consistency with the status row
@@ -24515,16 +24962,16 @@ router.get('/staff/:id/attendance-overview', async (req, res) => {
         // Resolve shift for this day
         const dDateStr = dayjs(dateStr).format('YYYY-MM-DD');
         // 1. Roster
-        const rosterEntry = rosters.find(ros => 
-          Number(ros.userId) === Number(userId) && 
+        const rosterEntry = rosters.find(ros =>
+          Number(ros.userId) === Number(userId) &&
           String(ros.date) === dDateStr
         );
         let shiftTpl = rosterEntry?.shiftTemplate;
 
         // 2. Assignment
         if (!shiftTpl) {
-          const dayShiftAsg = shiftAsg?.filter(asg => 
-            dDateStr >= dayjs(asg.effectiveFrom).format('YYYY-MM-DD') && 
+          const dayShiftAsg = shiftAsg?.filter(asg =>
+            dDateStr >= dayjs(asg.effectiveFrom).format('YYYY-MM-DD') &&
             (!asg.effectiveTo || dDateStr <= dayjs(asg.effectiveTo).format('YYYY-MM-DD'))
           ).sort((a, b) => dayjs(b.effectiveFrom).diff(dayjs(a.effectiveFrom)))[0];
           shiftTpl = dayShiftAsg?.template;
