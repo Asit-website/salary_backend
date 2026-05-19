@@ -27,6 +27,30 @@ async function initDb() {
     console.log('AWS Rekognition: Note on face_id column (might already exist):', err.message);
   }
 
+  // Ensure salary_register_enabled and other report columns exist in plans and subscriptions
+  const reportCols = [
+    'salary_register_enabled',
+    'monthly_summary_enabled',
+    'per_day_salary_enabled',
+    'comparison_enabled',
+    'ot_impact_enabled',
+    'late_penalty_enabled'
+  ];
+
+  for (const col of reportCols) {
+    try {
+      await sequelize.query(`ALTER TABLE plans ADD COLUMN ${col} BOOLEAN NOT NULL DEFAULT TRUE`);
+    } catch (err) {
+      console.log(`${col} column in plans already exists or error:`, err.message);
+    }
+
+    try {
+      await sequelize.query(`ALTER TABLE subscriptions ADD COLUMN ${col} BOOLEAN NOT NULL DEFAULT TRUE`);
+    } catch (err) {
+      console.log(`${col} column in subscriptions already exists or error:`, err.message);
+    }
+  }
+
   const phone = process.env.SUPERADMIN_PHONE;
   const password = process.env.SUPERADMIN_PASSWORD;
 

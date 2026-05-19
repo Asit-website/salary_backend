@@ -43,7 +43,8 @@ router.post('/plans', authRequired, requireRole('superadmin'), async (req, res) 
       rosterEnabled,
       recruitmentEnabled,
       communityEnabled,
-      features
+      features,
+      salaryRegisterEnabled
     } = req.body;
 
     const plan = await Plan.create({
@@ -66,6 +67,7 @@ router.post('/plans', authRequired, requireRole('superadmin'), async (req, res) 
       rosterEnabled,
       recruitmentEnabled,
       communityEnabled,
+      salaryRegisterEnabled: req.body.salaryRegisterEnabled !== undefined ? req.body.salaryRegisterEnabled : true,
       active: true
     });
 
@@ -104,7 +106,8 @@ router.put('/plans/:id', authRequired, requireRole('superadmin'), async (req, re
       recruitmentEnabled,
       communityEnabled,
       features,
-      active
+      active,
+      salaryRegisterEnabled
     } = req.body;
 
     await plan.update({
@@ -125,6 +128,7 @@ router.put('/plans/:id', authRequired, requireRole('superadmin'), async (req, re
       rosterEnabled,
       recruitmentEnabled,
       communityEnabled,
+      salaryRegisterEnabled: salaryRegisterEnabled !== undefined ? salaryRegisterEnabled : plan.salaryRegisterEnabled,
       features,
       active
     });
@@ -186,7 +190,13 @@ router.post('/assign-subscription', authRequired, requireRole('superadmin'), asy
       rosterEnabled: plan.rosterEnabled,
       recruitmentEnabled: plan.recruitmentEnabled,
       communityEnabled: plan.communityEnabled,
-      maxGeolocationStaff: plan.maxGeolocationStaff
+      maxGeolocationStaff: plan.maxGeolocationStaff,
+      salaryRegisterEnabled: plan.salaryRegisterEnabled !== undefined ? plan.salaryRegisterEnabled : true,
+      monthlySummaryEnabled: plan.monthlySummaryEnabled !== undefined ? plan.monthlySummaryEnabled : true,
+      perDaySalaryEnabled: plan.perDaySalaryEnabled !== undefined ? plan.perDaySalaryEnabled : true,
+      comparisonEnabled: plan.comparisonEnabled !== undefined ? plan.comparisonEnabled : true,
+      otImpactEnabled: plan.otImpactEnabled !== undefined ? plan.otImpactEnabled : true,
+      latePenaltyEnabled: plan.latePenaltyEnabled !== undefined ? plan.latePenaltyEnabled : true
     });
 
     // Get updated subscription with plan
@@ -323,6 +333,12 @@ router.get('/subscription-info', authRequired, tenantEnforce, async (req, res) =
       rosterEnabled: !!subscription.rosterEnabled,
       recruitmentEnabled: !!subscription.recruitmentEnabled,
       communityEnabled: !!subscription.communityEnabled,
+      salaryRegisterEnabled: subscription.salaryRegisterEnabled !== undefined ? !!subscription.salaryRegisterEnabled : true,
+      monthlySummaryEnabled: subscription.monthlySummaryEnabled !== undefined ? !!subscription.monthlySummaryEnabled : true,
+      perDaySalaryEnabled: subscription.perDaySalaryEnabled !== undefined ? !!subscription.perDaySalaryEnabled : true,
+      comparisonEnabled: subscription.comparisonEnabled !== undefined ? !!subscription.comparisonEnabled : true,
+      otImpactEnabled: subscription.otImpactEnabled !== undefined ? !!subscription.otImpactEnabled : true,
+      latePenaltyEnabled: subscription.latePenaltyEnabled !== undefined ? !!subscription.latePenaltyEnabled : true,
       maxGeolocationStaff: subscription.maxGeolocationStaff !== null ? subscription.maxGeolocationStaff : (subscription.meta?.maxGeolocationStaff || subscription.plan.maxGeolocationStaff),
       subscriptionStatus: subscription.status
     };

@@ -312,6 +312,21 @@ router.post('/visit', upload.single('clientSignature'), async (req, res) => {
   }
 });
 
+// Get past visits for logged-in staff
+router.get('/my-visits', async (req, res) => {
+  try {
+    const visits = await SalesVisit.findAll({
+      where: { userId: req.user.id },
+      order: [['visitDate', 'DESC'], ['id', 'DESC']],
+      limit: 100,
+    });
+    return res.json({ success: true, visits });
+  } catch (e) {
+    console.error('Fetch my-visits error:', e);
+    return res.status(500).json({ success: false, message: 'Failed to fetch your visits' });
+  }
+});
+
 // Create order (direct or linked to assigned job)
 router.post('/orders', upload.single('proof'), async (req, res) => {
   try {
@@ -778,6 +793,25 @@ router.get('/incentives/current', async (req, res) => {
     return res.json({ success: true, incentive: row || null });
   } catch (e) {
     return res.status(500).json({ success: false, message: 'Failed to load incentive' });
+  }
+});
+
+// Get orders for logged-in staff
+router.get('/my-orders', async (req, res) => {
+  try {
+    const orders = await Order.findAll({
+      where: { userId: req.user.id },
+      include: [
+        { model: Client, as: 'client' },
+        { model: OrderItem, as: 'items' },
+      ],
+      order: [['orderDate', 'DESC'], ['id', 'DESC']],
+      limit: 100,
+    });
+    return res.json({ success: true, orders });
+  } catch (e) {
+    console.error('Fetch my-orders error:', e);
+    return res.status(500).json({ success: false, message: 'Failed to fetch your orders' });
   }
 });
 

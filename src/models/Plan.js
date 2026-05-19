@@ -91,6 +91,42 @@ module.exports = (sequelize) => {
         defaultValue: false,
         field: 'community_enabled'
       },
+      salaryRegisterEnabled: {
+        type: DataTypes.BOOLEAN,
+        allowNull: false,
+        defaultValue: true,
+        field: 'salary_register_enabled'
+      },
+      monthlySummaryEnabled: {
+        type: DataTypes.BOOLEAN,
+        allowNull: false,
+        defaultValue: true,
+        field: 'monthly_summary_enabled'
+      },
+      perDaySalaryEnabled: {
+        type: DataTypes.BOOLEAN,
+        allowNull: false,
+        defaultValue: true,
+        field: 'per_day_salary_enabled'
+      },
+      comparisonEnabled: {
+        type: DataTypes.BOOLEAN,
+        allowNull: false,
+        defaultValue: true,
+        field: 'comparison_enabled'
+      },
+      otImpactEnabled: {
+        type: DataTypes.BOOLEAN,
+        allowNull: false,
+        defaultValue: true,
+        field: 'ot_impact_enabled'
+      },
+      latePenaltyEnabled: {
+        type: DataTypes.BOOLEAN,
+        allowNull: false,
+        defaultValue: true,
+        field: 'late_penalty_enabled'
+      },
       features: { type: DataTypes.JSON, allowNull: true },
       active: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: true },
     },

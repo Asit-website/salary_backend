@@ -866,7 +866,8 @@ router.post('/clients/:id/subscription', async (req, res) => {
       planId, planCode, startAt, staffLimit, maxGeolocationStaff,
       salesEnabled, geolocationEnabled, expenseEnabled,
       payrollEnabled, performanceEnabled, aiReportsEnabled, aiAssistantEnabled, taskManagementEnabled,
-      rosterEnabled, recruitmentEnabled, communityEnabled
+      rosterEnabled, recruitmentEnabled, communityEnabled, salaryRegisterEnabled,
+      monthlySummaryEnabled, perDaySalaryEnabled, comparisonEnabled, otImpactEnabled, latePenaltyEnabled
     } = req.body || {};
 
     // Handle subscription queuing or updates
@@ -957,6 +958,30 @@ router.post('/clients/:id/subscription', async (req, res) => {
         updateData.communityEnabled = !!communityEnabled;
         messageArr.push(`Community module ${communityEnabled ? 'enabled' : 'disabled'}`);
       }
+      if (salaryRegisterEnabled !== undefined && !!salaryRegisterEnabled !== existingSubscription.salaryRegisterEnabled) {
+        updateData.salaryRegisterEnabled = !!salaryRegisterEnabled;
+        messageArr.push(`Salary Register ${salaryRegisterEnabled ? 'enabled' : 'disabled'}`);
+      }
+      if (monthlySummaryEnabled !== undefined && !!monthlySummaryEnabled !== existingSubscription.monthlySummaryEnabled) {
+        updateData.monthlySummaryEnabled = !!monthlySummaryEnabled;
+        messageArr.push(`Monthly Summary ${monthlySummaryEnabled ? 'enabled' : 'disabled'}`);
+      }
+      if (perDaySalaryEnabled !== undefined && !!perDaySalaryEnabled !== existingSubscription.perDaySalaryEnabled) {
+        updateData.perDaySalaryEnabled = !!perDaySalaryEnabled;
+        messageArr.push(`Per Day Salary ${perDaySalaryEnabled ? 'enabled' : 'disabled'}`);
+      }
+      if (comparisonEnabled !== undefined && !!comparisonEnabled !== existingSubscription.comparisonEnabled) {
+        updateData.comparisonEnabled = !!comparisonEnabled;
+        messageArr.push(`MoM Comparison ${comparisonEnabled ? 'enabled' : 'disabled'}`);
+      }
+      if (otImpactEnabled !== undefined && !!otImpactEnabled !== existingSubscription.otImpactEnabled) {
+        updateData.otImpactEnabled = !!otImpactEnabled;
+        messageArr.push(`OT Impact ${otImpactEnabled ? 'enabled' : 'disabled'}`);
+      }
+      if (latePenaltyEnabled !== undefined && !!latePenaltyEnabled !== existingSubscription.latePenaltyEnabled) {
+        updateData.latePenaltyEnabled = !!latePenaltyEnabled;
+        messageArr.push(`Late Penalty ${latePenaltyEnabled ? 'enabled' : 'disabled'}`);
+      }
 
       if (Object.keys(updateData).length > 0) {
         await existingSubscription.update(updateData);
@@ -990,7 +1015,8 @@ router.post('/clients/:id/subscription', async (req, res) => {
       taskManagementEnabled,
       rosterEnabled,
       recruitmentEnabled,
-      communityEnabled
+      communityEnabled,
+      salaryRegisterEnabled
     });
 
     const sub = await Subscription.create({
@@ -1012,6 +1038,12 @@ router.post('/clients/:id/subscription', async (req, res) => {
       rosterEnabled: rosterEnabled !== undefined ? !!rosterEnabled : (plan.rosterEnabled || false),
       recruitmentEnabled: recruitmentEnabled !== undefined ? !!recruitmentEnabled : (plan.recruitmentEnabled || false),
       communityEnabled: communityEnabled !== undefined ? !!communityEnabled : (plan.communityEnabled || false),
+      salaryRegisterEnabled: salaryRegisterEnabled !== undefined ? !!salaryRegisterEnabled : (plan.salaryRegisterEnabled !== undefined ? plan.salaryRegisterEnabled : true),
+      monthlySummaryEnabled: monthlySummaryEnabled !== undefined ? !!monthlySummaryEnabled : (plan.monthlySummaryEnabled !== undefined ? plan.monthlySummaryEnabled : true),
+      perDaySalaryEnabled: perDaySalaryEnabled !== undefined ? !!perDaySalaryEnabled : (plan.perDaySalaryEnabled !== undefined ? plan.perDaySalaryEnabled : true),
+      comparisonEnabled: comparisonEnabled !== undefined ? !!comparisonEnabled : (plan.comparisonEnabled !== undefined ? plan.comparisonEnabled : true),
+      otImpactEnabled: otImpactEnabled !== undefined ? !!otImpactEnabled : (plan.otImpactEnabled !== undefined ? plan.otImpactEnabled : true),
+      latePenaltyEnabled: latePenaltyEnabled !== undefined ? !!latePenaltyEnabled : (plan.latePenaltyEnabled !== undefined ? plan.latePenaltyEnabled : true),
     });
     console.log('Subscription created successfully:', sub.id);
 
