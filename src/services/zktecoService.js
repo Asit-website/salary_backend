@@ -60,7 +60,7 @@ class ZktecoService {
         const [eh, em] = (shift?.endTime || '18:00').split(':').map(Number);
         
         let startTs = dayjs(dateStr).hour(sh).minute(sm).subtract(4, 'hour');
-        let endTs = dayjs(dateStr).hour(eh).minute(em).add(4, 'hour');
+        let endTs = dayjs(dateStr).hour(eh).minute(em).add(10, 'hour');
         
         if (this.isNightShift(shift)) {
             endTs = endTs.add(1, 'day');
