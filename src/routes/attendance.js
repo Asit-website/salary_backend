@@ -130,6 +130,30 @@ async function getMobilePunchRestriction(userId, orgAccountId) {
   };
 }
 
+async function getQrPunchRestriction(userId, orgAccountId) {
+  let globalRestricted = false;
+  const orgConfigRow = await AppSetting.findOne({ where: { key: 'org_config', orgAccountId } });
+  if (orgConfigRow?.value) {
+    try {
+      const config = JSON.parse(orgConfigRow.value);
+      globalRestricted = !!config.qrPunchRestricted;
+    } catch (_) { }
+  }
+
+  const user = await User.findOne({
+    where: { id: userId, orgAccountId },
+    attributes: ['id', 'qrPunchEnabled'],
+  });
+  const individualRestricted = user?.qrPunchEnabled === false;
+
+  return {
+    restricted: globalRestricted || individualRestricted,
+    globalRestricted,
+    individualRestricted,
+    message: 'This feature is disabled for you by your organization',
+  };
+}
+
 async function enforceMobilePunchAllowed(req, res) {
   const access = await getMobilePunchRestriction(req.user.id, req.user.orgAccountId);
   if (access.restricted) {
@@ -414,6 +438,9 @@ router.get('/status', async (req, res) => {
   const mobilePunchAccess = await getMobilePunchRestriction(userId, req.user.orgAccountId);
   const mobilePunchRestricted = mobilePunchAccess.restricted;
 
+  const qrPunchAccess = await getQrPunchRestriction(userId, req.user.orgAccountId);
+  const qrPunchRestricted = qrPunchAccess.restricted;
+
   const now = new Date();
 
   const isApprovedLeave = await hasApprovedLeave(userId, effectiveKey);
@@ -448,7 +475,7 @@ router.get('/status', async (req, res) => {
         status: {
           date: effectiveKey, punchedInAt: null, punchedOutAt: null, punchInPhotoUrl: null, punchOutPhotoUrl: null,
           isOnBreak: false, breakStartedAt: null, breakSeconds: 0, workingSeconds: 0, overtimeSeconds: 0,
-          requiredWorkSeconds: REQUIRED_WORK_SECONDS, dayStatus: 'HOLIDAY', mobilePunchRestricted,
+          requiredWorkSeconds: REQUIRED_WORK_SECONDS, dayStatus: 'HOLIDAY', mobilePunchRestricted, qrPunchRestricted,
         },
       });
     }
@@ -458,7 +485,7 @@ router.get('/status', async (req, res) => {
         status: {
           date: effectiveKey, punchedInAt: null, punchedOutAt: null, punchInPhotoUrl: null, punchOutPhotoUrl: null,
           isOnBreak: false, breakStartedAt: null, breakSeconds: 0, workingSeconds: 0, overtimeSeconds: 0,
-          requiredWorkSeconds: REQUIRED_WORK_SECONDS, dayStatus: 'WEEKLY_OFF', mobilePunchRestricted,
+          requiredWorkSeconds: REQUIRED_WORK_SECONDS, dayStatus: 'WEEKLY_OFF', mobilePunchRestricted, qrPunchRestricted,
         },
       });
     }
@@ -468,7 +495,7 @@ router.get('/status', async (req, res) => {
         status: {
           date: effectiveKey, punchedInAt: null, punchedOutAt: null, punchInPhotoUrl: null, punchOutPhotoUrl: null,
           isOnBreak: false, breakStartedAt: null, breakSeconds: 0, workingSeconds: 0, overtimeSeconds: 0,
-          requiredWorkSeconds: REQUIRED_WORK_SECONDS, dayStatus: 'LEAVE', mobilePunchRestricted,
+          requiredWorkSeconds: REQUIRED_WORK_SECONDS, dayStatus: 'LEAVE', mobilePunchRestricted, qrPunchRestricted,
         },
       });
     }
@@ -489,7 +516,7 @@ router.get('/status', async (req, res) => {
       status: {
         date: key, punchedInAt: null, punchedOutAt: null, punchInPhotoUrl: null, punchOutPhotoUrl: null,
         isOnBreak: false, breakStartedAt: null, breakSeconds: 0, workingSeconds: 0, overtimeSeconds: 0,
-        requiredWorkSeconds: REQUIRED_WORK_SECONDS, dayStatus: 'LEAVE', mobilePunchRestricted,
+        requiredWorkSeconds: REQUIRED_WORK_SECONDS, dayStatus: 'LEAVE', mobilePunchRestricted, qrPunchRestricted,
       },
     });
   }
@@ -607,6 +634,7 @@ router.get('/status', async (req, res) => {
         minPunchOutAfterMinutes: assignedShift.minPunchOutAfterMinutes, maxPunchOutAfterMinutes: assignedShift.maxPunchOutAfterMinutes,
       } : null,
       mobilePunchRestricted,
+      qrPunchRestricted,
     },
   });
 });
@@ -1130,15 +1158,24 @@ router.post('/location/ping', async (req, res) => {
     const lng = Number(req.body?.lng ?? req.body?.longitude);
     const accuracy = req.body?.accuracyMeters !== undefined ? Number(req.body.accuracyMeters) : null;
     const address = req.body?.address ? String(req.body.address).slice(0, 255) : null;
+    const timestamp = req.body?.timestamp || req.body?.createdAt;
+    
     if (!Number.isFinite(lat) || !Number.isFinite(lng)) return res.status(400).json({ success: false, message: 'lat/lng required' });
-    const row = await LocationPing.create({
+    
+    const pingData = {
       userId: req.user.id,
       latitude: lat,
       longitude: lng,
       accuracyMeters: Number.isFinite(accuracy) ? accuracy : null,
       address,
       source: req.body?.source ? String(req.body.source).slice(0, 32) : 'staff'
-    });
+    };
+    
+    if (timestamp) {
+      pingData.createdAt = new Date(timestamp);
+    }
+    
+    const row = await LocationPing.create(pingData);
     await touchDeviceInfo(req);
     return res.json({ success: true, ping: row });
   } catch (e) {
@@ -2071,6 +2108,284 @@ router.post('/auto-punchout', async (req, res) => {
       success: false,
       message: 'Failed to process auto-punchout'
     });
+  }
+});
+
+router.post('/qr-punch', upload.single('photo'), async (req, res) => {
+  try {
+    const access = await getQrPunchRestriction(req.user.id, req.user.orgAccountId);
+    if (access.restricted) {
+      return res.status(403).json({ success: false, message: access.message });
+    }
+
+    const { token } = req.body;
+    if (!token) {
+      return res.status(400).json({ success: false, message: 'QR token is required' });
+    }
+
+    // Fetch QR config
+    const qrRow = await AppSetting.findOne({ where: { key: 'qr_attendance_config', orgAccountId: req.user.orgAccountId } });
+    if (!qrRow) {
+      return res.status(404).json({ success: false, message: 'QR attendance is not configured for your organization.' });
+    }
+    const qrConfig = JSON.parse(qrRow.value);
+    if (!qrConfig.active) {
+      return res.status(400).json({ success: false, message: 'QR attendance config is inactive.' });
+    }
+
+    // Verify token
+    if (token !== qrConfig.token) {
+      return res.status(400).json({ success: false, message: 'Invalid or expired QR token.' });
+    }
+
+    const lat = Number(req.body?.lat ?? req.body?.latitude);
+    const lng = Number(req.body?.lng ?? req.body?.longitude);
+
+    // Verify coordinates if configured
+    if (qrConfig.latitude != null && qrConfig.longitude != null) {
+      if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
+        return res.status(400).json({ success: false, message: 'Location is required for QR attendance.' });
+      }
+      const dist = haversineMeters(lat, lng, Number(qrConfig.latitude), Number(qrConfig.longitude));
+      const allowedRadius = Number(qrConfig.radiusMeters || 100);
+      if (dist > allowedRadius) {
+        return res.status(403).json({
+          success: false,
+          message: `Outside allowed QR radius. You are ${Math.round(dist)}m away (allowed radius ${Math.round(allowedRadius)}m).`
+        });
+      }
+    }
+
+    const dateKey = todayKey();
+    let record = await Attendance.findOne({ where: { userId: req.user.id, date: dateKey } });
+    let action = 'PUNCH_IN';
+
+    // Night shift lookback / active record lookup
+    if (record && !record.punchedOutAt) {
+      action = 'PUNCH_OUT';
+    } else if (!record) {
+      const yesterday = isoDate(addDays(new Date(), -1));
+      const prevRecord = await Attendance.findOne({ where: { userId: req.user.id, date: yesterday, punchedOutAt: null } });
+      if (prevRecord) {
+        const prevShift = await shiftService.getEffectiveShiftTemplate(req.user.id, yesterday);
+        if (prevShift && prevShift.startTime && prevShift.endTime) {
+          const [sh] = prevShift.startTime.split(':').map(Number);
+          const [eh] = prevShift.endTime.split(':').map(Number);
+          if (sh > eh || (sh === eh && prevShift.startTime > prevShift.endTime)) {
+            record = prevRecord;
+            action = 'PUNCH_OUT';
+          }
+        }
+      }
+    }
+
+    const now = new Date();
+    const photoUrl = req.file ? `/uploads/${req.file.filename}` : null;
+    const address = req.body?.address ? String(req.body.address) : null;
+
+    if (action === 'PUNCH_IN') {
+      const isH = await isPaidHoliday(req.user.id, dateKey);
+      const isWO = await isWeeklyOff(req.user.id, dateKey);
+      const hasPayRule = await holidayWorkPayService.getEffectiveRule(req.user.id, dateKey);
+
+      if (!hasPayRule && (isH || isWO)) {
+        return res.status(403).json({ success: false, message: 'Punch-in not allowed: No Holiday/Weekly off Work Pay Rule assigned.' });
+      }
+
+      // Enforce template rules
+      const tpl = await getEffectiveTemplate(req.user.id);
+      const shiftTpl = await shiftService.getEffectiveShiftTemplate(req.user.id, dateKey);
+      if (tpl) {
+        if (!hasPayRule && (tpl.holidaysRule ?? tpl.holidays_rule) === 'disallow' && isH) {
+          return res.status(409).json({ success: false, message: 'Punch-in disabled on paid holidays' });
+        }
+        if (!hasPayRule && isWO) {
+          return res.status(409).json({ success: false, message: 'Punch-in disabled on weekly off' });
+        }
+      }
+      if (shiftTpl && (shiftTpl.shiftType === 'fixed' || shiftTpl.shiftType === 'rotational') && shiftTpl.earliestPunchInTime) {
+        const nowStr = toHhMmSs(now);
+        if (cmpTime(nowStr, shiftTpl.earliestPunchInTime) < 0) {
+          return res.status(409).json({ success: false, message: 'Punch-in before earliest allowed time' });
+        }
+      }
+      if (await hasApprovedLeave(req.user.id, dateKey)) {
+        return res.status(409).json({ success: false, message: 'You are on leave today' });
+      }
+
+      if (record?.source === 'biometric') {
+        return res.status(409).json({ success: false, message: 'You have already punched in using biometric device. Mobile punch is disabled for today.' });
+      }
+      if (record?.punchedInAt) {
+        return res.status(409).json({ success: false, message: 'Already punched in today' });
+      }
+
+      if (shiftTpl && (shiftTpl.shiftType === 'fixed' || shiftTpl.shiftType === 'rotational') && shiftTpl.latestPunchOutTime) {
+        const nowStr = toHhMmSs(now);
+        if (cmpTime(nowStr, shiftTpl.latestPunchOutTime) > 0) {
+          return res.status(409).json({ success: false, message: 'Punch-out after latest allowed time' });
+        }
+      }
+
+      record = record
+        ? await record.update({ punchedInAt: now, punchInPhotoUrl: photoUrl, orgAccountId: req.user.orgAccountId, latitude: lat, longitude: lng, address })
+        : await Attendance.create({ userId: req.user.id, date: dateKey, punchedInAt: now, punchInPhotoUrl: photoUrl, orgAccountId: req.user.orgAccountId, latitude: lat, longitude: lng, address });
+
+      // Calculate Early Overtime
+      try {
+        const orgAccount = await OrgAccount.findByPk(req.user.orgAccountId);
+        const daysInMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
+        const eotResult = await earlyOvertimeService.calculateEarlyOvertime({
+          userId: req.user.id,
+          orgAccountId: req.user.orgAccountId,
+          date: dateKey,
+          punchedInAt: now
+        }, orgAccount, daysInMonth, now);
+
+        if (eotResult && eotResult.earlyOvertimeMinutes > 0) {
+          await record.update({
+            earlyOvertimeMinutes: eotResult.earlyOvertimeMinutes,
+            earlyOvertimeAmount: eotResult.earlyOvertimeAmount,
+            earlyOvertimeRuleId: eotResult.ruleId || eotResult.earlyOvertimeRuleId,
+            status: 'OVERTIME'
+          });
+        }
+      } catch (eotErr) {
+        console.error('QR Early OT error:', eotErr);
+      }
+
+      // Calculate Late Punch-In Penalty
+      try {
+        const orgAccount = await OrgAccount.findByPk(req.user.orgAccountId);
+        const daysInMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
+        const lpResult = await latePunchInService.calculateLatePenalty({
+          userId: req.user.id,
+          orgAccountId: req.user.orgAccountId,
+          date: dateKey,
+          punchedInAt: now
+        }, orgAccount, daysInMonth, now);
+
+        if (lpResult && lpResult.isLate) {
+          await record.update({
+            latePunchInMinutes: lpResult.latePunchInMinutes,
+            latePunchInAmount: lpResult.latePunchInAmount,
+            latePunchInRuleId: lpResult.latePunchInRuleId,
+            isLate: true
+          });
+        }
+      } catch (lpErr) {
+        console.error('QR Late Penalty error:', lpErr);
+      }
+
+    } else {
+      // PUNCH_OUT
+      const tpl = await getEffectiveTemplate(req.user.id);
+      const shiftTpl = await shiftService.getEffectiveShiftTemplate(req.user.id, record.date);
+      const trackInOutEnabled = tpl ? (tpl.trackInOutEnabled ?? tpl.track_in_out_enabled ?? false) : false;
+      const allowMultiplePunches = tpl ? (tpl.allowMultiplePunches ?? tpl.allow_multiple_punches ?? false) : true;
+      const canTrackOut = trackInOutEnabled || !!shiftTpl || (!tpl && !shiftTpl);
+
+      if (!canTrackOut) {
+        return res.status(409).json({ success: false, message: 'Punch-out disabled by your template' });
+      }
+
+      if (record.punchedOutAt && !allowMultiplePunches) {
+        return res.status(409).json({ success: false, message: 'Multiple punches are not allowed by your template' });
+      }
+
+      const hasTimeRestrictions = (shiftTpl && (shiftTpl.minPunchOutAfterMinutes || shiftTpl.maxPunchOutAfterMinutes)) ||
+        (tpl && (tpl.minPunchOutAfterMinutes || tpl.maxPunchOutAfterMinutes));
+
+      if (hasTimeRestrictions) {
+        const inAt = record.punchedInAt ? new Date(record.punchedInAt) : null;
+        if (!inAt) {
+          return res.status(409).json({ success: false, message: 'Please punch-in first' });
+        }
+
+        const minMinutes = shiftTpl?.minPunchOutAfterMinutes || tpl?.minPunchOutAfterMinutes || 0;
+        const maxMinutes = shiftTpl?.maxPunchOutAfterMinutes || tpl?.maxPunchOutAfterMinutes || 0;
+
+        const minMs = Number(minMinutes) * 60000;
+        const maxMs = Number(maxMinutes) * 60000;
+
+        if (Number(minMinutes)) {
+          if (now.getTime() < inAt.getTime() + minMs) {
+            return res.status(409).json({ success: false, message: `Punch-out allowed after ${minMinutes} minutes from punch-in` });
+          }
+        }
+        if (Number(maxMinutes)) {
+          if (now.getTime() > inAt.getTime() + maxMs) {
+            return res.status(409).json({ success: false, message: `Punch-out must be within ${maxMinutes} minutes from punch-in` });
+          }
+        }
+      }
+
+      let breakTotalSeconds = Number(record.breakTotalSeconds || 0);
+      if (record.isOnBreak && record.breakStartedAt) {
+        breakTotalSeconds += diffSeconds(new Date(record.breakStartedAt), now);
+      }
+
+      const punchedInAt = new Date(record.punchedInAt);
+      const totalWorkSeconds = diffSeconds(punchedInAt, now) - breakTotalSeconds;
+      const totalWorkMinutes = Math.floor(totalWorkSeconds / 60);
+      const totalWorkHours = totalWorkSeconds / 3600;
+
+      const { calculateOvertime } = require('../services/overtimeService');
+      const earlyExitService = require('../services/earlyExitService');
+      const orgAccount = await OrgAccount.findByPk(req.user.orgAccountId);
+      const daysInMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
+
+      const otResult = await calculateOvertime({
+        userId: req.user.id,
+        orgAccountId: req.user.orgAccountId,
+        date: record.date,
+        totalWorkHours: totalWorkHours,
+        punchedInAt: record.punchedInAt,
+        punchedOutAt: now
+      }, orgAccount, daysInMonth, now);
+
+      const eeResult = await earlyExitService.calculateEarlyExit({
+        userId: req.user.id,
+        orgAccountId: req.user.orgAccountId,
+        date: record.date,
+        punchedOutAt: now
+      }, orgAccount, daysInMonth, now);
+
+      const breakService = require('../services/breakService');
+      const breakResult = await breakService.calculateBreakDeduction(record, orgAccount, daysInMonth, now);
+
+      let status = otResult.status || 'present';
+      if (record.earlyOvertimeMinutes > 0) {
+        status = 'overtime';
+      }
+
+      await record.update({
+        punchedOutAt: now,
+        punchOutPhotoUrl: photoUrl,
+        isOnBreak: false,
+        breakStartedAt: null,
+        breakTotalSeconds,
+        status: status.toUpperCase(),
+        totalWorkHours: totalWorkHours,
+        overtimeMinutes: otResult.overtimeMinutes || 0,
+        overtimeAmount: otResult.overtimeAmount || 0,
+        overtimeRuleId: otResult.overtimeRuleId || null,
+        earlyExitMinutes: eeResult.earlyExitMinutes || 0,
+        earlyExitAmount: eeResult.earlyExitAmount || 0,
+        earlyExitRuleId: eeResult.earlyExitRuleId || null,
+        breakDeductionAmount: breakResult.breakDeductionAmount || 0,
+        breakRuleId: breakResult.breakRuleId || null,
+        excessBreakMinutes: breakResult.excessBreakMinutes || 0,
+        punchOutLatitude: lat,
+        punchOutLongitude: lng,
+        punchOutAddress: address
+      });
+    }
+
+    return res.json({ success: true, action, attendance: record });
+  } catch (error) {
+    console.error('QR punch error:', error);
+    return res.status(500).json({ success: false, message: 'QR punch failed' });
   }
 });
 

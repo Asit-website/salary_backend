@@ -7219,6 +7219,7 @@ router.get('/staff', requireRole(['admin', 'staff']), async (req, res) => {
         education: u.profile?.education || null,
         experience: u.profile?.experience || null,
         mobilePunchEnabled: !!u.mobilePunchEnabled,
+        qrPunchEnabled: !!u.qrPunchEnabled,
       };
     });
 
@@ -7253,6 +7254,29 @@ router.post('/staff/bulk-mobile-punch', requireRole(['admin', 'staff']), async (
   } catch (e) {
     console.error('Bulk update mobile punch error:', e);
     return res.status(500).json({ success: false, message: 'Failed to update staff mobile punch status' });
+  }
+});
+
+router.post('/staff/bulk-qr-punch', requireRole(['admin', 'staff']), async (req, res) => {
+  try {
+    const hasAccess = await checkSettingsPermission(req);
+    if (!hasAccess) {
+      return res.status(403).json({ success: false, message: 'Forbidden' });
+    }
+
+    const orgId = requireOrg(req, res); if (!orgId) return;
+    const { userIds, enabled } = req.body;
+    if (!Array.isArray(userIds) || userIds.length === 0) {
+      return res.status(400).json({ success: false, message: 'User ID(s) required' });
+    }
+    await User.update(
+      { qrPunchEnabled: !!enabled },
+      { where: { id: userIds, orgAccountId: orgId, role: 'staff' } }
+    );
+    return res.json({ success: true, message: 'Staff QR punch status updated' });
+  } catch (e) {
+    console.error('Bulk update QR punch error:', e);
+    return res.status(500).json({ success: false, message: 'Failed to update staff QR punch status' });
   }
 });
 
@@ -9966,7 +9990,8 @@ router.put('/settings/org', async (req, res) => {
     const features = body.features && typeof body.features === 'object' ? body.features : {};
     const smsSettings = body.smsNotificationSettings && typeof body.smsNotificationSettings === 'object' ? body.smsNotificationSettings : {};
     const mobilePunchRestricted = !!body.mobilePunchRestricted;
-    const payload = JSON.stringify({ industryType, features, smsNotificationSettings: smsSettings, mobilePunchRestricted });
+    const qrPunchRestricted = !!body.qrPunchRestricted;
+    const payload = JSON.stringify({ industryType, features, smsNotificationSettings: smsSettings, mobilePunchRestricted, qrPunchRestricted });
 
     let row = await AppSetting.findOne({ where: { key: 'org_config', orgAccountId: orgId } });
     if (!row) {
@@ -9974,7 +9999,7 @@ router.put('/settings/org', async (req, res) => {
     } else {
       await row.update({ value: payload });
     }
-    return res.json({ success: true, config: { industryType, features, smsNotificationSettings: smsSettings, mobilePunchRestricted } });
+    return res.json({ success: true, config: { industryType, features, smsNotificationSettings: smsSettings, mobilePunchRestricted, qrPunchRestricted } });
   } catch (e) {
     console.error('Failed to save org config:', e);
     return res.status(500).json({
@@ -10024,6 +10049,47 @@ router.post('/settings/mobile-punch/staff/update', async (req, res) => {
     return res.json({ success: true, message: `Updated restriction for ${userIds.length} staff members` });
   } catch (e) {
     console.error('Error updating mobile punch restrictions:', e);
+    return res.status(500).json({ success: false, message: 'Failed to update restrictions' });
+  }
+});
+
+router.get('/settings/qr-punch/staff', async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
+    const staff = await User.findAll({
+      where: { orgAccountId: orgId, role: { [Op.in]: ['staff', 'admin'] } },
+      attributes: ['id', 'phone', 'qrPunchEnabled'],
+      include: [{ model: StaffProfile, as: 'profile', attributes: ['name'] }],
+    });
+
+    const data = staff.map(s => ({
+      id: s.id,
+      name: s.profile?.name || s.phone || `Staff #${s.id}`,
+      phone: s.phone,
+      restricted: s.qrPunchEnabled === false
+    })).sort((a, b) => a.name.localeCompare(b.name));
+
+    return res.json({ success: true, staff: data });
+  } catch (e) {
+    console.error('Error loading QR punch staff:', e);
+    return res.status(500).json({ success: false, message: 'Failed to load staff list' });
+  }
+});
+
+router.post('/settings/qr-punch/staff/update', async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
+    const { userIds, restricted } = req.body;
+    if (!Array.isArray(userIds)) return res.status(400).json({ success: false, message: 'userIds array required' });
+
+    await User.update(
+      { qrPunchEnabled: !restricted },
+      { where: { id: userIds, orgAccountId: orgId } }
+    );
+
+    return res.json({ success: true, message: `Updated QR restriction for ${userIds.length} staff members` });
+  } catch (e) {
+    console.error('Error updating QR punch restrictions:', e);
     return res.status(500).json({ success: false, message: 'Failed to update restrictions' });
   }
 });
@@ -13611,6 +13677,7 @@ router.post('/staff', requireRole(['admin', 'staff']), async (req, res) => {
 
       active,
       mobilePunchEnabled,
+      qrPunchEnabled,
       dateOfJoining,
       photoUrl,
       education,
@@ -13816,6 +13883,7 @@ router.post('/staff', requireRole(['admin', 'staff']), async (req, res) => {
     if (allowCurrentCycleSalaryAccess !== undefined) userData.allowCurrentCycleSalaryAccess = allowCurrentCycleSalaryAccess;
 
     if (mobilePunchEnabled !== undefined) userData.mobilePunchEnabled = !!mobilePunchEnabled;
+    if (qrPunchEnabled !== undefined) userData.qrPunchEnabled = !!qrPunchEnabled;
 
 
 
@@ -14383,6 +14451,7 @@ router.put('/staff/:id', requireRole(['admin', 'staff']), async (req, res) => {
       allowCurrentCycleSalaryAccess,
       active,
       mobilePunchEnabled,
+      qrPunchEnabled,
       dateOfJoining,
       photoUrl,
       education,
@@ -14443,6 +14512,7 @@ router.put('/staff/:id', requireRole(['admin', 'staff']), async (req, res) => {
     if (allowCurrentCycleSalaryAccess !== undefined) patchUser.allowCurrentCycleSalaryAccess = !!allowCurrentCycleSalaryAccess;
 
     if (mobilePunchEnabled !== undefined) patchUser.mobilePunchEnabled = !!mobilePunchEnabled;
+    if (qrPunchEnabled !== undefined) patchUser.qrPunchEnabled = !!qrPunchEnabled;
 
     // Handle salary recalculation if values are provided
     if (salaryValues && (salaryValues.earnings || salaryValues.deductions)) {
@@ -20571,9 +20641,9 @@ router.get('/reports/comparison', async (req, res) => {
               diff: Number(currTotals.netSalary || 0) - Number(lastTotals.netSalary || 0)
             },
             attendance: {
-              lastMonth: Number(lastAtt.presentDays || 0) + Number(lastAtt.halfDays || 0) * 0.5,
-              currentMonth: Number(currAtt.presentDays || 0) + Number(currAtt.halfDays || 0) * 0.5,
-              diff: (Number(currAtt.presentDays || 0) + Number(currAtt.halfDays || 0) * 0.5) - (Number(lastAtt.presentDays || 0) + Number(lastAtt.halfDays || 0) * 0.5)
+              lastMonth: Number(lastAtt.present || lastAtt.presentDays || 0),
+              currentMonth: Number(currAtt.present || currAtt.presentDays || 0),
+              diff: Number(currAtt.present || currAtt.presentDays || 0) - Number(lastAtt.present || lastAtt.presentDays || 0)
             },
             ot: {
               lastMonth: Number(lastAtt.overtimePay || 0) + Number(lastAtt.earlyOvertimePay || 0),
@@ -25894,6 +25964,63 @@ router.delete('/settings/late-punchin-rules/assignments/:id', async (req, res) =
   } catch (error) {
     console.error('Unassign late punch-in staff error:', error);
     return res.status(500).json({ success: false, message: 'Failed to unassign staff' });
+  }
+});
+
+// --- QR Attendance Configuration ---
+router.get('/qr-attendance/config', requireSettingsAccess, async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
+    const { OrgAccount } = require('../models');
+    const org = await OrgAccount.findByPk(orgId);
+    const orgName = org?.name || 'Your Organization';
+
+    const row = await AppSetting.findOne({ where: { key: 'qr_attendance_config', orgAccountId: orgId } });
+    if (!row) {
+      return res.json({ success: true, config: null, orgName });
+    }
+    const config = JSON.parse(row.value);
+    return res.json({ success: true, config, orgName });
+  } catch (error) {
+    console.error('Error fetching QR config:', error);
+    return res.status(500).json({ success: false, message: 'Failed to fetch QR configuration' });
+  }
+});
+
+router.post('/qr-attendance/generate', requireSettingsAccess, async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
+    const { OrgAccount } = require('../models');
+    const org = await OrgAccount.findByPk(orgId);
+    const orgName = org?.name || 'Your Organization';
+
+    const { latitude, longitude, radiusMeters } = req.body;
+
+    const crypto = require('crypto');
+    const token = crypto.randomBytes(32).toString('hex');
+
+    const config = {
+      token,
+      latitude: latitude != null && latitude !== '' ? Number(latitude) : null,
+      longitude: longitude != null && longitude !== '' ? Number(longitude) : null,
+      radiusMeters: radiusMeters != null && radiusMeters !== '' ? Number(radiusMeters) : 100,
+      active: true,
+      generatedAt: new Date().toISOString()
+    };
+
+    const [row, created] = await AppSetting.findOrCreate({
+      where: { key: 'qr_attendance_config', orgAccountId: orgId },
+      defaults: { value: JSON.stringify(config) }
+    });
+
+    if (!created) {
+      await row.update({ value: JSON.stringify(config) });
+    }
+
+    return res.json({ success: true, config, orgName });
+  } catch (error) {
+    console.error('Error generating QR config:', error);
+    return res.status(500).json({ success: false, message: 'Failed to generate QR configuration' });
   }
 });
 

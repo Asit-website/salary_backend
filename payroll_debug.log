@@ -5262,3 +5262,376 @@
 [2026-05-18T12:38:30.182Z] [Late-Dbg] User 108 Final: LateCount=0, Amt=0, Days=0
 [2026-05-18T12:38:30.263Z] [Late-Dbg] User 109 Final: LateCount=0, Amt=0, Days=0
 [2026-05-18T12:38:30.385Z] [Late-Dbg] User 142 Final: LateCount=0, Amt=0, Days=0
+[2026-05-20T08:12:11.109Z] [Late-Dbg] User 57 Final: LateCount=1, Amt=0, Days=0
+[Admin-Bonus] SKIP: User 57, Rule Active=true, RuleMonth=2026-04, TargetMonth=2026-05
+[2026-05-20T08:12:11.443Z] [Late-Dbg] User 58 Final: LateCount=0, Amt=0, Days=0
+[Admin-Bonus] SKIP: User 58, Rule Active=true, RuleMonth=2026-04, TargetMonth=2026-05
+[2026-05-20T08:12:11.575Z] [Late-Dbg] User 59 Final: LateCount=2, Amt=1129.03, Days=1
+[2026-05-20T08:12:11.852Z] [Late-Dbg] User 61 Final: LateCount=0, Amt=0, Days=0
+[2026-05-20T08:12:11.904Z] [Late-Dbg] User 62 Final: LateCount=0, Amt=0, Days=0
+[2026-05-20T08:12:11.987Z] [Late-Dbg] User 63 Final: LateCount=2, Amt=40, Days=0.04
+[2026-05-20T08:12:12.064Z] [Late-Dbg] User 64 Final: LateCount=0, Amt=0, Days=0
+[2026-05-20T08:12:12.102Z] [Late-Dbg] User 65 Final: LateCount=0, Amt=0, Days=0
+[2026-05-20T08:12:12.146Z] [Late-Dbg] User 68 Final: LateCount=0, Amt=0, Days=0
+[2026-05-20T08:12:12.290Z] [Late-Dbg] User 69 Final: LateCount=2, Amt=0, Days=0
+[2026-05-20T08:12:12.522Z] [Late-Dbg] User 70 Final: LateCount=0, Amt=0, Days=0
+[2026-05-20T08:12:12.546Z] [Late-Dbg] User 98 Final: LateCount=0, Amt=0, Days=0
+[2026-05-20T08:12:12.572Z] [Late-Dbg] User 99 Final: LateCount=0, Amt=0, Days=0
+[2026-05-20T08:12:12.596Z] [Late-Dbg] User 100 Final: LateCount=0, Amt=0, Days=0
+[2026-05-20T08:12:12.626Z] [Late-Dbg] User 101 Final: LateCount=0, Amt=0, Days=0
+[2026-05-20T08:12:12.652Z] [Late-Dbg] User 102 Final: LateCount=0, Amt=0, Days=0
+[2026-05-20T08:12:12.676Z] [Late-Dbg] User 103 Final: LateCount=0, Amt=0, Days=0
+[2026-05-20T08:12:12.709Z] [Late-Dbg] User 104 Final: LateCount=0, Amt=0, Days=0
+[2026-05-20T08:12:12.748Z] [Late-Dbg] User 105 Final: LateCount=0, Amt=0, Days=0
+[2026-05-20T08:12:12.780Z] [Late-Dbg] User 106 Final: LateCount=0, Amt=0, Days=0
+[2026-05-20T08:12:12.852Z] [Late-Dbg] User 107 Final: LateCount=0, Amt=0, Days=0
+[2026-05-20T08:12:12.911Z] [Late-Dbg] User 108 Final: LateCount=0, Amt=0, Days=0
+[2026-05-20T08:12:12.979Z] [Late-Dbg] User 109 Final: LateCount=1, Amt=0, Days=0
+[2026-05-20T08:12:13.089Z] [Late-Dbg] User 142 Final: LateCount=0, Amt=0, Days=0
+[2026-05-20T08:12:55.738Z] [Late-Dbg] User 57 Final: LateCount=1, Amt=0, Days=0
+[Admin-Bonus] SKIP: User 57, Rule Active=true, RuleMonth=2026-04, TargetMonth=2026-05
+[2026-05-20T08:12:56.000Z] [Late-Dbg] User 58 Final: LateCount=0, Amt=0, Days=0
+[Admin-Bonus] SKIP: User 58, Rule Active=true, RuleMonth=2026-04, TargetMonth=2026-05
+[2026-05-20T08:12:56.129Z] [Late-Dbg] User 59 Final: LateCount=2, Amt=1129.03, Days=1
+[2026-05-20T08:12:56.286Z] [Late-Dbg] User 61 Final: LateCount=0, Amt=0, Days=0
+[2026-05-20T08:12:56.341Z] [Late-Dbg] User 62 Final: LateCount=0, Amt=0, Days=0
+[2026-05-20T08:12:56.417Z] [Late-Dbg] User 63 Final: LateCount=2, Amt=40, Days=0.04
+[2026-05-20T08:12:56.542Z] [Late-Dbg] User 64 Final: LateCount=0, Amt=0, Days=0
+[2026-05-20T08:12:56.620Z] [Late-Dbg] User 65 Final: LateCount=0, Amt=0, Days=0
+[2026-05-20T08:12:56.716Z] [Late-Dbg] User 68 Final: LateCount=0, Amt=0, Days=0
+[2026-05-20T08:12:56.949Z] [Late-Dbg] User 69 Final: LateCount=2, Amt=0, Days=0
+[2026-05-20T08:12:57.393Z] [Late-Dbg] User 70 Final: LateCount=0, Amt=0, Days=0
+[2026-05-20T08:12:57.458Z] [Late-Dbg] User 98 Final: LateCount=0, Amt=0, Days=0
+[2026-05-20T08:12:57.518Z] [Late-Dbg] User 99 Final: LateCount=0, Amt=0, Days=0
+[2026-05-20T08:12:57.579Z] [Late-Dbg] User 100 Final: LateCount=0, Amt=0, Days=0
+[2026-05-20T08:12:57.717Z] [Late-Dbg] User 101 Final: LateCount=0, Amt=0, Days=0
+[2026-05-20T08:12:57.755Z] [Late-Dbg] User 102 Final: LateCount=0, Amt=0, Days=0
+[2026-05-20T08:12:57.784Z] [Late-Dbg] User 103 Final: LateCount=0, Amt=0, Days=0
+[2026-05-20T08:12:57.815Z] [Late-Dbg] User 104 Final: LateCount=0, Amt=0, Days=0
+[2026-05-20T08:12:57.857Z] [Late-Dbg] User 105 Final: LateCount=0, Amt=0, Days=0
+[2026-05-20T08:12:57.894Z] [Late-Dbg] User 106 Final: LateCount=0, Amt=0, Days=0
+[2026-05-20T08:12:57.941Z] [Late-Dbg] User 107 Final: LateCount=0, Amt=0, Days=0
+[2026-05-20T08:12:57.985Z] [Late-Dbg] User 108 Final: LateCount=0, Amt=0, Days=0
+[2026-05-20T08:12:58.101Z] [Late-Dbg] User 109 Final: LateCount=1, Amt=0, Days=0
+[2026-05-20T08:12:58.268Z] [Late-Dbg] User 142 Final: LateCount=0, Amt=0, Days=0
+[2026-05-20T10:55:23.514Z] [User 57] calculateSalary (Existing): lpResult: {"latePunchInMinutes":-117,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":1,"lateDetails":[{"id":4682,"userId":57,"orgAccountId":10,"latePunchInMinutes":3,"latePunchInAmount":0,"latePunchInRuleId":5,"isLate":true,"date":"2026-05-06","status":"overtime","punchedInAt":"2026-05-06T05:33:00.000Z"}]}
+[2026-05-20T10:55:23.549Z] [User 58] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0,"lateDetails":[]}
+[2026-05-20T10:55:23.620Z] [User 59] calculateSalary (Existing): lpResult: {"latePunchInMinutes":16,"latePunchInPenalty":364.2,"latePenaltyDays":1,"lateCount":2,"lateDetails":[{"id":4545,"userId":59,"orgAccountId":10,"latePunchInMinutes":26,"latePunchInAmount":0,"latePunchInRuleId":1,"isLate":true,"date":"2026-05-01","status":"present","punchedInAt":"2026-05-01T05:56:00.000Z"},{"id":4446,"userId":59,"orgAccountId":10,"latePunchInMinutes":20,"latePunchInAmount":364.2,"latePunchInRuleId":1,"isLate":true,"date":"2026-05-05","status":"present","punchedInAt":"2026-05-05T05:50:00.000Z"}]}
+[2026-05-20T10:55:23.651Z] [User 61] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0,"lateDetails":[]}
+[2026-05-20T10:55:23.682Z] [User 62] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0,"lateDetails":[]}
+[2026-05-20T10:55:23.723Z] [User 63] calculateSalary (Existing): lpResult: {"latePunchInMinutes":120,"latePunchInPenalty":40,"latePenaltyDays":0.64,"lateCount":2,"lateDetails":[{"id":4581,"userId":63,"orgAccountId":10,"latePunchInMinutes":60,"latePunchInAmount":0,"latePunchInRuleId":null,"isLate":true,"date":"2026-05-01","status":"present","punchedInAt":"2026-05-01T06:30:00.000Z"},{"id":4574,"userId":63,"orgAccountId":10,"latePunchInMinutes":60,"latePunchInAmount":40,"latePunchInRuleId":6,"isLate":true,"date":"2026-05-05","status":"present","punchedInAt":"2026-05-05T06:30:00.000Z"}]}
+[2026-05-20T10:55:23.739Z] [User 64] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0,"lateDetails":[]}
+[2026-05-20T10:55:23.767Z] [User 65] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0,"lateDetails":[]}
+[2026-05-20T10:55:23.782Z] [User 68] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0,"lateDetails":[]}
+[2026-05-20T10:55:23.953Z] [User 69] calculateSalary (Existing): lpResult: {"latePunchInMinutes":-2287,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":2,"lateDetails":[{"id":14808,"userId":69,"orgAccountId":10,"latePunchInMinutes":270,"latePunchInAmount":0,"latePunchInRuleId":null,"isLate":true,"date":"2026-05-16","status":"PRESENT","punchedInAt":"2026-05-16T10:00:00.000Z"},{"id":18221,"userId":69,"orgAccountId":10,"latePunchInMinutes":269,"latePunchInAmount":0,"latePunchInRuleId":null,"isLate":true,"date":"2026-05-19","status":"PRESENT","punchedInAt":"2026-05-19T09:59:00.000Z"}]}
+[2026-05-20T10:55:23.965Z] [User 70] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0,"lateDetails":[]}
+[2026-05-20T10:55:23.979Z] [User 98] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0,"lateDetails":[]}
+[2026-05-20T10:55:23.989Z] [User 99] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0,"lateDetails":[]}
+[2026-05-20T10:55:24.000Z] [User 100] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0,"lateDetails":[]}
+[2026-05-20T10:55:24.010Z] [User 101] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0,"lateDetails":[]}
+[2026-05-20T10:55:24.021Z] [User 102] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0,"lateDetails":[]}
+[2026-05-20T10:55:24.032Z] [User 103] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0,"lateDetails":[]}
+[2026-05-20T10:55:24.054Z] [User 104] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0,"lateDetails":[]}
+[2026-05-20T10:55:24.065Z] [User 105] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0,"lateDetails":[]}
+[2026-05-20T10:55:24.087Z] [User 106] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0,"lateDetails":[]}
+[2026-05-20T10:55:24.105Z] [User 107] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0,"lateDetails":[]}
+[2026-05-20T10:55:24.125Z] [User 108] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0,"lateDetails":[]}
+[2026-05-20T10:55:24.190Z] [User 109] calculateSalary (Existing): lpResult: {"latePunchInMinutes":-31,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":1,"lateDetails":[{"id":18630,"userId":109,"orgAccountId":10,"latePunchInMinutes":89,"latePunchInAmount":0,"latePunchInRuleId":null,"isLate":false,"date":"2026-05-20","status":null,"punchedInAt":"2026-05-20T06:59:24.000Z"}]}
+[2026-05-20T10:55:24.212Z] [User 142] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0,"lateDetails":[]}
+[2026-05-20T10:55:37.524Z] [User 57] calculateSalary (Existing): lpResult: {"latePunchInMinutes":-117,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":1,"lateDetails":[{"id":4682,"userId":57,"orgAccountId":10,"latePunchInMinutes":3,"latePunchInAmount":0,"latePunchInRuleId":5,"isLate":true,"date":"2026-05-06","status":"overtime","punchedInAt":"2026-05-06T05:33:00.000Z"}]}
+[2026-05-20T10:55:37.610Z] [User 57] calculateSalary (Existing): lpResult: {"latePunchInMinutes":107,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":1,"lateDetails":[{"id":1471,"userId":57,"orgAccountId":10,"latePunchInMinutes":107,"latePunchInAmount":0,"latePunchInRuleId":null,"isLate":true,"date":"2026-04-22","status":"present","punchedInAt":"2026-04-22T07:16:55.000Z"}]}
+[2026-05-20T10:55:37.635Z] [User 58] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0,"lateDetails":[]}
+[2026-05-20T10:55:37.692Z] [User 58] calculateSalary (Existing): lpResult: {"latePunchInMinutes":85,"latePunchInPenalty":100,"latePenaltyDays":0.5,"lateCount":3,"lateDetails":[{"id":1487,"userId":58,"orgAccountId":10,"latePunchInMinutes":10,"latePunchInAmount":0,"latePunchInRuleId":4,"isLate":true,"date":"2026-04-22","status":"present","punchedInAt":"2026-04-22T05:40:00.000Z"},{"id":1499,"userId":58,"orgAccountId":10,"latePunchInMinutes":30,"latePunchInAmount":0,"latePunchInRuleId":4,"isLate":true,"date":"2026-04-23","status":"present","punchedInAt":"2026-04-23T06:00:00.000Z"},{"id":1738,"userId":58,"orgAccountId":10,"latePunchInMinutes":45,"latePunchInAmount":100,"latePunchInRuleId":4,"isLate":true,"date":"2026-04-24","status":"present","punchedInAt":"2026-04-24T06:15:00.000Z"}]}
+[2026-05-20T10:55:37.759Z] [User 59] calculateSalary (Existing): lpResult: {"latePunchInMinutes":16,"latePunchInPenalty":364.2,"latePenaltyDays":1,"lateCount":2,"lateDetails":[{"id":4545,"userId":59,"orgAccountId":10,"latePunchInMinutes":26,"latePunchInAmount":0,"latePunchInRuleId":1,"isLate":true,"date":"2026-05-01","status":"present","punchedInAt":"2026-05-01T05:56:00.000Z"},{"id":4446,"userId":59,"orgAccountId":10,"latePunchInMinutes":20,"latePunchInAmount":364.2,"latePunchInRuleId":1,"isLate":true,"date":"2026-05-05","status":"present","punchedInAt":"2026-05-05T05:50:00.000Z"}]}
+[2026-05-20T10:55:37.785Z] [User 59] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0,"lateDetails":[]}
+[2026-05-20T10:55:37.812Z] [User 61] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0,"lateDetails":[]}
+[2026-05-20T10:55:37.834Z] [User 61] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0,"lateDetails":[]}
+[2026-05-20T10:55:37.889Z] [User 62] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0,"lateDetails":[]}
+[2026-05-20T10:55:37.913Z] [User 62] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0,"lateDetails":[]}
+[2026-05-20T10:55:37.993Z] [User 63] calculateSalary (Existing): lpResult: {"latePunchInMinutes":120,"latePunchInPenalty":40,"latePenaltyDays":0.64,"lateCount":2,"lateDetails":[{"id":4581,"userId":63,"orgAccountId":10,"latePunchInMinutes":60,"latePunchInAmount":0,"latePunchInRuleId":null,"isLate":true,"date":"2026-05-01","status":"present","punchedInAt":"2026-05-01T06:30:00.000Z"},{"id":4574,"userId":63,"orgAccountId":10,"latePunchInMinutes":60,"latePunchInAmount":40,"latePunchInRuleId":6,"isLate":true,"date":"2026-05-05","status":"present","punchedInAt":"2026-05-05T06:30:00.000Z"}]}
+[2026-05-20T10:55:38.021Z] [User 63] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0,"lateDetails":[]}
+[2026-05-20T10:55:38.050Z] [User 64] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0,"lateDetails":[]}
+[2026-05-20T10:55:38.076Z] [User 64] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0,"lateDetails":[]}
+[2026-05-20T10:55:38.173Z] [User 65] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0,"lateDetails":[]}
+[2026-05-20T10:55:38.201Z] [User 65] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0,"lateDetails":[]}
+[2026-05-20T10:55:38.223Z] [User 68] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0,"lateDetails":[]}
+[2026-05-20T10:55:38.262Z] [User 68] calculateSalary (Existing): lpResult: {"latePunchInMinutes":810,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":1,"lateDetails":[{"id":1093,"userId":68,"orgAccountId":10,"latePunchInMinutes":840,"latePunchInAmount":0,"latePunchInRuleId":null,"isLate":true,"date":"2026-04-20","status":"present","punchedInAt":"2026-04-20T18:30:00.000Z"}]}
+[2026-05-20T10:55:38.410Z] [User 69] calculateSalary (Existing): lpResult: {"latePunchInMinutes":-2287,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":2,"lateDetails":[{"id":14808,"userId":69,"orgAccountId":10,"latePunchInMinutes":270,"latePunchInAmount":0,"latePunchInRuleId":null,"isLate":true,"date":"2026-05-16","status":"PRESENT","punchedInAt":"2026-05-16T10:00:00.000Z"},{"id":18221,"userId":69,"orgAccountId":10,"latePunchInMinutes":269,"latePunchInAmount":0,"latePunchInRuleId":null,"isLate":true,"date":"2026-05-19","status":"PRESENT","punchedInAt":"2026-05-19T09:59:00.000Z"}]}
+[2026-05-20T10:55:38.487Z] [User 69] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0,"lateDetails":[]}
+[2026-05-20T10:55:38.497Z] [User 70] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0,"lateDetails":[]}
+[2026-05-20T10:55:38.546Z] [User 70] calculateSalary (Existing): lpResult: {"latePunchInMinutes":141,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":1,"lateDetails":[{"id":1404,"userId":70,"orgAccountId":10,"latePunchInMinutes":141,"latePunchInAmount":0,"latePunchInRuleId":3,"isLate":true,"date":"2026-04-22","status":"present","punchedInAt":"2026-04-22T05:51:00.000Z"}]}
+[2026-05-20T10:55:38.564Z] [User 98] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0,"lateDetails":[]}
+[2026-05-20T10:55:38.600Z] [User 98] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0,"lateDetails":[]}
+[2026-05-20T10:55:38.617Z] [User 99] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0,"lateDetails":[]}
+[2026-05-20T10:55:38.650Z] [User 99] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0,"lateDetails":[]}
+[2026-05-20T10:55:38.669Z] [User 100] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0,"lateDetails":[]}
+[2026-05-20T10:55:38.683Z] [User 100] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0,"lateDetails":[]}
+[2026-05-20T10:55:38.700Z] [User 101] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0,"lateDetails":[]}
+[2026-05-20T10:55:38.716Z] [User 101] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0,"lateDetails":[]}
+[2026-05-20T10:55:38.733Z] [User 102] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0,"lateDetails":[]}
+[2026-05-20T10:55:38.748Z] [User 102] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0,"lateDetails":[]}
+[2026-05-20T10:55:38.765Z] [User 103] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0,"lateDetails":[]}
+[2026-05-20T10:55:38.780Z] [User 103] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0,"lateDetails":[]}
+[2026-05-20T10:55:38.817Z] [User 104] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0,"lateDetails":[]}
+[2026-05-20T10:55:38.832Z] [User 104] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0,"lateDetails":[]}
+[2026-05-20T10:55:38.848Z] [User 105] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0,"lateDetails":[]}
+[2026-05-20T10:55:38.864Z] [User 105] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0,"lateDetails":[]}
+[2026-05-20T10:55:38.902Z] [User 106] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0,"lateDetails":[]}
+[2026-05-20T10:55:38.942Z] [User 106] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0,"lateDetails":[]}
+[2026-05-20T10:55:39.004Z] [User 107] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0,"lateDetails":[]}
+[2026-05-20T10:55:39.024Z] [User 107] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0,"lateDetails":[]}
+[2026-05-20T10:55:39.065Z] [User 108] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0,"lateDetails":[]}
+[2026-05-20T10:55:39.086Z] [User 108] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0,"lateDetails":[]}
+[2026-05-20T10:55:39.258Z] [User 109] calculateSalary (Existing): lpResult: {"latePunchInMinutes":-31,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":1,"lateDetails":[{"id":18630,"userId":109,"orgAccountId":10,"latePunchInMinutes":89,"latePunchInAmount":0,"latePunchInRuleId":null,"isLate":false,"date":"2026-05-20","status":null,"punchedInAt":"2026-05-20T06:59:24.000Z"}]}
+[2026-05-20T10:55:39.306Z] [User 109] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0,"lateDetails":[]}
+[2026-05-20T10:55:39.344Z] [User 142] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0,"lateDetails":[]}
+[2026-05-20T10:55:39.360Z] [User 142] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0,"lateDetails":[]}
+[2026-05-20T11:14:32.334Z] [User 57] calculateSalary (Existing): lpResult: {"latePunchInMinutes":-117,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":1,"lateDetails":[{"id":4682,"userId":57,"orgAccountId":10,"latePunchInMinutes":3,"latePunchInAmount":0,"latePunchInRuleId":5,"isLate":true,"date":"2026-05-06","status":"overtime","punchedInAt":"2026-05-06T05:33:00.000Z"}]}
+[2026-05-20T11:14:32.465Z] [User 57] calculateSalary (Existing): lpResult: {"latePunchInMinutes":107,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":1,"lateDetails":[{"id":1471,"userId":57,"orgAccountId":10,"latePunchInMinutes":107,"latePunchInAmount":0,"latePunchInRuleId":null,"isLate":true,"date":"2026-04-22","status":"present","punchedInAt":"2026-04-22T07:16:55.000Z"}]}
+[2026-05-20T11:14:32.507Z] [User 58] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0,"lateDetails":[]}
+[2026-05-20T11:14:32.592Z] [User 58] calculateSalary (Existing): lpResult: {"latePunchInMinutes":85,"latePunchInPenalty":100,"latePenaltyDays":0.5,"lateCount":3,"lateDetails":[{"id":1487,"userId":58,"orgAccountId":10,"latePunchInMinutes":10,"latePunchInAmount":0,"latePunchInRuleId":4,"isLate":true,"date":"2026-04-22","status":"present","punchedInAt":"2026-04-22T05:40:00.000Z"},{"id":1499,"userId":58,"orgAccountId":10,"latePunchInMinutes":30,"latePunchInAmount":0,"latePunchInRuleId":4,"isLate":true,"date":"2026-04-23","status":"present","punchedInAt":"2026-04-23T06:00:00.000Z"},{"id":1738,"userId":58,"orgAccountId":10,"latePunchInMinutes":45,"latePunchInAmount":100,"latePunchInRuleId":4,"isLate":true,"date":"2026-04-24","status":"present","punchedInAt":"2026-04-24T06:15:00.000Z"}]}
+[2026-05-20T11:14:32.683Z] [User 59] calculateSalary (Existing): lpResult: {"latePunchInMinutes":16,"latePunchInPenalty":364.2,"latePenaltyDays":1,"lateCount":2,"lateDetails":[{"id":4545,"userId":59,"orgAccountId":10,"latePunchInMinutes":26,"latePunchInAmount":0,"latePunchInRuleId":1,"isLate":true,"date":"2026-05-01","status":"present","punchedInAt":"2026-05-01T05:56:00.000Z"},{"id":4446,"userId":59,"orgAccountId":10,"latePunchInMinutes":20,"latePunchInAmount":364.2,"latePunchInRuleId":1,"isLate":true,"date":"2026-05-05","status":"present","punchedInAt":"2026-05-05T05:50:00.000Z"}]}
+[2026-05-20T11:14:32.718Z] [User 59] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0,"lateDetails":[]}
+[2026-05-20T11:14:32.753Z] [User 61] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0,"lateDetails":[]}
+[2026-05-20T11:14:32.785Z] [User 61] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0,"lateDetails":[]}
+[2026-05-20T11:14:32.818Z] [User 62] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0,"lateDetails":[]}
+[2026-05-20T11:14:32.833Z] [User 62] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0,"lateDetails":[]}
+[2026-05-20T11:14:32.875Z] [User 63] calculateSalary (Existing): lpResult: {"latePunchInMinutes":120,"latePunchInPenalty":40,"latePenaltyDays":0.64,"lateCount":2,"lateDetails":[{"id":4581,"userId":63,"orgAccountId":10,"latePunchInMinutes":60,"latePunchInAmount":0,"latePunchInRuleId":null,"isLate":true,"date":"2026-05-01","status":"present","punchedInAt":"2026-05-01T06:30:00.000Z"},{"id":4574,"userId":63,"orgAccountId":10,"latePunchInMinutes":60,"latePunchInAmount":40,"latePunchInRuleId":6,"isLate":true,"date":"2026-05-05","status":"present","punchedInAt":"2026-05-05T06:30:00.000Z"}]}
+[2026-05-20T11:14:32.889Z] [User 63] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0,"lateDetails":[]}
+[2026-05-20T11:14:32.907Z] [User 64] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0,"lateDetails":[]}
+[2026-05-20T11:14:32.922Z] [User 64] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0,"lateDetails":[]}
+[2026-05-20T11:14:32.953Z] [User 65] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0,"lateDetails":[]}
+[2026-05-20T11:14:32.968Z] [User 65] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0,"lateDetails":[]}
+[2026-05-20T11:14:32.985Z] [User 68] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0,"lateDetails":[]}
+[2026-05-20T11:14:33.049Z] [User 68] calculateSalary (Existing): lpResult: {"latePunchInMinutes":810,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":1,"lateDetails":[{"id":1093,"userId":68,"orgAccountId":10,"latePunchInMinutes":840,"latePunchInAmount":0,"latePunchInRuleId":null,"isLate":true,"date":"2026-04-20","status":"present","punchedInAt":"2026-04-20T18:30:00.000Z"}]}
+[2026-05-20T11:14:33.284Z] [User 69] calculateSalary (Existing): lpResult: {"latePunchInMinutes":-2287,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":2,"lateDetails":[{"id":14808,"userId":69,"orgAccountId":10,"latePunchInMinutes":270,"latePunchInAmount":0,"latePunchInRuleId":null,"isLate":true,"date":"2026-05-16","status":"PRESENT","punchedInAt":"2026-05-16T10:00:00.000Z"},{"id":18221,"userId":69,"orgAccountId":10,"latePunchInMinutes":269,"latePunchInAmount":0,"latePunchInRuleId":null,"isLate":true,"date":"2026-05-19","status":"PRESENT","punchedInAt":"2026-05-19T09:59:00.000Z"}]}
+[2026-05-20T11:14:33.384Z] [User 69] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0,"lateDetails":[]}
+[2026-05-20T11:14:33.398Z] [User 70] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0,"lateDetails":[]}
+[2026-05-20T11:14:33.431Z] [User 70] calculateSalary (Existing): lpResult: {"latePunchInMinutes":141,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":1,"lateDetails":[{"id":1404,"userId":70,"orgAccountId":10,"latePunchInMinutes":141,"latePunchInAmount":0,"latePunchInRuleId":3,"isLate":true,"date":"2026-04-22","status":"present","punchedInAt":"2026-04-22T05:51:00.000Z"}]}
+[2026-05-20T11:14:33.446Z] [User 98] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0,"lateDetails":[]}
+[2026-05-20T11:14:33.473Z] [User 98] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0,"lateDetails":[]}
+[2026-05-20T11:14:33.486Z] [User 99] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0,"lateDetails":[]}
+[2026-05-20T11:14:33.511Z] [User 99] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0,"lateDetails":[]}
+[2026-05-20T11:14:33.523Z] [User 100] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0,"lateDetails":[]}
+[2026-05-20T11:14:33.536Z] [User 100] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0,"lateDetails":[]}
+[2026-05-20T11:14:33.550Z] [User 101] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0,"lateDetails":[]}
+[2026-05-20T11:14:33.562Z] [User 101] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0,"lateDetails":[]}
+[2026-05-20T11:14:33.573Z] [User 102] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0,"lateDetails":[]}
+[2026-05-20T11:14:33.586Z] [User 102] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0,"lateDetails":[]}
+[2026-05-20T11:14:33.600Z] [User 103] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0,"lateDetails":[]}
+[2026-05-20T11:14:33.609Z] [User 103] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0,"lateDetails":[]}
+[2026-05-20T11:14:33.636Z] [User 104] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0,"lateDetails":[]}
+[2026-05-20T11:14:33.647Z] [User 104] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0,"lateDetails":[]}
+[2026-05-20T11:14:33.657Z] [User 105] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0,"lateDetails":[]}
+[2026-05-20T11:14:33.669Z] [User 105] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0,"lateDetails":[]}
+[2026-05-20T11:14:33.697Z] [User 106] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0,"lateDetails":[]}
+[2026-05-20T11:14:33.723Z] [User 106] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0,"lateDetails":[]}
+[2026-05-20T11:14:33.747Z] [User 107] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0,"lateDetails":[]}
+[2026-05-20T11:14:33.757Z] [User 107] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0,"lateDetails":[]}
+[2026-05-20T11:14:33.784Z] [User 108] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0,"lateDetails":[]}
+[2026-05-20T11:14:33.796Z] [User 108] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0,"lateDetails":[]}
+[2026-05-20T11:14:33.869Z] [User 109] calculateSalary (Existing): lpResult: {"latePunchInMinutes":-31,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":1,"lateDetails":[{"id":18630,"userId":109,"orgAccountId":10,"latePunchInMinutes":89,"latePunchInAmount":0,"latePunchInRuleId":null,"isLate":false,"date":"2026-05-20","status":null,"punchedInAt":"2026-05-20T06:59:24.000Z"}]}
+[2026-05-20T11:14:33.899Z] [User 109] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0,"lateDetails":[]}
+[2026-05-20T11:14:33.930Z] [User 142] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0,"lateDetails":[]}
+[2026-05-20T11:14:33.941Z] [User 142] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0,"lateDetails":[]}
+[2026-05-20T11:15:02.953Z] [User 57] calculateSalary (Existing): lpResult: {"latePunchInMinutes":-117,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":1,"lateDetails":[{"id":4682,"userId":57,"orgAccountId":10,"latePunchInMinutes":3,"latePunchInAmount":0,"latePunchInRuleId":5,"isLate":true,"date":"2026-05-06","status":"overtime","punchedInAt":"2026-05-06T05:33:00.000Z"}]}
+[2026-05-20T11:15:03.154Z] [User 57] calculateSalary (Existing): lpResult: {"latePunchInMinutes":107,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":1,"lateDetails":[{"id":1471,"userId":57,"orgAccountId":10,"latePunchInMinutes":107,"latePunchInAmount":0,"latePunchInRuleId":null,"isLate":true,"date":"2026-04-22","status":"present","punchedInAt":"2026-04-22T07:16:55.000Z"}]}
+[2026-05-20T11:15:03.191Z] [User 58] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0,"lateDetails":[]}
+[2026-05-20T11:15:03.255Z] [User 58] calculateSalary (Existing): lpResult: {"latePunchInMinutes":85,"latePunchInPenalty":100,"latePenaltyDays":0.5,"lateCount":3,"lateDetails":[{"id":1487,"userId":58,"orgAccountId":10,"latePunchInMinutes":10,"latePunchInAmount":0,"latePunchInRuleId":4,"isLate":true,"date":"2026-04-22","status":"present","punchedInAt":"2026-04-22T05:40:00.000Z"},{"id":1499,"userId":58,"orgAccountId":10,"latePunchInMinutes":30,"latePunchInAmount":0,"latePunchInRuleId":4,"isLate":true,"date":"2026-04-23","status":"present","punchedInAt":"2026-04-23T06:00:00.000Z"},{"id":1738,"userId":58,"orgAccountId":10,"latePunchInMinutes":45,"latePunchInAmount":100,"latePunchInRuleId":4,"isLate":true,"date":"2026-04-24","status":"present","punchedInAt":"2026-04-24T06:15:00.000Z"}]}
+[2026-05-20T11:15:03.328Z] [User 59] calculateSalary (Existing): lpResult: {"latePunchInMinutes":16,"latePunchInPenalty":364.2,"latePenaltyDays":1,"lateCount":2,"lateDetails":[{"id":4545,"userId":59,"orgAccountId":10,"latePunchInMinutes":26,"latePunchInAmount":0,"latePunchInRuleId":1,"isLate":true,"date":"2026-05-01","status":"present","punchedInAt":"2026-05-01T05:56:00.000Z"},{"id":4446,"userId":59,"orgAccountId":10,"latePunchInMinutes":20,"latePunchInAmount":364.2,"latePunchInRuleId":1,"isLate":true,"date":"2026-05-05","status":"present","punchedInAt":"2026-05-05T05:50:00.000Z"}]}
+[2026-05-20T11:15:03.357Z] [User 59] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0,"lateDetails":[]}
+[2026-05-20T11:15:03.384Z] [User 61] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0,"lateDetails":[]}
+[2026-05-20T11:15:03.406Z] [User 61] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0,"lateDetails":[]}
+[2026-05-20T11:15:03.435Z] [User 62] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0,"lateDetails":[]}
+[2026-05-20T11:15:03.447Z] [User 62] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0,"lateDetails":[]}
+[2026-05-20T11:15:03.486Z] [User 63] calculateSalary (Existing): lpResult: {"latePunchInMinutes":120,"latePunchInPenalty":40,"latePenaltyDays":0.64,"lateCount":2,"lateDetails":[{"id":4581,"userId":63,"orgAccountId":10,"latePunchInMinutes":60,"latePunchInAmount":0,"latePunchInRuleId":null,"isLate":true,"date":"2026-05-01","status":"present","punchedInAt":"2026-05-01T06:30:00.000Z"},{"id":4574,"userId":63,"orgAccountId":10,"latePunchInMinutes":60,"latePunchInAmount":40,"latePunchInRuleId":6,"isLate":true,"date":"2026-05-05","status":"present","punchedInAt":"2026-05-05T06:30:00.000Z"}]}
+[2026-05-20T11:15:03.500Z] [User 63] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0,"lateDetails":[]}
+[2026-05-20T11:15:03.514Z] [User 64] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0,"lateDetails":[]}
+[2026-05-20T11:15:03.527Z] [User 64] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0,"lateDetails":[]}
+[2026-05-20T11:15:03.554Z] [User 65] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0,"lateDetails":[]}
+[2026-05-20T11:15:03.566Z] [User 65] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0,"lateDetails":[]}
+[2026-05-20T11:15:03.579Z] [User 68] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0,"lateDetails":[]}
+[2026-05-20T11:15:03.624Z] [User 68] calculateSalary (Existing): lpResult: {"latePunchInMinutes":810,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":1,"lateDetails":[{"id":1093,"userId":68,"orgAccountId":10,"latePunchInMinutes":840,"latePunchInAmount":0,"latePunchInRuleId":null,"isLate":true,"date":"2026-04-20","status":"present","punchedInAt":"2026-04-20T18:30:00.000Z"}]}
+[2026-05-20T11:15:03.791Z] [User 69] calculateSalary (Existing): lpResult: {"latePunchInMinutes":-2287,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":2,"lateDetails":[{"id":14808,"userId":69,"orgAccountId":10,"latePunchInMinutes":270,"latePunchInAmount":0,"latePunchInRuleId":null,"isLate":true,"date":"2026-05-16","status":"PRESENT","punchedInAt":"2026-05-16T10:00:00.000Z"},{"id":18221,"userId":69,"orgAccountId":10,"latePunchInMinutes":269,"latePunchInAmount":0,"latePunchInRuleId":null,"isLate":true,"date":"2026-05-19","status":"PRESENT","punchedInAt":"2026-05-19T09:59:00.000Z"}]}
+[2026-05-20T11:15:03.872Z] [User 69] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0,"lateDetails":[]}
+[2026-05-20T11:15:03.885Z] [User 70] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0,"lateDetails":[]}
+[2026-05-20T11:15:03.913Z] [User 70] calculateSalary (Existing): lpResult: {"latePunchInMinutes":141,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":1,"lateDetails":[{"id":1404,"userId":70,"orgAccountId":10,"latePunchInMinutes":141,"latePunchInAmount":0,"latePunchInRuleId":3,"isLate":true,"date":"2026-04-22","status":"present","punchedInAt":"2026-04-22T05:51:00.000Z"}]}
+[2026-05-20T11:15:03.923Z] [User 98] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0,"lateDetails":[]}
+[2026-05-20T11:15:03.945Z] [User 98] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0,"lateDetails":[]}
+[2026-05-20T11:15:03.954Z] [User 99] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0,"lateDetails":[]}
+[2026-05-20T11:15:03.975Z] [User 99] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0,"lateDetails":[]}
+[2026-05-20T11:15:03.984Z] [User 100] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0,"lateDetails":[]}
+[2026-05-20T11:15:03.992Z] [User 100] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0,"lateDetails":[]}
+[2026-05-20T11:15:04.002Z] [User 101] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0,"lateDetails":[]}
+[2026-05-20T11:15:04.012Z] [User 101] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0,"lateDetails":[]}
+[2026-05-20T11:15:04.022Z] [User 102] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0,"lateDetails":[]}
+[2026-05-20T11:15:04.032Z] [User 102] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0,"lateDetails":[]}
+[2026-05-20T11:15:04.041Z] [User 103] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0,"lateDetails":[]}
+[2026-05-20T11:15:04.051Z] [User 103] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0,"lateDetails":[]}
+[2026-05-20T11:15:04.072Z] [User 104] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0,"lateDetails":[]}
+[2026-05-20T11:15:04.081Z] [User 104] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0,"lateDetails":[]}
+[2026-05-20T11:15:04.090Z] [User 105] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0,"lateDetails":[]}
+[2026-05-20T11:15:04.100Z] [User 105] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0,"lateDetails":[]}
+[2026-05-20T11:15:04.121Z] [User 106] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0,"lateDetails":[]}
+[2026-05-20T11:15:04.139Z] [User 106] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0,"lateDetails":[]}
+[2026-05-20T11:15:04.158Z] [User 107] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0,"lateDetails":[]}
+[2026-05-20T11:15:04.169Z] [User 107] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0,"lateDetails":[]}
+[2026-05-20T11:15:04.188Z] [User 108] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0,"lateDetails":[]}
+[2026-05-20T11:15:04.199Z] [User 108] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0,"lateDetails":[]}
+[2026-05-20T11:15:04.261Z] [User 109] calculateSalary (Existing): lpResult: {"latePunchInMinutes":-31,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":1,"lateDetails":[{"id":18630,"userId":109,"orgAccountId":10,"latePunchInMinutes":89,"latePunchInAmount":0,"latePunchInRuleId":null,"isLate":false,"date":"2026-05-20","status":null,"punchedInAt":"2026-05-20T06:59:24.000Z"}]}
+[2026-05-20T11:15:04.290Z] [User 109] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0,"lateDetails":[]}
+[2026-05-20T11:15:04.311Z] [User 142] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0,"lateDetails":[]}
+[2026-05-20T11:15:04.321Z] [User 142] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0,"lateDetails":[]}
+[2026-05-20T11:15:09.217Z] [User 57] calculateSalary (Existing): lpResult: {"latePunchInMinutes":-117,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":1,"lateDetails":[{"id":4682,"userId":57,"orgAccountId":10,"latePunchInMinutes":3,"latePunchInAmount":0,"latePunchInRuleId":5,"isLate":true,"date":"2026-05-06","status":"overtime","punchedInAt":"2026-05-06T05:33:00.000Z"}]}
+[2026-05-20T11:15:09.281Z] [User 57] calculateSalary (Existing): lpResult: {"latePunchInMinutes":107,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":1,"lateDetails":[{"id":1471,"userId":57,"orgAccountId":10,"latePunchInMinutes":107,"latePunchInAmount":0,"latePunchInRuleId":null,"isLate":true,"date":"2026-04-22","status":"present","punchedInAt":"2026-04-22T07:16:55.000Z"}]}
+[2026-05-20T11:15:09.305Z] [User 58] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0,"lateDetails":[]}
+[2026-05-20T11:15:09.353Z] [User 58] calculateSalary (Existing): lpResult: {"latePunchInMinutes":85,"latePunchInPenalty":100,"latePenaltyDays":0.5,"lateCount":3,"lateDetails":[{"id":1487,"userId":58,"orgAccountId":10,"latePunchInMinutes":10,"latePunchInAmount":0,"latePunchInRuleId":4,"isLate":true,"date":"2026-04-22","status":"present","punchedInAt":"2026-04-22T05:40:00.000Z"},{"id":1499,"userId":58,"orgAccountId":10,"latePunchInMinutes":30,"latePunchInAmount":0,"latePunchInRuleId":4,"isLate":true,"date":"2026-04-23","status":"present","punchedInAt":"2026-04-23T06:00:00.000Z"},{"id":1738,"userId":58,"orgAccountId":10,"latePunchInMinutes":45,"latePunchInAmount":100,"latePunchInRuleId":4,"isLate":true,"date":"2026-04-24","status":"present","punchedInAt":"2026-04-24T06:15:00.000Z"}]}
+[2026-05-20T11:15:09.414Z] [User 59] calculateSalary (Existing): lpResult: {"latePunchInMinutes":16,"latePunchInPenalty":364.2,"latePenaltyDays":1,"lateCount":2,"lateDetails":[{"id":4545,"userId":59,"orgAccountId":10,"latePunchInMinutes":26,"latePunchInAmount":0,"latePunchInRuleId":1,"isLate":true,"date":"2026-05-01","status":"present","punchedInAt":"2026-05-01T05:56:00.000Z"},{"id":4446,"userId":59,"orgAccountId":10,"latePunchInMinutes":20,"latePunchInAmount":364.2,"latePunchInRuleId":1,"isLate":true,"date":"2026-05-05","status":"present","punchedInAt":"2026-05-05T05:50:00.000Z"}]}
+[2026-05-20T11:15:09.438Z] [User 59] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0,"lateDetails":[]}
+[2026-05-20T11:15:09.467Z] [User 61] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0,"lateDetails":[]}
+[2026-05-20T11:15:09.486Z] [User 61] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0,"lateDetails":[]}
+[2026-05-20T11:15:09.513Z] [User 62] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0,"lateDetails":[]}
+[2026-05-20T11:15:09.522Z] [User 62] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0,"lateDetails":[]}
+[2026-05-20T11:15:09.555Z] [User 63] calculateSalary (Existing): lpResult: {"latePunchInMinutes":120,"latePunchInPenalty":40,"latePenaltyDays":0.64,"lateCount":2,"lateDetails":[{"id":4581,"userId":63,"orgAccountId":10,"latePunchInMinutes":60,"latePunchInAmount":0,"latePunchInRuleId":null,"isLate":true,"date":"2026-05-01","status":"present","punchedInAt":"2026-05-01T06:30:00.000Z"},{"id":4574,"userId":63,"orgAccountId":10,"latePunchInMinutes":60,"latePunchInAmount":40,"latePunchInRuleId":6,"isLate":true,"date":"2026-05-05","status":"present","punchedInAt":"2026-05-05T06:30:00.000Z"}]}
+[2026-05-20T11:15:09.567Z] [User 63] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0,"lateDetails":[]}
+[2026-05-20T11:15:09.580Z] [User 64] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0,"lateDetails":[]}
+[2026-05-20T11:15:09.589Z] [User 64] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0,"lateDetails":[]}
+[2026-05-20T11:15:09.611Z] [User 65] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0,"lateDetails":[]}
+[2026-05-20T11:15:09.620Z] [User 65] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0,"lateDetails":[]}
+[2026-05-20T11:15:09.632Z] [User 68] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0,"lateDetails":[]}
+[2026-05-20T11:15:09.669Z] [User 68] calculateSalary (Existing): lpResult: {"latePunchInMinutes":810,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":1,"lateDetails":[{"id":1093,"userId":68,"orgAccountId":10,"latePunchInMinutes":840,"latePunchInAmount":0,"latePunchInRuleId":null,"isLate":true,"date":"2026-04-20","status":"present","punchedInAt":"2026-04-20T18:30:00.000Z"}]}
+[2026-05-20T11:15:09.824Z] [User 69] calculateSalary (Existing): lpResult: {"latePunchInMinutes":-2287,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":2,"lateDetails":[{"id":14808,"userId":69,"orgAccountId":10,"latePunchInMinutes":270,"latePunchInAmount":0,"latePunchInRuleId":null,"isLate":true,"date":"2026-05-16","status":"PRESENT","punchedInAt":"2026-05-16T10:00:00.000Z"},{"id":18221,"userId":69,"orgAccountId":10,"latePunchInMinutes":269,"latePunchInAmount":0,"latePunchInRuleId":null,"isLate":true,"date":"2026-05-19","status":"PRESENT","punchedInAt":"2026-05-19T09:59:00.000Z"}]}
+[2026-05-20T11:15:09.908Z] [User 69] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0,"lateDetails":[]}
+[2026-05-20T11:15:09.920Z] [User 70] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0,"lateDetails":[]}
+[2026-05-20T11:15:09.949Z] [User 70] calculateSalary (Existing): lpResult: {"latePunchInMinutes":141,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":1,"lateDetails":[{"id":1404,"userId":70,"orgAccountId":10,"latePunchInMinutes":141,"latePunchInAmount":0,"latePunchInRuleId":3,"isLate":true,"date":"2026-04-22","status":"present","punchedInAt":"2026-04-22T05:51:00.000Z"}]}
+[2026-05-20T11:15:09.959Z] [User 98] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0,"lateDetails":[]}
+[2026-05-20T11:15:10.028Z] [User 98] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0,"lateDetails":[]}
+[2026-05-20T11:15:10.048Z] [User 99] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0,"lateDetails":[]}
+[2026-05-20T11:15:10.073Z] [User 99] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0,"lateDetails":[]}
+[2026-05-20T11:15:10.083Z] [User 100] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0,"lateDetails":[]}
+[2026-05-20T11:15:10.095Z] [User 100] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0,"lateDetails":[]}
+[2026-05-20T11:15:10.104Z] [User 101] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0,"lateDetails":[]}
+[2026-05-20T11:15:10.115Z] [User 101] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0,"lateDetails":[]}
+[2026-05-20T11:15:10.125Z] [User 102] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0,"lateDetails":[]}
+[2026-05-20T11:15:10.134Z] [User 102] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0,"lateDetails":[]}
+[2026-05-20T11:15:10.146Z] [User 103] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0,"lateDetails":[]}
+[2026-05-20T11:15:10.155Z] [User 103] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0,"lateDetails":[]}
+[2026-05-20T11:15:10.179Z] [User 104] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0,"lateDetails":[]}
+[2026-05-20T11:15:10.188Z] [User 104] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0,"lateDetails":[]}
+[2026-05-20T11:15:10.199Z] [User 105] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0,"lateDetails":[]}
+[2026-05-20T11:15:10.208Z] [User 105] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0,"lateDetails":[]}
+[2026-05-20T11:15:10.231Z] [User 106] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0,"lateDetails":[]}
+[2026-05-20T11:15:10.249Z] [User 106] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0,"lateDetails":[]}
+[2026-05-20T11:15:10.266Z] [User 107] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0,"lateDetails":[]}
+[2026-05-20T11:15:10.275Z] [User 107] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0,"lateDetails":[]}
+[2026-05-20T11:15:10.295Z] [User 108] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0,"lateDetails":[]}
+[2026-05-20T11:15:10.303Z] [User 108] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0,"lateDetails":[]}
+[2026-05-20T11:15:10.364Z] [User 109] calculateSalary (Existing): lpResult: {"latePunchInMinutes":-31,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":1,"lateDetails":[{"id":18630,"userId":109,"orgAccountId":10,"latePunchInMinutes":89,"latePunchInAmount":0,"latePunchInRuleId":null,"isLate":false,"date":"2026-05-20","status":null,"punchedInAt":"2026-05-20T06:59:24.000Z"}]}
+[2026-05-20T11:15:10.389Z] [User 109] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0,"lateDetails":[]}
+[2026-05-20T11:15:10.410Z] [User 142] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0,"lateDetails":[]}
+[2026-05-20T11:15:10.419Z] [User 142] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0,"lateDetails":[]}
+[2026-05-20T13:16:34.928Z] [Late-Dbg] User 57 Final: LateCount=1, Amt=0, Days=0
+[Admin-Bonus] SKIP: User 57, Rule Active=true, RuleMonth=2026-04, TargetMonth=2026-05
+[2026-05-20T13:16:35.330Z] [Late-Dbg] User 58 Final: LateCount=0, Amt=0, Days=0
+[Admin-Bonus] SKIP: User 58, Rule Active=true, RuleMonth=2026-04, TargetMonth=2026-05
+[2026-05-20T13:16:35.464Z] [Late-Dbg] User 59 Final: LateCount=2, Amt=1129.03, Days=1
+[2026-05-20T13:16:35.651Z] [Late-Dbg] User 61 Final: LateCount=0, Amt=0, Days=0
+[2026-05-20T13:16:35.732Z] [Late-Dbg] User 62 Final: LateCount=0, Amt=0, Days=0
+[2026-05-20T13:16:35.789Z] [Late-Dbg] User 63 Final: LateCount=2, Amt=40, Days=0.04
+[2026-05-20T13:16:35.870Z] [Late-Dbg] User 64 Final: LateCount=0, Amt=0, Days=0
+[2026-05-20T13:16:35.921Z] [Late-Dbg] User 65 Final: LateCount=0, Amt=0, Days=0
+[2026-05-20T13:16:35.992Z] [Late-Dbg] User 68 Final: LateCount=0, Amt=0, Days=0
+[2026-05-20T13:16:36.156Z] [Late-Dbg] User 69 Final: LateCount=2, Amt=0, Days=0
+[2026-05-20T13:16:36.454Z] [Late-Dbg] User 70 Final: LateCount=0, Amt=0, Days=0
+[2026-05-20T13:16:36.480Z] [Late-Dbg] User 98 Final: LateCount=0, Amt=0, Days=0
+[2026-05-20T13:16:36.510Z] [Late-Dbg] User 99 Final: LateCount=0, Amt=0, Days=0
+[2026-05-20T13:16:36.533Z] [Late-Dbg] User 100 Final: LateCount=0, Amt=0, Days=0
+[2026-05-20T13:16:36.558Z] [Late-Dbg] User 101 Final: LateCount=0, Amt=0, Days=0
+[2026-05-20T13:16:36.583Z] [Late-Dbg] User 102 Final: LateCount=0, Amt=0, Days=0
+[2026-05-20T13:16:36.608Z] [Late-Dbg] User 103 Final: LateCount=0, Amt=0, Days=0
+[2026-05-20T13:16:36.643Z] [Late-Dbg] User 104 Final: LateCount=0, Amt=0, Days=0
+[2026-05-20T13:16:36.684Z] [Late-Dbg] User 105 Final: LateCount=0, Amt=0, Days=0
+[2026-05-20T13:16:36.718Z] [Late-Dbg] User 106 Final: LateCount=0, Amt=0, Days=0
+[2026-05-20T13:16:36.766Z] [Late-Dbg] User 107 Final: LateCount=0, Amt=0, Days=0
+[2026-05-20T13:16:36.802Z] [Late-Dbg] User 108 Final: LateCount=0, Amt=0, Days=0
+[2026-05-20T13:16:36.878Z] [Late-Dbg] User 109 Final: LateCount=1, Amt=0, Days=0
+[2026-05-20T13:16:36.999Z] [Late-Dbg] User 142 Final: LateCount=0, Amt=0, Days=0
+[2026-05-20T13:17:03.496Z] [User 57] calculateSalary (Existing): lpResult: {"latePunchInMinutes":-117,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":1,"lateDetails":[{"id":4682,"userId":57,"orgAccountId":10,"latePunchInMinutes":3,"latePunchInAmount":0,"latePunchInRuleId":5,"isLate":true,"date":"2026-05-06","status":"overtime","punchedInAt":"2026-05-06T05:33:00.000Z"}]}
+[2026-05-20T13:17:07.174Z] [User 58] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0,"lateDetails":[]}
+[2026-05-20T13:17:10.014Z] [User 59] calculateSalary (Existing): lpResult: {"latePunchInMinutes":16,"latePunchInPenalty":364.2,"latePenaltyDays":1,"lateCount":2,"lateDetails":[{"id":4545,"userId":59,"orgAccountId":10,"latePunchInMinutes":26,"latePunchInAmount":0,"latePunchInRuleId":1,"isLate":true,"date":"2026-05-01","status":"present","punchedInAt":"2026-05-01T05:56:00.000Z"},{"id":4446,"userId":59,"orgAccountId":10,"latePunchInMinutes":20,"latePunchInAmount":364.2,"latePunchInRuleId":1,"isLate":true,"date":"2026-05-05","status":"present","punchedInAt":"2026-05-05T05:50:00.000Z"}]}
+[2026-05-20T13:17:12.797Z] [User 61] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0,"lateDetails":[]}
+[2026-05-20T13:17:15.726Z] [User 62] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0,"lateDetails":[]}
+[2026-05-20T13:17:18.324Z] [User 63] calculateSalary (Existing): lpResult: {"latePunchInMinutes":120,"latePunchInPenalty":40,"latePenaltyDays":0.64,"lateCount":2,"lateDetails":[{"id":4581,"userId":63,"orgAccountId":10,"latePunchInMinutes":60,"latePunchInAmount":0,"latePunchInRuleId":null,"isLate":true,"date":"2026-05-01","status":"present","punchedInAt":"2026-05-01T06:30:00.000Z"},{"id":4574,"userId":63,"orgAccountId":10,"latePunchInMinutes":60,"latePunchInAmount":40,"latePunchInRuleId":6,"isLate":true,"date":"2026-05-05","status":"present","punchedInAt":"2026-05-05T06:30:00.000Z"}]}
+[2026-05-20T13:17:21.527Z] [User 64] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0,"lateDetails":[]}
+[2026-05-20T13:17:24.786Z] [User 65] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0,"lateDetails":[]}
+[2026-05-20T13:17:27.954Z] [User 68] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0,"lateDetails":[]}
+[2026-05-20T13:17:32.344Z] [User 69] calculateSalary (Existing): lpResult: {"latePunchInMinutes":-2287,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":2,"lateDetails":[{"id":14808,"userId":69,"orgAccountId":10,"latePunchInMinutes":270,"latePunchInAmount":0,"latePunchInRuleId":null,"isLate":true,"date":"2026-05-16","status":"PRESENT","punchedInAt":"2026-05-16T10:00:00.000Z"},{"id":18221,"userId":69,"orgAccountId":10,"latePunchInMinutes":269,"latePunchInAmount":0,"latePunchInRuleId":null,"isLate":true,"date":"2026-05-19","status":"PRESENT","punchedInAt":"2026-05-19T09:59:00.000Z"}]}
+[2026-05-20T13:18:15.783Z] [User 57] calculateSalary (Existing): lpResult: {"latePunchInMinutes":-117,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":1,"lateDetails":[{"id":4682,"userId":57,"orgAccountId":10,"latePunchInMinutes":3,"latePunchInAmount":0,"latePunchInRuleId":5,"isLate":true,"date":"2026-05-06","status":"overtime","punchedInAt":"2026-05-06T05:33:00.000Z"}]}
+[2026-05-20T13:18:18.252Z] [User 58] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0,"lateDetails":[]}
+[2026-05-20T13:18:20.600Z] [User 59] calculateSalary (Existing): lpResult: {"latePunchInMinutes":16,"latePunchInPenalty":364.2,"latePenaltyDays":1,"lateCount":2,"lateDetails":[{"id":4545,"userId":59,"orgAccountId":10,"latePunchInMinutes":26,"latePunchInAmount":0,"latePunchInRuleId":1,"isLate":true,"date":"2026-05-01","status":"present","punchedInAt":"2026-05-01T05:56:00.000Z"},{"id":4446,"userId":59,"orgAccountId":10,"latePunchInMinutes":20,"latePunchInAmount":364.2,"latePunchInRuleId":1,"isLate":true,"date":"2026-05-05","status":"present","punchedInAt":"2026-05-05T05:50:00.000Z"}]}
+[2026-05-20T13:18:23.210Z] [User 61] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0,"lateDetails":[]}
+[2026-05-20T13:18:25.893Z] [User 62] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0,"lateDetails":[]}
+[2026-05-20T13:18:28.305Z] [User 63] calculateSalary (Existing): lpResult: {"latePunchInMinutes":120,"latePunchInPenalty":40,"latePenaltyDays":0.64,"lateCount":2,"lateDetails":[{"id":4581,"userId":63,"orgAccountId":10,"latePunchInMinutes":60,"latePunchInAmount":0,"latePunchInRuleId":null,"isLate":true,"date":"2026-05-01","status":"present","punchedInAt":"2026-05-01T06:30:00.000Z"},{"id":4574,"userId":63,"orgAccountId":10,"latePunchInMinutes":60,"latePunchInAmount":40,"latePunchInRuleId":6,"isLate":true,"date":"2026-05-05","status":"present","punchedInAt":"2026-05-05T06:30:00.000Z"}]}
+[2026-05-20T13:18:31.726Z] [User 64] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0,"lateDetails":[]}
+[2026-05-20T13:18:36.365Z] [User 65] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0,"lateDetails":[]}
+[2026-05-20T13:18:40.646Z] [User 68] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0,"lateDetails":[]}
+[2026-05-20T13:18:44.770Z] [User 69] calculateSalary (Existing): lpResult: {"latePunchInMinutes":-2287,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":2,"lateDetails":[{"id":14808,"userId":69,"orgAccountId":10,"latePunchInMinutes":270,"latePunchInAmount":0,"latePunchInRuleId":null,"isLate":true,"date":"2026-05-16","status":"PRESENT","punchedInAt":"2026-05-16T10:00:00.000Z"},{"id":18221,"userId":69,"orgAccountId":10,"latePunchInMinutes":269,"latePunchInAmount":0,"latePunchInRuleId":null,"isLate":true,"date":"2026-05-19","status":"PRESENT","punchedInAt":"2026-05-19T09:59:00.000Z"}]}
+[2026-05-20T13:19:19.076Z] [User 107] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0,"lateDetails":[]}
+[2026-05-20T13:19:21.529Z] [User 108] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0,"lateDetails":[]}
+[2026-05-20T13:19:24.092Z] [User 109] calculateSalary (Existing): lpResult: {"latePunchInMinutes":-31,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":1,"lateDetails":[{"id":18630,"userId":109,"orgAccountId":10,"latePunchInMinutes":89,"latePunchInAmount":0,"latePunchInRuleId":null,"isLate":false,"date":"2026-05-20","status":null,"punchedInAt":"2026-05-20T06:59:24.000Z"}]}
+[2026-05-20T13:19:26.711Z] [User 142] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0,"lateDetails":[]}
+[2026-05-20T13:20:06.224Z] [Late-Dbg] User 57 Final: LateCount=1, Amt=0, Days=0
+[Admin-Bonus] SKIP: User 57, Rule Active=true, RuleMonth=2026-04, TargetMonth=2026-05
+[2026-05-20T13:20:06.541Z] [Late-Dbg] User 58 Final: LateCount=0, Amt=0, Days=0
+[Admin-Bonus] SKIP: User 58, Rule Active=true, RuleMonth=2026-04, TargetMonth=2026-05
+[2026-05-20T13:20:06.656Z] [Late-Dbg] User 59 Final: LateCount=2, Amt=1129.03, Days=1
+[2026-05-20T13:20:06.839Z] [Late-Dbg] User 61 Final: LateCount=0, Amt=0, Days=0
+[2026-05-20T13:20:06.926Z] [Late-Dbg] User 62 Final: LateCount=0, Amt=0, Days=0
+[2026-05-20T13:20:07.104Z] [Late-Dbg] User 63 Final: LateCount=2, Amt=40, Days=0.04
+[2026-05-20T13:20:07.298Z] [Late-Dbg] User 64 Final: LateCount=0, Amt=0, Days=0
+[2026-05-20T13:20:07.406Z] [Late-Dbg] User 65 Final: LateCount=0, Amt=0, Days=0
+[2026-05-20T13:20:07.555Z] [Late-Dbg] User 68 Final: LateCount=0, Amt=0, Days=0
+[2026-05-20T13:20:07.854Z] [Late-Dbg] User 69 Final: LateCount=2, Amt=0, Days=0
+[2026-05-20T13:20:08.417Z] [Late-Dbg] User 70 Final: LateCount=0, Amt=0, Days=0
+[2026-05-20T13:20:08.506Z] [Late-Dbg] User 98 Final: LateCount=0, Amt=0, Days=0
+[2026-05-20T13:20:08.595Z] [Late-Dbg] User 99 Final: LateCount=0, Amt=0, Days=0
+[2026-05-20T13:20:08.689Z] [Late-Dbg] User 100 Final: LateCount=0, Amt=0, Days=0
+[2026-05-20T13:20:08.782Z] [Late-Dbg] User 101 Final: LateCount=0, Amt=0, Days=0
+[2026-05-20T13:20:08.871Z] [Late-Dbg] User 102 Final: LateCount=0, Amt=0, Days=0
+[2026-05-20T13:20:08.959Z] [Late-Dbg] User 103 Final: LateCount=0, Amt=0, Days=0
+[2026-05-20T13:20:09.128Z] [Late-Dbg] User 104 Final: LateCount=0, Amt=0, Days=0
+[2026-05-20T13:20:09.211Z] [Late-Dbg] User 105 Final: LateCount=0, Amt=0, Days=0
+[2026-05-20T13:20:09.273Z] [Late-Dbg] User 106 Final: LateCount=0, Amt=0, Days=0
+[2026-05-20T13:20:09.359Z] [Late-Dbg] User 107 Final: LateCount=0, Amt=0, Days=0
+[2026-05-20T13:20:09.430Z] [Late-Dbg] User 108 Final: LateCount=0, Amt=0, Days=0
+[2026-05-20T13:20:09.555Z] [Late-Dbg] User 109 Final: LateCount=1, Amt=0, Days=0
+[2026-05-20T13:20:09.758Z] [Late-Dbg] User 142 Final: LateCount=0, Amt=0, Days=0
+[2026-05-20T13:20:12.435Z] [User 70] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0,"lateDetails":[]}
+[2026-05-20T13:20:15.477Z] [User 98] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0,"lateDetails":[]}
+[2026-05-20T13:20:17.950Z] [User 103] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0,"lateDetails":[]}
+[2026-05-21T05:36:19.003Z] [Late-Dbg] User 57 Final: LateCount=1, Amt=0, Days=0
+[Admin-Bonus] SKIP: User 57, Rule Active=true, RuleMonth=2026-04, TargetMonth=2026-05
+[2026-05-21T05:36:19.236Z] [Late-Dbg] User 58 Final: LateCount=0, Amt=0, Days=0
+[Admin-Bonus] SKIP: User 58, Rule Active=true, RuleMonth=2026-04, TargetMonth=2026-05
+[2026-05-21T05:36:19.314Z] [Late-Dbg] User 59 Final: LateCount=2, Amt=1129.03, Days=1
+[2026-05-21T05:36:19.409Z] [Late-Dbg] User 61 Final: LateCount=0, Amt=0, Days=0
+[2026-05-21T05:36:19.454Z] [Late-Dbg] User 62 Final: LateCount=0, Amt=0, Days=0
+[2026-05-21T05:36:19.497Z] [Late-Dbg] User 63 Final: LateCount=2, Amt=40, Days=0.04
+[2026-05-21T05:36:19.547Z] [Late-Dbg] User 64 Final: LateCount=0, Amt=0, Days=0
+[2026-05-21T05:36:19.576Z] [Late-Dbg] User 65 Final: LateCount=0, Amt=0, Days=0
+[2026-05-21T05:36:19.610Z] [Late-Dbg] User 68 Final: LateCount=0, Amt=0, Days=0
+[2026-05-21T05:36:19.699Z] [Late-Dbg] User 69 Final: LateCount=3, Amt=0, Days=0
+[2026-05-21T05:36:19.895Z] [Late-Dbg] User 70 Final: LateCount=0, Amt=0, Days=0
+[2026-05-21T05:36:19.918Z] [Late-Dbg] User 98 Final: LateCount=0, Amt=0, Days=0
+[2026-05-21T05:36:19.937Z] [Late-Dbg] User 99 Final: LateCount=0, Amt=0, Days=0
+[2026-05-21T05:36:19.955Z] [Late-Dbg] User 100 Final: LateCount=0, Amt=0, Days=0
+[2026-05-21T05:36:19.974Z] [Late-Dbg] User 101 Final: LateCount=0, Amt=0, Days=0
+[2026-05-21T05:36:19.993Z] [Late-Dbg] User 102 Final: LateCount=0, Amt=0, Days=0
+[2026-05-21T05:36:20.013Z] [Late-Dbg] User 103 Final: LateCount=0, Amt=0, Days=0
+[2026-05-21T05:36:20.043Z] [Late-Dbg] User 104 Final: LateCount=0, Amt=0, Days=0
+[2026-05-21T05:36:20.077Z] [Late-Dbg] User 105 Final: LateCount=0, Amt=0, Days=0
+[2026-05-21T05:36:20.104Z] [Late-Dbg] User 106 Final: LateCount=0, Amt=0, Days=0
+[2026-05-21T05:36:20.141Z] [Late-Dbg] User 107 Final: LateCount=0, Amt=0, Days=0
+[2026-05-21T05:36:20.188Z] [Late-Dbg] User 108 Final: LateCount=0, Amt=0, Days=0
+[2026-05-21T05:36:20.245Z] [Late-Dbg] User 109 Final: LateCount=1, Amt=0, Days=0
+[2026-05-21T05:36:20.346Z] [Late-Dbg] User 142 Final: LateCount=0, Amt=0, Days=0

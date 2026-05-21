@@ -1,4 +1,5 @@
-const express = require('express');
+4
+    const express = require('express');
 const router = express.Router();
 const { SalaryTemplate } = require('../models');
 const { authRequired } = require('../middleware/auth');

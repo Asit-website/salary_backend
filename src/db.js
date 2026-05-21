@@ -27,6 +27,13 @@ async function initDb() {
     console.log('AWS Rekognition: Note on face_id column (might already exist):', err.message);
   }
 
+  // Ensure qr_punch_enabled column exists in users
+  try {
+    await sequelize.query('ALTER TABLE users ADD COLUMN qr_punch_enabled BOOLEAN NOT NULL DEFAULT TRUE');
+  } catch (err) {
+    console.log('Note on qr_punch_enabled column (might already exist):', err.message);
+  }
+
   // Ensure salary_register_enabled and other report columns exist in plans and subscriptions
   const reportCols = [
     'salary_register_enabled',

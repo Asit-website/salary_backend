@@ -161,6 +161,12 @@ module.exports = (sequelize) => {
         defaultValue: true,
         field: 'mobile_punch_enabled'
       },
+      qrPunchEnabled: {
+        type: DataTypes.BOOLEAN,
+        allowNull: false,
+        defaultValue: true,
+        field: 'qr_punch_enabled'
+      },
     },
     {
       tableName: 'users',
