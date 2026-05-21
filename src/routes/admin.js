@@ -25967,19 +25967,55 @@ router.delete('/settings/late-punchin-rules/assignments/:id', async (req, res) =
   }
 });
 
-// --- QR Attendance Configuration ---
+// --- QR Attendance Configuration & Multiple Zones ---
+
+// Helper function to load/migrate zones
+const getOrMigrateQrZones = async (orgId) => {
+  const { OrgAccount } = require('../models');
+  const org = await OrgAccount.findByPk(orgId);
+  const orgName = org?.name || 'Your Organization';
+
+  let zonesRow = await AppSetting.findOne({ where: { key: 'qr_attendance_zones', orgAccountId: orgId } });
+  let zones = [];
+
+  if (zonesRow) {
+    zones = JSON.parse(zonesRow.value);
+  } else {
+    // Check for legacy config
+    const legacyRow = await AppSetting.findOne({ where: { key: 'qr_attendance_config', orgAccountId: orgId } });
+    if (legacyRow) {
+      const legacyConfig = JSON.parse(legacyRow.value);
+      const defaultZone = {
+        id: 'zone_default',
+        name: 'Main Office',
+        token: legacyConfig.token,
+        latitude: legacyConfig.latitude != null ? Number(legacyConfig.latitude) : null,
+        longitude: legacyConfig.longitude != null ? Number(legacyConfig.longitude) : null,
+        radiusMeters: legacyConfig.radiusMeters != null ? Number(legacyConfig.radiusMeters) : 100,
+        active: legacyConfig.active !== false,
+        assignedUserIds: [], // Empty legacy list
+        createdAt: legacyConfig.generatedAt || new Date().toISOString()
+      };
+      zones = [defaultZone];
+
+      // Save new zones
+      zonesRow = await AppSetting.create({
+        key: 'qr_attendance_zones',
+        orgAccountId: orgId,
+        value: JSON.stringify(zones)
+      });
+    }
+  }
+
+  return { zones, zonesRow, orgName };
+};
+
+// GET legacy config (returns first active zone or legacy row)
 router.get('/qr-attendance/config', requireSettingsAccess, async (req, res) => {
   try {
     const orgId = requireOrg(req, res); if (!orgId) return;
-    const { OrgAccount } = require('../models');
-    const org = await OrgAccount.findByPk(orgId);
-    const orgName = org?.name || 'Your Organization';
-
-    const row = await AppSetting.findOne({ where: { key: 'qr_attendance_config', orgAccountId: orgId } });
-    if (!row) {
-      return res.json({ success: true, config: null, orgName });
-    }
-    const config = JSON.parse(row.value);
+    const { zones, orgName } = await getOrMigrateQrZones(orgId);
+    const config = zones.length > 0 ? zones[0] : null;
     return res.json({ success: true, config, orgName });
   } catch (error) {
     console.error('Error fetching QR config:', error);
@@ -25987,6 +26023,7 @@ router.get('/qr-attendance/config', requireSettingsAccess, async (req, res) => {
   }
 });
 
+// POST legacy generate (updates first zone or creates legacy row)
 router.post('/qr-attendance/generate', requireSettingsAccess, async (req, res) => {
   try {
     const orgId = requireOrg(req, res); if (!orgId) return;
@@ -25995,7 +26032,6 @@ router.post('/qr-attendance/generate', requireSettingsAccess, async (req, res) =
     const orgName = org?.name || 'Your Organization';
 
     const { latitude, longitude, radiusMeters } = req.body;
-
     const crypto = require('crypto');
     const token = crypto.randomBytes(32).toString('hex');
 
@@ -26008,19 +26044,213 @@ router.post('/qr-attendance/generate', requireSettingsAccess, async (req, res) =
       generatedAt: new Date().toISOString()
     };
 
+    // Save legacy
     const [row, created] = await AppSetting.findOrCreate({
       where: { key: 'qr_attendance_config', orgAccountId: orgId },
       defaults: { value: JSON.stringify(config) }
     });
-
     if (!created) {
       await row.update({ value: JSON.stringify(config) });
+    }
+
+    // Also update/sync to zones list
+    let zonesRow = await AppSetting.findOne({ where: { key: 'qr_attendance_zones', orgAccountId: orgId } });
+    if (zonesRow) {
+      const zones = JSON.parse(zonesRow.value);
+      if (zones.length > 0) {
+        zones[0].token = token;
+        zones[0].latitude = config.latitude;
+        zones[0].longitude = config.longitude;
+        zones[0].radiusMeters = config.radiusMeters;
+        zones[0].active = config.active;
+      } else {
+        zones.push({
+          id: 'zone_default',
+          name: 'Main Office',
+          token,
+          ...config,
+          assignedUserIds: []
+        });
+      }
+      await zonesRow.update({ value: JSON.stringify(zones) });
     }
 
     return res.json({ success: true, config, orgName });
   } catch (error) {
     console.error('Error generating QR config:', error);
     return res.status(500).json({ success: false, message: 'Failed to generate QR configuration' });
+  }
+});
+
+// GET all QR zones
+router.get('/qr-attendance/zones', requireSettingsAccess, async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
+    const { zones, orgName } = await getOrMigrateQrZones(orgId);
+    return res.json({ success: true, zones, orgName });
+  } catch (error) {
+    console.error('Error fetching QR zones:', error);
+    return res.status(500).json({ success: false, message: 'Failed to fetch QR zones' });
+  }
+});
+
+// POST create QR zone
+router.post('/qr-attendance/zones', requireSettingsAccess, async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
+    const { name, latitude, longitude, radiusMeters, active, assignedUserIds, address } = req.body;
+
+    if (!name) {
+      return res.status(400).json({ success: false, message: 'Zone name is required' });
+    }
+
+    const crypto = require('crypto');
+    const token = crypto.randomBytes(32).toString('hex');
+    const zoneId = 'zone_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
+
+    const newZone = {
+      id: zoneId,
+      name,
+      token,
+      latitude: latitude != null && latitude !== '' ? Number(latitude) : null,
+      longitude: longitude != null && longitude !== '' ? Number(longitude) : null,
+      radiusMeters: radiusMeters != null && radiusMeters !== '' ? Number(radiusMeters) : 100,
+      active: active !== false,
+      assignedUserIds: Array.isArray(assignedUserIds) ? assignedUserIds.map(Number) : [],
+      address: address !== undefined ? String(address) : '',
+      createdAt: new Date().toISOString()
+    };
+
+    let { zones, zonesRow } = await getOrMigrateQrZones(orgId);
+
+    zones.push(newZone);
+
+    if (zonesRow) {
+      await zonesRow.update({ value: JSON.stringify(zones) });
+    } else {
+      await AppSetting.create({
+        key: 'qr_attendance_zones',
+        orgAccountId: orgId,
+        value: JSON.stringify(zones)
+      });
+    }
+
+    return res.json({ success: true, zone: newZone, zones });
+  } catch (error) {
+    console.error('Error creating QR zone:', error);
+    return res.status(500).json({ success: false, message: 'Failed to create QR zone' });
+  }
+});
+
+// PUT update QR zone
+router.put('/qr-attendance/zones/:id', requireSettingsAccess, async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
+    const zoneId = req.params.id;
+    const { name, latitude, longitude, radiusMeters, active, assignedUserIds, address } = req.body;
+
+    let { zones, zonesRow } = await getOrMigrateQrZones(orgId);
+    const zoneIndex = zones.findIndex(z => z.id === zoneId);
+
+    if (zoneIndex === -1) {
+      return res.status(404).json({ success: false, message: 'QR zone not found' });
+    }
+
+    const updatedZone = {
+      ...zones[zoneIndex],
+      name: name !== undefined ? name : zones[zoneIndex].name,
+      latitude: latitude !== undefined ? (latitude != null && latitude !== '' ? Number(latitude) : null) : zones[zoneIndex].latitude,
+      longitude: longitude !== undefined ? (longitude != null && longitude !== '' ? Number(longitude) : null) : zones[zoneIndex].longitude,
+      radiusMeters: radiusMeters !== undefined ? (radiusMeters != null && radiusMeters !== '' ? Number(radiusMeters) : 100) : zones[zoneIndex].radiusMeters,
+      active: active !== undefined ? active === true : zones[zoneIndex].active,
+      assignedUserIds: assignedUserIds !== undefined ? (Array.isArray(assignedUserIds) ? assignedUserIds.map(Number) : []) : zones[zoneIndex].assignedUserIds,
+      address: address !== undefined ? String(address) : zones[zoneIndex].address,
+      updatedAt: new Date().toISOString()
+    };
+
+    zones[zoneIndex] = updatedZone;
+
+    if (zonesRow) {
+      await zonesRow.update({ value: JSON.stringify(zones) });
+    } else {
+      await AppSetting.create({
+        key: 'qr_attendance_zones',
+        orgAccountId: orgId,
+        value: JSON.stringify(zones)
+      });
+    }
+
+    return res.json({ success: true, zone: updatedZone, zones });
+  } catch (error) {
+    console.error('Error updating QR zone:', error);
+    return res.status(500).json({ success: false, message: 'Failed to update QR zone' });
+  }
+});
+
+// DELETE QR zone
+router.delete('/qr-attendance/zones/:id', requireSettingsAccess, async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
+    const zoneId = req.params.id;
+
+    let { zones, zonesRow } = await getOrMigrateQrZones(orgId);
+    const initialLength = zones.length;
+    zones = zones.filter(z => z.id !== zoneId);
+
+    if (zones.length === initialLength) {
+      return res.status(404).json({ success: false, message: 'QR zone not found' });
+    }
+
+    if (zonesRow) {
+      await zonesRow.update({ value: JSON.stringify(zones) });
+    } else {
+      await AppSetting.create({
+        key: 'qr_attendance_zones',
+        orgAccountId: orgId,
+        value: JSON.stringify(zones)
+      });
+    }
+
+    return res.json({ success: true, message: 'QR zone deleted successfully', zones });
+  } catch (error) {
+    console.error('Error deleting QR zone:', error);
+    return res.status(500).json({ success: false, message: 'Failed to delete QR zone' });
+  }
+});
+
+// POST regenerate QR zone token
+router.post('/qr-attendance/zones/:id/regenerate', requireSettingsAccess, async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
+    const zoneId = req.params.id;
+
+    let { zones, zonesRow } = await getOrMigrateQrZones(orgId);
+    const zoneIndex = zones.findIndex(z => z.id === zoneId);
+
+    if (zoneIndex === -1) {
+      return res.status(404).json({ success: false, message: 'QR zone not found' });
+    }
+
+    const crypto = require('crypto');
+    const newToken = crypto.randomBytes(32).toString('hex');
+
+    zones[zoneIndex].token = newToken;
+    zones[zoneIndex].updatedAt = new Date().toISOString();
+
+    if (zonesRow) {
+      await zonesRow.update({ value: JSON.stringify(zones) });
+    } else {
+      await AppSetting.create({
+        key: 'qr_attendance_zones',
+        orgAccountId: orgId,
+        value: JSON.stringify(zones)
+      });
+    }
+
+    return res.json({ success: true, zone: zones[zoneIndex], zones });
+  } catch (error) {
+    console.error('Error regenerating QR zone token:', error);
+    return res.status(500).json({ success: false, message: 'Failed to regenerate QR zone token' });
   }
 });
 

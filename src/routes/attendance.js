@@ -441,6 +441,26 @@ router.get('/status', async (req, res) => {
   const qrPunchAccess = await getQrPunchRestriction(userId, req.user.orgAccountId);
   const qrPunchRestricted = qrPunchAccess.restricted;
 
+  // Verify staff QR zone assignment
+  let isQrZoneAssigned = true;
+  try {
+    const zonesRow = await AppSetting.findOne({ where: { key: 'qr_attendance_zones', orgAccountId: req.user.orgAccountId } });
+    if (zonesRow) {
+      const zones = JSON.parse(zonesRow.value);
+      const activeZones = zones.filter(z => z.active !== false);
+      if (activeZones.length > 0) {
+        const canPunchAny = activeZones.some(z => {
+          const isDefaultWithoutAssignments = z.id === 'zone_default' && (!z.assignedUserIds || z.assignedUserIds.length === 0);
+          if (isDefaultWithoutAssignments) return true;
+          return Array.isArray(z.assignedUserIds) && z.assignedUserIds.map(Number).includes(Number(userId));
+        });
+        isQrZoneAssigned = canPunchAny;
+      }
+    }
+  } catch (_) {
+    isQrZoneAssigned = true;
+  }
+
   const now = new Date();
 
   const isApprovedLeave = await hasApprovedLeave(userId, effectiveKey);
@@ -475,7 +495,7 @@ router.get('/status', async (req, res) => {
         status: {
           date: effectiveKey, punchedInAt: null, punchedOutAt: null, punchInPhotoUrl: null, punchOutPhotoUrl: null,
           isOnBreak: false, breakStartedAt: null, breakSeconds: 0, workingSeconds: 0, overtimeSeconds: 0,
-          requiredWorkSeconds: REQUIRED_WORK_SECONDS, dayStatus: 'HOLIDAY', mobilePunchRestricted, qrPunchRestricted,
+          requiredWorkSeconds: REQUIRED_WORK_SECONDS, dayStatus: 'HOLIDAY', mobilePunchRestricted, qrPunchRestricted, isQrZoneAssigned,
         },
       });
     }
@@ -485,7 +505,7 @@ router.get('/status', async (req, res) => {
         status: {
           date: effectiveKey, punchedInAt: null, punchedOutAt: null, punchInPhotoUrl: null, punchOutPhotoUrl: null,
           isOnBreak: false, breakStartedAt: null, breakSeconds: 0, workingSeconds: 0, overtimeSeconds: 0,
-          requiredWorkSeconds: REQUIRED_WORK_SECONDS, dayStatus: 'WEEKLY_OFF', mobilePunchRestricted, qrPunchRestricted,
+          requiredWorkSeconds: REQUIRED_WORK_SECONDS, dayStatus: 'WEEKLY_OFF', mobilePunchRestricted, qrPunchRestricted, isQrZoneAssigned,
         },
       });
     }
@@ -495,7 +515,7 @@ router.get('/status', async (req, res) => {
         status: {
           date: effectiveKey, punchedInAt: null, punchedOutAt: null, punchInPhotoUrl: null, punchOutPhotoUrl: null,
           isOnBreak: false, breakStartedAt: null, breakSeconds: 0, workingSeconds: 0, overtimeSeconds: 0,
-          requiredWorkSeconds: REQUIRED_WORK_SECONDS, dayStatus: 'LEAVE', mobilePunchRestricted, qrPunchRestricted,
+          requiredWorkSeconds: REQUIRED_WORK_SECONDS, dayStatus: 'LEAVE', mobilePunchRestricted, qrPunchRestricted, isQrZoneAssigned,
         },
       });
     }
@@ -516,7 +536,7 @@ router.get('/status', async (req, res) => {
       status: {
         date: key, punchedInAt: null, punchedOutAt: null, punchInPhotoUrl: null, punchOutPhotoUrl: null,
         isOnBreak: false, breakStartedAt: null, breakSeconds: 0, workingSeconds: 0, overtimeSeconds: 0,
-        requiredWorkSeconds: REQUIRED_WORK_SECONDS, dayStatus: 'LEAVE', mobilePunchRestricted, qrPunchRestricted,
+        requiredWorkSeconds: REQUIRED_WORK_SECONDS, dayStatus: 'LEAVE', mobilePunchRestricted, qrPunchRestricted, isQrZoneAssigned,
       },
     });
   }
@@ -635,6 +655,7 @@ router.get('/status', async (req, res) => {
       } : null,
       mobilePunchRestricted,
       qrPunchRestricted,
+      isQrZoneAssigned,
     },
   });
 });
@@ -2123,31 +2144,63 @@ router.post('/qr-punch', upload.single('photo'), async (req, res) => {
       return res.status(400).json({ success: false, message: 'QR token is required' });
     }
 
-    // Fetch QR config
-    const qrRow = await AppSetting.findOne({ where: { key: 'qr_attendance_config', orgAccountId: req.user.orgAccountId } });
-    if (!qrRow) {
-      return res.status(404).json({ success: false, message: 'QR attendance is not configured for your organization.' });
+    // Fetch QR config (zones array first, then fallback to single config)
+    let matchedZone = null;
+    
+    const zonesRow = await AppSetting.findOne({ where: { key: 'qr_attendance_zones', orgAccountId: req.user.orgAccountId } });
+    if (zonesRow) {
+      const zones = JSON.parse(zonesRow.value);
+      matchedZone = zones.find(z => z.token === token);
     }
-    const qrConfig = JSON.parse(qrRow.value);
-    if (!qrConfig.active) {
-      return res.status(400).json({ success: false, message: 'QR attendance config is inactive.' });
+    
+    if (!matchedZone) {
+      // Fallback/Migration check
+      const legacyRow = await AppSetting.findOne({ where: { key: 'qr_attendance_config', orgAccountId: req.user.orgAccountId } });
+      if (legacyRow) {
+        const legacyConfig = JSON.parse(legacyRow.value);
+        if (legacyConfig.token === token) {
+          // Convert legacy to a zone structure for verification
+          matchedZone = {
+            id: 'zone_default',
+            name: 'Main Office',
+            token: legacyConfig.token,
+            latitude: legacyConfig.latitude != null ? Number(legacyConfig.latitude) : null,
+            longitude: legacyConfig.longitude != null ? Number(legacyConfig.longitude) : null,
+            radiusMeters: legacyConfig.radiusMeters != null ? Number(legacyConfig.radiusMeters) : 100,
+            active: legacyConfig.active !== false,
+            assignedUserIds: [] // Legacy has no user assignment restrictions initially
+          };
+        }
+      }
     }
 
-    // Verify token
-    if (token !== qrConfig.token) {
+    if (!matchedZone) {
       return res.status(400).json({ success: false, message: 'Invalid or expired QR token.' });
+    }
+
+    if (!matchedZone.active) {
+      return res.status(400).json({ success: false, message: 'QR attendance zone is inactive.' });
+    }
+
+    // Verify staff assignment: jo qr jo staff ko denge vo usi mai attendence kar payega
+    const isDefaultZoneWithoutAssignments = matchedZone.id === 'zone_default' && (!matchedZone.assignedUserIds || matchedZone.assignedUserIds.length === 0);
+    if (!isDefaultZoneWithoutAssignments) {
+      const isAssigned = Array.isArray(matchedZone.assignedUserIds) && matchedZone.assignedUserIds.map(Number).includes(Number(req.user.id));
+      if (!isAssigned) {
+        return res.status(403).json({ success: false, message: `You are not assigned to this QR zone (${matchedZone.name}).` });
+      }
     }
 
     const lat = Number(req.body?.lat ?? req.body?.latitude);
     const lng = Number(req.body?.lng ?? req.body?.longitude);
 
     // Verify coordinates if configured
-    if (qrConfig.latitude != null && qrConfig.longitude != null) {
+    if (matchedZone.latitude != null && matchedZone.longitude != null) {
       if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
         return res.status(400).json({ success: false, message: 'Location is required for QR attendance.' });
       }
-      const dist = haversineMeters(lat, lng, Number(qrConfig.latitude), Number(qrConfig.longitude));
-      const allowedRadius = Number(qrConfig.radiusMeters || 100);
+      const dist = haversineMeters(lat, lng, Number(matchedZone.latitude), Number(matchedZone.longitude));
+      const allowedRadius = Number(matchedZone.radiusMeters || 100);
       if (dist > allowedRadius) {
         return res.status(403).json({
           success: false,
