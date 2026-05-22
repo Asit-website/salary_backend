@@ -11643,7 +11643,7 @@ router.get('/attendance', async (req, res) => {
           as: 'user',
           attributes: ['id', 'shiftTemplateId'],
           include: [
-            { model: StaffProfile, as: 'profile', attributes: ['name', 'staffId', 'department', 'phone', 'shiftSelection'] },
+            { model: StaffProfile, as: 'profile', attributes: ['name', 'staffId', 'department', 'phone', 'shiftSelection', 'workLocation'] },
             {
               model: Role,
               as: 'roles',
@@ -11890,7 +11890,8 @@ router.get('/attendance', async (req, res) => {
         staffProfile: {
           staffId: r.user?.profile?.staffId || null,
           department: r.user?.profile?.department || null,
-          phone: r.user?.profile?.phone || null
+          phone: r.user?.profile?.phone || null,
+          workLocation: r.user?.profile?.workLocation || null
         },
 
         // Location data
@@ -25028,7 +25029,13 @@ router.get('/staff/:id/attendance-overview', async (req, res) => {
           status = 'present';
           stats.present++;
         }
+      }
+      else {
+        if (isPast) stats.absent++;
+        else status = 'scheduled';
+      }
 
+      if (att) {
         // Resolve shift for this day
         const dDateStr = dayjs(dateStr).format('YYYY-MM-DD');
         // 1. Roster
@@ -25107,10 +25114,6 @@ router.get('/staff/:id/attendance-overview', async (req, res) => {
           isLate,
           source: att.source || 'mobile'
         };
-      }
-      else {
-        if (isPast) stats.absent++;
-        else status = 'scheduled';
       }
 
       dailyData.push({ date: dateStr, day: dayjs(jsDate).format('ddd'), status, ...info });
