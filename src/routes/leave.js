@@ -436,19 +436,24 @@ router.get('/', requireRole(['admin', 'superadmin']), async (req, res) => {
       order: [['createdAt', 'DESC']],
     });
 
-    // We might want to resolve category names if needed, but profiles are most important now.
-    const leaves = rows.map((r) => {
+    const leaves = await Promise.all(rows.map(async (r) => {
       const it = r.toJSON ? r.toJSON() : r;
       let paid = it.paidDays;
       let unpaid = it.unpaidDays;
+      let categoryName = null;
       if (it.status === 'APPROVED' && (paid == null && unpaid == null)) {
         const isUnpaid = String(it.categoryKey || 'unpaid').toLowerCase() === 'unpaid';
         const days = Number(it.days || 0) || 0;
         paid = isUnpaid ? 0 : days;
         unpaid = isUnpaid ? days : 0;
       }
-      return { ...it, paidDays: Number(paid || 0), unpaidDays: Number(unpaid || 0) };
-    });
+      if (it.categoryKey) {
+        const tpl = await getActiveLeaveTemplateForUser(it.userId, String(it.startDate));
+        const category = (tpl?.categories || []).find(c => String(c.key).toLowerCase() === String(it.categoryKey).toLowerCase());
+        categoryName = category?.name || null;
+      }
+      return { ...it, categoryName, paidDays: Number(paid || 0), unpaidDays: Number(unpaid || 0) };
+    }));
     return res.json({ success: true, leaves });
   } catch (e) {
     return res.status(500).json({ success: false, message: 'Failed to load leaves' });

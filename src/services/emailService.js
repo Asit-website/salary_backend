@@ -7,7 +7,7 @@ const emailConfig = {
   secure: process.env.SMTP_SECURE === 'true', // true for 465 (SSL), false for other ports
   auth: {
     user: process.env.SMTP_USER || 'info@vetansutra.com',
-    pass: process.env.SMTP_PASS || 'Fzc]I~V]m(.9'
+    pass: process.env.SMTP_PASS || 'Y9Li3TPJn%2_'
   }
 };
 

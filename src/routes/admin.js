@@ -14714,9 +14714,21 @@ router.get('/dashboard', async (req, res) => {
       }
     });
 
-    const leaveToday = await Attendance.count({
-      where: { date: today, status: 'leave', userId: orgStaffIds }
+    // Count from Attendance table (manually marked leave)
+    const leaveTodayAttendance = await Attendance.count({
+      where: { date: today, status: { [Op.in]: ['leave', 'on_leave'] }, userId: orgStaffIds }
     });
+    // Count from LeaveRequest table (approved leave covering today)
+    const leaveTodayRequests = await LeaveRequest.count({
+      where: {
+        userId: { [Op.in]: orgStaffIds },
+        status: 'APPROVED',
+        startDate: { [Op.lte]: today },
+        endDate: { [Op.gte]: today },
+      }
+    });
+    // Take the max to avoid double-counting (some records may exist in both)
+    const leaveToday = Math.max(leaveTodayAttendance, leaveTodayRequests);
 
     // Get today's late arrivals (based on shift start time or 11:00 AM default)
     const todayAttendance = await Attendance.findAll({
@@ -14738,8 +14750,8 @@ router.get('/dashboard', async (req, res) => {
       ]
     });
 
-    // Use lateArrival flag set by automation rule during check-in
-    const lateArrivals = todayAttendance.filter(att => !!att.lateArrival).length;
+    // Use isLate or latePunchInMinutes set during check-in
+    const lateArrivals = todayAttendance.filter(att => att.isLate || Number(att.latePunchInMinutes) > 0).length;
 
     // Get total salary for active staff (Expected Monthly Payout)
     const staffWithSalary = await User.findAll({
@@ -14775,14 +14787,14 @@ router.get('/dashboard', async (req, res) => {
       success: true,
       data: {
         totalStaff,
+        activeStaff,
         presentToday,
         lateArrivals,
         leaveToday,
-        absentToday: Math.max(0, activeStaff - presentToday),
+        absentToday: Math.max(0, activeStaff - presentToday - leaveToday),
         totalSalary: expectedMonthlyPayout,
         expectedMonthlyPayout,
         dailyWagesPayout: Number(dailyWagesPayout.toFixed(2)),
-        activeStaff
       }
     });
   } catch (error) {
@@ -14816,9 +14828,21 @@ router.get('/dashboard/stats', async (req, res) => {
       }
     });
 
-    const leaveToday = await Attendance.count({
-      where: { date: today, status: 'leave', userId: orgStaffIds }
+    // Count from Attendance table (manually marked leave)
+    const leaveTodayAttendance = await Attendance.count({
+      where: { date: today, status: { [Op.in]: ['leave', 'on_leave'] }, userId: orgStaffIds }
     });
+    // Count from LeaveRequest table (approved leave covering today)
+    const leaveTodayRequests = await LeaveRequest.count({
+      where: {
+        userId: { [Op.in]: orgStaffIds },
+        status: 'APPROVED',
+        startDate: { [Op.lte]: today },
+        endDate: { [Op.gte]: today },
+      }
+    });
+    // Take the max to avoid double-counting (some records may exist in both)
+    const leaveToday = Math.max(leaveTodayAttendance, leaveTodayRequests);
 
     // Get today's late arrivals (based on shift start time or 11:00 AM default)
 
@@ -14858,41 +14882,7 @@ router.get('/dashboard/stats', async (req, res) => {
 
     });
 
-    const lateArrivals = todayAttendance.filter(att => {
-
-      if (!att.punchedInAt) return false;
-
-      const punchInTime = new Date(att.punchedInAt);
-
-      const punchInHour = punchInTime.getHours();
-
-      const punchInMinute = punchInTime.getMinutes();
-
-      const totalPunchInMinutes = punchInHour * 60 + punchInMinute;
-
-      // Check if user has assigned shift
-
-      if (att.user && att.user.shiftTemplate && att.user.shiftTemplate.startTime) {
-
-        const shiftStartTime = att.user.shiftTemplate.startTime; // Format: "HH:MM"
-
-        const [shiftHour, shiftMinute] = shiftStartTime.split(':').map(Number);
-
-        const shiftStartMinutes = shiftHour * 60 + shiftMinute;
-
-        // Late if punch-in after shift start time
-
-        return totalPunchInMinutes > shiftStartMinutes;
-
-      } else {
-
-        // No shift assigned - late if after 11:00 AM
-
-        return totalPunchInMinutes >= (11 * 60); // 11:00 AM = 660 minutes
-
-      }
-
-    }).length;
+    const lateArrivals = todayAttendance.filter(att => att.isLate || Number(att.latePunchInMinutes) > 0).length;
 
 
 
@@ -15164,8 +15154,8 @@ router.get('/dashboard/late-arrivals', async (req, res) => {
 
 
 
-    // Use lateArrival flag set by automation rule during check-in
-    const lateArrivals = todayAttendance.filter(att => !!att.lateArrival).length;
+    // Use isLate or latePunchInMinutes set during check-in
+    const lateArrivals = todayAttendance.filter(att => att.isLate || Number(att.latePunchInMinutes) > 0).length;
 
 
 
@@ -18383,7 +18373,7 @@ router.get('/reports/org-attendance', async (req, res) => {
 
           status: att.status || 'N/A',
 
-          lateArrival: att.lateArrival ? 'Yes' : 'No'
+          lateArrival: (att.isLate || Number(att.latePunchInMinutes) > 0) ? 'Yes' : 'No'
 
         });
 
@@ -25058,7 +25048,7 @@ router.get('/staff/:id/attendance-overview', async (req, res) => {
         if (!shiftTpl && user.shiftTemplateId) shiftTpl = await ShiftTemplate.findByPk(user.shiftTemplateId);
         if (!shiftTpl && user.profile?.shiftSelection) shiftTpl = await ShiftTemplate.findByPk(user.profile.shiftSelection);
 
-        let isLate = !!att.lateArrival;
+        let isLate = att.isLate || Number(att.latePunchInMinutes) > 0;
         let lateMinutes = 0;
         let earlyExitMinutes = 0;
 

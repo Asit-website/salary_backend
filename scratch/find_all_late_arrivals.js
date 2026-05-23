@@ -1,0 +1,29 @@
+const fs = require('fs');
+const path = require('path');
+
+const srcDir = path.join(__dirname, '..', 'src');
+
+function scanDir(dir) {
+  const files = fs.readdirSync(dir);
+  for (const file of files) {
+    const fullPath = path.join(dir, file);
+    const stat = fs.statSync(fullPath);
+    if (stat.isDirectory()) {
+      scanDir(fullPath);
+    } else if (file.endsWith('.js')) {
+      const content = fs.readFileSync(fullPath, 'utf8');
+      if (content.includes('lateArrival')) {
+        // Print lines containing lateArrival
+        const lines = content.split('\n');
+        lines.forEach((line, index) => {
+          if (line.includes('lateArrival')) {
+            const relPath = path.relative(srcDir, fullPath);
+            console.log(`${relPath}:${index + 1}: ${line.trim()}`);
+          }
+        });
+      }
+    }
+  }
+}
+
+scanDir(srcDir);
