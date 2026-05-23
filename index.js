@@ -35,6 +35,7 @@ const { verifyEmailConfig } = require('./src/services/emailService');
 const superadminMailRoutes = require('./src/routes/superadminMail');
 const recruitmentRoutes = require('./src/routes/recruitment');
 const socialRoutes = require('./src/routes/social');
+const notificationRoutes = require('./src/routes/notification');
 
 
 
@@ -113,6 +114,7 @@ app.use('/admin/user-access', userAccessRoutes);
 app.use('/admin/task-management', taskManagementRoutes);
 app.use('/admin/recruitment', recruitmentRoutes);
 app.use('/admin/social', socialRoutes);
+app.use('/admin/notifications', notificationRoutes);
 app.use('/channel-partner', channelPartnerRoutes);
 app.use(rosterRoutes);
 app.use('/admin/ai', aiRoutes);

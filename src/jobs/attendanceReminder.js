@@ -4,7 +4,7 @@ const {
     User, StaffProfile, Attendance, OrgAccount,
     WeeklyOffTemplate, StaffWeeklyOffAssignment,
     HolidayDate, StaffHolidayAssignment,
-    LeaveRequest, AppSetting, sequelize
+    LeaveRequest, AppSetting, Notification, sequelize
 } = require('../models');
 
 //this is job function for resdule missing attendanc
@@ -84,6 +84,18 @@ async function checkMissingAttendanceAndNotify() {
 
                 // If we reach here, attendance is missing on a workday
                 console.log(`[ATTENDANCE REMINDER] Missing attendance detected for ${name} (${phone}) on ${yesterday}`);
+
+                try {
+                  await Notification.create({
+                    orgAccountId: org.id,
+                    title: 'Missing Attendance',
+                    message: `${name} did not mark attendance for yesterday (${yesterday}).`,
+                    type: 'missing_attendance',
+                    isRead: false
+                  });
+                } catch (notifErr) {
+                  console.error('[ATTENDANCE REMINDER] Failed to create in-app notification:', notifErr);
+                }
 
                 const bizName = org.name || 'Business';
                 const d = new Date(yesterday);

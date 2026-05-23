@@ -21,13 +21,13 @@ async function checkMissingCheckoutAndNotify() {
                 continue; // Skip if org doesn't have an email
             }
 
-            // Find attendances for yesterday where checkInTime is present but checkOutTime is missing
+            // Find attendances for yesterday where punchedInAt is present but punchedOutAt is missing
             const missingAttendances = await Attendance.findAll({
                 where: {
                     orgAccountId: org.id,
                     date: yesterday,
-                    checkInTime: { [Op.not]: null },
-                    checkOutTime: null
+                    punchedInAt: { [Op.not]: null },
+                    punchedOutAt: null
                 },
                 include: [
                     {

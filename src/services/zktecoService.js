@@ -203,6 +203,57 @@ class ZktecoService {
                 punchedInAt: firstIn
             }, orgAccountObj, daysInMonth, new Date(date));
 
+            if (lpResult && lpResult.isLate) {
+              try {
+                const { Notification, User, StaffProfile } = require('../models');
+                const { Op } = require('sequelize');
+                const staffUser = await User.findByPk(userId, { include: [{ model: StaffProfile, as: 'profile' }] });
+                const staffName = staffUser?.profile?.name || staffUser?.name || 'Staff';
+
+                const startOfToday = new Date();
+                startOfToday.setHours(0, 0, 0, 0);
+                const endOfToday = new Date();
+                endOfToday.setHours(23, 59, 59, 999);
+
+                const existingNotif = await Notification.findOne({
+                  where: {
+                    orgAccountId: staff.orgAccountId,
+                    type: 'late',
+                    message: {
+                      [Op.and]: [
+                        { [Op.like]: `%${staffName}%` },
+                        { [Op.like]: `%checked in late%` }
+                      ]
+                    },
+                    createdAt: {
+                      [Op.between]: [startOfToday, endOfToday]
+                    }
+                  }
+                });
+
+                const newTitle = 'Late Punch-in Alert (Biometric)';
+                const newMessage = `${staffName} has checked in late via Biometric (ZKTeco) today by ${lpResult.latePunchInMinutes} minutes.`;
+
+                if (existingNotif) {
+                  await existingNotif.update({
+                    title: newTitle,
+                    message: newMessage,
+                    isRead: false
+                  });
+                } else {
+                  await Notification.create({
+                    orgAccountId: staff.orgAccountId,
+                    title: newTitle,
+                    message: newMessage,
+                    type: 'late',
+                    isRead: false
+                  });
+                }
+              } catch (notifErr) {
+                console.error('[NOTIFICATION] Failed to create biometric late notification:', notifErr.message);
+              }
+            }
+
             // 5. Break Deduction Calculation
             const breakService = require('./breakService');
             // Construct a virtual attendance record for break calculation

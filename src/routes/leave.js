@@ -1,7 +1,7 @@
 const express = require('express');
 const { Op } = require('sequelize');
 
-const { LeaveRequest, User, StaffProfile, StaffLeaveAssignment, LeaveTemplate, LeaveTemplateCategory, LeaveBalance, LeaveEncashment, OrgAccount, StaffWeeklyOffAssignment, WeeklyOffTemplate, StaffHolidayAssignment, HolidayTemplate, HolidayDate } = require('../models');
+const { LeaveRequest, User, StaffProfile, StaffLeaveAssignment, LeaveTemplate, LeaveTemplateCategory, LeaveBalance, LeaveEncashment, OrgAccount, StaffWeeklyOffAssignment, WeeklyOffTemplate, StaffHolidayAssignment, HolidayTemplate, HolidayDate, Notification } = require('../models');
 const { authRequired } = require('../middleware/auth');
 const { requireRole } = require('../middleware/roles');
 const { tenantEnforce } = require('../middleware/tenant');
@@ -302,6 +302,25 @@ router.post('/', requireRole(['staff', 'admin', 'superadmin']), async (req, res)
       paidDays,
       unpaidDays
     });
+
+    if (finalStatus === 'PENDING') {
+      try {
+        const staffUser = await User.findOne({
+          where: { id: userId },
+          include: [{ model: StaffProfile, as: 'profile', attributes: ['name'] }]
+        });
+        const staffName = staffUser?.profile?.name || 'A staff member';
+        await Notification.create({
+          orgAccountId: req.tenantOrgAccountId,
+          title: 'New Leave Request',
+          message: `${staffName} has applied for leave from ${startDate} to ${endDate} (${days} days) for ${leaveType}.`,
+          type: 'leave_request',
+          isRead: false
+        });
+      } catch (err) {
+        console.error('Failed to create leave request notification:', err);
+      }
+    }
 
     return res.json({ success: true, leave: lr });
   } catch (e) {

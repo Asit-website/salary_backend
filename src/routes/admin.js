@@ -8965,11 +8965,15 @@ router.put('/staff/:id/salary', async (req, res) => {
       current = { earnings: baseE, incentives: {}, deductions: baseD };
     }
 
+    // Normalize key to snake_case: 'BASIC SALARY' -> 'basic_salary'
+    const toSnakeKey = (s) => (s || '').toString().trim().toLowerCase().replace(/[\s]+/g, '_').replace(/[^a-z0-9_]/g, '');
+
     const normalize = (src) => {
       if (Array.isArray(src)) {
         const out = {};
         src.forEach((it) => {
-          const k = (it?.name || it?.key || '').toString().trim();
+          const rawK = (it?.name || it?.key || '').toString().trim();
+          const k = toSnakeKey(rawK);
           if (!k) return;
           const n = it?.amount ?? it?.valueNumber ?? it?.value;
           const v = n === undefined || n === null || n === '' ? 0 : parseFloat(n);
@@ -8979,8 +8983,10 @@ router.put('/staff/:id/salary', async (req, res) => {
       }
       if (src && typeof src === 'object') {
         const out = {};
-        Object.keys(src).forEach((k) => {
-          const n = src[k];
+        Object.keys(src).forEach((rawK) => {
+          const k = toSnakeKey(rawK);
+          if (!k) return;
+          const n = src[rawK];
           const v = n === undefined || n === null || n === '' ? 0 : parseFloat(n);
           out[k] = Number.isFinite(v) ? v : 0;
         });
@@ -8989,14 +8995,86 @@ router.put('/staff/:id/salary', async (req, res) => {
       return {};
     };
 
+    // Also normalize existing stored keys to clean up any old uppercase/spaced keys
+    const normalizeStored = (obj) => {
+      if (!obj || typeof obj !== 'object') return {};
+      const out = {};
+      for (const k of Object.keys(obj)) {
+        const nk = toSnakeKey(k);
+        if (nk) out[nk] = Number.isFinite(parseFloat(obj[k])) ? parseFloat(obj[k]) : 0;
+      }
+      return out;
+    };
+    if (current.earnings) current.earnings = normalizeStored(current.earnings);
+    if (current.deductions) current.deductions = normalizeStored(current.deductions);
+    if (current.incentives) current.incentives = normalizeStored(current.incentives);
+
     const incomingE = normalize(salaryValues.earnings || {});
     const incomingD = normalize(salaryValues.deductions || {});
-    const merged = {
-      earnings: { ...(current.earnings || {}), ...incomingE },
-      deductions: { ...(current.deductions || {}), ...incomingD },
+    const incomingI = normalize(salaryValues.incentives || {});
+
+    // monthKey present => month-wise update (merge OK); no monthKey => base structure REPLACE (no merge)
+    const { monthKey } = req.body || {};
+    let finalE, finalD, finalI;
+    if (monthKey) {
+      // Month-wise: merge with existing month data
+      const prevMonth = (current.months && current.months[monthKey]) || {};
+      finalE = Object.keys(incomingE).length > 0 ? incomingE : normalizeStored(prevMonth.earnings || current.earnings || {});
+      finalD = Object.keys(incomingD).length > 0 ? incomingD : normalizeStored(prevMonth.deductions || current.deductions || {});
+      finalI = Object.keys(incomingI).length > 0 ? incomingI : normalizeStored(prevMonth.incentives || current.incentives || {});
+      if (!current.months || typeof current.months !== 'object') current.months = {};
+      const totalE = Object.values(finalE).reduce((s, v) => s + v, 0);
+      const totalD = Object.values(finalD).reduce((s, v) => s + v, 0);
+      const totalI = Object.values(finalI).reduce((s, v) => s + v, 0);
+      current.months[monthKey] = { earnings: finalE, deductions: finalD, incentives: finalI, totals: { totalEarnings: totalE, totalDeductions: totalD, totalIncentives: totalI, grossSalary: totalE + totalI, netSalary: totalE + totalI - totalD } };
+      current.lastUpdatedMonth = monthKey;
+    } else {
+      // Base salary structure: REPLACE entirely (do NOT merge/spread old keys)
+      finalE = Object.keys(incomingE).length > 0 ? incomingE : current.earnings || {};
+      finalD = Object.keys(incomingD).length > 0 ? incomingD : current.deductions || {};
+      finalI = Object.keys(incomingI).length > 0 ? incomingI : current.incentives || {};
+      current.earnings = finalE;
+      current.deductions = finalD;
+      current.incentives = finalI;
+    }
+
+    const totalEarnings = Object.values(finalE || {}).reduce((s, v) => s + v, 0);
+    const totalDeductions = Object.values(finalD || {}).reduce((s, v) => s + v, 0);
+    const totalIncentives = Object.values(finalI || {}).reduce((s, v) => s + v, 0);
+    const grossSalary = totalEarnings + totalIncentives;
+    const netSalary = grossSalary - totalDeductions;
+
+    const updatePatch = {
+      salaryValues: JSON.stringify(current),
+      salary_values: JSON.stringify(current),
+      salaryLastCalculated: new Date(),
     };
-    await user.update({ salaryValues: merged, salary_values: merged });
-    return res.json({ success: true, user: { id: user.id, salaryValues: merged } });
+    if (!monthKey) {
+      updatePatch.totalEarnings = totalEarnings;
+      updatePatch.totalDeductions = totalDeductions;
+      updatePatch.grossSalary = grossSalary;
+      updatePatch.netSalary = netSalary;
+
+      // Sync individual salary columns so Edit Regular Staff & Employee Salary also see updated values
+      const e = finalE || {};
+      const d = finalD || {};
+      if (e.basic_salary !== undefined)         updatePatch.basicSalary          = e.basic_salary;
+      if (e.hra !== undefined)                  updatePatch.hra                  = e.hra;
+      if (e.da !== undefined)                   updatePatch.da                   = e.da;
+      if (e.special_allowance !== undefined)    updatePatch.specialAllowance     = e.special_allowance;
+      if (e.conveyance_allowance !== undefined) updatePatch.conveyanceAllowance  = e.conveyance_allowance;
+      if (e.medical_allowance !== undefined)    updatePatch.medicalAllowance     = e.medical_allowance;
+      if (e.telephone_allowance !== undefined)  updatePatch.telephoneAllowance   = e.telephone_allowance;
+      if (e.other_allowances !== undefined)     updatePatch.otherAllowances      = e.other_allowances;
+      if (d.provident_fund !== undefined)       updatePatch.pfDeduction          = d.provident_fund;
+      if (d.esi !== undefined)                  updatePatch.esiDeduction         = d.esi;
+      if (d.professional_tax !== undefined)     updatePatch.professionalTax      = d.professional_tax;
+      if (d.income_tax !== undefined)           updatePatch.tdsDeduction         = d.income_tax;
+      if (d.loan_deduction !== undefined)       updatePatch.loanDeduction        = d.loan_deduction;
+      if (d.other_deductions !== undefined)     updatePatch.otherDeductions      = d.other_deductions;
+    }
+    await user.update(updatePatch);
+    return res.json({ success: true, user: { id: user.id, salaryValues: current }, totals: { totalEarnings, totalDeductions, grossSalary, netSalary } });
   } catch (e) {
     console.error('Update staff salaryValues error:', e);
     return res.status(500).json({ success: false, message: 'Failed to update salary values' });
@@ -11295,40 +11373,41 @@ router.get('/staff-salary-list', async (req, res) => {
           vals = typeof u.salaryValues === 'string' ? JSON.parse(u.salaryValues) : (u.salaryValues || {});
         } catch (e) { console.error('Error parsing salaryValues', e); }
 
-        const earnings = { ...(vals.earnings || {}) };
-        const deductions = { ...(vals.deductions || {}) };
+        // Normalize all keys in earnings/deductions to snake_case to avoid duplicates
+        // e.g. 'BASIC SALARY', 'BASIC_SALARY', 'basic_salary' should all map to 'basic_salary'
+        const normToSnake = (s) => (s || '').toString().trim().toLowerCase().replace(/[\s]+/g, '_').replace(/[^a-z0-9_]/g, '');
 
-        // Helper to add if not already present (normalized check)
-        const addIfNew = (obj, key, val, alternates = []) => {
-          const norm = (s) => s.toLowerCase().replace(/[^a-z0-9]/g, '');
-          const existingKeys = Object.keys(obj).map(norm);
-          const keyNorm = norm(key);
-          const altNorms = alternates.map(norm);
+        // Build normalized earnings - later keys win, then we override with specific column fallbacks
+        const normalizedE = {};
+        Object.entries(vals.earnings || {}).forEach(([k, v]) => {
+          const nk = normToSnake(k);
+          if (nk) normalizedE[nk] = Number(v) || 0;
+        });
 
-          if (!existingKeys.includes(keyNorm) && !altNorms.some(a => existingKeys.includes(a))) {
-            obj[key] = val;
-          }
-        };
+        // Apply column fallbacks only when the key is missing or zero
+        if (!normalizedE.basic_salary || normalizedE.basic_salary === 0) normalizedE.basic_salary = Number(u.basicSalary) || 0;
+        if (!normalizedE.hra || normalizedE.hra === 0) normalizedE.hra = Number(u.hra) || 0;
+        if (!normalizedE.da || normalizedE.da === 0) normalizedE.da = Number(u.da) || 0;
+        if (!normalizedE.special_allowance || normalizedE.special_allowance === 0) normalizedE.special_allowance = Number(u.specialAllowance) || 0;
 
-        const getVal = (v1, v2, fallback) => {
-          const n = Number(v1 ?? v2);
-          return Number.isFinite(n) && n !== 0 ? n : Number(fallback || 0);
-        };
+        const finalEarnings = normalizedE;
 
-        const finalEarnings = {
-          ...vals.earnings,
-          basic_salary: getVal(vals.earnings?.BASIC_SALARY, vals.earnings?.basic_salary, u.basicSalary),
-          hra: getVal(vals.earnings?.HRA, vals.earnings?.hra, u.hra),
-          da: getVal(vals.earnings?.DA, vals.earnings?.da, u.da),
-          special_allowance: getVal(vals.earnings?.SPECIAL_ALLOWANCE, vals.earnings?.special_allowance, u.specialAllowance),
-        };
+        // Build normalized deductions
+        const normalizedD = {};
+        Object.entries(vals.deductions || {}).forEach(([k, v]) => {
+          const nk = normToSnake(k);
+          // Map common variants to canonical key
+          let canonicalKey = nk;
+          if (nk === 'provident_fund_employee' || nk === 'providentfundemployee') canonicalKey = 'provident_fund';
+          if (nk === 'esi_employee' || nk === 'esiemployee') canonicalKey = 'esi';
+          if (canonicalKey) normalizedD[canonicalKey] = Number(v) || 0;
+        });
 
-        const finalDeductions = {
-          ...vals.deductions,
-          provident_fund: getVal(vals.deductions?.PROVIDENT_FUND_EMPLOYEE, vals.deductions?.provident_fund, u.pfDeduction),
-          esi: getVal(vals.deductions?.ESI_EMPLOYEE, vals.deductions?.esi, u.esiDeduction),
-          professional_tax: getVal(vals.deductions?.['PROFESSIONAL TAX'], vals.deductions?.professional_tax, u.professionalTax),
-        };
+        if (!normalizedD.provident_fund || normalizedD.provident_fund === 0) normalizedD.provident_fund = Number(u.pfDeduction) || 0;
+        if (!normalizedD.esi || normalizedD.esi === 0) normalizedD.esi = Number(u.esiDeduction) || 0;
+        if (!normalizedD.professional_tax || normalizedD.professional_tax === 0) normalizedD.professional_tax = Number(u.professionalTax) || 0;
+
+        const finalDeductions = normalizedD;
 
         // Rule-based fallback if template exists and values are 0
         if (u.salaryTemplate) {
@@ -13017,9 +13096,61 @@ router.post('/attendance', async (req, res) => {
             punchedInAt
           }, orgAccount, daysInMonth, punchedInAt);
 
-          payload.latePunchInMinutes = lpResult.latePunchInMinutes;
+           payload.latePunchInMinutes = lpResult.latePunchInMinutes;
           payload.latePunchInAmount = lpResult.latePunchInAmount;
           payload.latePunchInRuleId = lpResult.latePunchInRuleId;
+          payload.isLate = lpResult.isLate || false;
+
+          if (lpResult && lpResult.isLate) {
+            try {
+              const { Notification, User, StaffProfile } = require('../models');
+              const { Op } = require('sequelize');
+              const staff = await User.findByPk(uid, { include: [{ model: StaffProfile, as: 'profile' }] });
+              const staffName = staff?.profile?.name || staff?.name || 'Staff';
+
+              const startOfToday = new Date();
+              startOfToday.setHours(0, 0, 0, 0);
+              const endOfToday = new Date();
+              endOfToday.setHours(23, 59, 59, 999);
+
+              const existingNotif = await Notification.findOne({
+                where: {
+                  orgAccountId: orgId,
+                  type: 'late',
+                  message: {
+                    [Op.and]: [
+                      { [Op.like]: `%${staffName}%` },
+                      { [Op.like]: `%checked in late%` }
+                    ]
+                  },
+                  createdAt: {
+                    [Op.between]: [startOfToday, endOfToday]
+                  }
+                }
+              });
+
+              const newTitle = 'Late Punch-in Alert';
+              const newMessage = `${staffName} has checked in late today by ${lpResult.latePunchInMinutes} minutes.`;
+
+              if (existingNotif) {
+                await existingNotif.update({
+                  title: newTitle,
+                  message: newMessage,
+                  isRead: false
+                });
+              } else {
+                await Notification.create({
+                  orgAccountId: orgId,
+                  title: newTitle,
+                  message: newMessage,
+                  type: 'late',
+                  isRead: false
+                });
+              }
+            } catch (notifErr) {
+              console.error('[NOTIFICATION] Failed to create manual late punch-in notification:', notifErr.message);
+            }
+          }
 
           // Sync status if OT occurred and user didn't mark as something else (leave/absent/half_day)
           if (otResult.overtimeMinutes > 0 && !['half_day', 'leave', 'absent'].includes(status)) {
@@ -13347,6 +13478,57 @@ router.post('/attendance/bulk', async (req, res) => {
           payload.latePunchInAmount = lpResult.latePunchInAmount;
           payload.latePunchInRuleId = lpResult.latePunchInRuleId;
           payload.isLate = lpResult.isLate || false;
+
+          if (lpResult && lpResult.isLate) {
+            try {
+              const { Notification, User, StaffProfile } = require('../models');
+              const { Op } = require('sequelize');
+              const staff = await User.findByPk(uid, { include: [{ model: StaffProfile, as: 'profile' }] });
+              const staffName = staff?.profile?.name || staff?.name || 'Staff';
+
+              const startOfToday = new Date();
+              startOfToday.setHours(0, 0, 0, 0);
+              const endOfToday = new Date();
+              endOfToday.setHours(23, 59, 59, 999);
+
+              const existingNotif = await Notification.findOne({
+                where: {
+                  orgAccountId: orgId,
+                  type: 'late',
+                  message: {
+                    [Op.and]: [
+                      { [Op.like]: `%${staffName}%` },
+                      { [Op.like]: `%checked in late%` }
+                    ]
+                  },
+                  createdAt: {
+                    [Op.between]: [startOfToday, endOfToday]
+                  }
+                }
+              });
+
+              const newTitle = 'Late Punch-in Alert';
+              const newMessage = `${staffName} has checked in late today by ${lpResult.latePunchInMinutes} minutes.`;
+
+              if (existingNotif) {
+                await existingNotif.update({
+                  title: newTitle,
+                  message: newMessage,
+                  isRead: false
+                });
+              } else {
+                await Notification.create({
+                  orgAccountId: orgId,
+                  title: newTitle,
+                  message: newMessage,
+                  type: 'late',
+                  isRead: false
+                });
+              }
+            } catch (notifErr) {
+              console.error('[NOTIFICATION] Failed to create bulk late punch-in notification:', notifErr.message);
+            }
+          }
 
           if (otResult.overtimeMinutes > 0 && !['half_day', 'leave', 'absent'].includes(payload.status)) {
             payload.status = otResult.status || 'overtime';
@@ -17591,6 +17773,9 @@ router.put('/staff/:id/salary', async (req, res) => {
 
 
 
+    // Normalize key to snake_case: 'BASIC SALARY' -> 'basic_salary'
+    const toSnakeKey = (s) => (s || '').toString().trim().toLowerCase().replace(/[\s]+/g, '_').replace(/[^a-z0-9_]/g, '');
+
     const arrayToObj = (arr) => {
 
       const out = {};
@@ -17599,7 +17784,9 @@ router.put('/staff/:id/salary', async (req, res) => {
 
         if (!it) continue;
 
-        const key = (it.key || it.name || it.field || '').toString().trim();
+        const rawKey = (it.key || it.name || it.field || '').toString().trim();
+
+        const key = toSnakeKey(rawKey);
 
         if (!key) continue;
 
@@ -17627,7 +17814,7 @@ router.put('/staff/:id/salary', async (req, res) => {
 
 
 
-    // Ensure numeric values (handle strings with commas, blanks)
+    // Ensure numeric values AND normalize keys (handles strings with commas, blanks)
 
     const toNumber = (v) => {
 
@@ -17647,11 +17834,15 @@ router.put('/staff/:id/salary', async (req, res) => {
 
     };
 
+    // normalize: convert all keys to snake_case AND values to numbers
     const normalize = (obj) => {
 
       const out = {};
 
-      for (const k of Object.keys(obj || {})) out[k] = toNumber(obj[k]);
+      for (const k of Object.keys(obj || {})) {
+        const nk = toSnakeKey(k);
+        if (nk) out[nk] = toNumber(obj[k]);
+      }
 
       return out;
 
@@ -17663,6 +17854,16 @@ router.put('/staff/:id/salary', async (req, res) => {
 
     deductions = normalize(deductions);
 
+    // Also normalize existing stored values to prevent old uppercase keys surviving
+    const normalizeStored = (obj) => {
+      if (!obj || typeof obj !== 'object') return {};
+      const out = {};
+      for (const k of Object.keys(obj)) {
+        const nk = toSnakeKey(k);
+        if (nk) out[nk] = toNumber(obj[k]);
+      }
+      return out;
+    };
 
 
     const sum = (o) => Object.values(o || {}).reduce((s, v) => s + (Number(v) || 0), 0);
@@ -17676,6 +17877,21 @@ router.put('/staff/:id/salary', async (req, res) => {
     if (typeof current === 'string') { try { current = JSON.parse(current); } catch { current = null; } }
 
     if (!current || typeof current !== 'object') current = {};
+
+    // Clean up any old uppercase/spaced keys in stored data (e.g. 'BASIC SALARY' -> 'basic_salary')
+    if (current.earnings) current.earnings = normalizeStored(current.earnings);
+    if (current.incentives) current.incentives = normalizeStored(current.incentives);
+    if (current.deductions) current.deductions = normalizeStored(current.deductions);
+    if (current.months && typeof current.months === 'object') {
+      for (const mk of Object.keys(current.months)) {
+        const m = current.months[mk];
+        if (m && typeof m === 'object') {
+          if (m.earnings) m.earnings = normalizeStored(m.earnings);
+          if (m.incentives) m.incentives = normalizeStored(m.incentives);
+          if (m.deductions) m.deductions = normalizeStored(m.deductions);
+        }
+      }
+    }
 
 
 

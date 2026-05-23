@@ -5,6 +5,34 @@ const { sequelize, User, StaffProfile, MailCampaign, MailQueue, JobPosting, Cand
 async function initDb() {
   await sequelize.authenticate();
 
+  // Ensure notifications table exists
+  try {
+    try {
+      await sequelize.query('SELECT 1 FROM notifications LIMIT 1');
+    } catch (queryErr) {
+      if (String(queryErr.message).includes("doesn't exist in engine")) {
+        console.log('⏰ Notifications table is corrupted in InnoDB engine. Dropping and recreating...');
+        await sequelize.query('DROP TABLE IF EXISTS notifications');
+      }
+    }
+
+    await sequelize.query(`
+      CREATE TABLE IF NOT EXISTS notifications (
+        id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+        org_account_id BIGINT UNSIGNED NULL,
+        title VARCHAR(255) NOT NULL,
+        message TEXT NOT NULL,
+        type VARCHAR(50) NOT NULL,
+        is_read BOOLEAN NOT NULL DEFAULT FALSE,
+        created_at DATETIME NOT NULL,
+        updated_at DATETIME NOT NULL
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+    `);
+    console.log('⏰ Ensure notifications table exists - verified.');
+  } catch (err) {
+    console.log('⚠️ Error ensuring notifications table exists:', err.message);
+  }
+
   // Sync models to create/update tables
   // These are causing duplicate index issues with 'alter: true'. 
   // Use migrations for schema changes.

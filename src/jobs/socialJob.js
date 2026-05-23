@@ -1,4 +1,4 @@
-const { StaffProfile, SocialPost, User, OrgAccount, sequelize } = require('../models');
+const { StaffProfile, SocialPost, User, OrgAccount, Notification, sequelize } = require('../models');
 const dayjs = require('dayjs');
 const { Op } = require('sequelize');
 
@@ -72,6 +72,14 @@ const checkAndPostCelebrations = async () => {
           type: 'birthday'
         });
         console.log(`✅ Birthday post created: ID=${newPost.id} for ${staff.name}`);
+        
+        await Notification.create({
+          orgAccountId: staff.orgAccountId,
+          title: 'Birthday Today',
+          message: `Today is ${staff.name}'s birthday! 🎂`,
+          type: 'birthday',
+          isRead: false
+        }).catch(e => console.error('Failed to create birthday notification:', e));
       } catch (postErr) {
         console.error(`[DEBUG]   >> SQL Error during post creation:`, postErr.message);
       }
@@ -121,6 +129,14 @@ const checkAndPostCelebrations = async () => {
           type: 'anniversary'
         });
         console.log(`✅ Anniversary post created for ${staff.name} (${years} years) (Org: ${staff.orgAccountId})`);
+
+        await Notification.create({
+          orgAccountId: staff.orgAccountId,
+          title: 'Work Anniversary Today',
+          message: `${staff.name} is celebrating their ${years} year work anniversary today! 🎊`,
+          type: 'anniversary',
+          isRead: false
+        }).catch(e => console.error('Failed to create anniversary notification:', e));
       }
     }
 

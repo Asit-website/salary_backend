@@ -1161,6 +1161,55 @@ router.post('/punch-in', upload.single('photo'), async (req, res) => {
           latePunchInRuleId: lpResult.latePunchInRuleId,
           isLate: true
         });
+
+        try {
+          const { Notification, User, StaffProfile } = require('../models');
+          const { Op } = require('sequelize');
+          const staff = await User.findByPk(req.user.id, { include: [{ model: StaffProfile, as: 'profile' }] });
+          const staffName = staff?.profile?.name || staff?.name || 'Staff';
+
+          const startOfToday = new Date();
+          startOfToday.setHours(0, 0, 0, 0);
+          const endOfToday = new Date();
+          endOfToday.setHours(23, 59, 59, 999);
+
+          const existingNotif = await Notification.findOne({
+            where: {
+              orgAccountId: req.user.orgAccountId,
+              type: 'late',
+              message: {
+                [Op.and]: [
+                  { [Op.like]: `%${staffName}%` },
+                  { [Op.like]: `%checked in late%` }
+                ]
+              },
+              createdAt: {
+                [Op.between]: [startOfToday, endOfToday]
+              }
+            }
+          });
+
+          const newTitle = 'Late Punch-in Alert';
+          const newMessage = `${staffName} has checked in late today by ${lpResult.latePunchInMinutes} minutes.`;
+
+          if (existingNotif) {
+            await existingNotif.update({
+              title: newTitle,
+              message: newMessage,
+              isRead: false
+            });
+          } else {
+            await Notification.create({
+              orgAccountId: req.user.orgAccountId,
+              title: newTitle,
+              message: newMessage,
+              type: 'late',
+              isRead: false
+            });
+          }
+        } catch (notifErr) {
+          console.error('[NOTIFICATION] Failed to create late punch-in notification:', notifErr.message);
+        }
       }
     } catch (lpErr) {
       console.error('Mobile Late Penalty calculation error:', lpErr);
@@ -2325,6 +2374,55 @@ router.post('/qr-punch', upload.single('photo'), async (req, res) => {
             latePunchInRuleId: lpResult.latePunchInRuleId,
             isLate: true
           });
+
+          try {
+            const { Notification, User, StaffProfile } = require('../models');
+            const { Op } = require('sequelize');
+            const staff = await User.findByPk(req.user.id, { include: [{ model: StaffProfile, as: 'profile' }] });
+            const staffName = staff?.profile?.name || staff?.name || 'Staff';
+
+            const startOfToday = new Date();
+            startOfToday.setHours(0, 0, 0, 0);
+            const endOfToday = new Date();
+            endOfToday.setHours(23, 59, 59, 999);
+
+            const existingNotif = await Notification.findOne({
+              where: {
+                orgAccountId: req.user.orgAccountId,
+                type: 'late',
+                message: {
+                  [Op.and]: [
+                    { [Op.like]: `%${staffName}%` },
+                    { [Op.like]: `%checked in late%` }
+                  ]
+                },
+                createdAt: {
+                  [Op.between]: [startOfToday, endOfToday]
+                }
+              }
+            });
+
+            const newTitle = 'Late Punch-in Alert (QR)';
+            const newMessage = `${staffName} has checked in late via QR today by ${lpResult.latePunchInMinutes} minutes.`;
+
+            if (existingNotif) {
+              await existingNotif.update({
+                title: newTitle,
+                message: newMessage,
+                isRead: false
+              });
+            } else {
+              await Notification.create({
+                orgAccountId: req.user.orgAccountId,
+                title: newTitle,
+                message: newMessage,
+                type: 'late',
+                isRead: false
+              });
+            }
+          } catch (notifErr) {
+            console.error('[NOTIFICATION] Failed to create QR late notification:', notifErr.message);
+          }
         }
       } catch (lpErr) {
         console.error('QR Late Penalty error:', lpErr);

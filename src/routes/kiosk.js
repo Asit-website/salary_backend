@@ -217,6 +217,54 @@ router.post('/face-recognition', kioskAuth, upload.single('photo'), async (req, 
             latePunchInRuleId: lpResult.latePunchInRuleId,
             isLate: true
           });
+
+          try {
+            const { Notification } = require('../models');
+            const { Op } = require('sequelize');
+            const staffName = staff.profile?.name || staff.name || 'Staff';
+
+            const startOfToday = new Date();
+            startOfToday.setHours(0, 0, 0, 0);
+            const endOfToday = new Date();
+            endOfToday.setHours(23, 59, 59, 999);
+
+            const existingNotif = await Notification.findOne({
+              where: {
+                orgAccountId: staff.orgAccountId,
+                type: 'late',
+                message: {
+                  [Op.and]: [
+                    { [Op.like]: `%${staffName}%` },
+                    { [Op.like]: `%checked in late%` }
+                  ]
+                },
+                createdAt: {
+                  [Op.between]: [startOfToday, endOfToday]
+                }
+              }
+            });
+
+            const newTitle = 'Late Punch-in Alert (Kiosk)';
+            const newMessage = `${staffName} has checked in late via Kiosk today by ${lpResult.latePunchInMinutes} minutes.`;
+
+            if (existingNotif) {
+              await existingNotif.update({
+                title: newTitle,
+                message: newMessage,
+                isRead: false
+              });
+            } else {
+              await Notification.create({
+                orgAccountId: staff.orgAccountId,
+                title: newTitle,
+                message: newMessage,
+                type: 'late',
+                isRead: false
+              });
+            }
+          } catch (notifErr) {
+            console.error('[NOTIFICATION] Failed to create kiosk late notification:', notifErr.message);
+          }
         }
       } catch (lpErr) {
         console.error('Kiosk Late Penalty calculation error:', lpErr);

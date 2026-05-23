@@ -142,7 +142,8 @@ class LatePunchInService {
       latePunchInAmount: parseFloat(deductionAmount.toFixed(2)),
       tier: matchedTier,
       rule: finalRule,
-      shiftHours: shiftHours
+      shiftHours: shiftHours,
+      isLate: latePunchInMinutes > 0
     };
   }
   /**

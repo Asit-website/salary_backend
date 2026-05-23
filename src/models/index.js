@@ -121,6 +121,7 @@ const defineLeadConfig = require('./LeadConfig');
 const defineHolidayWorkPayRule = require('./HolidayWorkPayRule');
 const defineStaffHolidayWorkPayAssignment = require('./StaffHolidayWorkPayAssignment');
 const defineClientAssignment = require('./ClientAssignment');
+const defineNotification = require('./Notification');
 
 
 
@@ -247,6 +248,10 @@ const LeadConfig = defineLeadConfig(sequelize);
 const HolidayWorkPayRule = defineHolidayWorkPayRule(sequelize);
 const StaffHolidayWorkPayAssignment = defineStaffHolidayWorkPayAssignment(sequelize);
 const ClientAssignment = defineClientAssignment(sequelize);
+const Notification = defineNotification(sequelize);
+
+OrgAccount.hasMany(Notification, { foreignKey: 'orgAccountId', as: 'notifications' });
+Notification.belongsTo(OrgAccount, { foreignKey: 'orgAccountId', as: 'orgAccount' });
 
 
 
@@ -959,4 +964,5 @@ module.exports = {
   HolidayWorkPayRule,
   StaffHolidayWorkPayAssignment,
   ClientAssignment,
+  Notification,
 };
