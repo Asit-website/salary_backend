@@ -11959,6 +11959,7 @@ router.get('/attendance', async (req, res) => {
         latePunchInMinutes,
         bufferMinutes: r.bufferMinutes || 0,
         latePenaltyText,
+        source: r.source,
 
         user: {
           name: r.user?.profile?.name || null,
