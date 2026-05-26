@@ -169,7 +169,12 @@ initDb()
     try { scheduleZktecoSync(); } catch (_) { }
 
     // Start Attendance Missing Reminder job
-    try { scheduleAttendanceReminders(); } catch (_) { }
+    try { 
+      scheduleAttendanceReminders(); 
+      // Catch-up check: Scan for yesterday's missing attendance immediately on startup to recover from server reboots/downtimes during 9:30 AM
+      const { checkMissingAttendanceAndNotify } = require('./src/jobs/attendanceReminder');
+      checkMissingAttendanceAndNotify().catch((err) => console.error('[STARTUP CHECK] Attendance check failed:', err.message));
+    } catch (_) { }
 
     // Start Bulk Mailing job (1-minute interval)
     try { scheduleBulkMailJob(); } catch (_) { }

@@ -1300,7 +1300,12 @@ router.get('/payroll/salary-register-excel-by-month', async (req, res) => {
     if (!cycle) return res.status(404).json({ success: false, message: 'Payroll cycle not found for this month' });
 
     const groupBy = req.query.groupBy || 'department';
+    const token = req.query.token || (req.headers.authorization?.startsWith('Bearer ') ? req.headers.authorization.slice(7) : null);
+    
     let url = `${req.baseUrl}/payroll/${cycle.id}/salary-register-excel?groupBy=${groupBy}`;
+    if (token) {
+      url += `&token=${encodeURIComponent(token)}`;
+    }
     if (employeeIds) url += `&employeeIds=${employeeIds}`;
     return res.redirect(url);
   } catch (e) {
@@ -11627,7 +11632,8 @@ router.put('/staff/:id/profile', async (req, res) => {
       'dob', 'gender', 'maritalStatus', 'bloodGroup', 'emergencyContact', 'currentAddress', 'permanentAddress',
       'addressLine1', 'addressLine2', 'city', 'state', 'postalCode',
       'attendanceSettingTemplate', 'salaryCycleDate', 'shiftSelection', 'openingBalance', 'salaryDetailAccess', 'allowCurrentCycleSalaryAccess',
-      'bankAccountHolderName', 'bankAccountNumber', 'bankIfsc', 'bankName', 'bankBranch', 'upiId', 'photoUrl'
+      'bankAccountHolderName', 'bankAccountNumber', 'bankIfsc', 'bankName', 'bankBranch', 'upiId', 'photoUrl',
+      'education', 'experience'
     ];
     const updates = {};
     allowed.forEach(k => { if (req.body[k] !== undefined) updates[k] = req.body[k]; });
@@ -11792,7 +11798,11 @@ router.get('/attendance', async (req, res) => {
 
     const toTime = (iso) => {
       if (!iso) return null;
-      return new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false });
+      const d = new Date(iso);
+      if (isNaN(d.getTime())) return null;
+      const hh = String(d.getHours()).padStart(2, '0');
+      const mm = String(d.getMinutes()).padStart(2, '0');
+      return `${hh}:${mm}`;
     };
 
     const data = rows.map(r => {
@@ -13109,10 +13119,10 @@ router.post('/attendance', async (req, res) => {
               const staff = await User.findByPk(uid, { include: [{ model: StaffProfile, as: 'profile' }] });
               const staffName = staff?.profile?.name || staff?.name || 'Staff';
 
-              const startOfToday = new Date();
-              startOfToday.setHours(0, 0, 0, 0);
-              const endOfToday = new Date();
-              endOfToday.setHours(23, 59, 59, 999);
+              const startOfDate = new Date(dateIso);
+              startOfDate.setHours(0, 0, 0, 0);
+              const endOfDate = new Date(dateIso);
+              endOfDate.setHours(23, 59, 59, 999);
 
               const existingNotif = await Notification.findOne({
                 where: {
@@ -13125,19 +13135,41 @@ router.post('/attendance', async (req, res) => {
                     ]
                   },
                   createdAt: {
-                    [Op.between]: [startOfToday, endOfToday]
+                    [Op.between]: [startOfDate, endOfDate]
                   }
                 }
               });
 
+              let notificationMins = lpResult.latePunchInMinutes;
+              try {
+                const shiftService = require('../services/shiftService');
+                const shiftTpl = await shiftService.getEffectiveShiftTemplate(uid, dateIso);
+                if (shiftTpl && shiftTpl.startTime) {
+                  const punchIn = new Date(punchedInAt);
+                  const punchInSec = punchIn.getHours() * 3600 + punchIn.getMinutes() * 60 + punchIn.getSeconds();
+                  const [sh, sm, ss] = shiftTpl.startTime.split(':').map(Number);
+                  const shiftStartSec = sh * 3600 + sm * 60 + (ss || 0);
+                  if (punchInSec > shiftStartSec) {
+                    notificationMins = Math.floor((punchInSec - shiftStartSec) / 60);
+                  }
+                }
+              } catch (err) {
+                console.error('Error calculating floored late minutes:', err);
+              }
+
               const newTitle = 'Late Punch-in Alert';
-              const newMessage = `${staffName} has checked in late today by ${lpResult.latePunchInMinutes} minutes.`;
+              const newMessage = `${staffName} has checked in late today by ${notificationMins} minutes.`;
+
+              const notifTime = punchedInAt || new Date(dateIso);
 
               if (existingNotif) {
+                const shouldMarkUnread = existingNotif.message !== newMessage || existingNotif.title !== newTitle;
                 await existingNotif.update({
                   title: newTitle,
                   message: newMessage,
-                  isRead: false
+                  isRead: shouldMarkUnread ? false : existingNotif.isRead,
+                  createdAt: notifTime,
+                  updatedAt: notifTime
                 });
               } else {
                 await Notification.create({
@@ -13145,7 +13177,9 @@ router.post('/attendance', async (req, res) => {
                   title: newTitle,
                   message: newMessage,
                   type: 'late',
-                  isRead: false
+                  isRead: false,
+                  createdAt: notifTime,
+                  updatedAt: notifTime
                 });
               }
             } catch (notifErr) {
@@ -13487,10 +13521,10 @@ router.post('/attendance/bulk', async (req, res) => {
               const staff = await User.findByPk(uid, { include: [{ model: StaffProfile, as: 'profile' }] });
               const staffName = staff?.profile?.name || staff?.name || 'Staff';
 
-              const startOfToday = new Date();
-              startOfToday.setHours(0, 0, 0, 0);
-              const endOfToday = new Date();
-              endOfToday.setHours(23, 59, 59, 999);
+              const startOfDate = new Date(dateIso);
+              startOfDate.setHours(0, 0, 0, 0);
+              const endOfDate = new Date(dateIso);
+              endOfDate.setHours(23, 59, 59, 999);
 
               const existingNotif = await Notification.findOne({
                 where: {
@@ -13503,19 +13537,41 @@ router.post('/attendance/bulk', async (req, res) => {
                     ]
                   },
                   createdAt: {
-                    [Op.between]: [startOfToday, endOfToday]
+                    [Op.between]: [startOfDate, endOfDate]
                   }
                 }
               });
 
+              let notificationMins = lpResult.latePunchInMinutes;
+              try {
+                const shiftService = require('../services/shiftService');
+                const shiftTpl = await shiftService.getEffectiveShiftTemplate(uid, dateIso);
+                if (shiftTpl && shiftTpl.startTime) {
+                  const punchIn = new Date(punchedInAt);
+                  const punchInSec = punchIn.getHours() * 3600 + punchIn.getMinutes() * 60 + punchIn.getSeconds();
+                  const [sh, sm, ss] = shiftTpl.startTime.split(':').map(Number);
+                  const shiftStartSec = sh * 3600 + sm * 60 + (ss || 0);
+                  if (punchInSec > shiftStartSec) {
+                    notificationMins = Math.floor((punchInSec - shiftStartSec) / 60);
+                  }
+                }
+              } catch (err) {
+                console.error('Error calculating floored late minutes:', err);
+              }
+
               const newTitle = 'Late Punch-in Alert';
-              const newMessage = `${staffName} has checked in late today by ${lpResult.latePunchInMinutes} minutes.`;
+              const newMessage = `${staffName} has checked in late today by ${notificationMins} minutes.`;
+
+              const notifTime = punchedInAt || new Date(dateIso);
 
               if (existingNotif) {
+                const shouldMarkUnread = existingNotif.message !== newMessage || existingNotif.title !== newTitle;
                 await existingNotif.update({
                   title: newTitle,
                   message: newMessage,
-                  isRead: false
+                  isRead: shouldMarkUnread ? false : existingNotif.isRead,
+                  createdAt: notifTime,
+                  updatedAt: notifTime
                 });
               } else {
                 await Notification.create({
@@ -13523,7 +13579,9 @@ router.post('/attendance/bulk', async (req, res) => {
                   title: newTitle,
                   message: newMessage,
                   type: 'late',
-                  isRead: false
+                  isRead: false,
+                  createdAt: notifTime,
+                  updatedAt: notifTime
                 });
               }
             } catch (notifErr) {
@@ -20054,7 +20112,14 @@ router.get('/reports/org-punch-matrix', async (req, res) => {
 
       if (!matrix[att.userId][dateStr]) matrix[att.userId][dateStr] = [];
 
-      const formatTime = (value) => new Date(value).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false });
+      const formatTime = (value) => {
+        if (!value) return '';
+        const d = new Date(value);
+        if (isNaN(d.getTime())) return '';
+        const hh = String(d.getHours()).padStart(2, '0');
+        const mm = String(d.getMinutes()).padStart(2, '0');
+        return `${hh}:${mm}`;
+      };
       const inTime = att.punchedInAt ? formatTime(att.punchedInAt) : '';
       const outTime = att.punchedOutAt ? formatTime(att.punchedOutAt) : '';
 

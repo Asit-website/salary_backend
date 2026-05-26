@@ -23,17 +23,12 @@ async function checkMissingAttendanceAndNotify() {
             console.log(`[ATTENDANCE REMINDER] Processing Org: ${org.name} (ID: ${org.id})`);
 
             const rowSet = await AppSetting.findOne({ where: { key: 'org_config', orgAccountId: org.id } });
-            let canSend = true;
+            let canSendSMS = true;
             if (rowSet?.value) {
                 try {
                     const cfg = JSON.parse(rowSet.value);
-                    if (cfg?.smsNotificationSettings?.missingAttendance === false) canSend = false;
+                    if (cfg?.smsNotificationSettings?.missingAttendance === false) canSendSMS = false;
                 } catch (_) { }
-            }
-
-            if (!canSend) {
-                console.log(`[ATTENDANCE REMINDER] Skipping ${org.name} - SMS notification disabled in settings`);
-                continue;
             }
 
             const staffMembers = await User.findAll({
@@ -85,6 +80,25 @@ async function checkMissingAttendanceAndNotify() {
                 // If we reach here, attendance is missing on a workday
                 console.log(`[ATTENDANCE REMINDER] Missing attendance detected for ${name} (${phone}) on ${yesterday}`);
 
+                // Deduplicate check: verify if a missing attendance notification has already been created for this date/employee
+                try {
+                  const existingNotif = await Notification.findOne({
+                    where: {
+                      orgAccountId: org.id,
+                      type: 'missing_attendance',
+                      message: {
+                        [Op.like]: `%${name}%did not mark attendance for yesterday (${yesterday})%`
+                      }
+                    }
+                  });
+                  if (existingNotif) {
+                    console.log(`[ATTENDANCE REMINDER] ${name} already notified for ${yesterday}. Skipping duplicates.`);
+                    continue;
+                  }
+                } catch (dbErr) {
+                  console.error('[ATTENDANCE REMINDER] Error checking existing notifications:', dbErr.message);
+                }
+
                 try {
                   await Notification.create({
                     orgAccountId: org.id,
@@ -97,29 +111,31 @@ async function checkMissingAttendanceAndNotify() {
                   console.error('[ATTENDANCE REMINDER] Failed to create in-app notification:', notifErr);
                 }
 
-                const bizName = org.name || 'Business';
-                const d = new Date(yesterday);
-                const months = ["january", "february", "march", "april", "may", "june", "july", "august", "september", "october", "november", "december"];
-                const day = d.getDate();
-                const m = months[d.getMonth()];
-                const suffix = (day % 10 === 1 && day !== 11) ? 'st' : (day % 10 === 2 && day !== 12) ? 'nd' : (day % 10 === 3 && day !== 13) ? 'rd' : 'th';
-                const dateStr = `${day}${suffix} ${m}`;
+                if (canSendSMS) {
+                    const bizName = org.name || 'Business';
+                    const d = new Date(yesterday);
+                    const months = ["january", "february", "march", "april", "may", "june", "july", "august", "september", "october", "november", "december"];
+                    const day = d.getDate();
+                    const m = months[d.getMonth()];
+                    const suffix = (day % 10 === 1 && day !== 11) ? 'st' : (day % 10 === 2 && day !== 12) ? 'nd' : (day % 10 === 3 && day !== 13) ? 'rd' : 'th';
+                    const dateStr = `${day}${suffix} ${m}`;
 
-                const normalized = String(phone || '').replace(/[^0-9]/g, '');
-                let fullPhone = normalized;
-                if (fullPhone.length === 10) fullPhone = '91' + fullPhone;
+                    const normalized = String(phone || '').replace(/[^0-9]/g, '');
+                    let fullPhone = normalized;
+                    if (fullPhone.length === 10) fullPhone = '91' + fullPhone;
 
-                if (fullPhone.length >= 10) {
-                    const smsText = `Hi ${name}, attendance for ${dateStr} is missing for ${bizName} - vetansutra.com ( Powered by Thinktech Software company)`;
-                    const smsUrl = `http://182.18.162.128/api/mt/SendSMS?APIKEY=85I1g6L9hEeIntNZgQRrzA&senderid=VETANS&channel=Trans&DCS=0&flashsms=0&number=${fullPhone}&text=${encodeURIComponent(smsText)}&route=08`;
+                    if (fullPhone.length >= 10) {
+                        const smsText = `Hi ${name}, attendance for ${dateStr} is missing for ${bizName} - vetansutra.com ( Powered by Thinktech Software company)`;
+                        const smsUrl = `http://182.18.162.128/api/mt/SendSMS?APIKEY=85I1g6L9hEeIntNZgQRrzA&senderid=VETANS&channel=Trans&DCS=0&flashsms=0&number=${fullPhone}&text=${encodeURIComponent(smsText)}&route=08`;
 
-                    console.log(`[ATTENDANCE REMINDER] Sending SMS to ${fullPhone}: ${smsText}`);
-                    try {
-                        const resp = await fetch(smsUrl);
-                        const body = await resp.text();
-                        console.log(`[ATTENDANCE REMINDER] SMS Result for ${name}:`, { ok: resp.ok, body });
-                    } catch (smsErr) {
-                        console.error(`[ATTENDANCE REMINDER] SMS Fetch failed for ${name}:`, smsErr.message);
+                        console.log(`[ATTENDANCE REMINDER] Sending SMS to ${fullPhone}: ${smsText}`);
+                        try {
+                            const resp = await fetch(smsUrl);
+                            const body = await resp.text();
+                            console.log(`[ATTENDANCE REMINDER] SMS Result for ${name}:`, { ok: resp.ok, body });
+                        } catch (smsErr) {
+                            console.error(`[ATTENDANCE REMINDER] SMS Fetch failed for ${name}:`, smsErr.message);
+                        }
                     }
                 }
             }

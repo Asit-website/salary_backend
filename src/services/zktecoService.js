@@ -210,10 +210,10 @@ class ZktecoService {
                 const staffUser = await User.findByPk(userId, { include: [{ model: StaffProfile, as: 'profile' }] });
                 const staffName = staffUser?.profile?.name || staffUser?.name || 'Staff';
 
-                const startOfToday = new Date();
-                startOfToday.setHours(0, 0, 0, 0);
-                const endOfToday = new Date();
-                endOfToday.setHours(23, 59, 59, 999);
+                const startOfDate = new Date(date);
+                startOfDate.setHours(0, 0, 0, 0);
+                const endOfDate = new Date(date);
+                endOfDate.setHours(23, 59, 59, 999);
 
                 const existingNotif = await Notification.findOne({
                   where: {
@@ -226,19 +226,41 @@ class ZktecoService {
                       ]
                     },
                     createdAt: {
-                      [Op.between]: [startOfToday, endOfToday]
+                      [Op.between]: [startOfDate, endOfDate]
                     }
                   }
                 });
 
+                let notificationMins = lpResult.latePunchInMinutes;
+                try {
+                  const shiftService = require('./shiftService');
+                  const shiftTpl = await shiftService.getEffectiveShiftTemplate(userId, date);
+                  if (shiftTpl && shiftTpl.startTime) {
+                    const punchIn = new Date(firstIn);
+                    const punchInSec = punchIn.getHours() * 3600 + punchIn.getMinutes() * 60 + punchIn.getSeconds();
+                    const [sh, sm, ss] = shiftTpl.startTime.split(':').map(Number);
+                    const shiftStartSec = sh * 3600 + sm * 60 + (ss || 0);
+                    if (punchInSec > shiftStartSec) {
+                      notificationMins = Math.floor((punchInSec - shiftStartSec) / 60);
+                    }
+                  }
+                } catch (err) {
+                  console.error('Error calculating floored late minutes:', err);
+                }
+
                 const newTitle = 'Late Punch-in Alert (Biometric)';
-                const newMessage = `${staffName} has checked in late via Biometric (ZKTeco) today by ${lpResult.latePunchInMinutes} minutes.`;
+                const newMessage = `${staffName} has checked in late via Biometric (ZKTeco) today by ${notificationMins} minutes.`;
+
+                const notifTime = firstIn || new Date(date);
 
                 if (existingNotif) {
+                  const shouldMarkUnread = existingNotif.message !== newMessage || existingNotif.title !== newTitle;
                   await existingNotif.update({
                     title: newTitle,
                     message: newMessage,
-                    isRead: false
+                    isRead: shouldMarkUnread ? false : existingNotif.isRead,
+                    createdAt: notifTime,
+                    updatedAt: notifTime
                   });
                 } else {
                   await Notification.create({
@@ -246,7 +268,9 @@ class ZktecoService {
                     title: newTitle,
                     message: newMessage,
                     type: 'late',
-                    isRead: false
+                    isRead: false,
+                    createdAt: notifTime,
+                    updatedAt: notifTime
                   });
                 }
               } catch (notifErr) {

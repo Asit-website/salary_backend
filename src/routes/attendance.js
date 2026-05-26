@@ -1189,14 +1189,31 @@ router.post('/punch-in', upload.single('photo'), async (req, res) => {
             }
           });
 
+          let notificationMins = lpResult.latePunchInMinutes;
+          try {
+            const shiftTpl = await shiftService.getEffectiveShiftTemplate(req.user.id, key);
+            if (shiftTpl && shiftTpl.startTime) {
+              const punchIn = new Date(now);
+              const punchInSec = punchIn.getHours() * 3600 + punchIn.getMinutes() * 60 + punchIn.getSeconds();
+              const [sh, sm, ss] = shiftTpl.startTime.split(':').map(Number);
+              const shiftStartSec = sh * 3600 + sm * 60 + (ss || 0);
+              if (punchInSec > shiftStartSec) {
+                notificationMins = Math.floor((punchInSec - shiftStartSec) / 60);
+              }
+            }
+          } catch (err) {
+            console.error('Error calculating floored late minutes:', err);
+          }
+
           const newTitle = 'Late Punch-in Alert';
-          const newMessage = `${staffName} has checked in late today by ${lpResult.latePunchInMinutes} minutes.`;
+          const newMessage = `${staffName} has checked in late today by ${notificationMins} minutes.`;
 
           if (existingNotif) {
+            const shouldMarkUnread = existingNotif.message !== newMessage || existingNotif.title !== newTitle;
             await existingNotif.update({
               title: newTitle,
               message: newMessage,
-              isRead: false
+              isRead: shouldMarkUnread ? false : existingNotif.isRead
             });
           } else {
             await Notification.create({
@@ -2402,14 +2419,31 @@ router.post('/qr-punch', upload.single('photo'), async (req, res) => {
               }
             });
 
+            let notificationMins = lpResult.latePunchInMinutes;
+            try {
+              const shiftTpl = await shiftService.getEffectiveShiftTemplate(req.user.id, dateKey);
+              if (shiftTpl && shiftTpl.startTime) {
+                const punchIn = new Date(now);
+                const punchInSec = punchIn.getHours() * 3600 + punchIn.getMinutes() * 60 + punchIn.getSeconds();
+                const [sh, sm, ss] = shiftTpl.startTime.split(':').map(Number);
+                const shiftStartSec = sh * 3600 + sm * 60 + (ss || 0);
+                if (punchInSec > shiftStartSec) {
+                  notificationMins = Math.floor((punchInSec - shiftStartSec) / 60);
+                }
+              }
+            } catch (err) {
+              console.error('Error calculating floored late minutes:', err);
+            }
+
             const newTitle = 'Late Punch-in Alert (QR)';
-            const newMessage = `${staffName} has checked in late via QR today by ${lpResult.latePunchInMinutes} minutes.`;
+            const newMessage = `${staffName} has checked in late via QR today by ${notificationMins} minutes.`;
 
             if (existingNotif) {
+              const shouldMarkUnread = existingNotif.message !== newMessage || existingNotif.title !== newTitle;
               await existingNotif.update({
                 title: newTitle,
                 message: newMessage,
-                isRead: false
+                isRead: shouldMarkUnread ? false : existingNotif.isRead
               });
             } else {
               await Notification.create({
