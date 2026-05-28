@@ -3,6 +3,7 @@ const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs');
 
 const { User, StaffProfile, OtpVerify, OrgAccount, ChannelPartner, Subscription, Plan } = require('../models');
+const { logAudit } = require('../utils/auditLogger');
 const otpStore = require('../otpStore');
 
 // Minimal SMS sender using the provided HTTP API
@@ -40,6 +41,37 @@ async function sendSmsViaGateway({ phoneE164, code }) {
 }
 
 const router = express.Router();
+const { authLimiter } = require('../middlewares/rateLimiter');
+
+const checkPhoneLockout = (users) => {
+  const now = new Date();
+  for (const user of users) {
+    if (user.lockoutUntil && new Date(user.lockoutUntil) > now) {
+      const remainingMinutes = Math.ceil((new Date(user.lockoutUntil) - now) / 60000);
+      return { locked: true, remainingMinutes };
+    }
+  }
+  return { locked: false };
+};
+
+const recordFailedAttempt = async (users) => {
+  for (const user of users) {
+    const attempts = (user.failedLoginAttempts || 0) + 1;
+    const updates = { failedLoginAttempts: attempts };
+    if (attempts >= 5) {
+      updates.lockoutUntil = new Date(Date.now() + 15 * 60 * 1000); // 15 minutes lockout
+    }
+    await user.update(updates);
+  }
+};
+
+const recordSuccessfulAttempt = async (users) => {
+  for (const user of users) {
+    if (user.failedLoginAttempts > 0 || user.lockoutUntil) {
+      await user.update({ failedLoginAttempts: 0, lockoutUntil: null });
+    }
+  }
+};
 
 function normalizePhone(phone) {
   const digits = String(phone || '').replace(/[^0-9]/g, '');
@@ -127,7 +159,7 @@ async function syncOrgMetadata(orgId, sequelize) {
   }
 }
 
-router.post('/send-otp', async (req, res) => {
+router.post('/send-otp', authLimiter, async (req, res) => {
   try {
     const { phone } = req.body || {};
     if (!phone) {
@@ -139,7 +171,16 @@ router.post('/send-otp', async (req, res) => {
       return res.status(400).json({ success: false, message: 'phone required' });
     }
 
-    const user = await User.findOne({ where: { phone: String(normalizedPhone) } });
+    const allUsers = await User.findAll({ where: { phone: String(normalizedPhone) } });
+    const lockoutStatus = checkPhoneLockout(allUsers);
+    if (lockoutStatus.locked) {
+      return res.status(423).json({
+        success: false,
+        message: `Too many failed attempts. Account is temporarily locked. Try again in ${lockoutStatus.remainingMinutes} minutes.`
+      });
+    }
+
+    const user = allUsers.find(u => u.active !== false) || allUsers[0];
     if (user && user.active === false) {
       return res.status(403).json({ success: false, message: 'User disabled' });
     }
@@ -208,7 +249,7 @@ router.get('/otp/latest', async (req, res) => {
   }
 });
 
-router.post('/verify-otp', async (req, res) => {
+router.post('/verify-otp', authLimiter, async (req, res) => {
   try {
     const { phone, code } = req.body || {};
     if (!phone || !code) {
@@ -226,11 +267,26 @@ router.post('/verify-otp', async (req, res) => {
       include: [{ model: OrgAccount, as: 'orgAccount' }]
     });
 
+    const lockoutStatus = checkPhoneLockout(allUsers);
+    if (lockoutStatus.locked) {
+      return res.status(423).json({
+        success: false,
+        message: `Too many failed attempts. Account is temporarily locked. Try again in ${lockoutStatus.remainingMinutes} minutes.`
+      });
+    }
+
     // Validate OTP
     let v = otpStore.verifyOtp(String(normalizedPhone), String(code), { keep: (!orgId && allUsers.length > 1) });
     if (!v.ok) {
       const row = await OtpVerify.findOne({ where: { phone: normalizedPhone, code: String(code) }, order: [['createdAt', 'DESC']] });
       if (!row || row.consumedAt || (new Date() - new Date(row.createdAt)) > 10 * 60 * 1000) {
+        await recordFailedAttempt(allUsers);
+        logAudit({
+          req,
+          action: 'LOGIN_FAILURE',
+          remarks: `Failed login attempt for phone ${normalizedPhone}. Invalid or expired OTP.`,
+          overrides: { userPhone: normalizedPhone }
+        });
         return res.status(400).json({ success: false, message: 'Invalid or expired OTP' });
       }
       if (!orgId && allUsers.length > 1) {
@@ -239,6 +295,9 @@ router.post('/verify-otp', async (req, res) => {
         await row.update({ consumedAt: new Date() });
       }
     }
+
+    // Success: clear failed attempts
+    await recordSuccessfulAttempt(allUsers);
 
     if (allUsers.length === 0) {
       return res.json({ success: true, requireSignup: true, phone: normalizedPhone });
@@ -380,6 +439,13 @@ router.post('/verify-otp', async (req, res) => {
           { expiresIn: '1h' }
         );
 
+        logAudit({
+          req,
+          action: 'LOGIN_SELECTION_REQUIRED',
+          remarks: `Multiple accounts found for phone ${normalizedPhone}. Prompting selection screen.`,
+          overrides: { userPhone: normalizedPhone }
+        });
+
         return res.json({
           success: true,
           requireSelection: true,
@@ -465,6 +531,18 @@ router.post('/verify-otp', async (req, res) => {
       secret,
       { expiresIn: process.env.JWT_EXPIRES_IN || '7d' }
     );
+
+    logAudit({
+      req,
+      action: 'LOGIN_SUCCESS',
+      remarks: `User ${name || user.phone} logged in successfully via OTP. Role: ${user.role}.`,
+      overrides: {
+        userId: user.id,
+        orgAccountId: isActuallySuperPanel ? null : user.orgAccountId,
+        userPhone: user.phone,
+        performedBy: name || `User (${user.phone})`
+      }
+    });
 
     return res.json({
       success: true,
@@ -564,6 +642,18 @@ router.post('/switch-account', async (req, res) => {
       secret,
       { expiresIn: process.env.JWT_EXPIRES_IN || '7d' }
     );
+
+    logAudit({
+      req,
+      action: 'ACCOUNT_SWITCH',
+      remarks: `User switched account/org to ${req.body.isSuperadminPanel ? 'Superadmin Panel' : 'Org ID ' + orgId}.`,
+      overrides: {
+        userId: user.id,
+        orgAccountId: req.body.isSuperadminPanel ? null : user.orgAccountId,
+        userPhone: user.phone,
+        performedBy: name || `User (${user.phone})`
+      }
+    });
 
     return res.json({
       success: true,
@@ -984,6 +1074,18 @@ router.post('/add-organization', async (req, res) => {
       role: u.role
     }));
 
+    logAudit({
+      req,
+      action: 'ORGANIZATION_CREATE',
+      remarks: `Organization "${name}" created successfully. Creator: ${decoded.phone}.`,
+      overrides: {
+        userId: creatorUser.id,
+        orgAccountId: org.id,
+        userPhone: normalizedPhone,
+        performedBy: profile?.name || `User (${normalizedPhone})`
+      }
+    });
+
     return res.json({
       success: true,
       organizations: [...Array.from(orgMap.values()), ...others]
@@ -1000,7 +1102,7 @@ router.post('/add-organization', async (req, res) => {
   }
 });
 
-router.post('/login', async (req, res) => {
+router.post('/login', authLimiter, async (req, res) => {
   try {
     const { phone, password } = req.body || {};
 
@@ -1008,15 +1110,37 @@ router.post('/login', async (req, res) => {
       return res.status(400).json({ success: false, message: 'phone and password required' });
     }
 
-    const user = await User.findOne({ where: { phone: String(phone) } });
+    const normalizedPhone = normalizePhone(phone);
+    if (!normalizedPhone) {
+      return res.status(400).json({ success: false, message: 'phone and password required' });
+    }
+
+    const allUsers = await User.findAll({
+      where: { phone: String(normalizedPhone) },
+      include: [{ model: OrgAccount, as: 'orgAccount' }]
+    });
+
+    const lockoutStatus = checkPhoneLockout(allUsers);
+    if (lockoutStatus.locked) {
+      return res.status(423).json({
+        success: false,
+        message: `Too many failed attempts. Account is temporarily locked. Try again in ${lockoutStatus.remainingMinutes} minutes.`
+      });
+    }
+
+    const user = allUsers.find(u => u.active !== false) || allUsers[0];
     if (!user || user.active === false) {
       return res.status(401).json({ success: false, message: 'Invalid credentials' });
     }
 
     const ok = await bcrypt.compare(String(password), user.passwordHash);
     if (!ok) {
+      await recordFailedAttempt(allUsers);
       return res.status(401).json({ success: false, message: 'Invalid credentials' });
     }
+
+    // Success: clear failed attempts
+    await recordSuccessfulAttempt(allUsers);
 
     // Subscription/Org enforcement on password login for non-superadmin/partner
     if (user.role !== 'superadmin' && user.role !== 'channel_partner') {
@@ -1048,11 +1172,6 @@ router.post('/login', async (req, res) => {
       secret,
       { expiresIn: process.env.JWT_EXPIRES_IN || '7d' }
     );
-
-    const allUsers = await User.findAll({
-      where: { phone: user.phone },
-      include: [{ model: OrgAccount, as: 'orgAccount' }]
-    });
 
     if (user.role === 'admin' || allUsers.length > 1) {
       const orgMap = new Map();

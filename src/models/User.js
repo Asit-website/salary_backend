@@ -167,6 +167,17 @@ module.exports = (sequelize) => {
         defaultValue: true,
         field: 'qr_punch_enabled'
       },
+      failedLoginAttempts: {
+        type: DataTypes.INTEGER,
+        allowNull: false,
+        defaultValue: 0,
+        field: 'failed_login_attempts'
+      },
+      lockoutUntil: {
+        type: DataTypes.DATE,
+        allowNull: true,
+        field: 'lockout_until'
+      },
     },
     {
       tableName: 'users',

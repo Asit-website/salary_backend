@@ -1,4 +1,5 @@
 const { DataTypes } = require('sequelize');
+const { encrypt, decrypt } = require('../utils/encryption');
 
 module.exports = (sequelize) => {
   const OrgKyb = sequelize.define('OrgKyb', {
@@ -9,9 +10,36 @@ module.exports = (sequelize) => {
     businessAddress: { type: DataTypes.TEXT, allowNull: true },
     cin: { type: DataTypes.STRING(64), allowNull: true },
     directorName: { type: DataTypes.STRING(120), allowNull: true },
-    companyPan: { type: DataTypes.STRING(32), allowNull: true },
-    bankAccountNumber: { type: DataTypes.STRING(64), allowNull: true },
-    ifsc: { type: DataTypes.STRING(32), allowNull: true },
+    companyPan: {
+      type: DataTypes.STRING(255),
+      allowNull: true,
+      get() {
+        return decrypt(this.getDataValue('companyPan'), 'string');
+      },
+      set(value) {
+        this.setDataValue('companyPan', encrypt(value));
+      }
+    },
+    bankAccountNumber: {
+      type: DataTypes.STRING(255),
+      allowNull: true,
+      get() {
+        return decrypt(this.getDataValue('bankAccountNumber'), 'string');
+      },
+      set(value) {
+        this.setDataValue('bankAccountNumber', encrypt(value));
+      }
+    },
+    ifsc: {
+      type: DataTypes.STRING(255),
+      allowNull: true,
+      get() {
+        return decrypt(this.getDataValue('ifsc'), 'string');
+      },
+      set(value) {
+        this.setDataValue('ifsc', encrypt(value));
+      }
+    },
     // document file paths
     docCertificateIncorp: { type: DataTypes.STRING(255), allowNull: true },
     docCompanyPan: { type: DataTypes.STRING(255), allowNull: true },

@@ -1,5 +1,6 @@
 const express = require('express');
 const multer = require('multer');
+const { authLimiter } = require('../middlewares/rateLimiter');
 const { searchFace, listFaces } = require('../services/awsService');
 const jwt = require('jsonwebtoken');
 const { User, StaffProfile, Attendance, AppSetting, StaffAttendanceAssignment, AttendanceTemplate, StaffShiftAssignment, ShiftTemplate, StaffRoster, OrgAccount } = require('../models');
@@ -81,7 +82,7 @@ router.get('/list-faces', kioskAuth, async (req, res) => {
 });
 
 // Kiosk Login via Organization Credentials
-router.post('/login', async (req, res) => {
+router.post('/login', authLimiter, async (req, res) => {
   try {
     const { username, password } = req.body;
     if (!username || !password) {

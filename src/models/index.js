@@ -122,6 +122,8 @@ const defineHolidayWorkPayRule = require('./HolidayWorkPayRule');
 const defineStaffHolidayWorkPayAssignment = require('./StaffHolidayWorkPayAssignment');
 const defineClientAssignment = require('./ClientAssignment');
 const defineNotification = require('./Notification');
+const defineAuditLog = require('./AuditLog');
+
 
 
 
@@ -249,9 +251,18 @@ const HolidayWorkPayRule = defineHolidayWorkPayRule(sequelize);
 const StaffHolidayWorkPayAssignment = defineStaffHolidayWorkPayAssignment(sequelize);
 const ClientAssignment = defineClientAssignment(sequelize);
 const Notification = defineNotification(sequelize);
+const AuditLog = defineAuditLog(sequelize);
+
 
 OrgAccount.hasMany(Notification, { foreignKey: 'orgAccountId', as: 'notifications' });
 Notification.belongsTo(OrgAccount, { foreignKey: 'orgAccountId', as: 'orgAccount' });
+
+// AuditLog associations
+User.hasMany(AuditLog, { foreignKey: 'userId', as: 'auditLogs' });
+AuditLog.belongsTo(User, { foreignKey: 'userId', as: 'user' });
+OrgAccount.hasMany(AuditLog, { foreignKey: 'orgAccountId', as: 'auditLogs' });
+AuditLog.belongsTo(OrgAccount, { foreignKey: 'orgAccountId', as: 'orgAccount' });
+
 
 
 
@@ -965,4 +976,5 @@ module.exports = {
   StaffHolidayWorkPayAssignment,
   ClientAssignment,
   Notification,
+  AuditLog,
 };

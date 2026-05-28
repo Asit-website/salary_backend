@@ -1,6 +1,8 @@
 const express = require('express');
 const dayjs = require('dayjs');
 const { formatDate, todayKey } = require('../utils/dateUtils');
+const { logAudit } = require('../utils/auditLogger');
+
 
 const bcrypt = require('bcryptjs');
 
@@ -23,6 +25,7 @@ function getCellValue(cell) {
 const { sequelize, User, StaffProfile, Role, Permission, AppSetting, DocumentType, ShiftTemplate, ShiftBreak, ShiftRotationalSlot, StaffShiftAssignment, SalaryAccess, AttendanceTemplate, StaffAttendanceAssignment, SalaryTemplate, StaffSalaryAssignment, Site, WorkUnit, Route, RouteStop, StaffRouteAssignment, SiteCheckpoint, PatrolLog, LeaveTemplate, LeaveTemplateCategory, StaffLeaveAssignment, LeaveBalance, LeaveRequest, AIAnomaly, ReliabilityScore, SalaryForecast, Attendance, Client, AssignedJob, SalesTarget, HolidayTemplate, HolidayDate, StaffHolidayAssignment, WeeklyOffTemplate, StaffWeeklyOffAssignment, Subscription, Plan, SalesVisit, Asset, AssetAssignment, AssetMaintenance, StaffLoan, StaffAdvance, OrderProduct, StaffOrderProduct, AttendanceAutomationRule, StaffGeofenceAssignment, GeofenceTemplate, GeofenceSite, DeviceInfo, Appraisal, Rating, OrgAccount, OvertimeRule, StaffOvertimeAssignment, EarlyExitRule, StaffEarlyExitAssignment, LatePunchInRule, StaffLatePunchInAssignment, TenureBonusRule, StaffTenureBonusAssignment, StaffBadge, Badge, BadgePermission, PayrollCycle, PayrollLine, HolidayWorkPayRule, StaffHolidayWorkPayAssignment, StaffRoster, ClientAssignment } = require('../models');
 
 const multer = require('multer');
+const { generateSecureFilename } = require('../utils/fileUploadSecurity');
 
 const fs = require('fs');
 
@@ -728,20 +731,12 @@ try { fs.mkdirSync(profileUploadsDir, { recursive: true }); } catch (_) { }
 
 const storage = multer.diskStorage({
   destination: (_req, _file, cb) => cb(null, uploadsDir),
-  filename: (_req, file, cb) => {
-    const ts = Date.now();
-    const safe = (file.originalname || 'file').replace(/[^a-zA-Z0-9_.-]/g, '_');
-    cb(null, `${ts}-${safe}`);
-  },
+  filename: (_req, file, cb) => cb(null, generateSecureFilename(file.originalname)),
 });
 
 const profileStorage = multer.diskStorage({
   destination: (_req, _file, cb) => cb(null, profileUploadsDir),
-  filename: (_req, file, cb) => {
-    const ts = Date.now();
-    const safe = (file.originalname || 'file').replace(/[^a-zA-r0-9_.-]/g, '_');
-    cb(null, `${ts}-${safe}`);
-  },
+  filename: (_req, file, cb) => cb(null, generateSecureFilename(file.originalname)),
 });
 
 
@@ -2394,6 +2389,13 @@ router.post('/payroll/:cycleId/lock', async (req, res) => {
       console.error('Error updating advance status on lock:', advErr);
     }
 
+    logAudit({
+      req,
+      action: 'PAYROLL_LOCK',
+      remarks: `Admin locked payroll cycle "${cycle.monthKey}" (Cycle ID: ${cycle.id}).`,
+      details: { cycleId: cycle.id, monthKey: cycle.monthKey }
+    });
+
     return res.json({ success: true, cycle });
 
   } catch (e) {
@@ -2440,6 +2442,13 @@ router.post('/payroll/:cycleId/unlock', async (req, res) => {
     } catch (advErr) {
       console.error('Error reverting advance status on unlock:', advErr);
     }
+
+    logAudit({
+      req,
+      action: 'PAYROLL_UNLOCK',
+      remarks: `Admin unlocked payroll cycle "${cycle.monthKey}" (Cycle ID: ${cycle.id}).`,
+      details: { cycleId: cycle.id, monthKey: cycle.monthKey }
+    });
 
     return res.json({ success: true, cycle });
 
@@ -2509,6 +2518,13 @@ router.post('/payroll/:cycleId/mark-paid', async (req, res) => {
 
     await cycle.update({ status: 'PAID' });
 
+    logAudit({
+      req,
+      action: 'PAYROLL_MARK_PAID',
+      remarks: `Admin marked payroll cycle "${cycle.monthKey}" (Cycle ID: ${cycle.id}) as PAID.`,
+      details: { cycleId: cycle.id, monthKey: cycle.monthKey }
+    });
+
     return res.json({ success: true, cycle });
 
   } catch (e) {
@@ -2519,10 +2535,64 @@ router.post('/payroll/:cycleId/mark-paid', async (req, res) => {
 
 });
 
-const upload = multer({ storage });
-const uploadProfilePhotoMiddleware = multer({ storage: profileStorage });
+const { validateExtension, validateMagicNumber, scanFile } = require('../utils/fileUploadSecurity');
 
-router.post('/upload-profile-photo', requireRole(['admin', 'staff']), uploadProfilePhotoMiddleware.single('photo'), async (req, res) => {
+function secureUploadMiddleware(multerSingle, category) {
+  return (req, res, next) => {
+    multerSingle(req, res, async (err) => {
+      if (err) {
+        if (err.code === 'LIMIT_FILE_SIZE') {
+          const limitStr = category === 'images' ? '2MB' : '10MB';
+          return res.status(400).json({ success: false, message: `File size exceeds the limit of ${limitStr}` });
+        }
+        return res.status(400).json({ success: false, message: err.message || 'Upload failed' });
+      }
+
+      if (!req.file) {
+        return next();
+      }
+
+      const filePath = req.file.path;
+
+      // 1. Extension check
+      if (!validateExtension(req.file.originalname, category)) {
+        try { await fs.promises.unlink(filePath); } catch (_) {}
+        return res.status(400).json({ success: false, message: 'File extension not allowed' });
+      }
+
+      // 2. Magic numbers check
+      const isValidMagic = await validateMagicNumber(filePath, category);
+      if (!isValidMagic) {
+        try { await fs.promises.unlink(filePath); } catch (_) {}
+        return res.status(400).json({ success: false, message: 'Invalid file format: content signature mismatch' });
+      }
+
+      // 3. Virus/Malware check
+      const scanResult = await scanFile(filePath);
+      if (!scanResult.safe) {
+        try { await fs.promises.unlink(filePath); } catch (_) {}
+        console.error(`[SECURITY BLOCKED] Malware detected in upload: ${filePath}. Reason: ${scanResult.reason}`);
+        return res.status(400).json({ success: false, message: `Upload rejected: Security scan failed (${scanResult.reason})` });
+      }
+
+      next();
+    });
+  };
+}
+
+const upload = multer({
+  storage,
+  limits: { fileSize: 10 * 1024 * 1024 } // 10MB
+});
+const uploadProfilePhotoMiddleware = multer({
+  storage: profileStorage,
+  limits: { fileSize: 2 * 1024 * 1024 } // 2MB
+});
+
+const secureUploadImages = secureUploadMiddleware(uploadProfilePhotoMiddleware.single('photo'), 'images');
+const secureUploadKyb = secureUploadMiddleware(upload.single('file'), 'documents');
+
+router.post('/upload-profile-photo', requireRole(['admin', 'staff']), secureUploadImages, async (req, res) => {
   try {
     if (!req.file) {
       return res.status(400).json({ success: false, message: 'No file uploaded' });
@@ -3742,6 +3812,13 @@ router.post('/payroll/:cycleId/compute', async (req, res) => {
 
 
     const lines = await require('../models').sequelize.models.PayrollLine.findAll({ where: { cycleId: cycle.id } });
+
+    logAudit({
+      req,
+      action: 'PAYROLL_COMPUTE',
+      remarks: `Computed payroll for cycle "${cycle.monthKey}" (Cycle ID: ${cycle.id})${staffId ? ` for staff member ID ${staffId}` : ''}.`,
+      details: { cycleId: cycle.id, monthKey: cycle.monthKey, staffId }
+    });
 
     return res.json({ success: true, cycle, lines });
 
@@ -5183,9 +5260,8 @@ router.put('/settings/bank-account', async (req, res) => {
     return res.json({ success: true });
 
   } catch (e) {
-
-    return res.status(500).json({ success: false, message: 'Failed to save bank account' });
-
+    console.error('FAILED TO SAVE BANK ACCOUNT ERROR:', e);
+    return res.status(500).json({ success: false, message: 'Failed to save bank account: ' + e.message });
   }
 
 });
@@ -5244,6 +5320,13 @@ router.post('/salary-templates', async (req, res) => {
 
     const row = await SalaryTemplate.create({ ...(req.body || {}), orgAccountId: orgId });
 
+    logAudit({
+      req,
+      action: 'SALARY_TEMPLATE_CREATE',
+      remarks: `Created salary template "${row.name}" (ID: ${row.id}).`,
+      details: { templateId: row.id, name: row.name }
+    });
+
     return res.json({ success: true, data: row });
 
   } catch (e) {
@@ -5268,6 +5351,13 @@ router.put('/salary-templates/:id', async (req, res) => {
 
     await row.update(req.body || {});
 
+    logAudit({
+      req,
+      action: 'SALARY_TEMPLATE_UPDATE',
+      remarks: `Updated salary template "${row.name}" (ID: ${row.id}).`,
+      details: { templateId: row.id, name: row.name }
+    });
+
     return res.json({ success: true, data: row });
 
   } catch (e) {
@@ -5290,7 +5380,17 @@ router.delete('/salary-templates/:id', async (req, res) => {
 
     if (!row) return res.status(404).json({ success: false, message: 'Salary template not found' });
 
+    const templateName = row.name;
+    const templateId = row.id;
+
     await row.destroy();
+
+    logAudit({
+      req,
+      action: 'SALARY_TEMPLATE_DELETE',
+      remarks: `Deleted salary template "${templateName}" (ID: ${templateId}).`,
+      details: { templateId, name: templateName }
+    });
 
     return res.json({ success: true, deleted: true });
 
@@ -7599,22 +7699,16 @@ const docsDir = path.join(process.cwd(), 'uploads', 'staff-docs');
 try { fs.mkdirSync(docsDir, { recursive: true }); } catch (_) { }
 
 const docsStorage = multer.diskStorage({
-
   destination: (_req, _file, cb) => cb(null, docsDir),
-
-  filename: (_req, file, cb) => {
-
-    const ts = Date.now();
-
-    const safe = (file.originalname || 'file').replace(/[^a-zA-Z0-9_.-]/g, '_');
-
-    cb(null, `${ts}-${safe}`);
-
-  },
-
+  filename: (_req, file, cb) => cb(null, generateSecureFilename(file.originalname)),
 });
 
-const uploadDoc = multer({ storage: docsStorage });
+const uploadDoc = multer({
+  storage: docsStorage,
+  limits: { fileSize: 10 * 1024 * 1024 } // 10MB
+});
+
+const secureUploadDocs = secureUploadMiddleware(uploadDoc.single('file'), 'documents');
 
 
 
@@ -7944,7 +8038,7 @@ router.get('/staff/:id/documents', async (req, res) => {
 
 // Create/upload document (org-scoped)
 
-router.post('/staff/:id/documents', uploadDoc.single('file'), async (req, res) => {
+router.post('/staff/:id/documents', secureUploadDocs, async (req, res) => {
 
   try {
 
@@ -7994,7 +8088,7 @@ router.post('/staff/:id/documents', uploadDoc.single('file'), async (req, res) =
 
 // Update document metadata or replace file
 
-router.put('/documents/:docId', uploadDoc.single('file'), async (req, res) => {
+router.put('/documents/:docId', secureUploadDocs, async (req, res) => {
 
   try {
 
@@ -8070,7 +8164,7 @@ router.delete('/documents/:docId', async (req, res) => {
 
 // Admin: upload once and assign to all staff (org-scoped)
 
-router.post('/documents/assign-all', uploadDoc.single('file'), async (req, res) => {
+router.post('/documents/assign-all', secureUploadDocs, async (req, res) => {
 
   try {
 
@@ -9079,6 +9173,14 @@ router.put('/staff/:id/salary', async (req, res) => {
       if (d.other_deductions !== undefined)     updatePatch.otherDeductions      = d.other_deductions;
     }
     await user.update(updatePatch);
+
+    logAudit({
+      req,
+      action: 'SALARY_UPDATE',
+      remarks: `Updated salary structure for staff ID: ${user.id} (${user.phone}).${monthKey ? ' (Month-wise for ' + monthKey + ')' : ''}`,
+      details: { staffId: user.id, monthKey, totalEarnings, totalDeductions, grossSalary, netSalary }
+    });
+
     return res.json({ success: true, user: { id: user.id, salaryValues: current }, totals: { totalEarnings, totalDeductions, grossSalary, netSalary } });
   } catch (e) {
     console.error('Update staff salaryValues error:', e);
@@ -10301,6 +10403,14 @@ router.post('/salary/templates', async (req, res) => {
     if (!payload.name) return res.status(400).json({ success: false, message: 'Name is required' });
     if (!Number.isFinite(payload.hoursPerDay) || payload.hoursPerDay <= 0 || payload.hoursPerDay > 24) payload.hoursPerDay = 8;
     const row = await SalaryTemplate.create(payload);
+
+    logAudit({
+      req,
+      action: 'SALARY_TEMPLATE_CREATE',
+      remarks: `Created salary template "${row.name}" (ID: ${row.id}).`,
+      details: { templateId: row.id, name: row.name }
+    });
+
     return res.json({ success: true, template: row });
   } catch (e) {
     return res.status(500).json({ success: false, message: 'Failed to create salary template' });
@@ -10327,6 +10437,14 @@ router.put('/salary/templates/:id', async (req, res) => {
     };
     if (!Number.isFinite(updates.hoursPerDay) || updates.hoursPerDay <= 0 || updates.hoursPerDay > 24) updates.hoursPerDay = row.hoursPerDay;
     await row.update(updates);
+
+    logAudit({
+      req,
+      action: 'SALARY_TEMPLATE_UPDATE',
+      remarks: `Updated salary template "${row.name}" (ID: ${row.id}).`,
+      details: { templateId: row.id, name: row.name }
+    });
+
     return res.json({ success: true, template: row });
   } catch (e) {
     return res.status(500).json({ success: false, message: 'Failed to update salary template' });
@@ -10339,7 +10457,19 @@ router.delete('/salary/templates/:id', async (req, res) => {
     const id = Number(req.params.id);
     const row = await SalaryTemplate.findOne({ where: { id, orgAccountId: orgId } });
     if (!row) return res.status(404).json({ success: false, message: 'Salary template not found' });
+
+    const templateName = row.name;
+    const templateId = row.id;
+
     await row.destroy();
+
+    logAudit({
+      req,
+      action: 'SALARY_TEMPLATE_DELETE',
+      remarks: `Deleted salary template "${templateName}" (ID: ${templateId}).`,
+      details: { templateId, name: templateName }
+    });
+
     return res.json({ success: true });
   } catch (e) {
     return res.status(500).json({ success: false, message: 'Failed to delete salary template' });
@@ -10363,6 +10493,14 @@ router.post('/salary/assign', async (req, res) => {
     if (!tpl) return res.status(404).json({ success: false, message: 'Salary template not found' });
 
     const row = await StaffSalaryAssignment.create({ userId, salaryTemplateId: templateId, effectiveFrom, effectiveTo });
+
+    logAudit({
+      req,
+      action: 'SALARY_ASSIGN',
+      remarks: `Assigned salary template "${tpl.name}" to staff ${user.phone} (ID: ${userId}).`,
+      details: { staffId: userId, templateId, effectiveFrom }
+    });
+
     return res.json({ success: true, assignment: row });
   } catch (e) {
     return res.status(500).json({ success: false, message: 'Failed to assign salary template' });
@@ -13268,6 +13406,13 @@ router.post('/attendance', async (req, res) => {
       console.error('[ATTENDANCE SMS] SMS trigger failed:', smsErr);
     }
 
+    logAudit({
+      req,
+      action: 'ATTENDANCE_MANUAL_MARK',
+      remarks: `Admin manually marked attendance for staff (${user.phone}) on ${dateIso}. Status: ${status.toUpperCase()}.`,
+      details: { staffId: uid, date: dateIso, status, checkIn, checkOut }
+    });
+
     return res.json({ success: true, attendance: row });
 
   } catch (e) {
@@ -13665,6 +13810,13 @@ router.post('/attendance/bulk', async (req, res) => {
 
       results.push({ userId: uid, created });
     }
+
+    logAudit({
+      req,
+      action: 'ATTENDANCE_BULK_MARK',
+      remarks: `Admin manually marked bulk attendance for ${results.length} staff members on ${dateIso}. Status: ${status.toUpperCase()}.`,
+      details: { staffIds, date: dateIso, status, checkIn, checkOut }
+    });
 
     return res.json({ success: true, count: results.length, results });
   } catch (e) {
@@ -18056,7 +18208,12 @@ router.put('/staff/:id/salary', async (req, res) => {
 
     await user.update(patch);
 
-
+    logAudit({
+      req,
+      action: 'SALARY_UPDATE',
+      remarks: `Updated salary structure for staff ID: ${user.id} (${user.phone}).${monthKey ? ' (Month-wise for ' + monthKey + ')' : ''}`,
+      details: { staffId: user.id, monthKey, totalEarnings, totalIncentives, totalDeductions, grossSalary, netSalary }
+    });
 
     return res.json({ success: true, userId: user.id, monthKey: monthKey || null, stored: payloadJson, totals: { totalEarnings, totalIncentives, totalDeductions, grossSalary, netSalary } });
 

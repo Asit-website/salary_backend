@@ -12,6 +12,7 @@ const latePunchInService = require('../services/latePunchInService');
 const holidayWorkPayService = require('../services/holidayWorkPayService');
 const { formatDate: isoDate, todayKey } = require('../utils/dateUtils');
 const shiftService = require('../services/shiftService');
+const { logAudit } = require('../utils/auditLogger');
 
 const router = express.Router();
 
@@ -990,6 +991,12 @@ router.post('/start-break', async (req, res) => {
 
     const now = new Date();
     await record.update({ isOnBreak: true, breakStartedAt: now });
+    logAudit({
+      req,
+      action: 'ATTENDANCE_BREAK_START',
+      remarks: `Staff started break on ${key}.`,
+      details: { attendanceId: record.id, date: key }
+    });
     return res.json({ success: true, attendance: record });
   } catch (e) {
     return res.status(500).json({ success: false, message: 'Failed to start break' });
@@ -1021,6 +1028,12 @@ router.post('/end-break', async (req, res) => {
     const total = Number(record.breakTotalSeconds || 0) + add;
 
     await record.update({ isOnBreak: false, breakStartedAt: null, breakTotalSeconds: total });
+    logAudit({
+      req,
+      action: 'ATTENDANCE_BREAK_END',
+      remarks: `Staff ended break on ${key}. Total break duration: ${Math.round(total / 60)} minutes.`,
+      details: { attendanceId: record.id, date: key, breakTotalSeconds: total }
+    });
     return res.json({ success: true, attendance: record });
   } catch (e) {
     return res.status(500).json({ success: false, message: 'Failed to end break' });
@@ -1232,6 +1245,12 @@ router.post('/punch-in', upload.single('photo'), async (req, res) => {
       console.error('Mobile Late Penalty calculation error:', lpErr);
     }
 
+    logAudit({
+      req,
+      action: 'ATTENDANCE_PUNCH_IN',
+      remarks: `Staff punched in at ${now.toISOString()} on ${key}.`,
+      details: { attendanceId: record.id, date: key, latitude: lat, longitude: lng, address }
+    });
     return res.json({ success: true, attendance: record });
   } catch (e) {
     return res.status(500).json({ success: false, message: 'Punch-in failed' });
@@ -1435,7 +1454,12 @@ router.post('/punch-out', upload.single('photo'), async (req, res) => {
       punchOutAddress: address
     });
 
-    console.log(`Attendance status calculated: ${status} for ${totalWorkHours.toFixed(2)} hours worked`);
+    logAudit({
+      req,
+      action: 'ATTENDANCE_PUNCH_OUT',
+      remarks: `Staff punched out at ${now.toISOString()} on ${key}. Status: ${status.toUpperCase()}.`,
+      details: { attendanceId: record.id, date: key, totalWorkHours, status }
+    });
     return res.json({ success: true, attendance: record });
   } catch (e) {
     return res.status(500).json({ success: false, message: 'Punch-out failed' });
@@ -2567,6 +2591,12 @@ router.post('/qr-punch', upload.single('photo'), async (req, res) => {
       });
     }
 
+    logAudit({
+      req,
+      action: `ATTENDANCE_QR_${action}`,
+      remarks: `Staff punched ${action === 'PUNCH_IN' ? 'in' : 'out'} via QR on ${record.date}.`,
+      details: { attendanceId: record.id, date: record.date, action, zoneName: matchedZone?.name }
+    });
     return res.json({ success: true, action, attendance: record });
   } catch (error) {
     console.error('QR punch error:', error);
