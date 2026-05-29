@@ -6,7 +6,7 @@ const authLimiter = rateLimit({
   max: 5, // Limit each IP to 5 requests per auth route
   message: {
     success: false,
-    message: 'Too many login or OTP attempts. Please try again after 1 minute.'
+    message: 'Too many login or OTP attempts. Please try again after 5 minute.'
   },
   standardHeaders: true,
   legacyHeaders: false,

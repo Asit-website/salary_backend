@@ -167,6 +167,14 @@ router.post('/holiday-work-pay/rules', requireSettingsAccess, async (req, res) =
       holidayMultiplier,
       weeklyOffMultiplier
     });
+
+    logAudit({
+      req,
+      action: 'HOLIDAY_WORK_PAY_RULE_CREATE',
+      remarks: `Created Holiday Work Pay rule: ${name}`,
+      details: { id: rule.id, name, holidayMultiplier, weeklyOffMultiplier }
+    });
+
     return res.json({ success: true, rule });
   } catch (e) {
     console.error('Error creating holiday pay rule:', e);
@@ -181,6 +189,14 @@ router.put('/holiday-work-pay/rules/:id', requireSettingsAccess, async (req, res
     const rule = await HolidayWorkPayRule.findOne({ where: { id: req.params.id, orgAccountId: orgId } });
     if (!rule) return res.status(404).json({ success: false, message: 'Rule not found' });
     await rule.update({ name, holidayMultiplier, weeklyOffMultiplier, active });
+
+    logAudit({
+      req,
+      action: 'HOLIDAY_WORK_PAY_RULE_UPDATE',
+      remarks: `Updated Holiday Work Pay rule: ${name || rule.name}`,
+      details: { id: rule.id, name, holidayMultiplier, weeklyOffMultiplier, active }
+    });
+
     return res.json({ success: true, rule });
   } catch (e) {
     console.error('Error updating holiday pay rule:', e);
@@ -193,7 +209,16 @@ router.delete('/holiday-work-pay/rules/:id', requireSettingsAccess, async (req, 
     const orgId = requireOrg(req, res); if (!orgId) return;
     const rule = await HolidayWorkPayRule.findOne({ where: { id: req.params.id, orgAccountId: orgId } });
     if (!rule) return res.status(404).json({ success: false, message: 'Rule not found' });
+    const ruleName = rule.name;
     await rule.destroy();
+
+    logAudit({
+      req,
+      action: 'HOLIDAY_WORK_PAY_RULE_DELETE',
+      remarks: `Deleted Holiday Work Pay rule: ${ruleName}`,
+      details: { id: req.params.id }
+    });
+
     return res.json({ success: true, message: 'Rule deleted' });
   } catch (e) {
     console.error('Error deleting holiday pay rule:', e);
@@ -236,6 +261,14 @@ router.post('/holiday-work-pay/assignments', requireSettingsAccess, async (req, 
       });
       results.push(asg);
     }
+
+    logAudit({
+      req,
+      action: 'HOLIDAY_WORK_PAY_ASSIGN',
+      remarks: `Assigned Holiday Work Pay rule ${ruleId} to ${ids.length} employees`,
+      details: { userIds: ids, ruleId, effectiveFrom, effectiveTo }
+    });
+
     return res.json({ success: true, assignments: results });
   } catch (e) {
     console.error('Error creating holiday pay assignment:', e);
@@ -250,6 +283,14 @@ router.put('/holiday-work-pay/assignments/:id', requireSettingsAccess, async (re
     const asg = await StaffHolidayWorkPayAssignment.findOne({ where: { id: req.params.id, orgAccountId: orgId } });
     if (!asg) return res.status(404).json({ success: false, message: 'Assignment not found' });
     await asg.update({ userId, ruleId, effectiveFrom, effectiveTo });
+
+    logAudit({
+      req,
+      action: 'HOLIDAY_WORK_PAY_ASSIGN_UPDATE',
+      remarks: `Updated Holiday Work Pay assignment for user ${userId || asg.userId}`,
+      details: { id: asg.id, userId, ruleId, effectiveFrom, effectiveTo }
+    });
+
     return res.json({ success: true, assignment: asg });
   } catch (e) {
     console.error('Error updating holiday pay assignment:', e);
@@ -262,7 +303,16 @@ router.delete('/holiday-work-pay/assignments/:id', requireSettingsAccess, async 
     const orgId = requireOrg(req, res); if (!orgId) return;
     const asg = await StaffHolidayWorkPayAssignment.findOne({ where: { id: req.params.id, orgAccountId: orgId } });
     if (!asg) return res.status(404).json({ success: false, message: 'Assignment not found' });
+    const targetUserId = asg.userId;
     await asg.destroy();
+
+    logAudit({
+      req,
+      action: 'HOLIDAY_WORK_PAY_ASSIGN_DELETE',
+      remarks: `Deleted Holiday Work Pay assignment for user ${targetUserId}`,
+      details: { id: req.params.id, userId: targetUserId }
+    });
+
     return res.json({ success: true, message: 'Assignment deleted' });
   } catch (e) {
     console.error('Error deleting holiday pay assignment:', e);
@@ -5611,6 +5661,13 @@ router.post('/weekly-off/templates', async (req, res) => {
 
     const row = await sequelize.models.WeeklyOffTemplate.create({ name: String(name), config: norm, active: active === undefined ? true : !!active, orgAccountId: orgId });
 
+    logAudit({
+      req,
+      action: 'WEEKLY_OFF_TEMPLATE_CREATE',
+      remarks: `Created Weekly-Off Template: ${row.name}`,
+      details: { id: row.id, name: row.name, config: row.config }
+    });
+
     return res.json({ success: true, template: row });
 
   } catch (e) {
@@ -5659,6 +5716,13 @@ router.put('/weekly-off/templates/:id', async (req, res) => {
 
     const fresh = await sequelize.models.WeeklyOffTemplate.findByPk(id);
 
+    logAudit({
+      req,
+      action: 'WEEKLY_OFF_TEMPLATE_UPDATE',
+      remarks: `Updated Weekly-Off Template: ${fresh.name}`,
+      details: { id: fresh.id, name: fresh.name, config: fresh.config }
+    });
+
     return res.json({ success: true, template: fresh });
 
   } catch (e) {
@@ -5704,6 +5768,13 @@ router.post('/weekly-off/assign', async (req, res) => {
     const payload = users.map(uid => ({ userId: Number(uid), weeklyOffTemplateId: tplId, effectiveFrom: from, effectiveTo: to }));
 
     await sequelize.models.StaffWeeklyOffAssignment.bulkCreate(payload);
+
+    logAudit({
+      req,
+      action: 'WEEKLY_OFF_ASSIGN',
+      remarks: `Assigned Weekly-Off Template ${tplId} to ${users.length} users`,
+      details: { userIds: users.map(Number), weeklyOffTemplateId: tplId, effectiveFrom: from, effectiveTo: to }
+    });
 
     return res.json({ success: true });
 
@@ -5758,6 +5829,14 @@ router.delete('/weekly-off/assign/:id', async (req, res) => {
     }
 
     await assignment.destroy();
+
+    logAudit({
+      req,
+      action: 'WEEKLY_OFF_UNASSIGN',
+      remarks: `Unassigned Weekly-Off Template ${assignment.weeklyOffTemplateId} from user ${assignment.userId}`,
+      details: { id: assignment.id, userId: assignment.userId, weeklyOffTemplateId: assignment.weeklyOffTemplateId }
+    });
+
     return res.json({ success: true });
   } catch (e) {
     return res.status(500).json({ success: false, message: 'Failed to unassign staff' });
@@ -6420,6 +6499,13 @@ router.post('/leave/templates', async (req, res) => {
 
     const created = await LeaveTemplate.findByPk(row.id, { include: [{ model: LeaveTemplateCategory, as: 'categories' }] });
 
+    logAudit({
+      req,
+      action: 'LEAVE_TEMPLATE_CREATE',
+      remarks: `Created Leave Template: ${created.name}`,
+      details: { id: created.id, name: created.name, cycle: created.cycle, categories: (created.categories || []).map(c => ({ name: c.name, leaveCount: c.leaveCount })) }
+    });
+
     return res.json({ success: true, template: created });
 
   } catch (e) {
@@ -6502,6 +6588,13 @@ router.put('/leave/templates/:id', async (req, res) => {
 
     const updated = await LeaveTemplate.findByPk(row.id, { include: [{ model: LeaveTemplateCategory, as: 'categories' }] });
 
+    logAudit({
+      req,
+      action: 'LEAVE_TEMPLATE_UPDATE',
+      remarks: `Updated Leave Template: ${updated.name}`,
+      details: { id: updated.id, name: updated.name, cycle: updated.cycle, categories: (updated.categories || []).map(c => ({ name: c.name, leaveCount: c.leaveCount })) }
+    });
+
     return res.json({ success: true, template: updated });
 
   } catch (e) {
@@ -6555,6 +6648,13 @@ router.post('/leave/assign', async (req, res) => {
 
     await StaffLeaveAssignment.bulkCreate(payload);
 
+    logAudit({
+      req,
+      action: 'LEAVE_ASSIGN',
+      remarks: `Assigned Leave Template ${tplId} to ${users.length} users`,
+      details: { userIds: users.map(Number), leaveTemplateId: tplId, effectiveFrom: from, effectiveTo: to }
+    });
+
     return res.json({ success: true });
 
   } catch (e) {
@@ -6606,6 +6706,14 @@ router.delete('/leave/assign/:id', async (req, res) => {
     }
 
     await assignment.destroy();
+
+    logAudit({
+      req,
+      action: 'LEAVE_UNASSIGN',
+      remarks: `Unassigned Leave Template ${assignment.leaveTemplateId} from user ${assignment.userId}`,
+      details: { id: assignment.id, userId: assignment.userId, leaveTemplateId: assignment.leaveTemplateId }
+    });
+
     return res.json({ success: true });
   } catch (e) {
     return res.status(500).json({ success: false, message: 'Failed to unassign staff' });
@@ -6708,6 +6816,13 @@ router.post('/holidays/templates', async (req, res) => {
 
     const created = await HolidayTemplate.findByPk(row.id, { include: [{ model: HolidayDate, as: 'holidays' }] });
 
+    logAudit({
+      req,
+      action: 'HOLIDAYS_TEMPLATE_CREATE',
+      remarks: `Created Holiday Template: ${created.name}`,
+      details: { id: created.id, name: created.name, holidays: (created.holidays || []).map(h => ({ name: h.name, date: h.date })) }
+    });
+
     return res.json({ success: true, template: created });
 
   } catch (e) {
@@ -6772,6 +6887,13 @@ router.put('/holidays/templates/:id', async (req, res) => {
 
     const updated = await HolidayTemplate.findByPk(row.id, { include: [{ model: HolidayDate, as: 'holidays' }] });
 
+    logAudit({
+      req,
+      action: 'HOLIDAYS_TEMPLATE_UPDATE',
+      remarks: `Updated Holiday Template: ${updated.name}`,
+      details: { id: updated.id, name: updated.name, holidays: (updated.holidays || []).map(h => ({ name: h.name, date: h.date })) }
+    });
+
     return res.json({ success: true, template: updated });
 
   } catch (e) {
@@ -6835,6 +6957,13 @@ router.post('/holidays/assign', async (req, res) => {
     const payload = validIds.map(uid => ({ userId: uid, holidayTemplateId: tplId, effectiveFrom: from, effectiveTo: to }));
     await StaffHolidayAssignment.bulkCreate(payload);
 
+    logAudit({
+      req,
+      action: 'HOLIDAYS_ASSIGN',
+      remarks: `Assigned Holiday Template ${tplId} to ${validIds.length} users`,
+      details: { userIds: validIds, holidayTemplateId: tplId, effectiveFrom: from, effectiveTo: to }
+    });
+
     return res.json({ success: true });
 
   } catch (e) {
@@ -6888,6 +7017,14 @@ router.delete('/holidays/assign/:id', async (req, res) => {
     }
 
     await assignment.destroy();
+
+    logAudit({
+      req,
+      action: 'HOLIDAYS_UNASSIGN',
+      remarks: `Unassigned Holiday Template ${assignment.holidayTemplateId} from user ${assignment.userId}`,
+      details: { id: assignment.id, userId: assignment.userId, holidayTemplateId: assignment.holidayTemplateId }
+    });
+
     return res.json({ success: true });
   } catch (e) {
     return res.status(500).json({ success: false, message: 'Failed to unassign staff' });
@@ -10873,6 +11010,13 @@ router.put('/settings/automation-rules', async (req, res) => {
       });
     }
 
+    logAudit({
+      req,
+      action: 'AUTOMATION_RULE_UPDATE',
+      remarks: `Updated Attendance Automation Rule: ${key}`,
+      details: { key, active: active ?? rule.active, config }
+    });
+
     return res.json({ success: true, rule });
   } catch (e) {
     return res.status(500).json({ success: false, message: 'Failed to save automation rule' });
@@ -11183,6 +11327,13 @@ router.post('/shifts/templates', async (req, res) => {
       await ShiftBreak.bulkCreate(payload);
     }
 
+    logAudit({
+      req,
+      action: 'SHIFT_TEMPLATE_CREATE',
+      remarks: `Created Shift Template: ${created.name}`,
+      details: { id: created.id, name: created.name, startTime: created.startTime, endTime: created.endTime, shiftType: created.shiftType }
+    });
+
     return res.json({ success: true, template: created });
   } catch (e) {
     return res.status(500).json({ success: false, message: 'Failed to create shift template' });
@@ -11249,7 +11400,7 @@ router.put('/shifts/templates/:id', async (req, res) => {
       }
     }
 
-    await row.update({
+   const created = await row.update({
       shiftType: st,
       name: name !== undefined ? String(name) : row.name,
       code: code !== undefined ? (code ? String(code) : null) : row.code,
@@ -11289,6 +11440,13 @@ router.put('/shifts/templates/:id', async (req, res) => {
       }
     }
 
+    logAudit({
+      req,
+      action: 'SHIFT_TEMPLATE_UPDATE',
+      remarks: `Updated Shift Template: ${created.name}`,
+      details: { id: created.id, name: created.name, startTime: created.startTime, endTime: created.endTime, shiftType: created.shiftType }
+    });
+
     return res.json({ success: true, template: row });
   } catch (e) {
     return res.status(500).json({ success: false, message: 'Failed to update shift template' });
@@ -11302,6 +11460,14 @@ router.delete('/shifts/templates/:id', async (req, res) => {
     const row = await ShiftTemplate.findOne({ where: { id, orgAccountId: orgId } });
     if (!row) return res.status(404).json({ success: false, message: 'Not found' });
     await row.update({ active: false });
+
+    logAudit({
+      req,
+      action: 'SHIFT_TEMPLATE_DELETE',
+      remarks: `Deleted Shift Template: ${row.name}`,
+      details: { id: row.id, name: row.name, startTime: row.startTime, endTime: row.endTime, shiftType: row.shiftType }
+    });
+
     return res.json({ success: true });
   } catch (e) {
     return res.status(500).json({ success: false, message: 'Failed to delete shift template' });
@@ -11324,7 +11490,10 @@ router.post('/shifts/assign', async (req, res) => {
       return res.status(400).json({ success: false, message: 'effectiveTo invalid' });
     }
 
-    const user = await User.findOne({ where: { id: uid, orgAccountId: orgId, role: 'staff' } });
+    const user = await User.findOne({
+      where: { id: uid, orgAccountId: orgId, role: 'staff' },
+      include: [{ model: StaffProfile, as: 'profile' }]
+    });
     if (!user) return res.status(404).json({ success: false, message: 'Staff not found' });
     const template = await ShiftTemplate.findOne({ where: { id: tid, orgAccountId: orgId, active: true } });
     if (!template) return res.status(404).json({ success: false, message: 'Shift template not found' });
@@ -11349,6 +11518,20 @@ router.post('/shifts/assign', async (req, res) => {
         effectiveTo: et,
       });
     }
+
+    logAudit({
+      req,
+      action: 'SHIFT_ASSIGN',
+      remarks: `Assigned Shift Template: ${template.name} to Staff: ${user.profile?.name || user.name || uid}`,
+      details: {
+        userId: uid,
+        userName: user.profile?.name || user.name || null,
+        shiftTemplateId: tid,
+        shiftTemplateName: template.name,
+        effectiveFrom: ef,
+        effectiveTo: et
+      }
+    });
 
     return res.json({ success: true, assignment: result });
   } catch (e) {
@@ -16583,6 +16766,13 @@ router.post('/geofence/templates', async (req, res) => {
 
     const created = await GeofenceTemplate.findByPk(tpl.id, { include: [{ model: GeofenceSite, as: 'sites' }] });
 
+    logAudit({
+      req,
+      action: 'GEOFENCE_TEMPLATE_CREATE',
+      remarks: `Created Geofence Template: ${created.name}`,
+      details: { id: created.id, name: created.name, sitesCount: (created.sites || []).length }
+    });
+
     return res.json({ success: true, template: created });
 
   } catch (e) {
@@ -16711,6 +16901,13 @@ router.put('/geofence/templates/:id', async (req, res) => {
 
     const updated = await GeofenceTemplate.findByPk(row.id, { include: [{ model: GeofenceSite, as: 'sites' }] });
 
+    logAudit({
+      req,
+      action: 'GEOFENCE_TEMPLATE_UPDATE',
+      remarks: `Updated Geofence Template: ${updated.name}`,
+      details: { id: updated.id, name: updated.name, sitesCount: (updated.sites || []).length }
+    });
+
     return res.json({ success: true, template: updated });
 
   } catch (e) {
@@ -16742,6 +16939,13 @@ router.delete('/geofence/templates/:id', async (req, res) => {
     await GeofenceSite.destroy({ where: { geofenceTemplateId: row.id } });
 
     await row.destroy();
+
+    logAudit({
+      req,
+      action: 'GEOFENCE_TEMPLATE_DELETE',
+      remarks: `Deleted Geofence Template: ${row.name}`,
+      details: { id: row.id, name: row.name }
+    });
 
     return res.json({ success: true });
 
@@ -16775,7 +16979,10 @@ router.post('/geofence/assign', async (req, res) => {
 
     // Verify staff and template belong to org
 
-    const staff = await User.findOne({ where: { id: Number(userId), orgAccountId: orgId, role: 'staff' } });
+    const staff = await User.findOne({
+      where: { id: Number(userId), orgAccountId: orgId, role: 'staff' },
+      include: [{ model: StaffProfile, as: 'profile' }]
+    });
 
     if (!staff) return res.status(404).json({ success: false, message: 'Staff not found' });
 
@@ -16810,6 +17017,20 @@ router.post('/geofence/assign', async (req, res) => {
 
       active: true,
 
+    });
+
+    logAudit({
+      req,
+      action: 'GEOFENCE_ASSIGN',
+      remarks: `Assigned Geofence Template: ${tpl.name} to Staff: ${staff.profile?.name || staff.name || userId}`,
+      details: {
+        userId: Number(userId),
+        userName: staff.profile?.name || staff.name || null,
+        geofenceTemplateId: Number(geofenceTemplateId),
+        geofenceTemplateName: tpl.name,
+        effectiveFrom: effectiveFrom || null,
+        effectiveTo: effectiveTo || null
+      }
     });
 
     return res.json({ success: true, assignment: row });
@@ -25633,6 +25854,13 @@ router.post('/settings/overtime-rules', async (req, res) => {
     // Automatically set as active rule for the organization
     await OrgAccount.update({ overtimeRuleId: rule.id }, { where: { id: orgId } });
 
+    logAudit({
+      req,
+      action: 'OVERTIME_RULE_CREATE',
+      remarks: `Created Overtime Rule: ${rule.name}`,
+      details: { id: rule.id, name: rule.name, calculationType: rule.calculationType, rewardType: rule.rewardType }
+    });
+
     return res.json({ success: true, rule });
   } catch (error) {
     return res.status(500).json({ success: false, message: 'Failed to create overtime rule' });
@@ -25650,6 +25878,13 @@ router.put('/settings/overtime-rules/:id', async (req, res) => {
     // Ensure OrgAccount is linked (in case it wasn't or multiple rules exist)
     await OrgAccount.update({ overtimeRuleId: rule.id }, { where: { id: orgId } });
 
+    logAudit({
+      req,
+      action: 'OVERTIME_RULE_UPDATE',
+      remarks: `Updated Overtime Rule: ${rule.name}`,
+      details: { id: rule.id, name: rule.name, calculationType: rule.calculationType, rewardType: rule.rewardType }
+    });
+
     return res.json({ success: true, rule });
   } catch (error) {
     return res.status(500).json({ success: false, message: 'Failed to update overtime rule' });
@@ -25663,6 +25898,14 @@ router.delete('/settings/overtime-rules/:id', async (req, res) => {
     if (!rule) return res.status(404).json({ success: false, message: 'Rule not found' });
 
     await rule.destroy();
+
+    logAudit({
+      req,
+      action: 'OVERTIME_RULE_DELETE',
+      remarks: `Deleted Overtime Rule: ${rule.name}`,
+      details: { id: rule.id, name: rule.name }
+    });
+
     return res.json({ success: true, message: 'Rule deleted' });
   } catch (error) {
     return res.status(500).json({ success: false, message: 'Failed to delete overtime rule' });
@@ -25734,6 +25977,13 @@ router.post('/settings/overtime-rules/:id/assign', async (req, res) => {
       });
     }
 
+    logAudit({
+      req,
+      action: 'OVERTIME_RULE_ASSIGN',
+      remarks: `Assigned Overtime Rule ID ${ruleId} to ${userIds.length} staff members`,
+      details: { ruleId, userIds, effectiveFrom, effectiveTo }
+    });
+
     return res.json({
       success: true,
       message: 'Staff assigned successfully',
@@ -25752,6 +26002,14 @@ router.delete('/settings/overtime-rules/assignments/:id', async (req, res) => {
     if (!assignment) return res.status(404).json({ success: false, message: 'Assignment not found' });
 
     await assignment.destroy();
+
+    logAudit({
+      req,
+      action: 'OVERTIME_RULE_UNASSIGN',
+      remarks: `Unassigned staff User ID ${assignment.userId} from Overtime Rule ID ${assignment.overtimeRuleId}`,
+      details: { id: assignment.id, userId: assignment.userId, overtimeRuleId: assignment.overtimeRuleId }
+    });
+
     return res.json({ success: true, message: 'Staff unassigned successfully' });
   } catch (error) {
     return res.status(500).json({ success: false, message: 'Failed to unassign staff' });
@@ -25808,6 +26066,13 @@ router.post('/settings/early-overtime-rules', async (req, res) => {
       fullDayThresholdMinutes
     });
 
+    logAudit({
+      req,
+      action: 'EARLY_OVERTIME_RULE_CREATE',
+      remarks: `Created Early Overtime Rule: ${rule.name}`,
+      details: { id: rule.id, name: rule.name }
+    });
+
     return res.json({ success: true, rule });
   } catch (error) {
     console.error('Create early overtime rule error:', error);
@@ -25823,6 +26088,14 @@ router.put('/settings/early-overtime-rules/:id', async (req, res) => {
     if (!rule) return res.status(404).json({ success: false, message: 'Rule not found' });
 
     await rule.update(req.body);
+
+    logAudit({
+      req,
+      action: 'EARLY_OVERTIME_RULE_UPDATE',
+      remarks: `Updated Early Overtime Rule: ${rule.name}`,
+      details: { id: rule.id, name: rule.name }
+    });
+
     return res.json({ success: true, rule });
   } catch (error) {
     console.error('Update early overtime rule error:', error);
@@ -25839,6 +26112,14 @@ router.delete('/settings/early-overtime-rules/:id', async (req, res) => {
 
     await StaffEarlyOvertimeAssignment.destroy({ where: { earlyOvertimeRuleId: rule.id } });
     await rule.destroy();
+
+    logAudit({
+      req,
+      action: 'EARLY_OVERTIME_RULE_DELETE',
+      remarks: `Deleted Early Overtime Rule: ${rule.name}`,
+      details: { id: rule.id, name: rule.name }
+    });
+
     return res.json({ success: true, message: 'Rule deleted' });
   } catch (error) {
     console.error('Delete early overtime rule error:', error);
@@ -25898,6 +26179,13 @@ router.post('/settings/early-overtime-rules/:id/assign', async (req, res) => {
       results.forEach(r => { if (r.lockedMonthsSkipped > 0) recalculationResult = r; });
     }
 
+    logAudit({
+      req,
+      action: 'EARLY_OVERTIME_RULE_ASSIGN',
+      remarks: `Assigned Early Overtime Rule ID ${req.params.id} to ${userIds.length} staff members`,
+      details: { ruleId: req.params.id, userIds, effectiveFrom, effectiveTo }
+    });
+
     return res.json({
       success: true,
       message: 'Staff assigned successfully',
@@ -25918,6 +26206,14 @@ router.delete('/settings/early-overtime-rules/assignments/:id', async (req, res)
     if (!assignment) return res.status(404).json({ success: false, message: 'Assignment not found' });
 
     await assignment.destroy();
+
+    logAudit({
+      req,
+      action: 'EARLY_OVERTIME_RULE_UNASSIGN',
+      remarks: `Unassigned staff User ID ${assignment.userId} from Early Overtime Rule ID ${assignment.earlyOvertimeRuleId}`,
+      details: { id: assignment.id, userId: assignment.userId, earlyOvertimeRuleId: assignment.earlyOvertimeRuleId }
+    });
+
     return res.json({ success: true, message: 'Staff unassigned successfully' });
   } catch (error) {
     console.error('Unassign early overtime staff error:', error);
@@ -25958,6 +26254,14 @@ router.post('/settings/early-exit-rules', async (req, res) => {
     const orgId = requireOrg(req, res); if (!orgId) return;
     const { EarlyExitRule } = require('../models');
     const rule = await EarlyExitRule.create({ ...req.body, orgAccountId: orgId });
+
+    logAudit({
+      req,
+      action: 'EARLY_EXIT_RULE_CREATE',
+      remarks: `Created Early Exit Rule: ${rule.name}`,
+      details: { id: rule.id, name: rule.name }
+    });
+
     return res.json({ success: true, rule });
   } catch (error) {
     return res.status(500).json({ success: false, message: 'Failed to create rule' });
@@ -25972,6 +26276,14 @@ router.put('/settings/early-exit-rules/:id', async (req, res) => {
     if (!rule) return res.status(404).json({ success: false, message: 'Rule not found' });
 
     await rule.update(req.body);
+
+    logAudit({
+      req,
+      action: 'EARLY_EXIT_RULE_UPDATE',
+      remarks: `Updated Early Exit Rule: ${rule.name}`,
+      details: { id: rule.id, name: rule.name }
+    });
+
     return res.json({ success: true, rule });
   } catch (error) {
     return res.status(500).json({ success: false, message: 'Failed to update rule' });
@@ -25987,6 +26299,14 @@ router.delete('/settings/early-exit-rules/:id', async (req, res) => {
 
     await StaffEarlyExitAssignment.destroy({ where: { earlyExitRuleId: rule.id } });
     await rule.destroy();
+
+    logAudit({
+      req,
+      action: 'EARLY_EXIT_RULE_DELETE',
+      remarks: `Deleted Early Exit Rule: ${rule.name}`,
+      details: { id: rule.id, name: rule.name }
+    });
+
     return res.json({ success: true, message: 'Rule deleted successfully' });
   } catch (error) {
     return res.status(500).json({ success: false, message: 'Failed to delete rule' });
@@ -26045,6 +26365,13 @@ router.post('/settings/early-exit-rules/:id/assign', async (req, res) => {
       results.forEach(r => { if (r.lockedMonthsSkipped > 0) recalculationResult = r; });
     }
 
+    logAudit({
+      req,
+      action: 'EARLY_EXIT_RULE_ASSIGN',
+      remarks: `Assigned Early Exit Rule ID ${req.params.id} to ${userIds.length} staff members`,
+      details: { ruleId: req.params.id, userIds, effectiveFrom, effectiveTo }
+    });
+
     return res.json({
       success: true,
       message: 'Staff assigned successfully',
@@ -26064,6 +26391,14 @@ router.delete('/settings/early-exit-rules/assignments/:id', async (req, res) => 
     if (!assignment) return res.status(404).json({ success: false, message: 'Assignment not found' });
 
     await assignment.destroy();
+
+    logAudit({
+      req,
+      action: 'EARLY_EXIT_RULE_UNASSIGN',
+      remarks: `Unassigned staff User ID ${assignment.userId} from Early Exit Rule ID ${assignment.earlyExitRuleId}`,
+      details: { id: assignment.id, userId: assignment.userId, earlyExitRuleId: assignment.earlyExitRuleId }
+    });
+
     return res.json({ success: true, message: 'Staff unassigned successfully' });
   } catch (error) {
     return res.status(500).json({ success: false, message: 'Failed to unassign staff' });
@@ -26103,6 +26438,14 @@ router.post('/settings/break-rules', async (req, res) => {
     const orgId = requireOrg(req, res); if (!orgId) return;
     const { BreakRule } = require('../models');
     const rule = await BreakRule.create({ ...req.body, orgAccountId: orgId });
+
+    logAudit({
+      req,
+      action: 'BREAK_RULE_CREATE',
+      remarks: `Created Break Rule: ${rule.name}`,
+      details: { id: rule.id, name: rule.name }
+    });
+
     return res.json({ success: true, rule });
   } catch (error) {
     return res.status(500).json({ success: false, message: 'Failed to create rule' });
@@ -26117,6 +26460,14 @@ router.put('/settings/break-rules/:id', async (req, res) => {
     if (!rule) return res.status(404).json({ success: false, message: 'Rule not found' });
 
     await rule.update(req.body);
+
+    logAudit({
+      req,
+      action: 'BREAK_RULE_UPDATE',
+      remarks: `Updated Break Rule: ${rule.name}`,
+      details: { id: rule.id, name: rule.name }
+    });
+
     return res.json({ success: true, rule });
   } catch (error) {
     return res.status(500).json({ success: false, message: 'Failed to update rule' });
@@ -26132,6 +26483,14 @@ router.delete('/settings/break-rules/:id', async (req, res) => {
 
     await StaffBreakAssignment.destroy({ where: { breakRuleId: rule.id } });
     await rule.destroy();
+
+    logAudit({
+      req,
+      action: 'BREAK_RULE_DELETE',
+      remarks: `Deleted Break Rule: ${rule.name}`,
+      details: { id: rule.id, name: rule.name }
+    });
+
     return res.json({ success: true, message: 'Rule deleted successfully' });
   } catch (error) {
     return res.status(500).json({ success: false, message: 'Failed to delete rule' });
@@ -26190,6 +26549,13 @@ router.post('/settings/break-rules/:id/assign', async (req, res) => {
       results.forEach(r => { if (r.lockedMonthsSkipped > 0) recalculationResult = r; });
     }
 
+    logAudit({
+      req,
+      action: 'BREAK_RULE_ASSIGN',
+      remarks: `Assigned Break Rule ID ${req.params.id} to ${userIds.length} staff members`,
+      details: { ruleId: req.params.id, userIds, effectiveFrom, effectiveTo }
+    });
+
     return res.json({
       success: true,
       message: 'Staff assigned successfully',
@@ -26209,6 +26575,14 @@ router.delete('/settings/break-rules/assignments/:id', async (req, res) => {
     if (!assignment) return res.status(404).json({ success: false, message: 'Assignment not found' });
 
     await assignment.destroy();
+
+    logAudit({
+      req,
+      action: 'BREAK_RULE_UNASSIGN',
+      remarks: `Unassigned staff User ID ${assignment.userId} from Break Rule ID ${assignment.breakRuleId}`,
+      details: { id: assignment.id, userId: assignment.userId, breakRuleId: assignment.breakRuleId }
+    });
+
     return res.json({ success: true, message: 'Staff unassigned successfully' });
   } catch (error) {
     return res.status(500).json({ success: false, message: 'Failed to unassign staff' });
@@ -26262,6 +26636,13 @@ router.post('/settings/late-punchin-rules', async (req, res) => {
       thresholds
     });
 
+    logAudit({
+      req,
+      action: 'LATE_PUNCHIN_RULE_CREATE',
+      remarks: `Created Late Punch-In Rule: ${rule.name}`,
+      details: { id: rule.id, name: rule.name }
+    });
+
     return res.json({ success: true, rule });
   } catch (error) {
     console.error('Create late punch-in rule error:', error);
@@ -26277,6 +26658,14 @@ router.put('/settings/late-punchin-rules/:id', async (req, res) => {
     if (!rule) return res.status(404).json({ success: false, message: 'Rule not found' });
 
     await rule.update(req.body);
+
+    logAudit({
+      req,
+      action: 'LATE_PUNCHIN_RULE_UPDATE',
+      remarks: `Updated Late Punch-In Rule: ${rule.name}`,
+      details: { id: rule.id, name: rule.name }
+    });
+
     return res.json({ success: true, rule });
   } catch (error) {
     console.error('Update late punch-in rule error:', error);
@@ -26293,6 +26682,14 @@ router.delete('/settings/late-punchin-rules/:id', async (req, res) => {
 
     await StaffLatePunchInAssignment.destroy({ where: { latePunchInRuleId: rule.id } });
     await rule.destroy();
+
+    logAudit({
+      req,
+      action: 'LATE_PUNCHIN_RULE_DELETE',
+      remarks: `Deleted Late Punch-In Rule: ${rule.name}`,
+      details: { id: rule.id, name: rule.name }
+    });
+
     return res.json({ success: true, message: 'Rule deleted successfully' });
   } catch (error) {
     console.error('Delete late punch-in rule error:', error);
@@ -26353,6 +26750,13 @@ router.post('/settings/late-punchin-rules/:id/assign', async (req, res) => {
       results.forEach(r => { if (r.lockedMonthsSkipped > 0) recalculationResult = r; });
     }
 
+    logAudit({
+      req,
+      action: 'LATE_PUNCHIN_RULE_ASSIGN',
+      remarks: `Assigned Late Punch-In Rule ID ${req.params.id} to ${userIds.length} staff members`,
+      details: { ruleId: req.params.id, userIds, effectiveFrom, effectiveTo }
+    });
+
     return res.json({
       success: true,
       message: 'Staff assigned successfully',
@@ -26412,6 +26816,14 @@ router.delete('/settings/late-punchin-rules/assignments/:id', async (req, res) =
     if (!assignment) return res.status(404).json({ success: false, message: 'Assignment not found' });
 
     await assignment.destroy();
+
+    logAudit({
+      req,
+      action: 'LATE_PUNCHIN_RULE_UNASSIGN',
+      remarks: `Unassigned staff User ID ${assignment.userId} from Late Punch-In Rule ID ${assignment.latePunchInRuleId}`,
+      details: { id: assignment.id, userId: assignment.userId, latePunchInRuleId: assignment.latePunchInRuleId }
+    });
+
     return res.json({ success: true, message: 'Staff unassigned successfully' });
   } catch (error) {
     console.error('Unassign late punch-in staff error:', error);
