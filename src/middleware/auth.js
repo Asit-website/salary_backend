@@ -1,4 +1,7 @@
 const jwt = require('jsonwebtoken');
+const { continuousVerify } = require('./continuousAuth');
+const { verifyDevice } = require('./verifyDevice');
+const { checkGeoVelocity } = require('./geoVelocity');
 
 function authRequired(req, res, next) {
   try {
@@ -17,10 +20,23 @@ function authRequired(req, res, next) {
     const secret = process.env.JWT_SECRET || 'dev_secret_change_me';
     const payload = jwt.verify(token, secret);
     req.user = payload;
-    return next();
+    
+    // Perform continuous validation of database status (Zero Trust)
+    return continuousVerify(req, res, (err) => {
+      if (err) return next(err);
+      // Perform device verification and auto-registration (Zero Trust)
+      return verifyDevice(req, res, (err2) => {
+        if (err2) return next(err2);
+        // Perform Geo-Velocity & IP reputation checks (Zero Trust)
+        return checkGeoVelocity(req, res, next);
+      });
+    });
   } catch (e) {
     return res.status(401).json({ success: false, message: 'Invalid token' });
   }
 }
 
 module.exports = { authRequired };
+
+
+
