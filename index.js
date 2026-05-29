@@ -6,6 +6,7 @@ require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
 
+const cookieParser = require('cookie-parser');
 const { initDb } = require('./src/db');
 const authRoutes = require('./src/routes/auth');
 const adminRoutes = require('./src/routes/admin');
@@ -57,7 +58,13 @@ ensureCollectionExists().then(success => {
   }
 });
 
-app.use(cors());
+app.use(cors({
+  origin: (origin, callback) => {
+    callback(null, origin || true);
+  },
+  credentials: true
+}));
+app.use(cookieParser());
 app.use(express.json({ limit: '2mb' }));
 
 const uploadsDir = path.join(__dirname, 'uploads');

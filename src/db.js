@@ -1,9 +1,17 @@
 const bcrypt = require('bcryptjs');
 
-const { sequelize, User, StaffProfile, MailCampaign, MailQueue, JobPosting, Candidate, Interview } = require('./models');
+const { sequelize, User, StaffProfile, MailCampaign, MailQueue, JobPosting, Candidate, Interview, RefreshToken } = require('./models');
 
 async function initDb() {
   await sequelize.authenticate();
+
+  // Ensure RefreshToken table exists
+  try {
+    await RefreshToken.sync({ alter: true });
+    console.log('⏰ RefreshToken table synced.');
+  } catch (err) {
+    console.log('⚠️ Error syncing RefreshToken table:', err.message);
+  }
 
   // Ensure notifications table exists
   try {

@@ -11936,11 +11936,31 @@ router.get('/attendance', async (req, res) => {
 
     const toTime = (iso) => {
       if (!iso) return null;
-      const d = new Date(iso);
-      if (isNaN(d.getTime())) return null;
-      const hh = String(d.getHours()).padStart(2, '0');
-      const mm = String(d.getMinutes()).padStart(2, '0');
-      return `${hh}:${mm}`;
+      try {
+        let str = String(iso).trim();
+        if (str.includes('24:')) {
+          str = str.replace(/24:(\d{2})/, '00:$1');
+        }
+        const d = dayjs(str);
+        if (d.isValid()) {
+          let formatted = d.format('HH:mm');
+          if (formatted.startsWith('24:')) {
+            formatted = '00' + formatted.slice(2);
+          }
+          return formatted;
+        }
+        const match = str.match(/(\d{1,2}):(\d{2})/);
+        if (match) {
+          let hr = Number(match[1]);
+          const mn = match[2];
+          if (hr === 24 || hr === 0) hr = 0;
+          return `${String(hr).padStart(2, '0')}:${mn}`;
+        }
+        return null;
+      } catch (err) {
+        console.error('Error in toTime:', err);
+        return null;
+      }
     };
 
     const data = rows.map(r => {

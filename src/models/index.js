@@ -123,6 +123,7 @@ const defineStaffHolidayWorkPayAssignment = require('./StaffHolidayWorkPayAssign
 const defineClientAssignment = require('./ClientAssignment');
 const defineNotification = require('./Notification');
 const defineAuditLog = require('./AuditLog');
+const defineRefreshToken = require('./RefreshToken');
 
 
 
@@ -252,6 +253,7 @@ const StaffHolidayWorkPayAssignment = defineStaffHolidayWorkPayAssignment(sequel
 const ClientAssignment = defineClientAssignment(sequelize);
 const Notification = defineNotification(sequelize);
 const AuditLog = defineAuditLog(sequelize);
+const RefreshToken = defineRefreshToken(sequelize);
 
 
 OrgAccount.hasMany(Notification, { foreignKey: 'orgAccountId', as: 'notifications' });
@@ -262,6 +264,10 @@ User.hasMany(AuditLog, { foreignKey: 'userId', as: 'auditLogs' });
 AuditLog.belongsTo(User, { foreignKey: 'userId', as: 'user' });
 OrgAccount.hasMany(AuditLog, { foreignKey: 'orgAccountId', as: 'auditLogs' });
 AuditLog.belongsTo(OrgAccount, { foreignKey: 'orgAccountId', as: 'orgAccount' });
+
+// RefreshToken associations
+User.hasMany(RefreshToken, { foreignKey: 'userId', as: 'refreshTokens' });
+RefreshToken.belongsTo(User, { foreignKey: 'userId', as: 'user' });
 
 
 
@@ -977,4 +983,5 @@ module.exports = {
   ClientAssignment,
   Notification,
   AuditLog,
+  RefreshToken,
 };

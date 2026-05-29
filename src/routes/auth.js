@@ -2,7 +2,8 @@ const express = require('express');
 const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs');
 
-const { User, StaffProfile, OtpVerify, OrgAccount, ChannelPartner, Subscription, Plan } = require('../models');
+const crypto = require('crypto');
+const { User, StaffProfile, OtpVerify, OrgAccount, ChannelPartner, Subscription, Plan, RefreshToken } = require('../models');
 const { logAudit } = require('../utils/auditLogger');
 const otpStore = require('../otpStore');
 
@@ -72,6 +73,92 @@ const recordSuccessfulAttempt = async (users) => {
     }
   }
 };
+
+async function sendAuthResponse(user, req, res, extraJson = {}) {
+  const secret = process.env.JWT_SECRET || 'dev_secret_change_me';
+  const profile = await StaffProfile.findOne({ where: { userId: user.id } });
+  const name = profile?.name || null;
+  const staffId = profile?.staffId || null;
+
+  const isSuperadminPanel = !!req.body.isSuperadminPanel || user.role === 'superadmin';
+  const orgAccountId = isSuperadminPanel ? null : user.orgAccountId;
+
+  // 1. Generate short-lived Access Token (15 minutes)
+  const accessToken = jwt.sign(
+    {
+      id: user.id,
+      role: user.role,
+      phone: user.phone,
+      name,
+      staffId,
+      orgAccountId,
+      channelPartnerId: user.channelPartnerId,
+      isSuperadminPanel,
+      permissions: user.permissions
+    },
+    secret,
+    { expiresIn: '15m' }
+  );
+
+  // 2. Generate Refresh Token (7 days)
+  const refreshToken = crypto.randomBytes(40).toString('hex');
+  const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000); // 7 days
+
+  // Store in database
+  await RefreshToken.create({
+    token: refreshToken,
+    userId: user.id,
+    expiresAt
+  });
+
+  const isMobile = req.headers['x-app-platform'] === 'mobile-apk' || req.headers['x-app-platform'] === 'admin-apk';
+
+  if (!isMobile) {
+    // Web client: Set refresh token as secure HttpOnly cookie
+    res.cookie('refreshToken', refreshToken, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === 'production',
+      sameSite: 'lax',
+      maxAge: 7 * 24 * 60 * 60 * 1000 // 7 days
+    });
+
+    return res.json({
+      success: true,
+      token: accessToken,
+      user: {
+        id: user.id,
+        role: user.role,
+        phone: user.phone,
+        name,
+        staffId,
+        orgAccountId,
+        channelPartnerId: user.channelPartnerId,
+        isSuperadminPanel,
+        permissions: user.permissions
+      },
+      ...extraJson
+    });
+  } else {
+    // Mobile client: Return refresh token in the JSON body
+    return res.json({
+      success: true,
+      token: accessToken,
+      refreshToken: refreshToken,
+      user: {
+        id: user.id,
+        role: user.role,
+        phone: user.phone,
+        name,
+        staffId,
+        orgAccountId,
+        channelPartnerId: user.channelPartnerId,
+        isSuperadminPanel,
+        permissions: user.permissions
+      },
+      ...extraJson
+    });
+  }
+}
 
 function normalizePhone(phone) {
   const digits = String(phone || '').replace(/[^0-9]/g, '');
@@ -508,58 +595,23 @@ router.post('/verify-otp', authLimiter, async (req, res) => {
       } catch (_) { }
     }
 
-    const profile = await StaffProfile.findOne({ where: { userId: user.id } });
-    const name = profile?.name || null;
-    const staffId = profile?.staffId || null;
-
-    const secret = process.env.JWT_SECRET || 'dev_secret_change_me';
-    const isSuperRole = user.role === 'superadmin';
-    const isActuallySuperPanel = !!req.body.isSuperadminPanel || isSuperRole;
-
-    const finalToken = jwt.sign(
-      {
-        id: user.id,
-        role: user.role,
-        phone: user.phone,
-        name,
-        staffId,
-        orgAccountId: isActuallySuperPanel ? null : user.orgAccountId,
-        channelPartnerId: user.channelPartnerId,
-        isSuperadminPanel: isActuallySuperPanel,
-        permissions: user.permissions
-      },
-      secret,
-      { expiresIn: process.env.JWT_EXPIRES_IN || '7d' }
-    );
+    const isActuallySuperPanel = Boolean(req.body?.isSuperadminPanel || !user.orgAccountId);
 
     logAudit({
       req,
       action: 'LOGIN_SUCCESS',
-      remarks: `User ${name || user.phone} logged in successfully via OTP. Role: ${user.role}.`,
+      remarks: `User ${user.name || user.phone} logged in successfully via OTP. Role: ${user.role}.`,
       overrides: {
         userId: user.id,
         orgAccountId: isActuallySuperPanel ? null : user.orgAccountId,
         userPhone: user.phone,
-        performedBy: name || `User (${user.phone})`
+        performedBy: user.name || `User (${user.phone})`
       }
     });
 
-    return res.json({
-      success: true,
-      token: finalToken,
-      user: {
-        id: user.id,
-        role: user.role,
-        phone: user.phone,
-        name,
-        staffId,
-        orgAccountId: isActuallySuperPanel ? null : user.orgAccountId,
-        channelPartnerId: user.channelPartnerId,
-        isSuperadminPanel: isActuallySuperPanel,
-        permissions: user.permissions
-      },
-    });
+    return sendAuthResponse(user, req, res);
   } catch (e) {
+    console.error('[verify-otp] EXCEPTION:', e.message, e.stack?.split('\n')[1]);
     return res.status(500).json({ success: false, message: 'Failed to verify OTP' });
   }
 });
@@ -622,27 +674,6 @@ router.post('/switch-account', async (req, res) => {
       syncOrgMetadata(user.orgAccountId, req.app.get('sequelize')).catch(() => { });
     }
 
-    // Issue new token
-    const profile = await StaffProfile.findOne({ where: { userId: user.id } });
-    const name = profile?.name || null;
-    const staffId = profile?.staffId || null;
-
-    const newToken = jwt.sign(
-      {
-        id: user.id,
-        role: user.role,
-        phone: user.phone,
-        name,
-        staffId,
-        orgAccountId: req.body.isSuperadminPanel ? null : user.orgAccountId, // Nullify orgId for superadmin panel
-        channelPartnerId: user.channelPartnerId,
-        isSuperadminPanel: !!req.body.isSuperadminPanel,
-        permissions: user.permissions
-      },
-      secret,
-      { expiresIn: process.env.JWT_EXPIRES_IN || '7d' }
-    );
-
     logAudit({
       req,
       action: 'ACCOUNT_SWITCH',
@@ -651,25 +682,11 @@ router.post('/switch-account', async (req, res) => {
         userId: user.id,
         orgAccountId: req.body.isSuperadminPanel ? null : user.orgAccountId,
         userPhone: user.phone,
-        performedBy: name || `User (${user.phone})`
+        performedBy: user.name || `User (${user.phone})`
       }
     });
 
-    return res.json({
-      success: true,
-      token: newToken,
-      user: {
-        id: user.id,
-        role: user.role,
-        phone: user.phone,
-        name,
-        staffId,
-        orgAccountId: req.body.isSuperadminPanel ? null : user.orgAccountId, // Nullify orgId for superadmin panel
-        channelPartnerId: user.channelPartnerId,
-        isSuperadminPanel: !!req.body.isSuperadminPanel,
-        permissions: user.permissions
-      },
-    });
+    return sendAuthResponse(user, req, res);
   } catch (e) {
     console.error('Switch account failed:', e);
     return res.status(500).json({ success: false, message: 'Failed to switch account' });
@@ -1167,11 +1184,6 @@ router.post('/login', authLimiter, async (req, res) => {
     const staffId = profile?.staffId || null;
 
     const secret = process.env.JWT_SECRET || 'dev_secret_change_me';
-    const finalToken = jwt.sign(
-      { id: user.id, role: user.role, phone: user.phone, name, staffId, orgAccountId: user.orgAccountId, channelPartnerId: user.channelPartnerId, isSuperadminPanel: !!req.body.isSuperadminPanel },
-      secret,
-      { expiresIn: process.env.JWT_EXPIRES_IN || '7d' }
-    );
 
     if (user.role === 'admin' || allUsers.length > 1) {
       const orgMap = new Map();
@@ -1222,11 +1234,7 @@ router.post('/login', authLimiter, async (req, res) => {
       });
     }
 
-    return res.json({
-      success: true,
-      token: finalToken,
-      user: { id: user.id, role: user.role, phone: user.phone, name, staffId, orgAccountId: user.orgAccountId, channelPartnerId: user.channelPartnerId, isSuperadminPanel: !!req.body.isSuperadminPanel },
-    });
+    return sendAuthResponse(user, req, res);
   } catch (e) {
     return res.status(500).json({ success: false, message: 'Login failed' });
   }
@@ -1307,6 +1315,179 @@ router.post('/signup-admin', async (req, res) => {
       return res.status(e.statusCode).json({ success: false, message: e.message || 'Validation failed' });
     }
     return res.status(500).json({ success: false, message: 'Signup failed' });
+  }
+});
+
+// Web refresh endpoint
+router.post('/refresh', async (req, res) => {
+  try {
+    const { refreshToken } = req.cookies;
+    if (!refreshToken) {
+      return res.status(401).json({ success: false, message: 'Refresh token missing' });
+    }
+
+    const tokenRecord = await RefreshToken.findOne({ where: { token: refreshToken } });
+    if (!tokenRecord) {
+      return res.status(401).json({ success: false, message: 'Invalid refresh token' });
+    }
+
+    if (new Date() > new Date(tokenRecord.expiresAt)) {
+      await tokenRecord.destroy();
+      return res.status(401).json({ success: false, message: 'Refresh token expired' });
+    }
+
+    const user = await User.findByPk(tokenRecord.userId);
+    if (!user || !user.active) {
+      await tokenRecord.destroy();
+      return res.status(401).json({ success: false, message: 'User inactive or not found' });
+    }
+
+    // Token Rotation
+    const secret = process.env.JWT_SECRET || 'dev_secret_change_me';
+    const profile = await StaffProfile.findOne({ where: { userId: user.id } });
+    const name = profile?.name || null;
+    const staffId = profile?.staffId || null;
+
+    const newAccessToken = jwt.sign(
+      {
+        id: user.id,
+        role: user.role,
+        phone: user.phone,
+        name,
+        staffId,
+        orgAccountId: user.orgAccountId,
+        channelPartnerId: user.channelPartnerId,
+        isSuperadminPanel: user.role === 'superadmin',
+        permissions: user.permissions
+      },
+      secret,
+      { expiresIn: '15m' }
+    );
+
+    const newRefreshToken = crypto.randomBytes(40).toString('hex');
+    const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+
+    // Swap tokens in DB (rotation)
+    await tokenRecord.destroy();
+    await RefreshToken.create({
+      token: newRefreshToken,
+      userId: user.id,
+      expiresAt
+    });
+
+    res.cookie('refreshToken', newRefreshToken, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === 'production',
+      sameSite: 'lax',
+      maxAge: 7 * 24 * 60 * 60 * 1000
+    });
+
+    return res.json({
+      success: true,
+      token: newAccessToken
+    });
+  } catch (error) {
+    console.error('Web token refresh failed:', error);
+    return res.status(500).json({ success: false, message: 'Failed to refresh token' });
+  }
+});
+
+// Mobile refresh endpoint
+router.post('/refresh-mobile', async (req, res) => {
+  try {
+    const { refreshToken } = req.body;
+    if (!refreshToken) {
+      return res.status(401).json({ success: false, message: 'Refresh token missing' });
+    }
+
+    const tokenRecord = await RefreshToken.findOne({ where: { token: refreshToken } });
+    if (!tokenRecord) {
+      return res.status(401).json({ success: false, message: 'Invalid refresh token' });
+    }
+
+    if (new Date() > new Date(tokenRecord.expiresAt)) {
+      await tokenRecord.destroy();
+      return res.status(401).json({ success: false, message: 'Refresh token expired' });
+    }
+
+    const user = await User.findByPk(tokenRecord.userId);
+    if (!user || !user.active) {
+      await tokenRecord.destroy();
+      return res.status(401).json({ success: false, message: 'User inactive or not found' });
+    }
+
+    // Token Rotation
+    const secret = process.env.JWT_SECRET || 'dev_secret_change_me';
+    const profile = await StaffProfile.findOne({ where: { userId: user.id } });
+    const name = profile?.name || null;
+    const staffId = profile?.staffId || null;
+
+    const newAccessToken = jwt.sign(
+      {
+        id: user.id,
+        role: user.role,
+        phone: user.phone,
+        name,
+        staffId,
+        orgAccountId: user.orgAccountId,
+        channelPartnerId: user.channelPartnerId,
+        isSuperadminPanel: user.role === 'superadmin',
+        permissions: user.permissions
+      },
+      secret,
+      { expiresIn: '15m' }
+    );
+
+    const newRefreshToken = crypto.randomBytes(40).toString('hex');
+    const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+
+    // Swap tokens in DB
+    await tokenRecord.destroy();
+    await RefreshToken.create({
+      token: newRefreshToken,
+      userId: user.id,
+      expiresAt
+    });
+
+    return res.json({
+      success: true,
+      token: newAccessToken,
+      refreshToken: newRefreshToken
+    });
+  } catch (error) {
+    console.error('Mobile token refresh failed:', error);
+    return res.status(500).json({ success: false, message: 'Failed to refresh token' });
+  }
+});
+
+// Web logout endpoint
+router.post('/logout', async (req, res) => {
+  try {
+    const { refreshToken } = req.cookies;
+    if (refreshToken) {
+      await RefreshToken.destroy({ where: { token: refreshToken } });
+    }
+    res.clearCookie('refreshToken', {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === 'production',
+      sameSite: 'lax'
+    });
+    return res.json({ success: true, message: 'Logged out successfully' });
+  } catch (error) {
+    return res.status(500).json({ success: false, message: 'Logout failed' });
+  }
+});
+
+// Mobile logout endpoint
+router.post('/logout-mobile', async (req, res) => {
+  try {
+    const { refreshToken } = req.body;
+    if (refreshToken) {
+      await RefreshToken.destroy({ where: { token: refreshToken } });
+    }
+    return res.json({ success: true, message: 'Logged out successfully' });
+  } catch (error) {
+    return res.status(500).json({ success: false, message: 'Logout failed' });
   }
 });
 
