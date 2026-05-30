@@ -10981,6 +10981,109 @@ router.put('/settings/kiosk', async (req, res) => {
   }
 });
 
+// Session Management Routes
+router.get('/settings/sessions', async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
+    const userId = req.user.id;
+    const { RefreshToken } = require('../models');
+
+    // Find all sessions for the user
+    const sessions = await RefreshToken.findAll({
+      where: { userId },
+      order: [['lastActivityAt', 'DESC']]
+    });
+
+    const currentToken = req.cookies?.refreshToken || null;
+    const currentFingerprint = req.headers['x-device-fingerprint'] || null;
+
+    const result = sessions.map(s => {
+      const isCurrent = (currentToken && s.token === currentToken) || 
+                        (currentFingerprint && s.deviceFingerprint === currentFingerprint);
+      
+      return {
+        id: s.id,
+        ipAddress: s.ipAddress || 'Unknown IP',
+        userAgent: s.userAgent || 'Unknown Device',
+        deviceFingerprint: s.deviceFingerprint,
+        lastActivityAt: s.lastActivityAt || s.createdAt,
+        createdAt: s.createdAt,
+        isCurrent: !!isCurrent
+      };
+    });
+
+    return res.json({ success: true, sessions: result });
+  } catch (e) {
+    console.error('[GET /settings/sessions] error:', e);
+    return res.status(500).json({ success: false, message: 'Failed to fetch active sessions' });
+  }
+});
+
+router.delete('/settings/sessions/:id', async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
+    const userId = req.user.id;
+    const id = Number(req.params.id);
+    const { RefreshToken } = require('../models');
+
+    const session = await RefreshToken.findOne({ where: { id, userId } });
+    if (!session) {
+      return res.status(404).json({ success: false, message: 'Session not found' });
+    }
+
+    await session.destroy();
+    
+    logAudit({
+      req,
+      action: 'SESSION_REVOKE',
+      remarks: `Revoked active session ID ${id} (${session.userAgent || 'Unknown Device'})`,
+      overrides: { userId }
+    });
+
+    return res.json({ success: true, message: 'Session revoked successfully' });
+  } catch (e) {
+    console.error('[DELETE /settings/sessions/:id] error:', e);
+    return res.status(500).json({ success: false, message: 'Failed to revoke session' });
+  }
+});
+
+router.post('/settings/sessions/logout-all', async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res); if (!orgId) return;
+    const userId = req.user.id;
+    const { RefreshToken } = require('../models');
+
+    const currentToken = req.cookies?.refreshToken || null;
+    const currentFingerprint = req.headers['x-device-fingerprint'] || null;
+
+    // Find all sessions for the user
+    const sessions = await RefreshToken.findAll({ where: { userId } });
+    let revokedCount = 0;
+
+    for (const s of sessions) {
+      const isCurrent = (currentToken && s.token === currentToken) || 
+                        (currentFingerprint && s.deviceFingerprint === currentFingerprint);
+      
+      if (!isCurrent) {
+        await s.destroy();
+        revokedCount++;
+      }
+    }
+
+    logAudit({
+      req,
+      action: 'SESSION_LOGOUT_ALL_OTHER',
+      remarks: `Terminated ${revokedCount} other active sessions`,
+      overrides: { userId }
+    });
+
+    return res.json({ success: true, message: `Successfully logged out of ${revokedCount} other devices` });
+  } catch (e) {
+    console.error('[POST /settings/sessions/logout-all] error:', e);
+    return res.status(500).json({ success: false, message: 'Failed to log out of other devices' });
+  }
+});
+
 // Automation Rules
 router.get('/settings/automation-rules', async (req, res) => {
   try {

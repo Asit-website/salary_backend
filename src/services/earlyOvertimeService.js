@@ -11,7 +11,7 @@ async function getEarlyOvertimeMinutes(attendance, rule, shiftTemplate) {
     return 0;
   }
 
-  const punchInLocal = dayjs(attendance.punchedInAt);
+  const punchInLocal = dayjs(attendance.punchedInAt).second(0).millisecond(0);
   const [sh, sm, ss] = shiftTemplate.startTime.split(':').map(Number);
   
   // Use the attendance dateKey as the base for the shift start
@@ -19,7 +19,7 @@ async function getEarlyOvertimeMinutes(attendance, rule, shiftTemplate) {
   const shiftStartLocal = shiftDate.hour(sh).minute(sm).second(ss || 0).millisecond(0);
 
   if (punchInLocal.isBefore(shiftStartLocal)) {
-    const earlyMin = Math.round(shiftStartLocal.diff(punchInLocal, 'minute', true));
+    const earlyMin = shiftStartLocal.diff(punchInLocal, 'minute');
 
     // Check against minimum threshold for Early OT to count (fallback to 0)
     const baseThreshold = (rule.thresholds && rule.thresholds.length > 0) ? rule.thresholds[0].minMinutes : 0;
@@ -143,7 +143,7 @@ async function calculateEarlyOvertime(params, orgAccountArg, daysInMonthArg = 30
   }
 
   return {
-    earlyOvertimeMinutes: Math.round(earlyOvertimeMinutes),
+    earlyOvertimeMinutes,
     earlyOvertimeAmount: parseFloat(earlyOvertimeAmount.toFixed(2)),
     earlyOvertimeRuleId: finalRule.id || null
   };

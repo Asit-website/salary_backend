@@ -20,6 +20,34 @@ function authRequired(req, res, next) {
     const secret = process.env.JWT_SECRET || 'dev_secret_change_me';
     const payload = jwt.verify(token, secret);
     req.user = payload;
+
+    // Slide session activity (throttled to once every 5 minutes to reduce DB load)
+    try {
+      const deviceFingerprint = req.headers['x-device-fingerprint'] || null;
+      const { refreshToken } = req.cookies || {};
+      const queryWhere = { userId: payload.id };
+      
+      if (deviceFingerprint) {
+        queryWhere.deviceFingerprint = deviceFingerprint;
+      } else if (refreshToken) {
+        queryWhere.token = refreshToken;
+      } else {
+        queryWhere.id = 0; // Skip lookup if no identifiers
+      }
+
+      if (queryWhere.id !== 0) {
+        const { RefreshToken } = require('../models');
+        RefreshToken.findOne({ where: queryWhere }).then(session => {
+          if (session) {
+            const now = new Date();
+            const lastActivity = session.lastActivityAt ? new Date(session.lastActivityAt) : null;
+            if (!lastActivity || (now - lastActivity) > 5 * 60 * 1000) {
+              session.update({ lastActivityAt: now }).catch(() => {});
+            }
+          }
+        }).catch(() => {});
+      }
+    } catch (_) {}
     
     // Perform continuous validation of database status (Zero Trust)
     return continuousVerify(req, res, (err) => {

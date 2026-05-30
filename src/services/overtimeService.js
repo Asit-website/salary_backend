@@ -19,13 +19,13 @@ async function getOvertimeMinutes(attendance, rule, shiftTemplate) {
   // If includeEarlyArrival is false, exclude minutes worked before shift start from total work minutes
   // to ensure they don't contribute to reaching thresholds.
   if (!rule.includeEarlyArrival && attendance.punchedInAt && shiftTemplate && shiftTemplate.startTime) {
-    const punchInLocal = dayjs(attendance.punchedInAt);
+    const punchInLocal = dayjs(attendance.punchedInAt).second(0).millisecond(0);
     const shiftDate = dayjs(attendance.date || attendance.punchedInAt);
     const [sh, sm] = shiftTemplate.startTime.split(':').map(Number);
     let shiftStartLocal = shiftDate.hour(sh).minute(sm).second(0).millisecond(0);
 
     if (punchInLocal.isBefore(shiftStartLocal)) {
-      const earlyMins = Math.round(shiftStartLocal.diff(punchInLocal, 'minute', true));
+      const earlyMins = shiftStartLocal.diff(punchInLocal, 'minute');
       if (earlyMins > 0) {
         totalWorkMinutes = Math.max(0, totalWorkMinutes - earlyMins);
       }
@@ -67,8 +67,8 @@ async function getOvertimeMinutes(attendance, rule, shiftTemplate) {
     const [sh, sm] = (shiftTemplate.startTime || '00:00').split(':').map(Number);
     const [eh, em, es] = shiftTemplate.endTime.split(':').map(Number);
     
-    const punchInLocal = dayjs(attendance.punchedInAt);
-    const punchOutLocal = dayjs(attendance.punchedOutAt);
+    const punchInLocal = dayjs(attendance.punchedInAt).second(0).millisecond(0);
+    const punchOutLocal = dayjs(attendance.punchedOutAt).second(0).millisecond(0);
     const shiftDate = dayjs(attendance.date || attendance.punchedInAt || attendance.punchedOutAt);
 
     let shiftStartLocal = shiftDate.hour(sh).minute(sm).second(0).millisecond(0);
@@ -81,12 +81,12 @@ async function getOvertimeMinutes(attendance, rule, shiftTemplate) {
 
     // Late Stay Overtime
     if (punchOutLocal.isAfter(shiftEndLocal)) {
-      overtimeByShift += Math.round(punchOutLocal.diff(shiftEndLocal, 'minute', true));
+      overtimeByShift += punchOutLocal.diff(shiftEndLocal, 'minute');
     }
 
     // Early Arrival Overtime (if enabled)
     if (rule.includeEarlyArrival && punchInLocal.isBefore(shiftStartLocal)) {
-      const earlyMins = Math.round(shiftStartLocal.diff(punchInLocal, 'minute', true));
+      const earlyMins = shiftStartLocal.diff(punchInLocal, 'minute');
       if (earlyMins > 0) {
         overtimeByShift += earlyMins;
       }

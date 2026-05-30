@@ -54,7 +54,7 @@ async function calculateBreakDeduction(attendance, orgAccount, daysInMonth = 30,
     const shiftHours = (shiftWorkMins || 480) / 60;
 
     // 2. Calculate Break Duration
-    const totalBreakMinutes = Math.round((attendance.breakTotalSeconds || 0) / 60);
+    const totalBreakMinutes = Math.floor((attendance.breakTotalSeconds || 0) / 60);
     if (totalBreakMinutes <= 0) {
       return { breakDeductionAmount: 0, excessBreakMinutes: 0, breakRuleId: ruleId };
     }

@@ -25,7 +25,7 @@ class EarlyExitService {
       // Robust Time Comparison:
       // We assume shift times are in Local Time (IST).
       // Build shift start and end times based on the attendance date (dateKey).
-      const outAtLocal = dayjs(punchedOutAt);
+      const outAtLocal = dayjs(punchedOutAt).second(0).millisecond(0);
       const shiftDate = dayjs(dateKey);
       
       let shiftStartLocal = shiftDate.hour(sh).minute(sm).second(0).millisecond(0);
@@ -37,7 +37,7 @@ class EarlyExitService {
       }
 
       if (outAtLocal.isBefore(shiftEndLocal)) {
-        earlyExitMinutes = Math.round(shiftEndLocal.diff(outAtLocal, 'minute', true));
+        earlyExitMinutes = shiftEndLocal.diff(outAtLocal, 'minute');
       }
     }
 

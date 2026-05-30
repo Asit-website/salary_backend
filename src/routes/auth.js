@@ -100,26 +100,52 @@ async function sendAuthResponse(user, req, res, extraJson = {}) {
     { expiresIn: '15m' }
   );
 
-  // 2. Generate Refresh Token (7 days)
-  const refreshToken = crypto.randomBytes(40).toString('hex');
-  const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000); // 7 days
+  const isMobile = req.headers['x-app-platform'] === 'mobile-apk' || req.headers['x-app-platform'] === 'admin-apk';
 
-  // Store in database
+  // 2. Generate Refresh Token (Perpetual - 100 years for both Web and Mobile)
+  const refreshToken = crypto.randomBytes(40).toString('hex');
+  const expiresAt = new Date(Date.now() + 100 * 365 * 24 * 60 * 60 * 1000); // 100 years
+
+  // Enforce concurrent session limit: max 3 active sessions
+  try {
+    const activeCount = await RefreshToken.count({ where: { userId: user.id } });
+    if (activeCount >= 3) {
+      // Find oldest session
+      const oldest = await RefreshToken.findOne({
+        where: { userId: user.id },
+        order: [['createdAt', 'ASC']]
+      });
+      if (oldest) {
+        await oldest.destroy();
+      }
+    }
+  } catch (err) {
+    console.error('[sendAuthResponse] Failed to enforce session limit:', err);
+  }
+
+  // Capture session metadata
+  const ipAddress = req.headers['x-forwarded-for'] || req.socket.remoteAddress || null;
+  const userAgent = req.headers['user-agent'] || null;
+  const deviceFingerprint = req.headers['x-device-fingerprint'] || null;
+
+  // Store in database with metadata
   await RefreshToken.create({
     token: refreshToken,
     userId: user.id,
-    expiresAt
+    expiresAt,
+    ipAddress,
+    userAgent,
+    deviceFingerprint,
+    lastActivityAt: new Date()
   });
 
-  const isMobile = req.headers['x-app-platform'] === 'mobile-apk' || req.headers['x-app-platform'] === 'admin-apk';
-
   if (!isMobile) {
-    // Web client: Set refresh token as secure HttpOnly cookie
+    // Web client: Set refresh token as secure HttpOnly cookie (100 years perpetual)
     res.cookie('refreshToken', refreshToken, {
       httpOnly: true,
       secure: process.env.NODE_ENV === 'production',
       sameSite: 'lax',
-      maxAge: 7 * 24 * 60 * 60 * 1000 // 7 days
+      maxAge: 100 * 365 * 24 * 60 * 60 * 1000 // 100 years
     });
 
     return res.json({
@@ -1365,21 +1391,29 @@ router.post('/refresh', async (req, res) => {
     );
 
     const newRefreshToken = crypto.randomBytes(40).toString('hex');
-    const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
 
-    // Swap tokens in DB (rotation)
+    // Capture session metadata
+    const ipAddress = req.headers['x-forwarded-for'] || req.socket.remoteAddress || null;
+    const userAgent = req.headers['user-agent'] || null;
+    const deviceFingerprint = req.headers['x-device-fingerprint'] || null;
+
+    // Swap tokens in DB (rotation) - 100 years perpetual
     await tokenRecord.destroy();
     await RefreshToken.create({
       token: newRefreshToken,
       userId: user.id,
-      expiresAt
+      expiresAt: new Date(Date.now() + 100 * 365 * 24 * 60 * 60 * 1000), // 100 years
+      ipAddress,
+      userAgent,
+      deviceFingerprint,
+      lastActivityAt: new Date()
     });
 
     res.cookie('refreshToken', newRefreshToken, {
       httpOnly: true,
       secure: process.env.NODE_ENV === 'production',
       sameSite: 'lax',
-      maxAge: 7 * 24 * 60 * 60 * 1000
+      maxAge: 100 * 365 * 24 * 60 * 60 * 1000 // 100 years
     });
 
     return res.json({
@@ -1439,14 +1473,23 @@ router.post('/refresh-mobile', async (req, res) => {
     );
 
     const newRefreshToken = crypto.randomBytes(40).toString('hex');
-    const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+    const expiresAt = new Date(Date.now() + 100 * 365 * 24 * 60 * 60 * 1000); // 100 years for perpetual login
+
+    // Capture session metadata
+    const ipAddress = req.headers['x-forwarded-for'] || req.socket.remoteAddress || null;
+    const userAgent = req.headers['user-agent'] || null;
+    const deviceFingerprint = req.headers['x-device-fingerprint'] || null;
 
     // Swap tokens in DB
     await tokenRecord.destroy();
     await RefreshToken.create({
       token: newRefreshToken,
       userId: user.id,
-      expiresAt
+      expiresAt,
+      ipAddress,
+      userAgent,
+      deviceFingerprint,
+      lastActivityAt: new Date()
     });
 
     return res.json({

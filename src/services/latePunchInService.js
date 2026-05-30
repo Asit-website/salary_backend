@@ -34,11 +34,11 @@ class LatePunchInService {
       // Robust Time Comparison:
       // We assume shift.startTime is in the Organization's Local Time (IST).
       // Build shift start time based on the attendance date (dateKey).
-      const inAtLocal = dayjs(punchedInAt); 
+      const inAtLocal = dayjs(punchedInAt).second(0).millisecond(0); 
       const shiftDate = dayjs(dateKey);
       const shiftStartLocal = shiftDate.hour(sh).minute(sm).second(ss || 0).millisecond(0);
       
-      latePunchInMinutes = Math.round(inAtLocal.diff(shiftStartLocal, 'minute', true));
+      latePunchInMinutes = inAtLocal.diff(shiftStartLocal, 'minute');
     }
 
     // 2. Resolve applicable Rule for penalty calculation
