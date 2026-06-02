@@ -1368,6 +1368,33 @@ router.post('/refresh', async (req, res) => {
       return res.status(401).json({ success: false, message: 'User inactive or not found' });
     }
 
+    // Read current context from request body
+    const { isSuperadminPanel, orgAccountId } = req.body || {};
+
+    let perms = user.permissions;
+    if (typeof perms === 'string') {
+      try { perms = JSON.parse(perms); } catch (_) {}
+    }
+    const hasSuperAccess = user.role === 'superadmin' || (perms && perms.superadmin_access === true);
+    const isCP = user.role === 'channel_partner';
+
+    let resolvedIsSuperadminPanel = false;
+    let resolvedOrgAccountId = user.orgAccountId;
+
+    if (hasSuperAccess) {
+      // Superadmins can choose to be in Superadmin Panel or in a specific org context
+      resolvedIsSuperadminPanel = isSuperadminPanel !== undefined ? !!isSuperadminPanel : hasSuperAccess;
+      resolvedOrgAccountId = resolvedIsSuperadminPanel ? null : (orgAccountId !== undefined ? orgAccountId : user.orgAccountId);
+    } else if (isCP) {
+      // Channel partners are not in superadmin panel, but can specify organization
+      resolvedIsSuperadminPanel = false;
+      resolvedOrgAccountId = orgAccountId !== undefined ? orgAccountId : user.orgAccountId;
+    } else {
+      // Regular users are locked to their DB orgAccountId and are not superadmin
+      resolvedIsSuperadminPanel = false;
+      resolvedOrgAccountId = user.orgAccountId;
+    }
+
     // Token Rotation
     const secret = process.env.JWT_SECRET || 'dev_secret_change_me';
     const profile = await StaffProfile.findOne({ where: { userId: user.id } });
@@ -1381,9 +1408,9 @@ router.post('/refresh', async (req, res) => {
         phone: user.phone,
         name,
         staffId,
-        orgAccountId: user.orgAccountId,
+        orgAccountId: resolvedOrgAccountId,
         channelPartnerId: user.channelPartnerId,
-        isSuperadminPanel: user.role === 'superadmin',
+        isSuperadminPanel: resolvedIsSuperadminPanel,
         permissions: user.permissions
       },
       secret,
@@ -1429,7 +1456,7 @@ router.post('/refresh', async (req, res) => {
 // Mobile refresh endpoint
 router.post('/refresh-mobile', async (req, res) => {
   try {
-    const { refreshToken } = req.body;
+    const { refreshToken, isSuperadminPanel, orgAccountId } = req.body;
     if (!refreshToken) {
       return res.status(401).json({ success: false, message: 'Refresh token missing' });
     }
@@ -1450,6 +1477,30 @@ router.post('/refresh-mobile', async (req, res) => {
       return res.status(401).json({ success: false, message: 'User inactive or not found' });
     }
 
+    let perms = user.permissions;
+    if (typeof perms === 'string') {
+      try { perms = JSON.parse(perms); } catch (_) {}
+    }
+    const hasSuperAccess = user.role === 'superadmin' || (perms && perms.superadmin_access === true);
+    const isCP = user.role === 'channel_partner';
+
+    let resolvedIsSuperadminPanel = false;
+    let resolvedOrgAccountId = user.orgAccountId;
+
+    if (hasSuperAccess) {
+      // Superadmins can choose to be in Superadmin Panel or in a specific org context
+      resolvedIsSuperadminPanel = isSuperadminPanel !== undefined ? !!isSuperadminPanel : hasSuperAccess;
+      resolvedOrgAccountId = resolvedIsSuperadminPanel ? null : (orgAccountId !== undefined ? orgAccountId : user.orgAccountId);
+    } else if (isCP) {
+      // Channel partners are not in superadmin panel, but can specify organization
+      resolvedIsSuperadminPanel = false;
+      resolvedOrgAccountId = orgAccountId !== undefined ? orgAccountId : user.orgAccountId;
+    } else {
+      // Regular users are locked to their DB orgAccountId and are not superadmin
+      resolvedIsSuperadminPanel = false;
+      resolvedOrgAccountId = user.orgAccountId;
+    }
+
     // Token Rotation
     const secret = process.env.JWT_SECRET || 'dev_secret_change_me';
     const profile = await StaffProfile.findOne({ where: { userId: user.id } });
@@ -1463,9 +1514,9 @@ router.post('/refresh-mobile', async (req, res) => {
         phone: user.phone,
         name,
         staffId,
-        orgAccountId: user.orgAccountId,
+        orgAccountId: resolvedOrgAccountId,
         channelPartnerId: user.channelPartnerId,
-        isSuperadminPanel: user.role === 'superadmin',
+        isSuperadminPanel: resolvedIsSuperadminPanel,
         permissions: user.permissions
       },
       secret,

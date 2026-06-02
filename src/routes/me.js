@@ -650,6 +650,51 @@ router.post('/expenses', upload.single('attachment'), async (req, res) => {
   }
 });
 
+// Update pending expense claim for current logged-in user
+router.put('/expenses/:id', upload.single('attachment'), async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const id = Number(req.params.id);
+    if (!Number.isFinite(id)) {
+      return res.status(400).json({ success: false, message: 'Invalid expense claim' });
+    }
+
+    const row = await ExpenseClaim.findOne({ where: { id, userId } });
+    if (!row) {
+      return res.status(404).json({ success: false, message: 'Expense claim not found' });
+    }
+    if (row.status !== 'pending') {
+      return res.status(403).json({ success: false, message: 'Approved expense cannot be edited' });
+    }
+
+    const { expenseType, expenseDate, billNumber, amount, description } = req.body || {};
+    const amt = Number(amount);
+    if (!Number.isFinite(amt) || amt <= 0) {
+      return res.status(400).json({ success: false, message: 'Valid amount required' });
+    }
+
+    let attachmentUrl = row.attachmentUrl;
+    if (req.file) {
+      const rel = path.join('uploads', 'claims', req.file.filename).replace(/\\/g, '/');
+      attachmentUrl = `/${rel}`;
+    }
+
+    await row.update({
+      expenseType: expenseType || null,
+      expenseDate: expenseDate ? String(expenseDate).slice(0, 10) : row.expenseDate,
+      billNumber: billNumber || null,
+      amount: amt,
+      description: description || null,
+      attachmentUrl,
+    });
+
+    return res.json({ success: true, claim: row });
+  } catch (e) {
+    console.error('Update my expense error:', e);
+    return res.status(500).json({ success: false, message: 'Failed to update expense claim' });
+  }
+});
+
 // Get earliest salary month for navigation limit
 router.get('/salary-history-range', async (req, res) => {
   try {
