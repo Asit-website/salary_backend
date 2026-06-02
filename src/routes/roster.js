@@ -380,6 +380,7 @@ router.post('/admin/roster', authRequired, requireRole(['admin', 'superadmin', '
         }
       }
 
+      /*
       // 4. Validation: Block roster change if staff is already present
       const attendance = await Attendance.findOne({
         where: { userId, date, orgAccountId: orgId }
@@ -406,6 +407,7 @@ router.post('/admin/roster', authRequired, requireRole(['admin', 'superadmin', '
           });
         }
       }
+      */
 
       if (status === 'DELETE') {
         // Find existing roster to check status before delete
