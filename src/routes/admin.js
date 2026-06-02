@@ -27646,7 +27646,7 @@ router.get("/geolocation", async (req, res) => {
       });
     }
 
-    const { LocationPing, User, StaffProfile, Attendance } = sequelize.models;
+    const { LocationPing, User, StaffProfile, Attendance, SalesVisit } = sequelize.models;
 
     const { startDate, endDate, staffId, date } = req.query || {};
 
@@ -27718,47 +27718,97 @@ router.get("/geolocation", async (req, res) => {
     });
 
     // Process data to match frontend expectations
-
     const staffLocationData = [];
-
     const staffMap = new Map();
 
-    // Group location pings by user and date
-
+    // 1. Group location pings by user and date first
     locationPings.forEach((ping) => {
       const userDate = formatDate(new Date(ping.createdAt));
-
       const key = `${ping.userId}-${userDate}`;
 
       if (!staffMap.has(key)) {
         staffMap.set(key, {
           id: key,
-
           staffId: ping.userId,
-
           staffName: ping.user?.profile?.name || "Unknown",
-
           date: userDate,
-
           locations: [],
-
           punchInTime: null,
-
           punchOutTime: null,
         });
       }
 
       staffMap.get(key).locations.push({
         timestamp: ping.createdAt,
-
         lat: ping.latitude,
-
         lng: ping.longitude,
-
         accuracy: ping.accuracyMeters,
-
         address: ping.address || null,
       });
+    });
+
+    // 2. Fetch and merge SalesVisit data matching the same date range and staff selection
+    let visitWhere = {};
+    if (startDate && endDate) {
+      visitWhere.visitDate = {
+        [Op.between]: [new Date(startDate + " 00:00:00"), new Date(endDate + " 23:59:59")],
+      };
+    } else if (date) {
+      visitWhere.visitDate = {
+        [Op.between]: [
+          new Date(date + " 00:00:00"),
+          new Date(date + " 23:59:59"),
+        ],
+      };
+    }
+    
+    if (staffId && staffId !== "all") {
+      visitWhere.userId = Number(staffId);
+    } else {
+      const orgUsers = await User.findAll({
+        where: { orgAccountId: orgId },
+        attributes: ['id']
+      });
+      const orgUserIds = orgUsers.map(u => u.id);
+      visitWhere.userId = { [Op.in]: orgUserIds };
+    }
+
+    const salesVisits = await SalesVisit.findAll({
+      where: visitWhere,
+      include: [
+        {
+          model: User,
+          as: "user",
+          include: [
+            {
+              model: StaffProfile,
+              as: "profile",
+              attributes: ['name']
+            }
+          ],
+          attributes: ['id', 'phone']
+        }
+      ]
+    });
+
+    const visitCountsMap = new Map();
+    salesVisits.forEach((visit) => {
+      const userDate = formatDate(new Date(visit.visitDate));
+      const key = `${visit.userId}-${userDate}`;
+      visitCountsMap.set(key, (visitCountsMap.get(key) || 0) + 1);
+
+      // Robust check: If staff member has no location pings but submitted a visit, show them!
+      if (!staffMap.has(key)) {
+        staffMap.set(key, {
+          id: key,
+          staffId: visit.userId,
+          staffName: visit.user?.profile?.name || visit.user?.phone || "Unknown",
+          date: userDate,
+          locations: [],
+          punchInTime: null,
+          punchOutTime: null,
+        });
+      }
     });
 
     // Add attendance data
@@ -27785,6 +27835,8 @@ router.get("/geolocation", async (req, res) => {
       staffData.firstLocation = locations[0] || null;
 
       staffData.lastLocation = locations[locations.length - 1] || null;
+
+      staffData.visitCount = visitCountsMap.get(staffData.id) || 0;
 
       staffLocationData.push(staffData);
     });
