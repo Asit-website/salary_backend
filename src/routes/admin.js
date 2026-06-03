@@ -2424,10 +2424,12 @@ router.get("/payroll/:cycleId/salary-register-excel", async (req, res) => {
           paidHoli: Number(s.holidays || 0),
           absent: Number(s.absent || 0),
           totalPayDay:
-            Number(s.present || 0) +
-            Number(s.weeklyOff || 0) +
-            Number(s.holidays || 0) +
-            Number(s.half || 0) * 0.5,
+            s.payableDays !== undefined
+              ? Number(s.payableDays || 0)
+              : Number(s.present || 0) +
+                Number(s.weeklyOff || 0) +
+                Number(s.holidays || 0) +
+                Number(s.half || 0) * 0.5,
           otDays: Number(otMeta.otDays || 0),
           otHours: Number((Number(otMeta.otMinutes || 0) / 60).toFixed(2)),
           basicRate: Number(u?.basicSalary || 0),
@@ -2950,10 +2952,12 @@ router.get("/payroll/salary-register-template-wise-excel", async (req, res) => {
           paidHoli: Number(s.holidays || 0),
           absent: Number(s.absent || 0),
           totalPayDay:
-            Number(s.present || 0) +
-            Number(s.weeklyOff || 0) +
-            Number(s.holidays || 0) +
-            Number(s.half || 0) * 0.5,
+            s.payableDays !== undefined
+              ? Number(s.payableDays || 0)
+              : Number(s.present || 0) +
+                Number(s.weeklyOff || 0) +
+                Number(s.holidays || 0) +
+                Number(s.half || 0) * 0.5,
           otDays: Number(otMeta.otDays || 0),
           otHours: Number((Number(otMeta.otMinutes || 0) / 60).toFixed(2)),
           basicRate: Number(u?.basicSalary || 0),
@@ -5092,6 +5096,8 @@ router.post("/payroll/:cycleId/compute", async (req, res) => {
         daysForRate > 0
           ? Math.max(0, Math.min(1, computedPayableUnits / daysForRate))
           : 1;
+
+
 
       // Pro-rate individual keys first (User wants to see 54, 7 in Edit)
       const prorate = (obj, r, exemptKeys = []) => {

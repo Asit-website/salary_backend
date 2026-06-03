@@ -806,6 +806,8 @@ async function calculateSalary(userId, monthKey) {
   const computedPayableUnits = Math.max(0, Math.min(daysForRate, payableUnits - (daysInMonth - daysForRate)));
   let ratio = daysForRate > 0 ? Math.max(0, Math.min(1, computedPayableUnits / daysForRate)) : 0;
 
+
+
   // Calculate Late Penalty separately via the new meta function
   let lp = await computeLatePenaltyMeta({
     userId: u.id,
