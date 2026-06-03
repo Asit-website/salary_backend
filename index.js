@@ -30,6 +30,7 @@ const meetingRoutes = require('./src/routes/meeting');
 const ticketRoutes = require('./src/routes/ticket');
 const taskManagementRoutes = require('./src/routes/taskManagement');
 const rosterRoutes = require('./src/routes/roster');
+const shiftRotationRoutes = require('./src/routes/shiftRotation');
 const aiRoutes = require('./src/routes/ai');
 const channelPartnerRoutes = require('./src/routes/channelPartner');
 const { verifyEmailConfig } = require('./src/services/emailService');
@@ -43,7 +44,7 @@ const notificationRoutes = require('./src/routes/notification');
 
 const { tenantEnforce } = require('./src/middleware/tenant');
 const { scheduleSubscriptionSweep } = require('./src/jobs/subscriptionSweep');
-const { scheduleSubscriptionExpiryReminders, scheduleZktecoSync, scheduleAttendanceReminders, scheduleSocialCelebrations, scheduleMissingCheckoutReminders } = require('./src/jobs');
+const { scheduleSubscriptionExpiryReminders, scheduleZktecoSync, scheduleAttendanceReminders, scheduleSocialCelebrations, scheduleMissingCheckoutReminders, scheduleShiftRotationCron } = require('./src/jobs');
 const { ensureCollectionExists } = require('./src/services/awsService');
 const { scheduleBulkMailJob } = require('./src/jobs');
 
@@ -124,6 +125,7 @@ app.use('/admin/social', socialRoutes);
 app.use('/admin/notifications', notificationRoutes);
 app.use('/channel-partner', channelPartnerRoutes);
 app.use(rosterRoutes);
+app.use('/admin/shift-rotation', shiftRotationRoutes);
 app.use('/admin/ai', aiRoutes);
 app.use('/admin', adminRoutes);
 app.use('/superadmin/mail', superadminMailRoutes);
@@ -191,6 +193,9 @@ initDb()
 
     // Start Missing Check-Out Email job
     try { scheduleMissingCheckoutReminders(); } catch (_) { }
+
+    // Start Shift Rotation Cron job
+    try { scheduleShiftRotationCron(); } catch (_) { }
     // app.listen(port, () => {
     //   console.log(`Backend running on http://localhost:${port}`);
     // });

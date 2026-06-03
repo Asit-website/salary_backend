@@ -1,6 +1,8 @@
 const { sequelize, OvertimeRule, ShiftTemplate, StaffShiftAssignment, User, StaffProfile, StaffRoster, OrgAccount, StaffOvertimeAssignment } = require('../models');
 const dayjs = require('dayjs');
 const shiftService = require('./shiftService');
+const { getSettingsPayableDays } = require('../utils/salarySettingsHelper');
+
 
 /**
  * Calculates overtime based on a specific Rule or fallback ShiftTemplate.
@@ -219,7 +221,16 @@ async function calculateOvertime(params, orgAccountArg, daysInMonthArg = 30, now
     baseSalary = basic + da;
   }
 
-  const daysInMonth = daysInMonthArg || 30;
+  let daysForRate = daysInMonthArg || 30;
+  if (orgAccount && dateKey) {
+    const monthKey = dateKey.substring(0, 7);
+    const settingsDays = await getSettingsPayableDays(orgAccount, monthKey);
+    if (settingsDays > 0) {
+      daysForRate = settingsDays;
+    }
+  }
+  const daysInMonth = daysForRate;
+
 
   if (rewardType === 'FIXED_AMOUNT') {
     overtimeAmount = rewardValue;

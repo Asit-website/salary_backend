@@ -1274,6 +1274,7 @@ router.get("/payroll/:cycleId/export", async (req, res) => {
       PayrollLine,
       User,
       StaffProfile,
+      AppSetting,
     } = require("../models");
 
     const id = Number(req.params.cycleId);
@@ -1292,6 +1293,15 @@ router.get("/payroll/:cycleId/export", async (req, res) => {
     // Calculate days in month for the cycle
     const [year, month] = cycle.monthKey.split("-").map(Number);
     const daysInMonth = new Date(year, month, 0).getDate();
+
+    const salarySettingsRow = await AppSetting.findOne({
+      where: { key: "salary_settings", orgAccountId: orgId },
+    });
+    const salarySettings = salarySettingsRow?.value
+      ? JSON.parse(salarySettingsRow.value)
+      : getDefaultSalarySettings();
+    const settingsPayableDays = computePayableDays(salarySettings, year, month);
+    const dynamicWorkingDays = settingsPayableDays > 0 ? settingsPayableDays : daysInMonth;
 
     const userIds = [...new Set(lines.map((l) => l.userId))];
     const users = await User.findAll({
@@ -1361,6 +1371,7 @@ router.get("/payroll/:cycleId/export", async (req, res) => {
         weeklyOff,
         holidays,
         absent,
+        payableDays: s.payableDays,
       };
     };
 
@@ -1514,7 +1525,7 @@ router.get("/payroll/:cycleId/export", async (req, res) => {
       };
 
       const ratio = Number(t.ratio || s.ratio || 0);
-      const pod = ratio * daysInMonth;
+      const pod = s.payableDays !== undefined ? Number(s.payableDays) : Number((ratio * dynamicWorkingDays).toFixed(2));
       const overtimeMinutes = Number(s.overtimeMinutes || 0);
       const overtimeHours = Number(
         s.overtimeHours || overtimeMinutes / 60 || 0,
@@ -1523,7 +1534,7 @@ router.get("/payroll/:cycleId/export", async (req, res) => {
         Number((e.basic_salary ?? u.basicSalary ?? 0) || 0) +
         Number((e.da ?? 0) || 0);
       const fallbackOtRate =
-        daysInMonth > 0 ? overtimeBaseSalary / (daysInMonth * 8) : 0;
+        dynamicWorkingDays > 0 ? overtimeBaseSalary / (dynamicWorkingDays * 8) : 0;
       const overtimeRate = Number(s.overtimeHourlyRate || fallbackOtRate || 0);
       const overtimePay = Number(
         s.overtimePay ||
@@ -1538,7 +1549,7 @@ router.get("/payroll/:cycleId/export", async (req, res) => {
         u.designation,
         u.department,
         cycle.monthKey,
-        daysInMonth,
+        dynamicWorkingDays,
         Number(s.present || 0),
         Number(s.half || 0),
         Number(s.absent || 0),
@@ -1548,7 +1559,7 @@ router.get("/payroll/:cycleId/export", async (req, res) => {
         Number(s.holidays || 0),
         Number(s.lateCount || 0),
         Number(s.latePenaltyDays || 0),
-        Number(pod.toFixed(2)),
+        Number(pod),
         Number(overtimeHours.toFixed(2)),
         overtimeMinutes,
         Number(overtimeRate.toFixed(2)),
@@ -4221,6 +4232,7 @@ router.post("/payroll/:cycleId/compute", async (req, res) => {
       AttendanceAutomationRule,
       TenureBonusRule,
       StaffTenureBonusAssignment,
+      AppSetting,
     } = require("../models");
 
     const cycleId = Number(req.params.cycleId);
@@ -4237,6 +4249,14 @@ router.post("/payroll/:cycleId/compute", async (req, res) => {
     const monthKey = cycle.monthKey;
 
     const [yy, mm] = monthKey.split("-").map(Number);
+
+    const salarySettingsRow = await AppSetting.findOne({
+      where: { key: "salary_settings", orgAccountId: orgId },
+    });
+    const salarySettings = salarySettingsRow?.value
+      ? JSON.parse(salarySettingsRow.value)
+      : getDefaultSalarySettings();
+    const settingsPayableDays = computePayableDays(salarySettings, yy, mm);
 
     const start = `${monthKey}-01`;
 
@@ -4875,7 +4895,8 @@ router.post("/payroll/:cycleId/compute", async (req, res) => {
       let multiplierBreakdown = [];
       let paidLeaveDates = [];
       const daysInMonth = end.getDate();
-      const dailySalary = sd.grossSalary / daysInMonth;
+      const daysForRate = settingsPayableDays > 0 ? settingsPayableDays : daysInMonth;
+      const dailySalary = sd.grossSalary / daysForRate;
       const now = new Date();
       const todayStart = new Date(
         now.getFullYear(),
@@ -5057,14 +5078,19 @@ router.post("/payroll/:cycleId/compute", async (req, res) => {
         );
       }
 
-      // Proration by payable units: present(1) + half(0.5) + weeklyOff(1) + holidays(1) + paidLeave(1) + extra multipliers
+      // Proration by settingsPayableDays if active, else standard calendar month
       const payableUnitsGross =
         present + half * 0.5 + weeklyOff + holidays + paidLeave;
-      const payableUnits = Math.max(0, payableUnitsGross);
-      const daysForRatio = daysInMonth;
+      const computedPayableUnits = Math.max(
+        0,
+        Math.min(
+          daysForRate,
+          payableUnitsGross - (daysInMonth - daysForRate),
+        ),
+      );
       const ratio =
-        daysForRatio > 0
-          ? Math.max(0, Math.min(1, payableUnits / daysForRatio))
+        daysForRate > 0
+          ? Math.max(0, Math.min(1, computedPayableUnits / daysForRate))
           : 1;
 
       // Pro-rate individual keys first (User wants to see 54, 7 in Edit)
@@ -5155,7 +5181,7 @@ router.post("/payroll/:cycleId/compute", async (req, res) => {
             const base =
               Number(e?.basic_salary || sd.basicSalary || 0) +
               Number(e?.da || sd.da || 0);
-            const dailyRate = base / daysInMonth;
+            const dailyRate = base / daysForRate;
             amount = dailyRate * Number(enc.days || 0);
           }
           const catName =
@@ -5201,11 +5227,11 @@ router.post("/payroll/:cycleId/compute", async (req, res) => {
               a.overtimeMinutes || a.overtime_minutes || 0,
             );
 
-            // Always re-calculate to ensure latest logic and correct daysInMonth are applied
+            // Always re-calculate to ensure latest logic and correct daysForRate are applied
             const otRes = await calculateOvertime(
               a,
               orgAccountRecord,
-              daysInMonth,
+              daysForRate,
               a.punchedOutAt,
             );
             finalOtAmt = Number(otRes.overtimeAmount || 0);
@@ -5225,7 +5251,7 @@ router.post("/payroll/:cycleId/compute", async (req, res) => {
         Number(e?.basic_salary || sd.basicSalary || 0) +
         Number(e?.da || sd.da || 0);
       const hourlyRate =
-        daysInMonth > 0 ? overtimeBaseSalary / (daysInMonth * 8) : 0;
+        daysForRate > 0 ? overtimeBaseSalary / (daysForRate * 8) : 0;
 
       if (overtimePay > 0) {
         finalE.overtime_pay = overtimePay;
@@ -5252,7 +5278,7 @@ router.post("/payroll/:cycleId/compute", async (req, res) => {
             const eotRes = await earlyOvertimeService.calculateEarlyOvertime(
               a,
               orgAccountRecord,
-              daysInMonth,
+              daysForRate,
               a.punchedInAt,
             );
             if (eotAmt === 0) eotAmt = Number(eotRes.earlyOvertimeAmount || 0);
@@ -5284,7 +5310,7 @@ router.post("/payroll/:cycleId/compute", async (req, res) => {
         const eeRes = await earlyExitService.calculateEarlyExit(
           a,
           orgAccountRecord,
-          daysInMonth,
+          daysForRate,
           a.punchedOutAt,
           dailySalary,
         );
@@ -5296,7 +5322,7 @@ router.post("/payroll/:cycleId/compute", async (req, res) => {
         const breakRes = await breakService.calculateBreakDeduction(
           a,
           orgAccountRecord,
-          daysInMonth,
+          daysForRate,
           a.punchedOutAt,
           dailySalary,
         );
@@ -5528,7 +5554,7 @@ router.post("/payroll/:cycleId/compute", async (req, res) => {
         weeklyOff,
         holidays,
         ratio,
-        payableDays: payableUnits,
+        payableDays: computedPayableUnits,
         overtimeMinutes: totalOvertimeMinutes,
         overtimeHours: Number(overtimeHours.toFixed(2)),
         overtimeHourlyRate: Number(hourlyRate.toFixed(2)),

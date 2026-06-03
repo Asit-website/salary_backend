@@ -1,6 +1,8 @@
 const dayjs = require('dayjs');
 const { sequelize, EarlyOvertimeRule, ShiftTemplate, StaffShiftAssignment, User, StaffProfile, StaffRoster, OrgAccount, StaffEarlyOvertimeAssignment } = require('../models');
 const shiftService = require('./shiftService');
+const { getSettingsPayableDays } = require('../utils/salarySettingsHelper');
+
 
 /**
  * Helper to find minutes worked before shift start.
@@ -109,7 +111,16 @@ async function calculateEarlyOvertime(params, orgAccountArg, daysInMonthArg = 30
     const basic = Number(user?.basicSalary || 0) || Number(sv?.earnings?.basic_salary || sv?.earnings?.BASIC_SALARY || 0);
     const da = Number(user?.da || 0) || Number(sv?.earnings?.da || sv?.earnings?.DA || 0);
     const baseSalary = basic + da;
-    const daysInMonth = daysInMonthArg || 30;
+    let daysForRate = daysInMonthArg || 30;
+    if (orgAccount && dateKey) {
+      const monthKey = dateKey.substring(0, 7);
+      const settingsDays = await getSettingsPayableDays(orgAccount, monthKey);
+      if (settingsDays > 0) {
+        daysForRate = settingsDays;
+      }
+    }
+    const daysInMonth = daysForRate;
+
     let shiftWorkMins = shiftTemplate?.workMinutes || 0;
     if (!shiftWorkMins && shiftTemplate?.startTime && shiftTemplate?.endTime) {
       const [sh, sm] = shiftTemplate.startTime.split(':').map(Number);

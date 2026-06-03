@@ -1,6 +1,7 @@
 const { BreakRule, StaffBreakAssignment, StaffProfile, ShiftTemplate, StaffShiftAssignment, User, StaffRoster } = require('../models');
 const { Op } = require('sequelize');
 const dayjs = require('dayjs');
+const { getSettingsPayableDays } = require('../utils/salarySettingsHelper');
 
 /**
  * Calculates break deduction for a specific attendance record.
@@ -61,18 +62,28 @@ async function calculateBreakDeduction(attendance, orgAccount, daysInMonth = 30,
 
     // 3. Fetch Staff Salary for Multiplier
     let dailySalary = dailySalaryArg;
-    if (!dailySalary && (effectiveRule.deductionType === 'SALARY_MULTIPLIER' || effectiveRule.deductHalfDay || effectiveRule.deductFullDay)) {
-      const { User } = require('../models');
-      const user = await User.findByPk(userId);
-      let sv = {};
-      if (user?.salaryValues) {
-        try { sv = typeof user.salaryValues === 'string' ? JSON.parse(user.salaryValues) : user.salaryValues; } catch (e) { sv = {}; }
+
+    // Resolve settings-based days for rate
+    let daysForRate = daysInMonth || 30;
+    const resolvedOrgAccount = orgAccount || (orgAccountId ? { id: orgAccountId } : null);
+    if (resolvedOrgAccount && dateStr) {
+      const monthKey = String(dateStr).substring(0, 7);
+      const settingsDays = await getSettingsPayableDays(resolvedOrgAccount, monthKey);
+      if (settingsDays > 0) {
+        daysForRate = settingsDays;
       }
-      const basic = Number(user?.basicSalary || 0) || Number(sv?.earnings?.basic_salary || sv?.earnings?.BASIC_SALARY || 0);
-      const da = Number(user?.da || 0) || Number(sv?.earnings?.da || sv?.earnings?.DA || 0);
-      const gross = Number(user?.grossSalary || 0) || Number(sv?.earnings?.gross_salary || sv?.earnings?.GROSS_SALARY || 0) || (basic + da);
-      dailySalary = (daysInMonth > 0) ? (gross / daysInMonth) : 0;
     }
+
+    // Recalculate dailySalary using settings-based daysForRate to guarantee accuracy
+    const user = await User.findByPk(userId);
+    let sv = {};
+    if (user?.salaryValues) {
+      try { sv = typeof user.salaryValues === 'string' ? JSON.parse(user.salaryValues) : user.salaryValues; } catch (e) { sv = {}; }
+    }
+    const basic = Number(user?.basicSalary || 0) || Number(sv?.earnings?.basic_salary || sv?.earnings?.BASIC_SALARY || 0);
+    const da = Number(user?.da || 0) || Number(sv?.earnings?.da || sv?.earnings?.DA || 0);
+    const gross = Number(user?.grossSalary || 0) || Number(sv?.earnings?.gross_salary || sv?.earnings?.GROSS_SALARY || 0) || (basic + da);
+    dailySalary = (daysForRate > 0) ? (gross / daysForRate) : 0;
 
     let deductionAmount = 0;
     let excessBreakMinutes = 0;
@@ -86,7 +97,6 @@ async function calculateBreakDeduction(attendance, orgAccount, daysInMonth = 30,
       excessBreakMinutes = totalBreakMinutes - effectiveRule.halfDayThresholdMinutes;
     } else {
       // 5. Evaluate Multi-tier Thresholds
-      // Thresholds: [{ minMinutes: 15, rewardType: 'FIXED_AMOUNT', rewardValue: 100, frequency: 1 }]
       let thresholds = effectiveRule.thresholds || [];
       if (typeof thresholds === 'string') {
         try { thresholds = JSON.parse(thresholds); } catch (e) { thresholds = []; }

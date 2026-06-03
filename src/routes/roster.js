@@ -1,8 +1,9 @@
 const express = require('express');
 const { Op } = require('sequelize');
-const { StaffRoster, ShiftTemplate, User, StaffProfile, StaffShiftAssignment, Badge, BadgePermission, Attendance, LeaveRequest, StaffHolidayAssignment, HolidayDate } = require('../models');
+const { StaffRoster, ShiftTemplate, User, StaffProfile, StaffShiftAssignment, Badge, BadgePermission, Attendance, LeaveRequest, StaffHolidayAssignment, HolidayDate, StaffWeeklyOffAssignment, WeeklyOffTemplate } = require('../models');
 const { authRequired } = require('../middleware/auth');
 const dayjs = require('dayjs');
+const { isWeeklyOffForDate } = require('./weeklyOff');
 const { requireRole } = require('../middleware/roles');
 const { tenantEnforce } = require('../middleware/tenant');
 
@@ -236,6 +237,40 @@ router.post('/admin/roster', authRequired, requireRole(['admin', 'superadmin', '
               message: `Alert: You are assigning a shift on a Public Holiday (${holiday.name}). Special Overtime rates may apply. Do you want to continue?`
             });
           }
+        }
+      }
+
+      // 2b. Validation: Alert if employee is on Weekly Off
+      if (status === 'SHIFT' && !req.body.forceWeeklyOff) {
+        const woAssignments = await StaffWeeklyOffAssignment.findAll({
+          where: { userId },
+          include: [{ model: WeeklyOffTemplate, as: 'template' }]
+        });
+
+        const targetDate = new Date(`${date}T00:00:00`);
+        let hasWeeklyOffConflict = false;
+
+        for (const asg of woAssignments) {
+          const ef = new Date(asg.effectiveFrom);
+          const et = asg.effectiveTo ? new Date(asg.effectiveTo) : null;
+          if (targetDate >= ef && (!et || targetDate <= et)) {
+            let rawConfig = asg.template?.config;
+            while (typeof rawConfig === 'string' && rawConfig.trim().startsWith('[')) {
+              try { rawConfig = JSON.parse(rawConfig); } catch (_) { break; }
+            }
+            if (isWeeklyOffForDate(Array.isArray(rawConfig) ? rawConfig : [], targetDate)) {
+              hasWeeklyOffConflict = true;
+              break;
+            }
+          }
+        }
+
+        if (hasWeeklyOffConflict) {
+          return res.status(400).json({
+            success: false,
+            isWeeklyOffWarning: true,
+            message: `Alert: You are assigning a shift on a Weekly Off day. Do you want to continue?`
+          });
         }
       }
 

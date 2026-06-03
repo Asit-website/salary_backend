@@ -6,6 +6,7 @@ const { checkMissingCheckoutAndNotify } = require('./missingCheckoutReminder');
 const { checkAbsentStaffAndNotify } = require('./absentStaffReminder');
 const { processMailQueue } = require('./mailCampaignJob');
 const { checkAndPostCelebrations } = require('./socialJob');
+const { scheduleShiftRotationCron, runShiftRotationCronManual } = require('./rotationCron');
 
 // Schedule the subscription expiry reminder job to run daily at 9:00 AM
 const scheduleSubscriptionExpiryReminders = () => {
@@ -83,5 +84,7 @@ module.exports = {
   scheduleBulkMailJob,
   scheduleSocialCelebrations,
   runSocialCelebrationsManual,
-  scheduleMissingCheckoutReminders
+  scheduleMissingCheckoutReminders,
+  scheduleShiftRotationCron,
+  runShiftRotationCronManual
 };

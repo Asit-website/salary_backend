@@ -6,6 +6,7 @@ const latePunchInService = require('./latePunchInService');
 const breakService = require('./breakService');
 const dayjs = require('dayjs');
 const { Op } = require('sequelize');
+const { getSettingsPayableDays } = require('../utils/salarySettingsHelper');
 
 class AutomationRecalculationService {
     /**
@@ -72,15 +73,10 @@ class AutomationRecalculationService {
         const basic = Number(user?.basicSalary || 0) || Number(sv?.earnings?.basic_salary || sv?.earnings?.BASIC_SALARY || 0);
         const da = Number(user?.da || 0) || Number(sv?.earnings?.da || sv?.earnings?.DA || 0);
         const gross = Number(user?.grossSalary || 0) || Number(sv?.earnings?.gross_salary || sv?.earnings?.GROSS_SALARY || 0) || (basic + da);
-        const dailySalary = gross / 30; // Defaulting to 30 days for now, similar to services
 
         let processedCount = 0;
 
         // Group by month for LatePunchIn occurrence logic if needed
-        // But for now, we'll process each day. 
-        // Note: LatePunchIn occurrence logic usually runs at the end of the month or during sync.
-        // If we recalculate backdated, we might need to re-run the WHOLE month's late count.
-
         const monthGroups = {};
         attendanceRecords.forEach(rec => {
             const m = dayjs(rec.date).format('YYYY-MM');
@@ -92,29 +88,42 @@ class AutomationRecalculationService {
         for (const [monthKey, rows] of Object.entries(monthGroups)) {
             console.log(`[Recalculation] Processing ${rows.length} records for ${monthKey}`);
 
+            // Calculate settings-aware base days for this month
+            let daysForRate = 30;
+            if (orgAccount && monthKey) {
+                const settingsDays = await getSettingsPayableDays(orgAccount, monthKey);
+                if (settingsDays > 0) {
+                    daysForRate = settingsDays;
+                } else {
+                    const [yy, mm] = monthKey.split('-').map(Number);
+                    daysForRate = new Date(yy, mm, 0).getDate();
+                }
+            }
+            const monthDailySalary = gross / daysForRate;
+
             // Special handling for Late Punch-In (requires month context for occurrences)
             const lateResult = await latePunchInService.calculateMonthlyLateDetails(
                 userId,
                 orgAccountId,
                 monthKey,
                 rows,
-                dailySalary
+                monthDailySalary
             );
 
             // lateResult.rows now contains updated latePunchInMinutes and latePunchInAmount
             // Now calculate other daily rules for each row
             for (const row of lateResult.rows) {
                 // Overtime
-                const ot = await overtimeService.calculateOvertime(row, orgAccount);
+                const ot = await overtimeService.calculateOvertime(row, orgAccount, daysForRate);
 
                 // Early Overtime
-                const eot = await earlyOvertimeService.calculateEarlyOvertime(row, orgAccount);
+                const eot = await earlyOvertimeService.calculateEarlyOvertime(row, orgAccount, daysForRate);
 
                 // Early Exit
-                const ee = await earlyExitService.calculateEarlyExit(row, orgAccount, 30, new Date(), dailySalary);
+                const ee = await earlyExitService.calculateEarlyExit(row, orgAccount, daysForRate, new Date(), monthDailySalary);
 
                 // Break Deduction
-                const brk = await breakService.calculateBreakDeduction(row, orgAccount, 30, new Date(), dailySalary);
+                const brk = await breakService.calculateBreakDeduction(row, orgAccount, daysForRate, new Date(), monthDailySalary);
 
                 // Determine final status
                 let finalStatus = row.status || 'present';
@@ -131,7 +140,7 @@ class AutomationRecalculationService {
                 if (ot.status) {
                     finalStatus = ot.status.toLowerCase();
                 }
-
+                
                 // If late but status is still present, keep as present (the late details are tracked in other fields)
                 if ((row.latePunchInMinutes || 0) > 0 && finalStatus.toLowerCase() === 'present') {
                     finalStatus = 'present';

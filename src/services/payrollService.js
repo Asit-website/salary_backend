@@ -13,6 +13,8 @@ const {
   HolidayWorkPayRule, StaffHolidayWorkPayAssignment
 } = require('../models');
 const holidayWorkPayService = require('./holidayWorkPayService');
+const { coerceSalarySettings, computePayableDays, getSettingsPayableDays } = require('../utils/salarySettingsHelper');
+
 
 const categoryNames = {
   'cl': 'Casual Leave',
@@ -48,45 +50,38 @@ async function computeOvertimeMeta({ userId, monthKey, overtimeBaseSalary, orgAc
   const { start, endKey, end } = getMonthRange(monthKey);
   const rows = await Attendance.findAll({
     where: { userId, date: { [Op.gte]: start, [Op.lte]: endKey } },
-    attributes: ['id', 'userId', 'orgAccountId', 'overtimeMinutes', 'overtimeAmount', 'overtimeRuleId', 'totalWorkHours', 'date', 'punchedInAt', 'punchedOutAt']
+    attributes: ['id', 'userId', 'orgAccountId', 'overtimeMinutes', 'date', 'status'],
+    order: [['date', 'ASC']]
   });
+  const daysInMonth = Number(end.getDate() || 30);
+  const settingsPayableDays = await getSettingsPayableDays(orgAccount, monthKey);
+  const daysForRate = settingsPayableDays > 0 ? settingsPayableDays : daysInMonth;
 
   const { calculateOvertime } = require('./overtimeService');
-  const daysInMonth = Number(end.getDate() || 30);
 
   let totalOvertimeMinutes = 0;
   let totalOvertimePay = 0;
 
   for (const row of rows) {
-    // CRITICAL: Only count if it has an associated Automation Rule
-    if (row.overtimeRuleId || (row.getDataValue && row.getDataValue('overtime_rule_id'))) {
-      let otAmount = Number(row.overtimeAmount !== undefined ? row.overtimeAmount : (row.getDataValue ? row.getDataValue('overtime_amount') : (row.overtime_amount || 0)));
-      let otMinutes = Number(row.overtimeMinutes !== undefined ? row.overtimeMinutes : (row.getDataValue ? row.getDataValue('overtime_minutes') : (row.overtime_minutes || 0)));
+    let otAmount = Number(row.overtimeAmount !== undefined ? row.overtimeAmount : (row.getDataValue ? row.getDataValue('overtime_amount') : (row.overtime_amount || 0)));
+    let otMinutes = Number(row.overtimeMinutes !== undefined ? row.overtimeMinutes : (row.getDataValue ? row.getDataValue('overtime_minutes') : (row.overtime_minutes || 0)));
 
-      // Always re-calculate to ensure latest logic and correct daysInMonth are applied
-      const result = await calculateOvertime(row, orgAccount, daysInMonth);
+    if (orgAccount?.overtimeRuleId && otAmount <= 0 && otMinutes > 0) {
+      // Always re-calculate to ensure latest logic and correct daysForRate are applied
+      const result = await calculateOvertime(row, orgAccount, daysForRate);
       otAmount = result.overtimeAmount;
       otMinutes = result.overtimeMinutes;
-
-      totalOvertimeMinutes += otMinutes;
-      totalOvertimePay += otAmount;
     }
+
+    totalOvertimeMinutes += otMinutes;
+    totalOvertimePay += otAmount;
   }
 
-  // Final Force-Zero if no minutes were accumulated via rules
-  if (totalOvertimeMinutes <= 0) {
-    totalOvertimeMinutes = 0;
-    totalOvertimePay = 0;
-  }
-
-  const overtimeHours = totalOvertimeMinutes / 60;
-  const hourlyRate = daysInMonth > 0 ? (Number(overtimeBaseSalary || 0) / (daysInMonth * 8)) : 0;
-
-  console.log(`[Payroll-OT] Final Strict - User: ${userId}, TotalMin: ${totalOvertimeMinutes}, TotalPay: ${totalOvertimePay}`);
+  const hourlyRate = daysForRate > 0 ? (Number(overtimeBaseSalary || 0) / (daysForRate * 8)) : 0;
 
   return {
     overtimeMinutes: totalOvertimeMinutes,
-    overtimeHours: Number(overtimeHours.toFixed(2)),
+    overtimeHours: Number((totalOvertimeMinutes / 60).toFixed(2)),
     overtimeHourlyRate: Number(hourlyRate.toFixed(2)),
     overtimePay: totalOvertimePay
   };
@@ -101,6 +96,8 @@ async function computeEarlyOvertimeMeta({ userId, monthKey, orgAccount }) {
 
   const { calculateEarlyOvertime } = require('./earlyOvertimeService');
   const daysInMonth = Number(end.getDate() || 30);
+  const settingsPayableDays = await getSettingsPayableDays(orgAccount, monthKey);
+  const daysForRate = settingsPayableDays > 0 ? settingsPayableDays : daysInMonth;
 
   let totalEarlyOvertimeMinutes = 0;
   let totalEarlyOvertimePay = 0;
@@ -110,7 +107,7 @@ async function computeEarlyOvertimeMeta({ userId, monthKey, orgAccount }) {
     let eotMinutes = Number(row.earlyOvertimeMinutes !== undefined ? row.earlyOvertimeMinutes : (row.getDataValue ? row.getDataValue('early_overtime_minutes') : (row.early_overtime_minutes || 0)));
 
     if (orgAccount?.earlyOvertimeRuleId && eotAmount <= 0 && eotMinutes > 0) {
-      const result = await calculateEarlyOvertime(row, orgAccount, daysInMonth, row.punchedInAt);
+      const result = await calculateEarlyOvertime(row, orgAccount, daysForRate, row.punchedInAt);
       eotAmount = result.earlyOvertimeAmount;
       eotMinutes = result.earlyOvertimeMinutes;
     }
@@ -128,6 +125,8 @@ async function computeEarlyOvertimeMeta({ userId, monthKey, orgAccount }) {
 async function computeEarlyExitMeta({ userId, monthKey, orgAccount }) {
   const { start, endKey, end } = getMonthRange(monthKey);
   const daysInMonth = Number(end.getDate() || 30);
+  const settingsPayableDays = await getSettingsPayableDays(orgAccount, monthKey);
+  const daysForRate = settingsPayableDays > 0 ? settingsPayableDays : daysInMonth;
   const rows = await Attendance.findAll({
     where: { userId, date: { [Op.gte]: start, [Op.lte]: endKey } },
     attributes: ['id', 'userId', 'orgAccountId', 'earlyExitMinutes', 'earlyExitAmount', 'earlyExitRuleId', 'date', 'punchedOutAt']
@@ -144,7 +143,7 @@ async function computeEarlyExitMeta({ userId, monthKey, orgAccount }) {
 
     // If an Automation Rule is active and amount is missing, calculate it
     if (orgAccount?.earlyExitRuleId && eeAmount <= 0 && eeMinutes > 0) {
-      const result = await earlyExitService.calculateEarlyExit(row, orgAccount, daysInMonth, row.punchedOutAt);
+      const result = await earlyExitService.calculateEarlyExit(row, orgAccount, daysForRate, row.punchedOutAt);
       eeAmount = result.earlyExitAmount;
       eeMinutes = result.earlyExitMinutes;
     }
@@ -162,6 +161,8 @@ async function computeEarlyExitMeta({ userId, monthKey, orgAccount }) {
 async function computeBreakMeta({ userId, monthKey, orgAccount }) {
   const { start, endKey, end } = getMonthRange(monthKey);
   const daysInMonth = Number(end.getDate() || 30);
+  const settingsPayableDays = await getSettingsPayableDays(orgAccount, monthKey);
+  const daysForRate = settingsPayableDays > 0 ? settingsPayableDays : daysInMonth;
   const rows = await Attendance.findAll({
     where: { userId, date: { [Op.gte]: start, [Op.lte]: endKey } },
     attributes: ['id', 'userId', 'orgAccountId', 'breakDeductionAmount', 'excessBreakMinutes', 'breakRuleId', 'date', 'punchedOutAt', 'breakTotalSeconds']
@@ -178,7 +179,7 @@ async function computeBreakMeta({ userId, monthKey, orgAccount }) {
 
     // Re-calculate if rule is active but no penalty saved
     if (orgAccount?.breakRuleId && bAmount <= 0 && (row.breakTotalSeconds || 0) > 0) {
-      const result = await breakService.calculateBreakDeduction(row, orgAccount, daysInMonth, row.punchedOutAt);
+      const result = await breakService.calculateBreakDeduction(row, orgAccount, daysForRate, row.punchedOutAt);
       bAmount = result.breakDeductionAmount;
       bMinutes = result.excessBreakMinutes;
     }
@@ -196,7 +197,9 @@ async function computeBreakMeta({ userId, monthKey, orgAccount }) {
 async function computeLatePenaltyMeta({ userId, monthKey, orgAccount, baseSalary }) {
   const { start, endKey, end } = getMonthRange(monthKey);
   const daysInMonth = Number(end.getDate() || 30);
-  const dailySalary = baseSalary / daysInMonth;
+  const settingsPayableDays = await getSettingsPayableDays(orgAccount, monthKey);
+  const daysForRate = settingsPayableDays > 0 ? settingsPayableDays : daysInMonth;
+  const dailySalary = baseSalary / daysForRate;
 
   // 1. Fetch all attendance records for the month
   const rows = await Attendance.findAll({
@@ -245,6 +248,8 @@ async function calculateSalary(userId, monthKey) {
   }
 
   if (!u) throw new Error('User not found');
+
+  const settingsPayableDays = await getSettingsPayableDays(u.orgAccount, monthKey);
 
   // Check if payroll line exists for this month across ALL cycles for this monthKey
   const cycles = await PayrollCycle.findAll({ where: { monthKey }, order: [['id', 'DESC']] });
@@ -710,6 +715,7 @@ async function calculateSalary(userId, monthKey) {
   let present = 0, actualPresent = 0, half = 0, leave = 0, paidLeaveCount = 0, unpaidLeave = 0, weeklyOffCount = 0, holidaysCount = 0, absent = 0;
   let paidLeaveDates = [];
   const daysInMonth = end.getDate();
+  const daysForRate = settingsPayableDays > 0 ? settingsPayableDays : daysInMonth;
   const now = new Date();
   const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
   const isCurrentMonth = Number(yy) === now.getFullYear() && Number(mm) === (now.getMonth() + 1);
@@ -797,7 +803,8 @@ async function calculateSalary(userId, monthKey) {
   }
 
   let payableUnits = present + paidLeaveCount + weeklyOffCount + holidaysCount;
-  let ratio = daysInMonth > 0 ? (payableUnits / daysInMonth) : 0;
+  const computedPayableUnits = Math.max(0, Math.min(daysForRate, payableUnits - (daysInMonth - daysForRate)));
+  let ratio = daysForRate > 0 ? Math.max(0, Math.min(1, computedPayableUnits / daysForRate)) : 0;
 
   // Calculate Late Penalty separately via the new meta function
   let lp = await computeLatePenaltyMeta({
@@ -814,8 +821,7 @@ async function calculateSalary(userId, monthKey) {
   if (latePenaltyAmount > 0) {
     deductions = { ...deductions, late_punchin_penalty: latePenaltyAmount };
   }
-  const daysForRatio = daysInMonth;
-  ratio = daysForRatio > 0 ? Math.max(0, Math.min(1, payableUnits / daysForRatio)) : 1;
+  ratio = daysForRate > 0 ? Math.max(0, Math.min(1, computedPayableUnits / daysForRate)) : 1;
 
   const loanDeduction = await calculateLoanDeduction();
   const advanceDeduction = await calculateAdvanceDeduction();
@@ -917,7 +923,7 @@ async function calculateSalary(userId, monthKey) {
       let amount = Number(enc.amount || 0);
       if (amount <= 0) {
         const base = Number(earnings?.basic_salary || sd.basicSalary || 0) + Number(earnings?.da || sd.da || 0);
-        const dailyRate = base / daysInMonth;
+        const dailyRate = base / daysForRate;
         amount = Math.round(dailyRate * Number(enc.days || 0));
       }
       const catName = categoryNames[enc.categoryKey.toLowerCase()] || enc.categoryKey.toUpperCase();
@@ -1068,7 +1074,7 @@ async function calculateSalary(userId, monthKey) {
     attendanceSummary: {
       present: actualPresent, half, leave, paidLeave: paidLeaveCount, paidLeaveDates,
       absent, weeklyOff: weeklyOffCount, holidays: holidaysCount, ratio,
-      payableDays: payableUnits, // This is the gross payable days (e.g. 28)
+      payableDays: computedPayableUnits, // This is the gross payable days (e.g. 28)
       lateCount: lp.lateCount,
       latePenalty: lp.latePunchInPenalty,
       latePunchInPenalty: lp.latePunchInPenalty,

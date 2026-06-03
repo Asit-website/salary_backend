@@ -2,6 +2,7 @@ const { LatePunchInRule, StaffLatePunchInAssignment, User, StaffShiftAssignment,
 const { Op } = require('sequelize');
 const dayjs = require('dayjs');
 const shiftService = require('./shiftService');
+const { getSettingsPayableDays } = require('../utils/salarySettingsHelper');
 
 /**
  * Service to handle automated Late Punch-In calculations and penalties
@@ -72,7 +73,20 @@ class LatePunchInService {
     const buffer = Number(finalRule?.bufferMinutes || 0);
     const effectiveLateMinutes = Math.max(0, latePunchInMinutes - buffer);
 
-    let deductionAmount = 0;
+    let dailySalary = dailySalaryArg;
+
+    // Resolve settings-based days for rate
+    let daysForRate = daysInMonth || 30;
+    const resolvedOrgAccount = orgAccount || (orgAccountId ? { id: orgAccountId } : null);
+    if (resolvedOrgAccount && dateKey) {
+      const monthKey = String(dateKey).substring(0, 7);
+      const settingsDays = await getSettingsPayableDays(resolvedOrgAccount, monthKey);
+      if (settingsDays > 0) {
+        daysForRate = settingsDays;
+      }
+    }
+
+    // Recalculate dailySalary using settings-based daysForRate to guarantee accuracy
     const user = await User.findByPk(userId);
     let sv = {};
     if (user?.salaryValues) {
@@ -81,7 +95,7 @@ class LatePunchInService {
     const basic = Number(user?.basicSalary || 0) || Number(sv?.earnings?.basic_salary || sv?.earnings?.BASIC_SALARY || 0);
     const da = Number(user?.da || 0) || Number(sv?.earnings?.da || sv?.earnings?.DA || 0);
     const baseSalary = Number(user?.grossSalary || 0) || Number(sv?.earnings?.gross_salary || sv?.earnings?.GROSS_SALARY || 0) || (basic + da);
-    const dailySalary = dailySalaryArg || (baseSalary / daysInMonth);
+    dailySalary = (daysForRate > 0) ? (baseSalary / daysForRate) : 0;
 
     const pType = finalRule.penaltyType || 'SLABS';
     let thresholds = finalRule.thresholds;
@@ -91,6 +105,7 @@ class LatePunchInService {
     if (!Array.isArray(thresholds)) thresholds = [];
 
     let matchedTier = null;
+    let deductionAmount = 0;
     if (pType === 'SLABS') {
       const tier = thresholds.find(t => effectiveLateMinutes >= Number(t.minMinutes) && effectiveLateMinutes <= Number(t.maxMinutes));
       if (tier) {
@@ -179,13 +194,29 @@ class LatePunchInService {
     let totalDays = 0;
     let lateCount = 0;
 
+    // Recalculate/override dailySalary with settings-based daysForRate to guarantee accuracy
+    let finalDailySalary = dailySalary;
+    if (userId && orgAccountId && monthKey) {
+      const settingsDays = await getSettingsPayableDays({ id: orgAccountId }, monthKey);
+      const daysForRate = settingsDays > 0 ? settingsDays : 30;
+      
+      const user = await User.findByPk(userId);
+      let sv = {};
+      if (user?.salaryValues) {
+        try { sv = typeof user.salaryValues === 'string' ? JSON.parse(user.salaryValues) : user.salaryValues; } catch (e) { sv = {}; }
+      }
+      const basic = Number(user?.basicSalary || 0) || Number(sv?.earnings?.basic_salary || sv?.earnings?.BASIC_SALARY || 0);
+      const da = Number(user?.da || 0) || Number(sv?.earnings?.da || sv?.earnings?.DA || 0);
+      const baseSalary = Number(user?.grossSalary || 0) || Number(sv?.earnings?.gross_salary || sv?.earnings?.GROSS_SALARY || 0) || (basic + da);
+      finalDailySalary = baseSalary / daysForRate;
+    }
+
     // We track occurrences per unique Rule+Tier combination
     const ruleOccurrences = {}; // { "ruleId_tierIndex": count }
 
     for (const row of rows) {
       // 1. Calculate raw penalty for this specific day
-      // We pass 30 as default daysInMonth, but we primarily care about the matched rule and tier
-      const lp = await this.calculateLatePenalty(row, { id: orgAccountId }, 30, new Date(), dailySalary);
+      const lp = await this.calculateLatePenalty(row, { id: orgAccountId }, 30, new Date(), finalDailySalary);
 
       row.latePunchInMinutes = lp.latePunchInMinutes || 0;
       row.latePunchInAmount = 0; // Default to 0, will set if threshold met
@@ -215,25 +246,25 @@ class LatePunchInService {
             const pType = rule.penaltyType || 'SLABS';
             if (pType === 'SLABS') {
               rowDays = Number(tier.deduction || 0);
-              rowPenalty = dailySalary * rowDays;
+              rowPenalty = finalDailySalary * rowDays;
             } else if (pType === 'FIXED_AMOUNT') {
               rowPenalty = Number(tier.value || 0);
-              rowDays = dailySalary > 0 ? (rowPenalty / dailySalary) : 0;
+              rowDays = finalDailySalary > 0 ? (rowPenalty / finalDailySalary) : 0;
             } else if (pType === 'FIXED_AMOUNT_PER_HOUR') {
               const hours = Math.round(row.latePunchInMinutes / 60);
               rowPenalty = Number(tier.value || 0) * hours;
-              rowDays = dailySalary > 0 ? (rowPenalty / dailySalary) : 0;
+              rowDays = finalDailySalary > 0 ? (rowPenalty / finalDailySalary) : 0;
             } else if (pType === 'HALF_DAY') {
               rowDays = 0.5;
-              rowPenalty = dailySalary * 0.5;
+              rowPenalty = finalDailySalary * 0.5;
             } else if (pType === 'FULL_DAY') {
               rowDays = 1.0;
-              rowPenalty = dailySalary;
+              rowPenalty = finalDailySalary;
             } else if (pType === 'SALARY_MULTIPLIER') {
               const shiftHours = lp.shiftHours || 8;
-              const hourlySalary = dailySalary / shiftHours;
+              const hourlySalary = finalDailySalary / shiftHours;
               rowPenalty = hourlySalary * Number(tier.value || 0);
-              rowDays = dailySalary > 0 ? (rowPenalty / dailySalary) : 0;
+              rowDays = finalDailySalary > 0 ? (rowPenalty / finalDailySalary) : 0;
             }
 
             row.latePunchInAmount = parseFloat(rowPenalty.toFixed(2));

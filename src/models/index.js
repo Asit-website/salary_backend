@@ -124,6 +124,8 @@ const defineClientAssignment = require('./ClientAssignment');
 const defineNotification = require('./Notification');
 const defineAuditLog = require('./AuditLog');
 const defineRefreshToken = require('./RefreshToken');
+const defineShiftRotationGroup = require('./ShiftRotationGroup');
+const defineShiftRotationRule = require('./ShiftRotationRule');
 
 
 
@@ -254,6 +256,8 @@ const ClientAssignment = defineClientAssignment(sequelize);
 const Notification = defineNotification(sequelize);
 const AuditLog = defineAuditLog(sequelize);
 const RefreshToken = defineRefreshToken(sequelize);
+const ShiftRotationGroup = defineShiftRotationGroup(sequelize);
+const ShiftRotationRule = defineShiftRotationRule(sequelize);
 
 
 OrgAccount.hasMany(Notification, { foreignKey: 'orgAccountId', as: 'notifications' });
@@ -825,6 +829,16 @@ User.hasMany(Lead, { as: 'leads', foreignKey: 'createdBy' });
 OrgAccount.belongsTo(User, { as: 'creator', foreignKey: 'createdBy' });
 User.hasMany(OrgAccount, { as: 'createdOrgs', foreignKey: 'createdBy' });
 
+// Shift Rotation associations
+OrgAccount.hasMany(ShiftRotationGroup, { foreignKey: 'orgAccountId', as: 'shiftRotationGroups' });
+ShiftRotationGroup.belongsTo(OrgAccount, { foreignKey: 'orgAccountId', as: 'orgAccount' });
+ShiftRotationGroup.hasMany(User, { foreignKey: 'shiftRotationGroupId', as: 'staff' });
+User.belongsTo(ShiftRotationGroup, { foreignKey: 'shiftRotationGroupId', as: 'rotationGroup' });
+ShiftRotationGroup.hasOne(ShiftRotationRule, { foreignKey: 'shiftRotationGroupId', as: 'rule' });
+ShiftRotationRule.belongsTo(ShiftRotationGroup, { foreignKey: 'shiftRotationGroupId', as: 'group' });
+ShiftRotationRule.belongsTo(ShiftTemplate, { foreignKey: 'startShiftTemplateId', as: 'startShift' });
+ShiftRotationRule.belongsTo(ShiftTemplate, { foreignKey: 'alternateShiftTemplateId', as: 'alternateShift' });
+
 // Database Schema Fix: Remove restrictive global unique constraints
 (async () => {
   try {
@@ -984,4 +998,6 @@ module.exports = {
   Notification,
   AuditLog,
   RefreshToken,
+  ShiftRotationGroup,
+  ShiftRotationRule,
 };

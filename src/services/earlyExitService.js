@@ -2,6 +2,7 @@ const { EarlyExitRule, StaffEarlyExitAssignment, User, StaffShiftAssignment, Shi
 const { Op } = require('sequelize');
 const dayjs = require('dayjs');
 const shiftService = require('./shiftService');
+const { getSettingsPayableDays } = require('../utils/salarySettingsHelper');
 
 /**
  * Service to handle automated Early Exit calculations and penalties
@@ -73,17 +74,27 @@ class EarlyExitService {
     let deductionAmount = 0;
     let dailySalary = dailySalaryArg;
 
-    if (!dailySalary) {
-      const user = await User.findByPk(userId);
-      let sv = {};
-      if (user?.salaryValues) {
-        try { sv = typeof user.salaryValues === 'string' ? JSON.parse(user.salaryValues) : user.salaryValues; } catch (e) { sv = {}; }
+    // Resolve settings-based days for rate
+    let daysForRate = daysInMonth || 30;
+    const resolvedOrgAccount = orgAccount || (orgAccountId ? { id: orgAccountId } : null);
+    if (resolvedOrgAccount && dateKey) {
+      const monthKey = String(dateKey).substring(0, 7);
+      const settingsDays = await getSettingsPayableDays(resolvedOrgAccount, monthKey);
+      if (settingsDays > 0) {
+        daysForRate = settingsDays;
       }
-      const basic = Number(user?.basicSalary || 0) || Number(sv?.earnings?.basic_salary || sv?.earnings?.BASIC_SALARY || 0);
-      const da = Number(user?.da || 0) || Number(sv?.earnings?.da || sv?.earnings?.DA || 0);
-      const gross = Number(user?.grossSalary || 0) || Number(sv?.earnings?.gross_salary || sv?.earnings?.GROSS_SALARY || 0) || (basic + da);
-      dailySalary = (daysInMonth > 0) ? (gross / daysInMonth) : 0;
     }
+
+    // Recalculate dailySalary using settings-based daysForRate to guarantee accuracy
+    const user = await User.findByPk(userId);
+    let sv = {};
+    if (user?.salaryValues) {
+      try { sv = typeof user.salaryValues === 'string' ? JSON.parse(user.salaryValues) : user.salaryValues; } catch (e) { sv = {}; }
+    }
+    const basic = Number(user?.basicSalary || 0) || Number(sv?.earnings?.basic_salary || sv?.earnings?.BASIC_SALARY || 0);
+    const da = Number(user?.da || 0) || Number(sv?.earnings?.da || sv?.earnings?.DA || 0);
+    const gross = Number(user?.grossSalary || 0) || Number(sv?.earnings?.gross_salary || sv?.earnings?.GROSS_SALARY || 0) || (basic + da);
+    dailySalary = (daysForRate > 0) ? (gross / daysForRate) : 0;
 
     // A. Priority 1: Full Day Deduction
     if (finalRule.deductFullDay && finalRule.fullDayThresholdMinutes && earlyExitMinutes >= finalRule.fullDayThresholdMinutes) {
