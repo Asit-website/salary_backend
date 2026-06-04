@@ -1727,6 +1727,7 @@ router.get("/payroll/monthly-summary-excel", async (req, res) => {
       earlyOvertimePay: "EARLY OT",
       special_allowance: "SPECIAL ALLOW.",
       travel_allowance: "TRAVEL ALLOW.",
+      no_absent_pay: "NO ABSENT PAY",
       pf: "P.F.",
       esi: "E.S.I.",
       ptax: "P.TAX",
@@ -2198,6 +2199,7 @@ router.get("/payroll/:cycleId/salary-register-excel", async (req, res) => {
       fooding: "FOODING",
       special_allowance: "SPECIAL ALLOW.",
       travel_allowance: "TRAVEL ALLOW.",
+      no_absent_pay: "NO ABSENT PAY",
       pf: "P.F.",
       esi: "E.S.I.",
       ptax: "P.TAX",
@@ -2756,6 +2758,7 @@ router.get("/payroll/salary-register-template-wise-excel", async (req, res) => {
         fooding: "FOODING",
         special_allowance: "SPECIAL ALLOW.",
         travel_allowance: "TRAVEL ALLOW.",
+        no_absent_pay: "NO ABSENT PAY",
         pf: "P.F.",
         esi: "E.S.I.",
         ptax: "P.TAX",
@@ -5483,10 +5486,10 @@ router.post("/payroll/:cycleId/compute", async (req, res) => {
       const sumObj = (obj) =>
         Object.values(obj || {}).reduce((s, v) => s + (Number(v) || 0), 0);
 
-      const totalEarnings = sumObj(finalE);
+      let totalEarnings = sumObj(finalE);
       const totalIncentives = sumObj(finalI);
       const totalDeductions = sumObj(finalD);
-      const grossSalary = totalEarnings + totalIncentives;
+      let grossSalary = totalEarnings + totalIncentives;
 
       // --- Dynamic ESI and PT Logic (Admin Compute) ---
       if (u.salaryTemplate) {
@@ -5540,6 +5543,33 @@ router.post("/payroll/:cycleId/compute", async (req, res) => {
           }
         }
       }
+
+      // --- ESI as TA/No Absent Pay Logic ---
+      let extraObj = {};
+      if (u.profile && u.profile.extra) {
+        try {
+          extraObj = typeof u.profile.extra === 'string' ? JSON.parse(u.profile.extra) : u.profile.extra;
+        } catch (e) {}
+      }
+      if (extraObj && (extraObj.esiAsTa === true || extraObj.esiAsTa === 'true')) {
+        const esiAmt = Number(finalD.esi || finalD.ESI || 0);
+        if (esiAmt > 0) {
+          finalE.travel_allowance = Number(finalE.travel_allowance || 0) + esiAmt;
+          totalEarnings = sumObj(finalE);
+          grossSalary = totalEarnings + totalIncentives;
+        }
+      }
+      const noAbsentPayAmt = Number(extraObj?.noAbsentPay || 0);
+      if (noAbsentPayAmt > 0 && Number(absent || 0) === 0) {
+        finalE.no_absent_pay = noAbsentPayAmt;
+        totalEarnings = sumObj(finalE);
+        grossSalary = totalEarnings + totalIncentives;
+      } else if (finalE.no_absent_pay !== undefined) {
+        delete finalE.no_absent_pay;
+        totalEarnings = sumObj(finalE);
+        grossSalary = totalEarnings + totalIncentives;
+      }
+
       // Recalculate total deductions and net salary after overrides
       const updatedTotalDeductions = Object.values(finalD).reduce(
         (s, v) => s + (Number(v) || 0),
@@ -14675,6 +14705,180 @@ router.put("/salary/access-bulk", async (req, res) => {
   }
 });
 
+// --- ESI as TA Assignment Settings --- (org-scoped)
+router.get("/salary/esi-as-ta", async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res);
+    if (!orgId) return;
+    const staff = await User.findAll({
+      where: { role: "staff", orgAccountId: orgId },
+      include: [
+        { model: StaffProfile, as: "profile" },
+      ],
+      order: [["createdAt", "DESC"]],
+    });
+
+    const rows = staff.map((u) => {
+      let extraObj = {};
+      if (u.profile?.extra) {
+        try {
+          extraObj = typeof u.profile.extra === 'string' ? JSON.parse(u.profile.extra) : u.profile.extra;
+        } catch (e) {}
+      }
+      return {
+        userId: u.id,
+        staffId: u.profile?.staffId || null,
+        name: u.profile?.name || null,
+        phone: u.phone,
+        esiAsTa: !!extraObj?.esiAsTa,
+      };
+    });
+    return res.json({ success: true, items: rows });
+  } catch (e) {
+    return res
+      .status(500)
+      .json({ success: false, message: "Failed to load ESI as TA assignment list" });
+  }
+});
+
+router.put("/salary/esi-as-ta-bulk", async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res);
+    if (!orgId) return;
+    const userIds = Array.isArray(req.body?.userIds)
+      ? req.body.userIds
+          .map((x) => Number(x))
+          .filter((n) => Number.isFinite(n) && n > 0)
+      : [];
+    const esiAsTa = !!req.body?.esiAsTa;
+    if (userIds.length === 0)
+      return res
+        .status(400)
+        .json({ success: false, message: "userIds required" });
+
+    const profiles = await StaffProfile.findAll({
+      where: { userId: userIds, orgAccountId: orgId },
+    });
+    const updated = [];
+    for (const p of profiles) {
+      let extra = {};
+      if (p.extra) {
+        try {
+          extra = typeof p.extra === 'string' ? JSON.parse(p.extra) : p.extra;
+        } catch (e) {}
+      }
+      extra.esiAsTa = esiAsTa;
+      await p.update({ extra });
+      updated.push({ userId: p.userId, esiAsTa });
+    }
+    return res.json({ success: true, updated });
+  } catch (e) {
+    return res
+      .status(500)
+      .json({ success: false, message: "Failed to bulk update ESI as TA assignment" });
+  }
+});
+
+router.get("/salary/no-absent-pay", async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res);
+    if (!orgId) return;
+    const staff = await User.findAll({
+      where: { role: "staff", orgAccountId: orgId },
+      include: [
+        { model: StaffProfile, as: "profile" },
+      ],
+      order: [["createdAt", "DESC"]],
+    });
+
+    const rows = staff.map((u) => {
+      let extraObj = {};
+      if (u.profile?.extra) {
+        try {
+          extraObj = typeof u.profile.extra === 'string' ? JSON.parse(u.profile.extra) : u.profile.extra;
+        } catch (e) {}
+      }
+      return {
+        userId: u.id,
+        staffId: u.profile?.staffId || null,
+        name: u.profile?.name || null,
+        phone: u.phone,
+        noAbsentPay: Number(extraObj?.noAbsentPay || 0),
+      };
+    });
+    return res.json({ success: true, items: rows });
+  } catch (e) {
+    return res
+      .status(500)
+      .json({ success: false, message: "Failed to load No Absent Pay list" });
+  }
+});
+
+router.put("/salary/no-absent-pay-bulk", async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res);
+    if (!orgId) return;
+
+    const updates = Array.isArray(req.body?.updates) ? req.body.updates : [];
+    if (updates.length > 0) {
+      const userIds = updates.map((u) => Number(u.userId)).filter((id) => id > 0);
+      const profiles = await StaffProfile.findAll({
+        where: { userId: userIds, orgAccountId: orgId },
+      });
+      const profileMap = new Map(profiles.map((p) => [p.userId, p]));
+      const updated = [];
+      for (const u of updates) {
+        const p = profileMap.get(Number(u.userId));
+        if (p) {
+          let extra = {};
+          if (p.extra) {
+            try {
+              extra = typeof p.extra === "string" ? JSON.parse(p.extra) : p.extra;
+            } catch (e) {}
+          }
+          extra.noAbsentPay = Number(u.noAbsentPay || 0);
+          await p.update({ extra });
+          updated.push({ userId: p.userId, noAbsentPay: extra.noAbsentPay });
+        }
+      }
+      return res.json({ success: true, updated });
+    }
+
+    const userIds = Array.isArray(req.body?.userIds)
+      ? req.body.userIds
+          .map((x) => Number(x))
+          .filter((n) => Number.isFinite(n) && n > 0)
+      : [];
+    const noAbsentPay = Number(req.body?.noAbsentPay || 0);
+    if (userIds.length === 0)
+      return res
+        .status(400)
+        .json({ success: false, message: "userIds or updates required" });
+
+    const profiles = await StaffProfile.findAll({
+      where: { userId: userIds, orgAccountId: orgId },
+    });
+    const updated = [];
+    for (const p of profiles) {
+      let extra = {};
+      if (p.extra) {
+        try {
+          extra = typeof p.extra === "string" ? JSON.parse(p.extra) : p.extra;
+        } catch (e) {}
+      }
+      extra.noAbsentPay = noAbsentPay;
+      await p.update({ extra });
+      updated.push({ userId: p.userId, noAbsentPay });
+    }
+    return res.json({ success: true, updated });
+  } catch (e) {
+    return res
+      .status(500)
+      .json({ success: false, message: "Failed to bulk update No Absent Pay" });
+  }
+});
+
+
 // Salary calculation settings (org-scoped)
 router.get("/settings/salary", async (req, res) => {
   try {
@@ -16155,8 +16359,8 @@ router.get("/staff-salary-list", async (req, res) => {
                 (s, v) => s + (Number(v) || 0),
                 0,
               );
-              finalDeductions.esi = Math.round(
-                currentGross * (Number(esiRule.valueNumber || 0) / 100),
+              finalDeductions.esi = Number(
+                (currentGross * (Number(esiRule.valueNumber || 0) / 100)).toFixed(2)
               );
             }
           }
@@ -16438,6 +16642,7 @@ router.put("/staff/:id/profile", async (req, res) => {
       "photoUrl",
       "education",
       "experience",
+      "extra",
     ];
     const updates = {};
     allowed.forEach((k) => {
@@ -19044,6 +19249,7 @@ router.post("/staff", requireRole(["admin", "staff"]), async (req, res) => {
       photoUrl,
       education,
       experience,
+      extra,
     } = req.body || {};
 
     // Accept phone under different common keys just in case
@@ -19472,6 +19678,7 @@ router.post("/staff", requireRole(["admin", "staff"]), async (req, res) => {
       photoUrl: photoUrl || null,
       education: education || null,
       experience: experience || null,
+      extra: extra || null,
     });
 
     // FACE ENROLLMENT: If photo is provided, enroll in AWS Rekognition
@@ -19785,6 +19992,7 @@ router.put("/staff/:id", requireRole(["admin", "staff"]), async (req, res) => {
       photoUrl,
       education,
       experience,
+      extra,
     } = req.body || {};
 
     const staff = await User.findOne({
@@ -20007,6 +20215,7 @@ router.put("/staff/:id", requireRole(["admin", "staff"]), async (req, res) => {
       if (photoUrl !== undefined) patchProfile.photoUrl = photoUrl;
       if (education !== undefined) patchProfile.education = education;
       if (experience !== undefined) patchProfile.experience = experience;
+      if (extra !== undefined) patchProfile.extra = extra;
       await profile.update(patchProfile);
 
       // FACE ENROLLMENT: If photo has changed, re-enroll in AWS Rekognition

@@ -1057,19 +1057,48 @@ async function calculateSalary(userId, monthKey) {
       }
     }
   }
+  // --- ESI as TA Logic ---
+  let extraObj = {};
+  if (u.profile && u.profile.extra) {
+    try {
+      extraObj = typeof u.profile.extra === 'string' ? JSON.parse(u.profile.extra) : u.profile.extra;
+    } catch (e) {}
+  }
+  let updatedTotalEarnings = _totalEarnings;
+  let updatedGrossSalary = grossSalary;
+  if (extraObj && (extraObj.esiAsTa === true || extraObj.esiAsTa === 'true')) {
+    const esiAmt = Number(finalDeductions.esi || finalDeductions.ESI || 0);
+    if (esiAmt > 0) {
+      finalEarnings.travel_allowance = Number(finalEarnings.travel_allowance || 0) + esiAmt;
+      updatedTotalEarnings = sumObj(finalEarnings);
+      updatedGrossSalary = updatedTotalEarnings + _totalIncentives;
+    }
+  }
+
+  const noAbsentPayAmt = Number(extraObj?.noAbsentPay || 0);
+  if (noAbsentPayAmt > 0 && Number(absent || 0) === 0) {
+    finalEarnings.no_absent_pay = noAbsentPayAmt;
+    updatedTotalEarnings = sumObj(finalEarnings);
+    updatedGrossSalary = updatedTotalEarnings + _totalIncentives;
+  } else if (finalEarnings.no_absent_pay !== undefined) {
+    delete finalEarnings.no_absent_pay;
+    updatedTotalEarnings = sumObj(finalEarnings);
+    updatedGrossSalary = updatedTotalEarnings + _totalIncentives;
+  }
+
   // Recalculate total deductions and net salary after overrides
   const updatedTotalDeductions = Object.values(finalDeductions).reduce((s, v) => s + (Number(v) || 0), 0);
-  const netSalary = grossSalary - updatedTotalDeductions;
+  const netSalary = updatedGrossSalary - updatedTotalDeductions;
   // --- End Dynamic Logic ---
 
   return {
     success: true,
     monthKey,
     totals: {
-      totalEarnings: _totalEarnings,
+      totalEarnings: updatedTotalEarnings,
       totalIncentives: _totalIncentives,
       totalDeductions: updatedTotalDeductions,
-      grossSalary,
+      grossSalary: updatedGrossSalary,
       netSalary: Math.max(0, netSalary),
       ratio
     },
