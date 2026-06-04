@@ -2,6 +2,80 @@ const { sequelize, OvertimeRule, ShiftTemplate, StaffShiftAssignment, User, Staf
 const dayjs = require('dayjs');
 const shiftService = require('./shiftService');
 const { getSettingsPayableDays } = require('../utils/salarySettingsHelper');
+const isWeeklyOffForDate = (configArray, jsDate) => {
+  try {
+    let config = configArray;
+    while (typeof config === 'string' && config.trim().startsWith('[')) {
+      try {
+        const p = JSON.parse(config);
+        if (p === config) break;
+        config = p;
+      } catch (e) { break; }
+    }
+    if (!Array.isArray(config)) return false;
+
+    const dow = jsDate.getDay(); // 0=Sun
+    const wk = Math.floor((jsDate.getDate() - 1) / 7) + 1; // 1..5
+    for (const cfg of config) {
+      if (cfg && Number(cfg.day) === dow) {
+        if (cfg.weeks === 'all') return true;
+        if (Array.isArray(cfg.weeks) && cfg.weeks.includes(wk)) return true;
+      }
+    }
+    return false;
+  } catch (_) { return false; }
+};
+
+async function checkIfDateIsWoOrHoliday(userId, orgAccountId, dateKey) {
+  const { StaffRoster, StaffWeeklyOffAssignment, WeeklyOffTemplate, StaffHolidayAssignment, HolidayDate } = require('../models');
+  const { Op } = require('sequelize');
+
+  const roster = await StaffRoster.findOne({ where: { userId, date: dateKey } });
+  if (roster) {
+    if (roster.status === 'WEEKLY_OFF') return { isWO: true, isH: false };
+    if (roster.status === 'HOLIDAY') return { isWO: false, isH: true };
+  }
+
+  let isWO = false;
+  const asg = await StaffWeeklyOffAssignment.findOne({
+    where: {
+      userId,
+      effectiveFrom: { [Op.lte]: dateKey },
+      [Op.or]: [{ effectiveTo: null }, { effectiveTo: { [Op.gte]: dateKey } }],
+    },
+    order: [['effectiveFrom', 'DESC'], ['id', 'DESC']]
+  });
+  if (asg) {
+    const tpl = await WeeklyOffTemplate.findByPk(asg.weeklyOffTemplateId || asg.weekly_off_template_id);
+    const jsDate = new Date(dateKey);
+    isWO = isWeeklyOffForDate(tpl?.config, jsDate);
+  }
+
+  let isH = false;
+  const hasg = await StaffHolidayAssignment.findOne({
+    where: {
+      userId,
+      effectiveFrom: { [Op.lte]: dateKey },
+      [Op.or]: [{ effectiveTo: null }, { effectiveTo: { [Op.gte]: dateKey } }],
+    },
+    order: [['effectiveFrom', 'DESC'], ['id', 'DESC']],
+  });
+  if (hasg) {
+    const tplId = Number(hasg.holidayTemplateId || hasg.holiday_template_id);
+    if (Number.isFinite(tplId)) {
+      const hDate = await HolidayDate.findOne({
+        where: {
+          holidayTemplateId: tplId,
+          active: { [Op.not]: false },
+          date: dateKey
+        }
+      });
+      if (hDate) isH = true;
+    }
+  }
+
+  return { isWO, isH };
+}
 
 
 /**
@@ -181,7 +255,30 @@ async function calculateOvertime(params, orgAccountArg, daysInMonthArg = 30, now
     }
   }
 
-  const overtimeMinutes = await getOvertimeMinutes(attendance, { ...(finalRule.toJSON ? finalRule.toJSON() : finalRule), thresholds }, shiftTemplate);
+  // Check if woHolidayAsOt is enabled for this employee
+  let woHolidayAsOtEnabled = false;
+  let isWoOrHoliday = false;
+  try {
+    const profile = await StaffProfile.findOne({ where: { userId } });
+    let extraObj = {};
+    if (profile && profile.extra) {
+      extraObj = typeof profile.extra === 'string' ? JSON.parse(profile.extra) : profile.extra;
+    }
+    woHolidayAsOtEnabled = !!extraObj?.woHolidayAsOt;
+    if (woHolidayAsOtEnabled) {
+      const { isWO, isH } = await checkIfDateIsWoOrHoliday(userId, orgAccountId, dateKey);
+      isWoOrHoliday = isWO || isH;
+    }
+  } catch (e) {
+    console.error('[OvertimeService] Error loading profile extra:', e);
+  }
+
+  let overtimeMinutes = 0;
+  if (woHolidayAsOtEnabled && isWoOrHoliday) {
+    overtimeMinutes = totalWorkMinutes;
+  } else {
+    overtimeMinutes = await getOvertimeMinutes(attendance, { ...(finalRule.toJSON ? finalRule.toJSON() : finalRule), thresholds }, shiftTemplate);
+  }
 
   if (overtimeMinutes <= 0) {
     return {
@@ -251,6 +348,8 @@ async function calculateOvertime(params, orgAccountArg, daysInMonthArg = 30, now
 
     // CUSTOM: If user has 'Half Day' bonus enabled at 0 mins, 
     // it implies they want 1 hour of OT to be worth at least half a day (standard in some Indian orgs)
+
+
     if (finalRule.giveHalfDayOvertime && Number(finalRule.halfDayThresholdMinutes) === 0) {
       const dailyRate = daysInMonth > 0 ? (baseSalary / daysInMonth) : 0;
       hourlySalary = dailyRate / 2; // 1 hour = 0.5 days
@@ -309,5 +408,6 @@ async function calculateOvertime(params, orgAccountArg, daysInMonthArg = 30, now
 }
 
 module.exports = {
-  calculateOvertime
+  calculateOvertime,
+  checkIfDateIsWoOrHoliday
 };

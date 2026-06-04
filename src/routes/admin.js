@@ -4364,6 +4364,12 @@ router.post("/payroll/:cycleId/compute", async (req, res) => {
 
     for (const u of staff) {
       let sv = parseMaybe(u.salaryValues || u.salary_values || null);
+      let extraObj = {};
+      if (u.profile && u.profile.extra) {
+        try {
+          extraObj = typeof u.profile.extra === 'string' ? JSON.parse(u.profile.extra) : u.profile.extra;
+        } catch (e) {}
+      }
       const sd = {
         basicSalary:
           Number(u.basicSalary || 0) ||
@@ -4926,8 +4932,6 @@ router.post("/payroll/:cycleId/compute", async (req, res) => {
           rosterHSet.has(key);
 
         if (s === "present" || s === "overtime" || s === "work_from_home") {
-          present += 1;
-          actualPresent += 1;
           const activeAsg = payRuleAssignments
             .filter(
               (a) =>
@@ -4939,33 +4943,36 @@ router.post("/payroll/:cycleId/compute", async (req, res) => {
           const m = isH
             ? rule?.holidayMultiplier || 1
             : rule?.weeklyOffMultiplier || 1;
-          if (u.id == 57)
-            console.log(
-              `[Payroll-Dbg] User 57 Day ${key}: s=${s}, isH=${isH}, isWO=${isWO}, m=${m}`,
-            );
 
           if (isH || isWO) {
-            const added = m > 1 ? m - 1 : 0;
-            if (added > 0) {
-              if (isH) holidays += added;
-              else if (isWO) weeklyOff += added;
+            if (extraObj.woHolidayAsOt) {
+              if (isH) holidays += 1;
+              else weeklyOff += 1;
+            } else {
+              present += 1;
+              actualPresent += 1;
+              const added = m > 1 ? m - 1 : 0;
+              if (added > 0) {
+                if (isH) holidays += added;
+                else weeklyOff += added;
+              }
+              multiplierBreakdown.push({
+                date: key,
+                type: isH ? "Holiday" : "Weekly Off",
+                multiplier: `${m}x`,
+                addedUnits: added,
+                baseUnits: 1, // Full day present
+                status: s,
+              });
             }
-            multiplierBreakdown.push({
-              date: key,
-              type: isH ? "Holiday" : "Weekly Off",
-              multiplier: `${m}x`,
-              addedUnits: added,
-              baseUnits: 1, // Full day present
-              status: s,
-            });
+          } else {
+            present += 1;
+            actualPresent += 1;
           }
           continue;
         }
 
         if (s === "half_day") {
-          half += 1;
-          actualPresent += 0.5;
-
           const activeAsg = payRuleAssignments
             .filter(
               (a) =>
@@ -4977,18 +4984,29 @@ router.post("/payroll/:cycleId/compute", async (req, res) => {
           const m = isH
             ? rule?.holidayMultiplier || 1
             : rule?.weeklyOffMultiplier || 1;
+
           if (isH || isWO) {
-            const added = (m - 1) * 0.5 + 0.5;
-            if (isH) holidays += added;
-            else if (isWO) weeklyOff += added;
-            multiplierBreakdown.push({
-              date: key,
-              type: isH ? "Holiday" : "Weekly Off",
-              multiplier: `${m}x`,
-              addedUnits: added,
-              baseUnits: 0.5,
-              status: s,
-            });
+            if (extraObj.woHolidayAsOt) {
+              if (isH) holidays += 1;
+              else weeklyOff += 1;
+            } else {
+              half += 1;
+              actualPresent += 0.5;
+              const added = (m - 1) * 0.5 + 0.5;
+              if (isH) holidays += added;
+              else if (isWO) weeklyOff += added;
+              multiplierBreakdown.push({
+                date: key,
+                type: isH ? "Holiday" : "Weekly Off",
+                multiplier: `${m}x`,
+                addedUnits: added,
+                baseUnits: 0.5,
+                status: s,
+              });
+            }
+          } else {
+            half += 1;
+            actualPresent += 0.5;
           }
           continue;
         }
@@ -5230,7 +5248,15 @@ router.post("/payroll/:cycleId/compute", async (req, res) => {
             otAssignment?.overtimeRuleId ||
             orgAccountRecord?.overtimeRuleId;
 
-          if (effectiveRuleId) {
+          let forceRecalc = false;
+          if (extraObj.woHolidayAsOt) {
+            const { isWO, isH } = await require("../services/overtimeService").checkIfDateIsWoOrHoliday(u.id, orgId, a.date);
+            if (isWO || isH) {
+              forceRecalc = true;
+            }
+          }
+
+          if (effectiveRuleId || forceRecalc) {
             let finalOtAmt = Number(a.overtimeAmount || a.overtime_amount || 0);
             let finalOtMins = Number(
               a.overtimeMinutes || a.overtime_minutes || 0,
@@ -5545,12 +5571,6 @@ router.post("/payroll/:cycleId/compute", async (req, res) => {
       }
 
       // --- ESI as TA/No Absent Pay Logic ---
-      let extraObj = {};
-      if (u.profile && u.profile.extra) {
-        try {
-          extraObj = typeof u.profile.extra === 'string' ? JSON.parse(u.profile.extra) : u.profile.extra;
-        } catch (e) {}
-      }
       if (extraObj && (extraObj.esiAsTa === true || extraObj.esiAsTa === 'true')) {
         const esiAmt = Number(finalD.esi || finalD.ESI || 0);
         if (esiAmt > 0) {
@@ -14779,6 +14799,81 @@ router.put("/salary/esi-as-ta-bulk", async (req, res) => {
   }
 });
 
+router.get("/salary/wo-holiday-as-ot", async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res);
+    if (!orgId) return;
+    const staff = await User.findAll({
+      where: { role: "staff", orgAccountId: orgId },
+      include: [
+        { model: StaffProfile, as: "profile" },
+      ],
+      order: [["createdAt", "DESC"]],
+    });
+
+    const rows = staff.map((u) => {
+      let extraObj = {};
+      if (u.profile?.extra) {
+        try {
+          extraObj = typeof u.profile.extra === 'string' ? JSON.parse(u.profile.extra) : u.profile.extra;
+        } catch (e) {}
+      }
+      return {
+        userId: u.id,
+        staffId: u.profile?.staffId || null,
+        name: u.profile?.name || null,
+        phone: u.phone,
+        department: u.profile?.department || null,
+        designation: u.profile?.designation || null,
+        woHolidayAsOt: !!extraObj?.woHolidayAsOt,
+      };
+    });
+    return res.json({ success: true, items: rows });
+  } catch (e) {
+    return res
+      .status(500)
+      .json({ success: false, message: "Failed to load Weekly Off & Holiday Work as OT list" });
+  }
+});
+
+router.put("/salary/wo-holiday-as-ot-bulk", async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res);
+    if (!orgId) return;
+    const userIds = Array.isArray(req.body?.userIds)
+      ? req.body.userIds
+          .map((x) => Number(x))
+          .filter((n) => Number.isFinite(n) && n > 0)
+      : [];
+    const woHolidayAsOt = !!req.body?.woHolidayAsOt;
+    if (userIds.length === 0)
+      return res
+        .status(400)
+        .json({ success: false, message: "userIds required" });
+
+    const profiles = await StaffProfile.findAll({
+      where: { userId: userIds, orgAccountId: orgId },
+    });
+    const updated = [];
+    for (const p of profiles) {
+      let extra = {};
+      if (p.extra) {
+        try {
+          extra = typeof p.extra === 'string' ? JSON.parse(p.extra) : p.extra;
+        } catch (e) {}
+      }
+      extra.woHolidayAsOt = woHolidayAsOt;
+      await p.update({ extra });
+      updated.push({ userId: p.userId, woHolidayAsOt });
+    }
+    return res.json({ success: true, updated });
+  } catch (e) {
+    return res
+      .status(500)
+      .json({ success: false, message: "Failed to bulk update Weekly Off & Holiday Work as OT" });
+  }
+});
+
 router.get("/salary/no-absent-pay", async (req, res) => {
   try {
     const orgId = requireOrg(req, res);
@@ -17991,6 +18086,31 @@ router.get("/attendance/check-leave", async (req, res) => {
     return res.json({ success: true, onLeave: !!approvedLeave });
   } catch (e) {
     return res.status(500).json({ success: false, message: e.message });
+  }
+});
+
+router.delete("/attendance/:id", async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res);
+    if (!orgId) return;
+    const { id } = req.params;
+
+    const record = await Attendance.findByPk(id);
+    if (!record) {
+      return res.status(404).json({ success: false, message: "Attendance record not found" });
+    }
+
+    // Check organization by fetching the user associated with this attendance record
+    const user = await User.findByPk(record.userId);
+    if (!user || user.orgAccountId !== orgId) {
+      return res.status(403).json({ success: false, message: "Unauthorized to delete this record" });
+    }
+
+    await record.destroy();
+    return res.json({ success: true, message: "Attendance record deleted successfully" });
+  } catch (error) {
+    console.error("Error deleting attendance:", error);
+    return res.status(500).json({ success: false, message: "Failed to delete attendance record" });
   }
 });
 

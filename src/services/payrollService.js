@@ -59,6 +59,16 @@ async function computeOvertimeMeta({ userId, monthKey, overtimeBaseSalary, orgAc
 
   const { calculateOvertime } = require('./overtimeService');
 
+  let woHolidayAsOtEnabled = false;
+  try {
+    const profile = await StaffProfile.findOne({ where: { userId } });
+    let extraObj = {};
+    if (profile && profile.extra) {
+      extraObj = typeof profile.extra === 'string' ? JSON.parse(profile.extra) : profile.extra;
+    }
+    woHolidayAsOtEnabled = !!extraObj?.woHolidayAsOt;
+  } catch (e) {}
+
   let totalOvertimeMinutes = 0;
   let totalOvertimePay = 0;
 
@@ -66,7 +76,15 @@ async function computeOvertimeMeta({ userId, monthKey, overtimeBaseSalary, orgAc
     let otAmount = Number(row.overtimeAmount !== undefined ? row.overtimeAmount : (row.getDataValue ? row.getDataValue('overtime_amount') : (row.overtime_amount || 0)));
     let otMinutes = Number(row.overtimeMinutes !== undefined ? row.overtimeMinutes : (row.getDataValue ? row.getDataValue('overtime_minutes') : (row.overtime_minutes || 0)));
 
-    if (orgAccount?.overtimeRuleId && otAmount <= 0 && otMinutes > 0) {
+    let forceRecalc = false;
+    if (woHolidayAsOtEnabled) {
+      const { isWO, isH } = await require('./overtimeService').checkIfDateIsWoOrHoliday(userId, row.orgAccountId, row.date);
+      if (isWO || isH) {
+        forceRecalc = true;
+      }
+    }
+
+    if (orgAccount?.overtimeRuleId && (forceRecalc || (otAmount <= 0 && otMinutes > 0))) {
       // Always re-calculate to ensure latest logic and correct daysForRate are applied
       const result = await calculateOvertime(row, orgAccount, daysForRate);
       otAmount = result.overtimeAmount;
@@ -238,6 +256,13 @@ async function calculateSalary(userId, monthKey) {
   if (!staffProfile) {
     staffProfile = await StaffProfile.findOne({ where: { userId: u.id } });
     u.profile = staffProfile; // Attach for later
+  }
+
+  let extraObj = {};
+  if (staffProfile && staffProfile.extra) {
+    try {
+      extraObj = typeof staffProfile.extra === 'string' ? JSON.parse(staffProfile.extra) : staffProfile.extra;
+    } catch (e) {}
   }
 
   let orgAccount = u.orgAccount;
@@ -748,19 +773,29 @@ async function calculateSalary(userId, monthKey) {
       const isPL = paidLeaveSet.has(key);
 
       if (isH) {
-        const mult = (rule?.holidayMultiplier || 1);
-        present += mult;
-        fl.appendFileSync('payroll_debug.log', `[${new Date().toISOString()}] [User ${u.id}] Date ${key}: HOLIDAY PRESENT. Multiplier=${mult}. New Present Total=${present}\n`);
+        if (extraObj.woHolidayAsOt) {
+          holidaysCount += 1;
+        } else {
+          const mult = (rule?.holidayMultiplier || 1);
+          present += mult;
+          fl.appendFileSync('payroll_debug.log', `[${new Date().toISOString()}] [User ${u.id}] Date ${key}: HOLIDAY PRESENT. Multiplier=${mult}. New Present Total=${present}\n`);
+          actualPresent += 1;
+        }
       }
       else if (isWO) {
-        const mult = (rule?.weeklyOffMultiplier || 1);
-        present += mult;
-        fl.appendFileSync('payroll_debug.log', `[${new Date().toISOString()}] [User ${u.id}] Date ${key}: WEEKLY_OFF PRESENT. Multiplier=${mult}. New Present Total=${present}\n`);
+        if (extraObj.woHolidayAsOt) {
+          weeklyOffCount += 1;
+        } else {
+          const mult = (rule?.weeklyOffMultiplier || 1);
+          present += mult;
+          fl.appendFileSync('payroll_debug.log', `[${new Date().toISOString()}] [User ${u.id}] Date ${key}: WEEKLY_OFF PRESENT. Multiplier=${mult}. New Present Total=${present}\n`);
+          actualPresent += 1;
+        }
       }
       else {
         present += 1;
+        actualPresent += 1;
       }
-      actualPresent += 1;
       continue;
     }
     if (s === 'half_day') {
@@ -771,12 +806,28 @@ async function calculateSalary(userId, monthKey) {
       const isWO = rosterWOSet.has(key) || (hasWeeklyOffAssignment ? isWeeklyOffForDate(woConfig, dt) : false);
       const isH = holidaySet.has(key) || rosterHSet.has(key);
 
-      let val = 0.5;
-      if (isH) val *= (rule?.holidayMultiplier || 1);
-      else if (isWO) val *= (rule?.weeklyOffMultiplier || 1);
-
-      present += val;
-      actualPresent += 0.5;
+      if (isH) {
+        if (extraObj.woHolidayAsOt) {
+          holidaysCount += 1;
+        } else {
+          let val = 0.5 * (rule?.holidayMultiplier || 1);
+          present += val;
+          actualPresent += 0.5;
+        }
+      }
+      else if (isWO) {
+        if (extraObj.woHolidayAsOt) {
+          weeklyOffCount += 1;
+        } else {
+          let val = 0.5 * (rule?.weeklyOffMultiplier || 1);
+          present += val;
+          actualPresent += 0.5;
+        }
+      }
+      else {
+        present += 0.5;
+        actualPresent += 0.5;
+      }
       continue;
     }
     if (s === 'leave') { leave += 1; if (paidLeaveSet.has(key)) { paidLeaveCount += 1; paidLeaveDates.push(key); } else if (unpaidLeaveSet.has(key)) unpaidLeave += 1; continue; }
@@ -1058,12 +1109,6 @@ async function calculateSalary(userId, monthKey) {
     }
   }
   // --- ESI as TA Logic ---
-  let extraObj = {};
-  if (u.profile && u.profile.extra) {
-    try {
-      extraObj = typeof u.profile.extra === 'string' ? JSON.parse(u.profile.extra) : u.profile.extra;
-    } catch (e) {}
-  }
   let updatedTotalEarnings = _totalEarnings;
   let updatedGrossSalary = grossSalary;
   if (extraObj && (extraObj.esiAsTa === true || extraObj.esiAsTa === 'true')) {
