@@ -566,7 +566,7 @@ async function calculateSalary(userId, monthKey) {
   // Calculate REAL attendance from database
   const atts = await Attendance.findAll({
     where: { userId: u.id, date: { [Op.gte]: start, [Op.lte]: endKey } },
-    attributes: ['status', 'date']
+    attributes: ['status', 'date', 'totalWorkHours', 'punchedInAt', 'punchedOutAt']
   });
   const attMap = {};
   for (const a of atts) {
@@ -876,6 +876,50 @@ async function calculateSalary(userId, monthKey) {
   }
   ratio = daysForRate > 0 ? Math.max(0, Math.min(1, computedPayableUnits / daysForRate)) : 1;
 
+  let rmoTargetHours = 480;
+  let rmoTotalWorkedHours = 0;
+  let rmoAssignedHours = 120;
+  let isRmo = false;
+
+  // Load RMO settings
+  try {
+    const rmoRow = await AppSetting.findOne({ where: { key: 'rmo_settings', orgAccountId: u.orgAccountId } });
+    if (rmoRow) {
+      const rmoSettings = JSON.parse(rmoRow.value);
+      isRmo = Array.isArray(rmoSettings?.staffIds) && rmoSettings.staffIds.map(Number).includes(Number(u.id));
+      if (isRmo) {
+        rmoTargetHours = Number(rmoSettings.targetHours || 480);
+      }
+    }
+  } catch (e) {
+    console.error('[RMO Settings Load Fail]', e);
+  }
+
+  if (isRmo) {
+    // Sum actual worked hours from month's attendance records
+    rmoTotalWorkedHours = atts.reduce((sum, a) => sum + Number(a.totalWorkHours || 0), 0);
+
+    // Resolve assigned shift template to get work minutes / 60
+    try {
+      const shiftAsg = await StaffShiftAssignment.findOne({
+        where: {
+          userId: u.id,
+          effectiveFrom: { [Op.lte]: endKey },
+          [Op.or]: [{ effectiveTo: null }, { effectiveTo: { [Op.gte]: start } }]
+        },
+        include: [{ model: ShiftTemplate, as: 'template' }],
+        order: [['effectiveFrom', 'DESC'], ['id', 'DESC']]
+      });
+      if (shiftAsg?.template?.workMinutes) {
+        rmoAssignedHours = Number((shiftAsg.template.workMinutes / 60).toFixed(2));
+      }
+    } catch (e) {
+      console.error('[RMO Shift Resolve Fail]', e);
+    }
+
+    ratio = rmoTargetHours > 0 ? Math.min(1.0, rmoTotalWorkedHours / rmoTargetHours) : 1.0;
+  }
+
   const loanDeduction = await calculateLoanDeduction();
   const advanceDeduction = await calculateAdvanceDeduction();
 
@@ -1151,6 +1195,10 @@ async function calculateSalary(userId, monthKey) {
       present: actualPresent, half, leave, paidLeave: paidLeaveCount, paidLeaveDates,
       absent, weeklyOff: weeklyOffCount, holidays: holidaysCount, ratio,
       payableDays: computedPayableUnits, // This is the gross payable days (e.g. 28)
+      isRmo,
+      rmoTargetHours,
+      rmoTotalWorkedHours: Number(rmoTotalWorkedHours.toFixed(2)),
+      rmoAssignedHours,
       lateCount: lp.lateCount,
       latePenalty: lp.latePunchInPenalty,
       latePunchInPenalty: lp.latePunchInPenalty,

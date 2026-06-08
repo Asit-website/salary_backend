@@ -44,8 +44,18 @@ router.post('/plans', authRequired, requireRole('superadmin'), async (req, res) 
       recruitmentEnabled,
       communityEnabled,
       features,
-      salaryRegisterEnabled
+      salaryRegisterEnabled,
+      esiAsTaEnabled,
+      rmoEnabled
     } = req.body;
+
+    const planFeatures = features || {};
+    if (esiAsTaEnabled !== undefined) {
+      planFeatures.esiAsTaEnabled = !!esiAsTaEnabled;
+    }
+    if (rmoEnabled !== undefined) {
+      planFeatures.rmoEnabled = !!rmoEnabled;
+    }
 
     const plan = await Plan.create({
       code,
@@ -58,7 +68,7 @@ router.post('/plans', authRequired, requireRole('superadmin'), async (req, res) 
       geolocationEnabled,
       expenseEnabled,
       maxGeolocationStaff,
-      features,
+      features: planFeatures,
       payrollEnabled,
       performanceEnabled,
       aiReportsEnabled,
@@ -107,8 +117,18 @@ router.put('/plans/:id', authRequired, requireRole('superadmin'), async (req, re
       communityEnabled,
       features,
       active,
-      salaryRegisterEnabled
+      salaryRegisterEnabled,
+      esiAsTaEnabled,
+      rmoEnabled
     } = req.body;
+
+    const planFeatures = features || {};
+    if (esiAsTaEnabled !== undefined) {
+      planFeatures.esiAsTaEnabled = !!esiAsTaEnabled;
+    }
+    if (rmoEnabled !== undefined) {
+      planFeatures.rmoEnabled = !!rmoEnabled;
+    }
 
     await plan.update({
       name,
@@ -129,7 +149,7 @@ router.put('/plans/:id', authRequired, requireRole('superadmin'), async (req, re
       recruitmentEnabled,
       communityEnabled,
       salaryRegisterEnabled: salaryRegisterEnabled !== undefined ? salaryRegisterEnabled : plan.salaryRegisterEnabled,
-      features,
+      features: planFeatures,
       active
     });
 
@@ -178,6 +198,10 @@ router.post('/assign-subscription', authRequired, requireRole('superadmin'), asy
       startAt: newStartAt,
       endAt: newEndAt,
       status: 'ACTIVE',
+      meta: {
+        esiAsTaEnabled: !!plan.features?.esiAsTaEnabled,
+        rmoEnabled: !!plan.features?.rmoEnabled
+      },
       staffLimit: plan.staffLimit,
       salesEnabled: plan.salesEnabled,
       geolocationEnabled: plan.geolocationEnabled,
@@ -339,6 +363,24 @@ router.get('/subscription-info', authRequired, tenantEnforce, async (req, res) =
       comparisonEnabled: subscription.comparisonEnabled !== undefined ? !!subscription.comparisonEnabled : true,
       otImpactEnabled: subscription.otImpactEnabled !== undefined ? !!subscription.otImpactEnabled : true,
       latePenaltyEnabled: subscription.latePenaltyEnabled !== undefined ? !!subscription.latePenaltyEnabled : true,
+      esiAsTaEnabled: (() => {
+        let metaObj = {};
+        if (subscription.meta) {
+          try {
+            metaObj = typeof subscription.meta === 'string' ? JSON.parse(subscription.meta) : subscription.meta;
+          } catch (e) {}
+        }
+        return !!metaObj?.esiAsTaEnabled;
+      })(),
+      rmoEnabled: (() => {
+        let metaObj = {};
+        if (subscription.meta) {
+          try {
+            metaObj = typeof subscription.meta === 'string' ? JSON.parse(subscription.meta) : subscription.meta;
+          } catch (e) {}
+        }
+        return !!metaObj?.rmoEnabled;
+      })(),
       maxGeolocationStaff: subscription.maxGeolocationStaff !== null ? subscription.maxGeolocationStaff : (subscription.meta?.maxGeolocationStaff || subscription.plan.maxGeolocationStaff),
       subscriptionStatus: subscription.status
     };

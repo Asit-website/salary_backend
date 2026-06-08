@@ -1415,6 +1415,8 @@ router.get("/payroll/:cycleId/export", async (req, res) => {
     const sortedIncentives = Array.from(incentivesKeys).sort();
     const sortedDeductions = Array.from(deductionsKeys).sort();
 
+    const hasRmo = parsedLines.some((pl) => pl.s && (pl.s.isRmo === true || pl.s.isRmo === "true"));
+
     const header = [
       "Staff ID",
       "Name",
@@ -1432,6 +1434,7 @@ router.get("/payroll/:cycleId/export", async (req, res) => {
       "Late Count",
       "Late Penalty",
       "Payable Days",
+      ...(hasRmo ? ["Target Hours (RMO)", "Total Hours Worked (RMO)", "Assigned Hours (RMO)"] : []),
       "Overtime Hours",
       "Overtime Minutes",
       "Overtime Rate/Hour",
@@ -1560,6 +1563,11 @@ router.get("/payroll/:cycleId/export", async (req, res) => {
         Number(s.lateCount || 0),
         Number(s.latePenaltyDays || 0),
         Number(pod),
+        ...(hasRmo ? [
+          s.isRmo ? Number(s.rmoTargetHours || 480) : "—",
+          s.isRmo ? Number(s.rmoTotalWorkedHours || 0) : "—",
+          s.isRmo ? Number(s.rmoAssignedHours || 120) : "—"
+        ] : []),
         Number(overtimeHours.toFixed(2)),
         overtimeMinutes,
         Number(overtimeRate.toFixed(2)),
@@ -12757,6 +12765,55 @@ router.put("/settings/geo-fence", async (req, res) => {
   }
 });
 
+// --- RMO Configuration Settings ---
+router.get("/rmo-settings", async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res);
+    if (!orgId) return;
+    const row = await AppSetting.findOne({
+      where: { key: "rmo_settings", orgAccountId: orgId },
+    });
+    const value = row?.value
+      ? JSON.parse(row.value)
+      : {
+          targetHours: 480,
+          staffIds: [],
+        };
+    return res.json({ success: true, settings: value });
+  } catch (e) {
+    console.error("Error loading RMO settings:", e);
+    return res
+      .status(500)
+      .json({ success: false, message: "Failed to load RMO settings" });
+  }
+});
+
+router.post("/rmo-settings", async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res);
+    if (!orgId) return;
+    const { targetHours, staffIds } = req.body || {};
+    const next = {
+      targetHours: Number(targetHours || 480),
+      staffIds: Array.isArray(staffIds) ? staffIds.map(Number) : [],
+    };
+    const payload = JSON.stringify(next);
+    const [row] = await AppSetting.findOrCreate({
+      where: { key: "rmo_settings", orgAccountId: orgId },
+      defaults: { value: payload, orgAccountId: orgId },
+    });
+    if (row.value !== payload) {
+      await row.update({ value: payload });
+    }
+    return res.json({ success: true, settings: next });
+  } catch (e) {
+    console.error("Error saving RMO settings:", e);
+    return res
+      .status(500)
+      .json({ success: false, message: "Failed to save RMO settings" });
+  }
+});
+
 // AI Attendance Anomaly: list recent and compute stub (org-scoped)
 router.get("/ai/anomalies", async (req, res) => {
   try {
@@ -16885,6 +16942,70 @@ router.get("/attendance", async (req, res) => {
       ],
     });
 
+    // Load RMO settings
+    let rmoSettings = { staffIds: [] };
+    try {
+      const rmoRow = await AppSetting.findOne({ where: { key: "rmo_settings", orgAccountId: orgId } });
+      if (rmoRow) rmoSettings = JSON.parse(rmoRow.value);
+    } catch (e) {
+      console.error(e);
+    }
+    const rmoUserIds = Array.isArray(rmoSettings?.staffIds) ? rmoSettings.staffIds.map(Number) : [];
+
+    if (!month && date) {
+      const dateStr = String(date);
+      const targetDate = new Date(`${dateStr}T00:00:00`);
+      const existingUserIds = rows.map((r) => Number(r.userId));
+      const missingRmoUserIds = rmoUserIds.filter((uid) => !existingUserIds.includes(uid) && allowedStaffIds.includes(uid));
+
+      if (missingRmoUserIds.length > 0) {
+        const lookbackStart = dayjs(dateStr).subtract(5, "day").format("YYYY-MM-DD");
+        const rmoPunchRecords = await Attendance.findAll({
+          where: {
+            userId: missingRmoUserIds,
+            date: { [Op.between]: [lookbackStart, dateStr] },
+          },
+          order: [["date", "ASC"]],
+        });
+
+        for (const r of rmoPunchRecords) {
+          if (!r.punchedInAt) continue;
+          const inDateStr = dayjs(r.punchedInAt).format("YYYY-MM-DD");
+          let overlaps = false;
+
+          if (r.punchedOutAt) {
+            const outDateStr = dayjs(r.punchedOutAt).format("YYYY-MM-DD");
+            overlaps = dateStr >= inDateStr && dateStr <= outDateStr;
+          } else {
+            const diffDays = Math.floor((targetDate - new Date(r.punchedInAt)) / (1000 * 60 * 60 * 24));
+            overlaps = dateStr >= inDateStr && diffDays >= 0 && diffDays < 5;
+          }
+
+          if (overlaps && inDateStr !== dateStr) {
+            const u = await User.findOne({
+              where: { id: r.userId },
+              include: [{ model: StaffProfile, as: "profile" }],
+            });
+
+            const mockRow = {
+              id: `rmo-mock-${r.id}-${dateStr}`,
+              userId: r.userId,
+              date: dateStr,
+              status: r.status || "present",
+              totalWorkHours: 0,
+              punchedInAt: r.punchedInAt,
+              punchedOutAt: r.punchedOutAt,
+              isRmoIntermediate: true,
+              user: u,
+              createdAt: new Date(),
+              updatedAt: new Date(),
+            };
+            rows.push(mockRow);
+          }
+        }
+      }
+    }
+
     let lateTiers = [];
     let lateRuleActive = false;
     try {
@@ -17044,7 +17165,7 @@ router.get("/attendance", async (req, res) => {
           shiftTpl = shiftTemplateMap[Number(r.user.profile.shiftSelection)];
         }
 
-        if (shiftTpl) {
+        if (shiftTpl && !r.isRmoIntermediate) {
           // Late Calculation (Unconditional)
           if (shiftTpl.startTime) {
             const punchIn = new Date(r.punchedInAt);
@@ -17170,6 +17291,9 @@ router.get("/attendance", async (req, res) => {
       return {
         id: r.id,
         userId: r.userId,
+        isRmo: rmoUserIds.includes(Number(r.userId)),
+        punchedInAt: r.punchedInAt,
+        punchedOutAt: r.punchedOutAt,
 
         date: r.date,
 
@@ -28068,13 +28192,35 @@ router.get("/geolocation", async (req, res) => {
       order: [["createdAt", "ASC"]],
     });
 
-    // Get attendance data for punch in/out times
-
+    // Get attendance data for punch in/out times and coordinates
     const attendanceRecords = await Attendance.findAll({
       where: attendanceWhere,
-
-      attributes: ["userId", "date", "punchedInAt", "punchedOutAt"],
-
+      attributes: [
+        "userId",
+        "date",
+        "punchedInAt",
+        "punchedOutAt",
+        "latitude",
+        "longitude",
+        "address",
+        "punchOutLatitude",
+        "punchOutLongitude",
+        "punchOutAddress"
+      ],
+      include: [
+        {
+          model: User,
+          as: "user",
+          include: [
+            {
+              model: StaffProfile,
+              as: "profile",
+              attributes: ["name"],
+            },
+          ],
+          attributes: ["id", "phone"],
+        },
+      ],
       order: [["date", "DESC"]],
     });
 
@@ -28173,16 +28319,54 @@ router.get("/geolocation", async (req, res) => {
     });
 
     // Add attendance data
-
     attendanceRecords.forEach((record) => {
       const key = `${record.userId}-${record.date}`;
 
-      if (staffMap.has(key)) {
-        const staffData = staffMap.get(key);
+      if (!staffMap.has(key)) {
+        staffMap.set(key, {
+          id: key,
+          staffId: record.userId,
+          staffName: record.user?.profile?.name || record.user?.phone || "Unknown",
+          date: record.date,
+          locations: [],
+          punchInTime: null,
+          punchOutTime: null,
+        });
+      }
 
-        staffData.punchInTime = record.punchedInAt;
+      const staffData = staffMap.get(key);
+      staffData.punchInTime = record.punchedInAt;
+      staffData.punchOutTime = record.punchedOutAt;
+      
+      // Store punch-in / punch-out coordinates directly on the staff record
+      staffData.punchInLatitude = record.latitude;
+      staffData.punchInLongitude = record.longitude;
+      staffData.punchInAddress = record.address;
+      staffData.punchOutLatitude = record.punchOutLatitude;
+      staffData.punchOutLongitude = record.punchOutLongitude;
+      staffData.punchOutAddress = record.punchOutAddress;
 
-        staffData.punchOutTime = record.punchedOutAt;
+      // If this staff has no tracker location pings, but has attendance locations,
+      // populate them in locations list so they show on map and count as valid locations!
+      if (staffData.locations.length === 0) {
+        if (record.latitude && record.longitude) {
+          staffData.locations.push({
+            timestamp: record.punchedInAt || `${record.date}T09:00:00.000Z`,
+            lat: record.latitude,
+            lng: record.longitude,
+            accuracy: null,
+            address: record.address || "Punch In Location",
+          });
+        }
+        if (record.punchOutLatitude && record.punchOutLongitude) {
+          staffData.locations.push({
+            timestamp: record.punchedOutAt || `${record.date}T18:00:00.000Z`,
+            lat: record.punchOutLatitude,
+            lng: record.punchOutLongitude,
+            accuracy: null,
+            address: record.punchOutAddress || "Punch Out Location",
+          });
+        }
       }
     });
 
@@ -28370,24 +28554,48 @@ router.get("/geolocation/:staffId/timeline", async (req, res) => {
     });
 
     // Format timeline data
-
     const timelineData = locationPings.map((ping) => ({
       id: ping.id,
-
       timestamp: ping.createdAt,
-
       lat: ping.latitude,
-
       lng: ping.longitude,
-
       accuracy: ping.accuracyMeters,
-
       address: ping.address || null,
     }));
 
+    // Merge attendance records if any
+    const attendance = await sequelize.models.Attendance.findOne({
+      where: { userId: staffId, date },
+      attributes: ["punchedInAt", "punchedOutAt", "latitude", "longitude", "address", "punchOutLatitude", "punchOutLongitude", "punchOutAddress"]
+    });
+
+    if (attendance) {
+      if (attendance.punchedInAt && attendance.latitude && attendance.longitude) {
+        timelineData.push({
+          id: `punchin-${attendance.punchedInAt}`,
+          timestamp: attendance.punchedInAt,
+          lat: attendance.latitude,
+          lng: attendance.longitude,
+          accuracy: null,
+          address: attendance.address ? `[PUNCH IN] ${attendance.address}` : `[PUNCH IN] Lat ${attendance.latitude}, Lng ${attendance.longitude}`,
+        });
+      }
+      if (attendance.punchedOutAt && attendance.punchOutLatitude && attendance.punchOutLongitude) {
+        timelineData.push({
+          id: `punchout-${attendance.punchedOutAt}`,
+          timestamp: attendance.punchedOutAt,
+          lat: attendance.punchOutLatitude,
+          lng: attendance.punchOutLongitude,
+          accuracy: null,
+          address: attendance.punchOutAddress ? `[PUNCH OUT] ${attendance.punchOutAddress}` : `[PUNCH OUT] Lat ${attendance.punchOutLatitude}, Lng ${attendance.punchOutLongitude}`,
+        });
+      }
+    }
+
+    timelineData.sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
+
     res.json({
       success: true,
-
       data: timelineData,
     });
   } catch (error) {
@@ -30572,6 +30780,13 @@ router.get("/staff/:id/attendance-overview", async (req, res) => {
     const lastDay = new Date(yy, mm, 0).getDate();
     const endDateStr = `${month}-${String(lastDay).padStart(2, "0")}`;
 
+    const lookupStartDate = dayjs(startDateStr).subtract(5, "day").format("YYYY-MM-DD");
+
+    // Fetch RMO settings
+    const rmoRow = await AppSetting.findOne({ where: { key: "rmo_settings", orgAccountId: orgId } });
+    const rmoSettings = rmoRow ? JSON.parse(rmoRow.value) : { targetHours: 480, staffIds: [] };
+    const isRmo = Array.isArray(rmoSettings?.staffIds) && rmoSettings.staffIds.map(Number).includes(Number(userId));
+
     // 1. Fetch data in parallel
     const [
       atts,
@@ -30583,7 +30798,7 @@ router.get("/staff/:id/attendance-overview", async (req, res) => {
       rosters,
     ] = await Promise.all([
       Attendance.findAll({
-        where: { userId, date: { [Op.between]: [startDateStr, endDateStr] } },
+        where: { userId, date: { [Op.between]: [lookupStartDate, endDateStr] } },
         attributes: [
           "id",
           "userId",
@@ -30765,7 +30980,35 @@ router.get("/staff/:id/attendance-overview", async (req, res) => {
     for (let d = 1; d <= lastDay; d++) {
       const dateStr = `${month}-${String(d).padStart(2, "0")}`;
       const jsDate = new Date(yy, mm - 1, d);
-      const att = attMap[dateStr];
+      let att = attMap[dateStr];
+      let isRmoIntermediate = false;
+
+      if (isRmo && !att) {
+        const rmoRecord = atts.find(r => {
+          if (!r.punchedInAt) return false;
+          const inDateStr = dayjs(r.punchedInAt).format("YYYY-MM-DD");
+          if (r.punchedOutAt) {
+            const outDateStr = dayjs(r.punchedOutAt).format("YYYY-MM-DD");
+            return dateStr >= inDateStr && dateStr <= outDateStr;
+          } else {
+            const diffDays = Math.floor((jsDate - new Date(r.punchedInAt)) / (1000 * 60 * 60 * 24));
+            return dateStr >= inDateStr && diffDays >= 0 && diffDays < 5;
+          }
+        });
+        if (rmoRecord && dateStr !== dayjs(rmoRecord.date).format("YYYY-MM-DD")) {
+          isRmoIntermediate = true;
+          att = {
+            status: rmoRecord.status || "present",
+            totalWorkHours: 0,
+            breakTotalSeconds: 0,
+            overtimeMinutes: 0,
+            punchedInAt: rmoRecord.punchedInAt,
+            punchedOutAt: rmoRecord.punchedOutAt,
+            isRmoIntermediate: true
+          };
+        }
+      }
+
       const isPast = dateStr <= todayStr;
 
       let status = "absent";
@@ -30876,7 +31119,7 @@ router.get("/staff/:id/attendance-overview", async (req, res) => {
         let lateMinutes = 0;
         let earlyExitMinutes = 0;
 
-        if (shiftTpl) {
+        if (shiftTpl && !att.isRmoIntermediate) {
           if (att.punchedInAt && shiftTpl.startTime) {
             const punchIn = new Date(att.punchedInAt);
             const punchInSec =
@@ -30934,25 +31177,26 @@ router.get("/staff/:id/attendance-overview", async (req, res) => {
           checkOut: att.punchedOutAt
             ? dayjs(att.punchedOutAt).format("HH:mm:ss")
             : null,
-          workDuration: att.totalWorkSeconds
-            ? Math.floor(att.totalWorkSeconds / 60)
-            : 0,
-          totalDurationMinutes:
-            att.punchedInAt && att.punchedOutAt
-              ? Math.floor(
-                  Math.max(
-                    0,
-                    dayjs(att.punchedOutAt).diff(
-                      dayjs(att.punchedInAt),
-                      "minute",
+          workDuration: att.isRmoIntermediate
+            ? 0
+            : (att.totalWorkSeconds ? Math.floor(att.totalWorkSeconds / 60) : 0),
+          totalDurationMinutes: att.isRmoIntermediate
+            ? 0
+            : (att.punchedInAt && att.punchedOutAt
+                ? Math.floor(
+                    Math.max(
+                      0,
+                      dayjs(att.punchedOutAt).diff(
+                        dayjs(att.punchedInAt),
+                        "minute",
+                      ),
                     ),
-                  ),
-                )
-              : att.totalWorkSeconds
-                ? Math.floor(att.totalWorkSeconds / 60)
-                : 0,
-          breakMinutes: Math.round((att.breakTotalSeconds || 0) / 60),
-          overtimeMinutes: att.overtimeMinutes || 0,
+                  )
+                : att.totalWorkSeconds
+                  ? Math.floor(att.totalWorkSeconds / 60)
+                  : 0),
+          breakMinutes: att.isRmoIntermediate ? 0 : Math.round((att.breakTotalSeconds || 0) / 60),
+          overtimeMinutes: att.isRmoIntermediate ? 0 : (att.overtimeMinutes || 0),
           lateMinutes,
           earlyExitMinutes,
           isLate,

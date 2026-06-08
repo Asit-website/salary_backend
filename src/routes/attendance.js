@@ -683,9 +683,18 @@ router.get('/history', async (req, res) => {
     const startKey = isoDate(start);
     const endKey = isoDate(end);
 
+    const lookupStartDate = new Date(start);
+    lookupStartDate.setDate(lookupStartDate.getDate() - 5);
+    const lookupStartKey = isoDate(lookupStartDate);
+
+    // Fetch RMO Settings
+    const rmoSettingsRow = await AppSetting.findOne({ where: { key: 'rmo_settings' } });
+    const rmoSettings = rmoSettingsRow ? JSON.parse(rmoSettingsRow.value) : { targetHours: 480, staffIds: [] };
+    const isRmo = Array.isArray(rmoSettings?.staffIds) && rmoSettings.staffIds.map(Number).includes(Number(userId));
+
     // Fetch everything needed once
     const attendanceRows = await Attendance.findAll({
-      where: { userId, date: { [Op.between]: [startKey, endKey] } },
+      where: { userId, date: { [Op.between]: [lookupStartKey, endKey] } },
       order: [['date', 'ASC']],
     });
     const attMap = new Map(attendanceRows.map((r) => [isoDate(r.date), r]));
@@ -773,7 +782,35 @@ router.get('/history', async (req, res) => {
     for (let i = 0; i < totalDaysRemainingInMonth; i++) {
       const d = new Date(y, mo - 1, i + 1);
       const key = isoDate(d);
-      const record = attMap.get(key);
+      let record = attMap.get(key);
+      let isRmoIntermediate = false;
+
+      if (isRmo && !record) {
+        const rmoRecord = attendanceRows.find(r => {
+          if (!r.punchedInAt) return false;
+          const inDateStr = isoDate(r.punchedInAt);
+          if (r.punchedOutAt) {
+            const outDateStr = isoDate(r.punchedOutAt);
+            return key >= inDateStr && key <= outDateStr;
+          } else {
+            const diffDays = Math.floor((d - new Date(r.punchedInAt)) / (1000 * 60 * 60 * 24));
+            return key >= inDateStr && diffDays >= 0 && diffDays < 5;
+          }
+        });
+        if (rmoRecord && key !== isoDate(rmoRecord.date)) {
+          isRmoIntermediate = true;
+          record = {
+            status: rmoRecord.status || 'PRESENT',
+            totalWorkHours: 0,
+            breakTotalSeconds: 0,
+            overtimeMinutes: 0,
+            punchedInAt: rmoRecord.punchedInAt,
+            punchedOutAt: rmoRecord.punchedOutAt,
+            isRmoIntermediate: true
+          };
+        }
+      }
+
       const isH = holidaySet.has(key);
       const isWO = isWeeklyOffForDate(woConfig, d);
 
@@ -803,7 +840,7 @@ router.get('/history', async (req, res) => {
 
       const shiftTpl = await shiftService.getEffectiveShiftTemplate(userId, key);
 
-      if (record?.punchedInAt && !isAdminLeave && !isAdminHalf) {
+      if (record?.punchedInAt && !record.isRmoIntermediate && !isAdminLeave && !isAdminHalf) {
         const inAt = new Date(record.punchedInAt);
         const outAt = record.punchedOutAt ? new Date(record.punchedOutAt) : (key === todayStr ? now : inAt);
         const bBase = Number(record.breakTotalSeconds || 0);
@@ -952,12 +989,18 @@ router.get('/history', async (req, res) => {
       });
     }
 
+    let rmoTotalWorkHours = 0;
+    if (isRmo) {
+      const monthRecords = attendanceRows.filter(r => isoDate(r.date) >= startKey && isoDate(r.date) <= endKey);
+      rmoTotalWorkHours = monthRecords.reduce((sum, r) => sum + Number(r.totalWorkHours || 0), 0);
+    }
+
     return res.json({
       success: true,
       month: `${y}-${String(mo).padStart(2, '0')}`,
       requiredWorkSeconds: REQUIRED_WORK_SECONDS,
       maxBreakMinutes: maxBreakMinutes,
-      summary,
+      summary: isRmo ? { ...summary, isRmo: true, totalWorkHours: Number(rmoTotalWorkHours.toFixed(2)) } : summary,
       days,
     });
   } catch (e) {
@@ -1936,15 +1979,23 @@ router.get('/user/:userId', async (req, res) => {
     const startDate = new Date(yearNum, monthNum - 1, 1);
     const endDate = new Date(yearNum, monthNum, 0); // Last day of month
 
+    const lookupStartDate = new Date(startDate);
+    lookupStartDate.setDate(lookupStartDate.getDate() - 5);
+
     const attendanceRecords = await Attendance.findAll({
       where: {
         userId: userId,
         date: {
-          [Op.between]: [startDate, endDate]
+          [Op.between]: [lookupStartDate, endDate]
         }
       },
       order: [['date', 'ASC']]
     });
+
+    // Fetch RMO Settings
+    const rmoSettingsRow = await AppSetting.findOne({ where: { key: 'rmo_settings' } });
+    const rmoSettings = rmoSettingsRow ? JSON.parse(rmoSettingsRow.value) : { targetHours: 480, staffIds: [] };
+    const isRmo = Array.isArray(rmoSettings?.staffIds) && rmoSettings.staffIds.map(Number).includes(Number(userId));
 
     // Get leave requests for this month
     const leaveRequests = await LeaveRequest.findAll({
@@ -1979,15 +2030,39 @@ router.get('/user/:userId', async (req, res) => {
       });
 
       let status = 'absent'; // Default status
+      let matchedRmoSession = null;
+
+      if (isRmo) {
+        // Find if any RMO multi-day shift covers dateStr
+        matchedRmoSession = attendanceRecords.find(record => {
+          if (!record.punchedInAt) return false;
+          const inDateStr = new Date(record.punchedInAt).toISOString().split('T')[0];
+          if (record.punchedOutAt) {
+            const outDateStr = new Date(record.punchedOutAt).toISOString().split('T')[0];
+            return dateStr >= inDateStr && dateStr <= outDateStr;
+          } else {
+            // Still active/ongoing: up to 5 days
+            const inDate = new Date(record.punchedInAt);
+            const diffDays = Math.floor((currentDate - inDate) / (1000 * 60 * 60 * 24));
+            return dateStr >= inDateStr && diffDays >= 0 && diffDays < 5;
+          }
+        });
+      }
 
       if (leave) {
         // If there's an approved leave, mark as leave
         status = 'leave';
+      } else if (matchedRmoSession) {
+        // If covered by RMO shift
+        status = matchedRmoSession.status ? String(matchedRmoSession.status).toLowerCase() : 'present';
+        if (status !== 'present' && status !== 'half_day' && status !== 'overtime') {
+          status = 'present';
+        }
       } else if (attendance) {
         // Determine status based on attendance data
-        if (attendance.checkIn && attendance.checkOut) {
+        if (attendance.punchedInAt && attendance.punchedOutAt) {
           status = 'present';
-        } else if (attendance.checkIn && !attendance.checkOut) {
+        } else if (attendance.punchedInAt && !attendance.punchedOutAt) {
           status = 'half_day';
         } else if (attendance.leaveType) {
           status = 'leave';
@@ -2003,10 +2078,10 @@ router.get('/user/:userId', async (req, res) => {
       processedRecords.push({
         date: dateStr,
         status: status,
-        checkIn: attendance?.checkIn || null,
-        checkOut: attendance?.checkOut || null,
-        leaveType: leave?.leaveType || attendance?.leaveType || null,
-        leaveReason: leave?.reason || null
+        checkIn: matchedRmoSession?.punchedInAt || attendance?.punchedInAt || null,
+        checkOut: matchedRmoSession?.punchedOutAt || attendance?.punchedOutAt || null,
+        leaveType: leave?.leaveType || matchedRmoSession?.leaveType || attendance?.leaveType || null,
+        leaveReason: leave?.reason || matchedRmoSession?.note || attendance?.note || null
       });
     }
 

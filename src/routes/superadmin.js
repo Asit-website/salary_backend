@@ -867,7 +867,8 @@ router.post('/clients/:id/subscription', async (req, res) => {
       salesEnabled, geolocationEnabled, expenseEnabled,
       payrollEnabled, performanceEnabled, aiReportsEnabled, aiAssistantEnabled, taskManagementEnabled,
       rosterEnabled, recruitmentEnabled, communityEnabled, salaryRegisterEnabled,
-      monthlySummaryEnabled, perDaySalaryEnabled, comparisonEnabled, otImpactEnabled, latePenaltyEnabled
+      monthlySummaryEnabled, perDaySalaryEnabled, comparisonEnabled, otImpactEnabled, latePenaltyEnabled,
+      esiAsTaEnabled, rmoEnabled
     } = req.body || {};
 
     // Handle subscription queuing or updates
@@ -982,6 +983,29 @@ router.post('/clients/:id/subscription', async (req, res) => {
         updateData.latePenaltyEnabled = !!latePenaltyEnabled;
         messageArr.push(`Late Penalty ${latePenaltyEnabled ? 'enabled' : 'disabled'}`);
       }
+      let metaObj = {};
+      if (existingSubscription.meta) {
+        try {
+          metaObj = typeof existingSubscription.meta === 'string' ? JSON.parse(existingSubscription.meta) : existingSubscription.meta;
+        } catch (e) {}
+      }
+      let metaUpdated = false;
+
+      if (req.body.esiAsTaEnabled !== undefined && !!metaObj.esiAsTaEnabled !== !!req.body.esiAsTaEnabled) {
+        metaObj.esiAsTaEnabled = !!req.body.esiAsTaEnabled;
+        metaUpdated = true;
+        messageArr.push(`ESI as TA Mapping ${req.body.esiAsTaEnabled ? 'enabled' : 'disabled'}`);
+      }
+
+      if (req.body.rmoEnabled !== undefined && !!metaObj.rmoEnabled !== !!req.body.rmoEnabled) {
+        metaObj.rmoEnabled = !!req.body.rmoEnabled;
+        metaUpdated = true;
+        messageArr.push(`RMO Configuration ${req.body.rmoEnabled ? 'enabled' : 'disabled'}`);
+      }
+
+      if (metaUpdated) {
+        updateData.meta = metaObj;
+      }
 
       if (Object.keys(updateData).length > 0) {
         await existingSubscription.update(updateData);
@@ -1025,6 +1049,10 @@ router.post('/clients/:id/subscription', async (req, res) => {
       startAt: start,
       endAt: end,
       status: 'ACTIVE',
+      meta: {
+        esiAsTaEnabled: esiAsTaEnabled !== undefined ? !!esiAsTaEnabled : !!plan.features?.esiAsTaEnabled,
+        rmoEnabled: rmoEnabled !== undefined ? !!rmoEnabled : !!plan.features?.rmoEnabled
+      },
       staffLimit: staffLimit !== undefined && staffLimit !== null ? Number(staffLimit) : (plan.staffLimit || 0),
       maxGeolocationStaff: maxGeolocationStaff !== undefined && maxGeolocationStaff !== null ? Number(maxGeolocationStaff) : (plan.maxGeolocationStaff || 0),
       salesEnabled: salesEnabled !== undefined ? !!salesEnabled : (plan.salesEnabled || false),

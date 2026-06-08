@@ -354,7 +354,8 @@ router.post('/admin/roster', authRequired, requireRole(['admin', 'superadmin', '
         }
       }
 
-      // 4. Validation: Maximum Consecutive Working Days (Point 5)
+      // 4. Validation: Maximum Consecutive Working Days (Point 5) - Disabled for now
+      /*
       if (status === 'SHIFT') {
         let consecutiveDays = 0;
         let hasWO = false;
@@ -414,6 +415,7 @@ router.post('/admin/roster', authRequired, requireRole(['admin', 'superadmin', '
           }
         }
       }
+      */
 
       /*
       // 4. Validation: Block roster change if staff is already present
