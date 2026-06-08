@@ -1383,8 +1383,14 @@ router.post('/refresh', async (req, res) => {
 
     if (hasSuperAccess) {
       // Superadmins can choose to be in Superadmin Panel or in a specific org context
-      resolvedIsSuperadminPanel = isSuperadminPanel !== undefined ? !!isSuperadminPanel : hasSuperAccess;
-      resolvedOrgAccountId = resolvedIsSuperadminPanel ? null : (orgAccountId !== undefined ? orgAccountId : user.orgAccountId);
+      const isOrgSelected = orgAccountId !== undefined && orgAccountId !== null && orgAccountId !== '' && String(orgAccountId) !== 'null';
+      if (!isOrgSelected) {
+        resolvedIsSuperadminPanel = true;
+        resolvedOrgAccountId = null;
+      } else {
+        resolvedIsSuperadminPanel = false;
+        resolvedOrgAccountId = orgAccountId;
+      }
     } else if (isCP) {
       // Channel partners are not in superadmin panel, but can specify organization
       resolvedIsSuperadminPanel = false;
@@ -1489,8 +1495,14 @@ router.post('/refresh-mobile', async (req, res) => {
 
     if (hasSuperAccess) {
       // Superadmins can choose to be in Superadmin Panel or in a specific org context
-      resolvedIsSuperadminPanel = isSuperadminPanel !== undefined ? !!isSuperadminPanel : hasSuperAccess;
-      resolvedOrgAccountId = resolvedIsSuperadminPanel ? null : (orgAccountId !== undefined ? orgAccountId : user.orgAccountId);
+      const isOrgSelected = orgAccountId !== undefined && orgAccountId !== null && orgAccountId !== '' && String(orgAccountId) !== 'null';
+      if (!isOrgSelected) {
+        resolvedIsSuperadminPanel = true;
+        resolvedOrgAccountId = null;
+      } else {
+        resolvedIsSuperadminPanel = false;
+        resolvedOrgAccountId = orgAccountId;
+      }
     } else if (isCP) {
       // Channel partners are not in superadmin panel, but can specify organization
       resolvedIsSuperadminPanel = false;

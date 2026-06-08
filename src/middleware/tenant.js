@@ -4,8 +4,15 @@ const { Op } = require('sequelize');
 async function tenantEnforce(req, res, next) {
   try {
     if (!req.user) return res.status(401).json({ success: false, message: 'Unauthenticated' });
-    if (req.user.role === 'superadmin' || req.user.role === 'channel_partner') {
-      // Superadmin can specify org via header, query, or fallback to their own orgAccountId
+
+    let perms = req.user.permissions;
+    if (typeof perms === 'string') {
+      try { perms = JSON.parse(perms); } catch (_) {}
+    }
+    const hasSuperAccess = req.user.role === 'superadmin' || (perms && perms.superadmin_access === true);
+
+    if (hasSuperAccess || req.user.role === 'channel_partner') {
+      // Superadmin / Superadmin Staff / Channel partner can specify org via header, query, or fallback to their own orgAccountId
       const headerOrg = req.headers['x-org-id'] || req.query.orgId || null;
       const user = await User.findByPk(req.user.id);
       const fallbackOrg = user?.orgAccountId || null;

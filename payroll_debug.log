@@ -809,3 +809,4 @@
 [2026-06-05T12:55:58.721Z] [Late-Dbg] User 182 Final: LateCount=0, Amt=0, Days=0
 [2026-06-05T12:55:58.838Z] [Late-Dbg] User 185 Final: LateCount=0, Amt=0, Days=0
 [2026-06-05T12:55:59.093Z] [Late-Dbg] User 186 Final: LateCount=0, Amt=0, Days=0
+[2026-06-08T11:59:12.772Z] [User 57] calculateSalary (Existing): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0,"lateDetails":[]}

@@ -31,7 +31,11 @@ async function continuousVerify(req, res, next) {
       }
 
       // 3. Verify Subscription plan is not expired (Skip for superadmins and channel partners)
-      const isSuper = dbUser.role === 'superadmin' || role === 'superadmin';
+      let perms = dbUser.permissions;
+      if (typeof perms === 'string') {
+        try { perms = JSON.parse(perms); } catch (_) {}
+      }
+      const isSuper = dbUser.role === 'superadmin' || role === 'superadmin' || (perms && perms.superadmin_access === true);
       const isPartner = dbUser.role === 'channel_partner' || role === 'channel_partner';
 
       if (!isSuper && !isPartner) {

@@ -119,6 +119,12 @@ module.exports = (sequelize) => {
         allowNull: false,
         defaultValue: true,
         field: 'late_penalty_enabled'
+      },
+      attendanceLocationEnabled: {
+        type: DataTypes.BOOLEAN,
+        allowNull: false,
+        defaultValue: false,
+        field: 'attendance_location_enabled'
       }
     },
     { tableName: 'subscriptions', underscored: true }

@@ -868,7 +868,7 @@ router.post('/clients/:id/subscription', async (req, res) => {
       payrollEnabled, performanceEnabled, aiReportsEnabled, aiAssistantEnabled, taskManagementEnabled,
       rosterEnabled, recruitmentEnabled, communityEnabled, salaryRegisterEnabled,
       monthlySummaryEnabled, perDaySalaryEnabled, comparisonEnabled, otImpactEnabled, latePenaltyEnabled,
-      esiAsTaEnabled, rmoEnabled
+      esiAsTaEnabled, rmoEnabled, attendanceLocationEnabled
     } = req.body || {};
 
     // Handle subscription queuing or updates
@@ -983,6 +983,10 @@ router.post('/clients/:id/subscription', async (req, res) => {
         updateData.latePenaltyEnabled = !!latePenaltyEnabled;
         messageArr.push(`Late Penalty ${latePenaltyEnabled ? 'enabled' : 'disabled'}`);
       }
+      if (attendanceLocationEnabled !== undefined && !!attendanceLocationEnabled !== existingSubscription.attendanceLocationEnabled) {
+        updateData.attendanceLocationEnabled = !!attendanceLocationEnabled;
+        messageArr.push(`Attendance Location Details ${attendanceLocationEnabled ? 'enabled' : 'disabled'}`);
+      }
       let metaObj = {};
       if (existingSubscription.meta) {
         try {
@@ -1072,6 +1076,7 @@ router.post('/clients/:id/subscription', async (req, res) => {
       comparisonEnabled: comparisonEnabled !== undefined ? !!comparisonEnabled : (plan.comparisonEnabled !== undefined ? plan.comparisonEnabled : true),
       otImpactEnabled: otImpactEnabled !== undefined ? !!otImpactEnabled : (plan.otImpactEnabled !== undefined ? plan.otImpactEnabled : true),
       latePenaltyEnabled: latePenaltyEnabled !== undefined ? !!latePenaltyEnabled : (plan.latePenaltyEnabled !== undefined ? plan.latePenaltyEnabled : true),
+      attendanceLocationEnabled: attendanceLocationEnabled !== undefined ? !!attendanceLocationEnabled : (plan.attendanceLocationEnabled || false),
     });
     console.log('Subscription created successfully:', sub.id);
 

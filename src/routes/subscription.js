@@ -46,7 +46,8 @@ router.post('/plans', authRequired, requireRole('superadmin'), async (req, res) 
       features,
       salaryRegisterEnabled,
       esiAsTaEnabled,
-      rmoEnabled
+      rmoEnabled,
+      attendanceLocationEnabled
     } = req.body;
 
     const planFeatures = features || {};
@@ -78,6 +79,7 @@ router.post('/plans', authRequired, requireRole('superadmin'), async (req, res) 
       recruitmentEnabled,
       communityEnabled,
       salaryRegisterEnabled: req.body.salaryRegisterEnabled !== undefined ? req.body.salaryRegisterEnabled : true,
+      attendanceLocationEnabled: attendanceLocationEnabled !== undefined ? !!attendanceLocationEnabled : false,
       active: true
     });
 
@@ -119,7 +121,8 @@ router.put('/plans/:id', authRequired, requireRole('superadmin'), async (req, re
       active,
       salaryRegisterEnabled,
       esiAsTaEnabled,
-      rmoEnabled
+      rmoEnabled,
+      attendanceLocationEnabled
     } = req.body;
 
     const planFeatures = features || {};
@@ -149,6 +152,7 @@ router.put('/plans/:id', authRequired, requireRole('superadmin'), async (req, re
       recruitmentEnabled,
       communityEnabled,
       salaryRegisterEnabled: salaryRegisterEnabled !== undefined ? salaryRegisterEnabled : plan.salaryRegisterEnabled,
+      attendanceLocationEnabled: attendanceLocationEnabled !== undefined ? !!attendanceLocationEnabled : plan.attendanceLocationEnabled,
       features: planFeatures,
       active
     });
@@ -220,7 +224,8 @@ router.post('/assign-subscription', authRequired, requireRole('superadmin'), asy
       perDaySalaryEnabled: plan.perDaySalaryEnabled !== undefined ? plan.perDaySalaryEnabled : true,
       comparisonEnabled: plan.comparisonEnabled !== undefined ? plan.comparisonEnabled : true,
       otImpactEnabled: plan.otImpactEnabled !== undefined ? plan.otImpactEnabled : true,
-      latePenaltyEnabled: plan.latePenaltyEnabled !== undefined ? plan.latePenaltyEnabled : true
+      latePenaltyEnabled: plan.latePenaltyEnabled !== undefined ? plan.latePenaltyEnabled : true,
+      attendanceLocationEnabled: plan.attendanceLocationEnabled !== undefined ? plan.attendanceLocationEnabled : false
     });
 
     // Get updated subscription with plan
@@ -363,6 +368,7 @@ router.get('/subscription-info', authRequired, tenantEnforce, async (req, res) =
       comparisonEnabled: subscription.comparisonEnabled !== undefined ? !!subscription.comparisonEnabled : true,
       otImpactEnabled: subscription.otImpactEnabled !== undefined ? !!subscription.otImpactEnabled : true,
       latePenaltyEnabled: subscription.latePenaltyEnabled !== undefined ? !!subscription.latePenaltyEnabled : true,
+      attendanceLocationEnabled: subscription.attendanceLocationEnabled !== undefined ? !!subscription.attendanceLocationEnabled : false,
       esiAsTaEnabled: (() => {
         let metaObj = {};
         if (subscription.meta) {

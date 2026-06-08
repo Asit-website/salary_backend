@@ -105,6 +105,19 @@ async function initDb() {
     }
   }
 
+  // Ensure attendance_location_enabled column exists in plans and subscriptions, defaulting to false
+  try {
+    await sequelize.query('ALTER TABLE plans ADD COLUMN attendance_location_enabled BOOLEAN NOT NULL DEFAULT FALSE');
+  } catch (err) {
+    console.log('attendance_location_enabled column in plans already exists or error:', err.message);
+  }
+
+  try {
+    await sequelize.query('ALTER TABLE subscriptions ADD COLUMN attendance_location_enabled BOOLEAN NOT NULL DEFAULT FALSE');
+  } catch (err) {
+    console.log('attendance_location_enabled column in subscriptions already exists or error:', err.message);
+  }
+
   const phone = process.env.SUPERADMIN_PHONE;
   const password = process.env.SUPERADMIN_PASSWORD;
 
