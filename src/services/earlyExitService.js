@@ -15,6 +15,34 @@ class EarlyExitService {
     const { userId, orgAccountId, date: dateKey, punchedOutAt } = attendance;
     if (!punchedOutAt) return { earlyExitMinutes: 0, earlyExitAmount: 0, earlyExitRuleId: null };
 
+    // Check if woHolidayAsOt is enabled for this employee and it is a WO/Holiday
+    let woHolidayAsOtEnabled = false;
+    let isWoOrHoliday = false;
+    try {
+      const { StaffProfile } = require('../models');
+      const profile = await StaffProfile.findOne({ where: { userId } });
+      let extraObj = {};
+      if (profile && profile.extra) {
+        extraObj = typeof profile.extra === 'string' ? JSON.parse(profile.extra) : profile.extra;
+      }
+      woHolidayAsOtEnabled = !!extraObj?.woHolidayAsOt;
+      if (woHolidayAsOtEnabled) {
+        const { checkIfDateIsWoOrHoliday } = require('./overtimeService');
+        const { isWO, isH } = await checkIfDateIsWoOrHoliday(userId, orgAccountId, dateKey);
+        isWoOrHoliday = isWO || isH;
+      }
+    } catch (e) {
+      console.error('Error checking woHolidayAsOt in earlyExitService:', e);
+    }
+
+    if (woHolidayAsOtEnabled && isWoOrHoliday) {
+      return {
+        earlyExitMinutes: 0,
+        earlyExitAmount: 0,
+        earlyExitRuleId: null
+      };
+    }
+
     // 1. Identify Shift End Time (Always identify shift to get raw minutes)
     const shift = await shiftService.getEffectiveShiftTemplate(userId, dateKey);
     let earlyExitMinutes = 0;

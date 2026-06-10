@@ -30977,6 +30977,13 @@ router.get("/staff/:id/attendance-overview", async (req, res) => {
     };
     const todayStr = dayjs().format("YYYY-MM-DD");
 
+    let extraObj = {};
+    if (user?.profile?.extra) {
+      try {
+        extraObj = typeof user.profile.extra === "string" ? JSON.parse(user.profile.extra) : user.profile.extra;
+      } catch (e) {}
+    }
+
     for (let d = 1; d <= lastDay; d++) {
       const dateStr = `${month}-${String(d).padStart(2, "0")}`;
       const jsDate = new Date(yy, mm - 1, d);
@@ -31119,7 +31126,29 @@ router.get("/staff/:id/attendance-overview", async (req, res) => {
         let lateMinutes = 0;
         let earlyExitMinutes = 0;
 
-        if (shiftTpl && !att.isRmoIntermediate) {
+        const isHOverview = holidayDates.has(dateStr);
+        const isWOOverview = (() => {
+          const dow = jsDate.getDay();
+          const wk = getMonthWeekNum(jsDate);
+          for (const cfg of Array.isArray(woConfig) ? woConfig : []) {
+            if (cfg && Number(cfg.day) === dow) {
+              const weeks = normalizeWOWeeks(cfg.weeks);
+              if (
+                weeks === "all" ||
+                (Array.isArray(weeks) && weeks.includes(wk))
+              )
+                return true;
+            }
+          }
+          return false;
+        })();
+        const isWoOrHolidayOverview = isHOverview || isWOOverview;
+
+        if (extraObj.woHolidayAsOt && isWoOrHolidayOverview) {
+          isLate = false;
+          lateMinutes = 0;
+          earlyExitMinutes = 0;
+        } else if (shiftTpl && !att.isRmoIntermediate) {
           if (att.punchedInAt && shiftTpl.startTime) {
             const punchIn = new Date(att.punchedInAt);
             const punchInSec =
