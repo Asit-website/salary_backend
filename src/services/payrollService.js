@@ -15,6 +15,8 @@ const {
 const holidayWorkPayService = require('./holidayWorkPayService');
 const { coerceSalarySettings, computePayableDays, getSettingsPayableDays } = require('../utils/salarySettingsHelper');
 
+const fl = fs;
+
 
 const categoryNames = {
   'cl': 'Casual Leave',
@@ -383,7 +385,7 @@ async function calculateSalary(userId, monthKey) {
         computeOvertimeMeta({ userId: u.id, monthKey, overtimeBaseSalary: basicSalaryBase, orgAccount })
       ]);
 
-      const fl = require('fs');
+      // fl is globally defined
       fl.appendFileSync('payroll_debug.log', `[${new Date().toISOString()}] [User ${u.id}] calculateSalary (Existing): lpResult: ${JSON.stringify(lp)}\n`);
 
       // Note: Regular overtime (ot) usually fetched separately or part of another flow, 
@@ -854,8 +856,8 @@ async function calculateSalary(userId, monthKey) {
   }
 
   let payableUnits = present + paidLeaveCount + weeklyOffCount + holidaysCount;
-  const computedPayableUnits = Math.max(0, Math.min(daysForRate, payableUnits - (daysInMonth - daysForRate)));
-  let ratio = daysForRate > 0 ? Math.max(0, Math.min(1, computedPayableUnits / daysForRate)) : 0;
+  const computedPayableUnits = Math.max(0, payableUnits - (daysInMonth - daysForRate));
+  let ratio = daysForRate > 0 ? Math.max(0, computedPayableUnits / daysForRate) : 0;
 
 
 
@@ -867,14 +869,14 @@ async function calculateSalary(userId, monthKey) {
     baseSalary: Number(earnings.basic_salary || sd.basicSalary || 0) + Number(earnings.da || sd.da || 0)
   });
 
-  const fl = require('fs');
+  // fl is globally defined
   fl.appendFileSync('payroll_debug.log', `[${new Date().toISOString()}] [User ${u.id}] calculateSalary (Live): lpResult: ${JSON.stringify(lp)}\n`);
 
   const latePenaltyAmount = Number(lp?.latePunchInPenalty || 0);
   if (latePenaltyAmount > 0) {
     deductions = { ...deductions, late_punchin_penalty: latePenaltyAmount };
   }
-  ratio = daysForRate > 0 ? Math.max(0, Math.min(1, computedPayableUnits / daysForRate)) : 1;
+  ratio = daysForRate > 0 ? Math.max(0, computedPayableUnits / daysForRate) : 1;
 
   let rmoTargetHours = 480;
   let rmoTotalWorkedHours = 0;

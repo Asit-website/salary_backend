@@ -5116,14 +5116,11 @@ router.post("/payroll/:cycleId/compute", async (req, res) => {
         present + half * 0.5 + weeklyOff + holidays + paidLeave;
       const computedPayableUnits = Math.max(
         0,
-        Math.min(
-          daysForRate,
-          payableUnitsGross - (daysInMonth - daysForRate),
-        ),
+        payableUnitsGross - (daysInMonth - daysForRate),
       );
       const ratio =
         daysForRate > 0
-          ? Math.max(0, Math.min(1, computedPayableUnits / daysForRate))
+          ? Math.max(0, computedPayableUnits / daysForRate)
           : 1;
 
 
