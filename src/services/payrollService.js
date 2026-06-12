@@ -276,6 +276,19 @@ async function calculateSalary(userId, monthKey) {
 
   if (!u) throw new Error('User not found');
 
+  let salarySettings = null;
+  try {
+    const salarySettingsRow = await AppSetting.findOne({
+      where: { key: 'salary_settings', orgAccountId: u.orgAccountId }
+    });
+    if (salarySettingsRow?.value) {
+      salarySettings = JSON.parse(salarySettingsRow.value);
+    }
+  } catch (e) {}
+  if (!salarySettings) {
+    salarySettings = coerceSalarySettings({});
+  }
+
   const settingsPayableDays = await getSettingsPayableDays(u.orgAccount, monthKey);
 
   // Check if payroll line exists for this month across ALL cycles for this monthKey
@@ -545,6 +558,7 @@ async function calculateSalary(userId, monthKey) {
     };
   }
 
+  let pfCalculatedFromRule = false;
   // Smart Deduction Fallback (Rule-based) if stored values are 0
   if (u.salaryTemplate) {
     const tD = u.salaryTemplate.deductions ? (typeof u.salaryTemplate.deductions === 'string' ? JSON.parse(u.salaryTemplate.deductions) : u.salaryTemplate.deductions) : [];
@@ -553,7 +567,8 @@ async function calculateSalary(userId, monthKey) {
     if (Number(deductions.provident_fund || 0) === 0) {
       const pfRule = getRule('PROVIDENT_FUND_EMPLOYEE');
       if (pfRule && pfRule.type === 'percent' && (pfRule.meta?.basedOn === 'BASIC SALARY' || pfRule.meta?.basedOn === 'BASIC_SALARY')) {
-        deductions.provident_fund = Math.round(Number(earnings.basic_salary || 0) * (Number(pfRule.valueNumber || 0) / 100));
+        deductions.provident_fund = Number((Number(earnings.basic_salary || 0) * (Number(pfRule.valueNumber || 0) / 100)).toFixed(2));
+        pfCalculatedFromRule = true;
       }
     }
     if (Number(deductions.esi || 0) === 0) {
@@ -1064,6 +1079,20 @@ async function calculateSalary(userId, monthKey) {
   // Break penalties
   if (breakMeta.breakPenalty > 0) {
     finalDeductions.break_penalty = (finalDeductions.break_penalty || 0) + breakMeta.breakPenalty;
+  }
+
+  // Recalculate PF if mode is basic_minus_penalties
+  if (salarySettings?.pfCalculationMode === 'basic_minus_penalties' && u.salaryTemplate) {
+    const tD = u.salaryTemplate.deductions ? (typeof u.salaryTemplate.deductions === 'string' ? JSON.parse(u.salaryTemplate.deductions) : u.salaryTemplate.deductions) : [];
+    const getRule = (key) => (Array.isArray(tD) ? tD : []).find(d => d.key === key);
+    const pfRule = getRule('PROVIDENT_FUND_EMPLOYEE');
+    if (pfRule) {
+      const basicVal = Number(finalEarnings.basic_salary || 0);
+      const earlyExitPenalty = Number(finalDeductions.early_exit_penalty || 0);
+      const latePenalty = Number(finalDeductions.late_punchin_penalty || 0);
+      const pfBase = Math.max(0, basicVal - earlyExitPenalty - latePenalty);
+      finalDeductions.provident_fund = Number((pfBase * (Number(pfRule.valueNumber || 0) / 100)).toFixed(2));
+    }
   }
 
   // 3. APPLY TENURE BONUS (Only if live compute and month matches)

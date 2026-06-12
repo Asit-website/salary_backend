@@ -47,6 +47,7 @@ router.post('/plans', authRequired, requireRole('superadmin'), async (req, res) 
       salaryRegisterEnabled,
       esiAsTaEnabled,
       rmoEnabled,
+      pfSettingsEnabled,
       attendanceLocationEnabled
     } = req.body;
 
@@ -56,6 +57,9 @@ router.post('/plans', authRequired, requireRole('superadmin'), async (req, res) 
     }
     if (rmoEnabled !== undefined) {
       planFeatures.rmoEnabled = !!rmoEnabled;
+    }
+    if (pfSettingsEnabled !== undefined) {
+      planFeatures.pfSettingsEnabled = !!pfSettingsEnabled;
     }
 
     const plan = await Plan.create({
@@ -122,6 +126,7 @@ router.put('/plans/:id', authRequired, requireRole('superadmin'), async (req, re
       salaryRegisterEnabled,
       esiAsTaEnabled,
       rmoEnabled,
+      pfSettingsEnabled,
       attendanceLocationEnabled
     } = req.body;
 
@@ -131,6 +136,9 @@ router.put('/plans/:id', authRequired, requireRole('superadmin'), async (req, re
     }
     if (rmoEnabled !== undefined) {
       planFeatures.rmoEnabled = !!rmoEnabled;
+    }
+    if (pfSettingsEnabled !== undefined) {
+      planFeatures.pfSettingsEnabled = !!pfSettingsEnabled;
     }
 
     await plan.update({
@@ -204,7 +212,8 @@ router.post('/assign-subscription', authRequired, requireRole('superadmin'), asy
       status: 'ACTIVE',
       meta: {
         esiAsTaEnabled: !!plan.features?.esiAsTaEnabled,
-        rmoEnabled: !!plan.features?.rmoEnabled
+        rmoEnabled: !!plan.features?.rmoEnabled,
+        pfSettingsEnabled: !!plan.features?.pfSettingsEnabled
       },
       staffLimit: plan.staffLimit,
       salesEnabled: plan.salesEnabled,
@@ -386,6 +395,15 @@ router.get('/subscription-info', authRequired, tenantEnforce, async (req, res) =
           } catch (e) {}
         }
         return !!metaObj?.rmoEnabled;
+      })(),
+      pfSettingsEnabled: (() => {
+        let metaObj = {};
+        if (subscription.meta) {
+          try {
+            metaObj = typeof subscription.meta === 'string' ? JSON.parse(subscription.meta) : subscription.meta;
+          } catch (e) {}
+        }
+        return !!metaObj?.pfSettingsEnabled;
       })(),
       maxGeolocationStaff: subscription.maxGeolocationStaff !== null ? subscription.maxGeolocationStaff : (subscription.meta?.maxGeolocationStaff || subscription.plan.maxGeolocationStaff),
       subscriptionStatus: subscription.status

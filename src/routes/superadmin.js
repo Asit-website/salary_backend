@@ -868,7 +868,7 @@ router.post('/clients/:id/subscription', async (req, res) => {
       payrollEnabled, performanceEnabled, aiReportsEnabled, aiAssistantEnabled, taskManagementEnabled,
       rosterEnabled, recruitmentEnabled, communityEnabled, salaryRegisterEnabled,
       monthlySummaryEnabled, perDaySalaryEnabled, comparisonEnabled, otImpactEnabled, latePenaltyEnabled,
-      esiAsTaEnabled, rmoEnabled, attendanceLocationEnabled
+      esiAsTaEnabled, rmoEnabled, pfSettingsEnabled, attendanceLocationEnabled
     } = req.body || {};
 
     // Handle subscription queuing or updates
@@ -1007,6 +1007,12 @@ router.post('/clients/:id/subscription', async (req, res) => {
         messageArr.push(`RMO Configuration ${req.body.rmoEnabled ? 'enabled' : 'disabled'}`);
       }
 
+      if (req.body.pfSettingsEnabled !== undefined && !!metaObj.pfSettingsEnabled !== !!req.body.pfSettingsEnabled) {
+        metaObj.pfSettingsEnabled = !!req.body.pfSettingsEnabled;
+        metaUpdated = true;
+        messageArr.push(`PF Settings ${req.body.pfSettingsEnabled ? 'enabled' : 'disabled'}`);
+      }
+
       if (metaUpdated) {
         updateData.meta = metaObj;
       }
@@ -1055,7 +1061,8 @@ router.post('/clients/:id/subscription', async (req, res) => {
       status: 'ACTIVE',
       meta: {
         esiAsTaEnabled: esiAsTaEnabled !== undefined ? !!esiAsTaEnabled : !!plan.features?.esiAsTaEnabled,
-        rmoEnabled: rmoEnabled !== undefined ? !!rmoEnabled : !!plan.features?.rmoEnabled
+        rmoEnabled: rmoEnabled !== undefined ? !!rmoEnabled : !!plan.features?.rmoEnabled,
+        pfSettingsEnabled: pfSettingsEnabled !== undefined ? !!pfSettingsEnabled : !!plan.features?.pfSettingsEnabled
       },
       staffLimit: staffLimit !== undefined && staffLimit !== null ? Number(staffLimit) : (plan.staffLimit || 0),
       maxGeolocationStaff: maxGeolocationStaff !== undefined && maxGeolocationStaff !== null ? Number(maxGeolocationStaff) : (plan.maxGeolocationStaff || 0),

@@ -4508,9 +4508,9 @@ router.post("/payroll/:cycleId/compute", async (req, res) => {
             (pfRule.meta?.basedOn === "BASIC SALARY" ||
               pfRule.meta?.basedOn === "BASIC_SALARY")
           ) {
-            d.provident_fund = Math.round(
-              Number(e.basic_salary || 0) *
-                (Number(pfRule.valueNumber || 0) / 100),
+            let pfBase = Number(e.basic_salary || 0);
+            d.provident_fund = Number(
+              (pfBase * (Number(pfRule.valueNumber || 0) / 100)).toFixed(2),
             );
           }
         }
@@ -5593,6 +5593,35 @@ router.post("/payroll/:cycleId/compute", async (req, res) => {
         delete finalE.no_absent_pay;
         totalEarnings = sumObj(finalE);
         grossSalary = totalEarnings + totalIncentives;
+      }
+
+      // Recalculate PF if mode is basic_minus_penalties
+      if (salarySettings?.pfCalculationMode === "basic_minus_penalties" && u.salaryTemplate) {
+        const template = u.salaryTemplate;
+        let templateDeductions = [];
+        try {
+          templateDeductions =
+            typeof template.deductions === "string"
+              ? JSON.parse(template.deductions)
+              : template.deductions || [];
+        } catch (e) {}
+
+        const pfRule = (Array.isArray(templateDeductions) ? templateDeductions : []).find(
+          (rule) =>
+            rule.key === "PROVIDENT_FUND_EMPLOYEE" &&
+            rule.type === "percent" &&
+            (rule.meta?.basedOn === "BASIC SALARY" ||
+              rule.meta?.basedOn === "BASIC_SALARY"),
+        );
+        if (pfRule) {
+          const basicVal = Number(finalE.basic_salary || e.basic_salary || 0);
+          const earlyExitPenalty = Number(finalD.early_exit_penalty || 0);
+          const latePenalty = Number(finalD.late_punchin_penalty || 0);
+          const pfBase = Math.max(0, basicVal - earlyExitPenalty - latePenalty);
+          finalD.provident_fund = Number(
+            (pfBase * (Number(pfRule.valueNumber || 0) / 100)).toFixed(2),
+          );
+        }
       }
 
       // Recalculate total deductions and net salary after overrides
@@ -11941,6 +11970,7 @@ function getDefaultSalarySettings() {
     payableDaysMode: "calendar_month",
     weeklyOffs: [0], // 0 = Sunday ... 6 = Saturday
     hoursPerDay: 8,
+    pfCalculationMode: "basic_only",
   };
 }
 
@@ -11967,7 +11997,8 @@ function coerceSalarySettings(input) {
     Number.isFinite(hoursPerDay) && hoursPerDay > 0 && hoursPerDay <= 24
       ? hoursPerDay
       : def.hoursPerDay;
-  return { payableDaysMode: mode, weeklyOffs, hoursPerDay: hp };
+  const pfCalculationMode = input?.pfCalculationMode ? String(input.pfCalculationMode) : def.pfCalculationMode;
+  return { payableDaysMode: mode, weeklyOffs, hoursPerDay: hp, pfCalculationMode };
 }
 
 function daysInMonth(year, month /* 1-12 */) {
@@ -16366,6 +16397,13 @@ router.get("/staff-salary-list", async (req, res) => {
     const orgId = requireOrg(req, res);
     if (!orgId) return;
 
+    const salarySettingsRow = await AppSetting.findOne({
+      where: { key: "salary_settings", orgAccountId: orgId },
+    });
+    const salarySettings = salarySettingsRow?.value
+      ? JSON.parse(salarySettingsRow.value)
+      : getDefaultSalarySettings();
+
     const staff = await User.findAll({
       where: { role: "staff", orgAccountId: orgId },
       include: [
@@ -16482,17 +16520,23 @@ router.get("/staff-salary-list", async (req, res) => {
           const getRule = (key) =>
             (Array.isArray(tD) ? tD : []).find((d) => d.key === key);
 
-          if (finalDeductions.provident_fund === 0) {
+          if (finalDeductions.provident_fund === 0 || salarySettings?.pfCalculationMode === "basic_minus_penalties") {
             const pfRule = getRule("PROVIDENT_FUND_EMPLOYEE");
             if (
               pfRule &&
               pfRule.type === "percent" &&
               (pfRule.meta?.basedOn === "BASIC SALARY" ||
+                pfRule.meta?.basedOn === "BASIC_SAVARY" ||
                 pfRule.meta?.basedOn === "BASIC_SALARY")
             ) {
-              finalDeductions.provident_fund = Math.round(
-                finalEarnings.basic_salary *
-                  (Number(pfRule.valueNumber || 0) / 100),
+              let pfBase = Number(finalEarnings.basic_salary || 0);
+              if (salarySettings?.pfCalculationMode === "basic_minus_penalties") {
+                const earlyExitPenalty = Number(finalDeductions.early_exit_penalty || 0);
+                const latePenalty = Number(finalDeductions.late_punchin_penalty || 0);
+                pfBase = Math.max(0, pfBase - earlyExitPenalty - latePenalty);
+              }
+              finalDeductions.provident_fund = Number(
+                (pfBase * (Number(pfRule.valueNumber || 0) / 100)).toFixed(2),
               );
             }
           }

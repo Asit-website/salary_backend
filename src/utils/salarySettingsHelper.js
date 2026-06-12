@@ -5,6 +5,7 @@ function coerceSalarySettings(input) {
     payableDaysMode: "calendar_month",
     weeklyOffs: [0], // 0 = Sunday ... 6 = Saturday
     hoursPerDay: 8,
+    pfCalculationMode: "basic",
   };
   const modes = [
     "calendar_month",
@@ -27,7 +28,12 @@ function coerceSalarySettings(input) {
     Number.isFinite(hoursPerDay) && hoursPerDay > 0 && hoursPerDay <= 24
       ? hoursPerDay
       : def.hoursPerDay;
-  return { payableDaysMode: mode, weeklyOffs, hoursPerDay: hp };
+  const pfCalculationMode =
+    input?.pfCalculationMode &&
+    ["basic", "basic_minus_penalties"].includes(String(input.pfCalculationMode))
+      ? String(input.pfCalculationMode)
+      : def.pfCalculationMode;
+  return { payableDaysMode: mode, weeklyOffs, hoursPerDay: hp, pfCalculationMode };
 }
 
 function computePayableDays(settings, year, month /* 1-12 */) {
