@@ -4501,11 +4501,12 @@ router.post("/payroll/:cycleId/compute", async (req, res) => {
           (Array.isArray(tD) ? tD : []).find((it) => it.key === key);
 
         if (Number(d.provident_fund || 0) === 0) {
-          const pfRule = getRule("PROVIDENT_FUND_EMPLOYEE");
+          const pfRule = getRule("PROVIDENT_FUND_EMPLOYEE") || getRule("PROVIDENT_FUND");
           if (
             pfRule &&
             pfRule.type === "percent" &&
             (pfRule.meta?.basedOn === "BASIC SALARY" ||
+              pfRule.meta?.basedOn === "BASIC_SAVARY" ||
               pfRule.meta?.basedOn === "BASIC_SALARY")
           ) {
             let pfBase = Number(e.basic_salary || 0);
@@ -5608,9 +5609,10 @@ router.post("/payroll/:cycleId/compute", async (req, res) => {
 
         const pfRule = (Array.isArray(templateDeductions) ? templateDeductions : []).find(
           (rule) =>
-            rule.key === "PROVIDENT_FUND_EMPLOYEE" &&
+            (rule.key === "PROVIDENT_FUND_EMPLOYEE" || rule.key === "PROVIDENT_FUND") &&
             rule.type === "percent" &&
             (rule.meta?.basedOn === "BASIC SALARY" ||
+              rule.meta?.basedOn === "BASIC_SAVARY" ||
               rule.meta?.basedOn === "BASIC_SALARY"),
         );
         if (pfRule) {
@@ -16521,12 +16523,11 @@ router.get("/staff-salary-list", async (req, res) => {
             (Array.isArray(tD) ? tD : []).find((d) => d.key === key);
 
           if (finalDeductions.provident_fund === 0 || salarySettings?.pfCalculationMode === "basic_minus_penalties") {
-            const pfRule = getRule("PROVIDENT_FUND_EMPLOYEE");
+            const pfRule = getRule("PROVIDENT_FUND_EMPLOYEE") || getRule("PROVIDENT_FUND");
             if (
               pfRule &&
               pfRule.type === "percent" &&
               (pfRule.meta?.basedOn === "BASIC SALARY" ||
-                pfRule.meta?.basedOn === "BASIC_SAVARY" ||
                 pfRule.meta?.basedOn === "BASIC_SALARY")
             ) {
               let pfBase = Number(finalEarnings.basic_salary || 0);

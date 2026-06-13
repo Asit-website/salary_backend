@@ -565,8 +565,14 @@ async function calculateSalary(userId, monthKey) {
     const getRule = (key) => (Array.isArray(tD) ? tD : []).find(d => d.key === key);
 
     if (Number(deductions.provident_fund || 0) === 0) {
-      const pfRule = getRule('PROVIDENT_FUND_EMPLOYEE');
-      if (pfRule && pfRule.type === 'percent' && (pfRule.meta?.basedOn === 'BASIC SALARY' || pfRule.meta?.basedOn === 'BASIC_SALARY')) {
+      const pfRule = getRule('PROVIDENT_FUND_EMPLOYEE') || getRule('PROVIDENT_FUND');
+      if (
+        pfRule &&
+        pfRule.type === 'percent' &&
+        (pfRule.meta?.basedOn === 'BASIC SALARY' ||
+          pfRule.meta?.basedOn === 'BASIC_SAVARY' ||
+          pfRule.meta?.basedOn === 'BASIC_SALARY')
+      ) {
         deductions.provident_fund = Number((Number(earnings.basic_salary || 0) * (Number(pfRule.valueNumber || 0) / 100)).toFixed(2));
         pfCalculatedFromRule = true;
       }
@@ -1085,7 +1091,7 @@ async function calculateSalary(userId, monthKey) {
   if (salarySettings?.pfCalculationMode === 'basic_minus_penalties' && u.salaryTemplate) {
     const tD = u.salaryTemplate.deductions ? (typeof u.salaryTemplate.deductions === 'string' ? JSON.parse(u.salaryTemplate.deductions) : u.salaryTemplate.deductions) : [];
     const getRule = (key) => (Array.isArray(tD) ? tD : []).find(d => d.key === key);
-    const pfRule = getRule('PROVIDENT_FUND_EMPLOYEE');
+    const pfRule = getRule('PROVIDENT_FUND_EMPLOYEE') || getRule('PROVIDENT_FUND');
     if (pfRule) {
       const basicVal = Number(finalEarnings.basic_salary || 0);
       const earlyExitPenalty = Number(finalDeductions.early_exit_penalty || 0);
