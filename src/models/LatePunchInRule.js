@@ -28,6 +28,7 @@ module.exports = (sequelize) => {
 
       active: { type: DataTypes.BOOLEAN, defaultValue: true },
       bufferMinutes: { type: DataTypes.INTEGER, defaultValue: 0, field: 'buffer_minutes' },
+      pardonLimit: { type: DataTypes.INTEGER, defaultValue: 0, field: 'pardon_limit' },
       orgAccountId: { type: DataTypes.BIGINT.UNSIGNED, allowNull: false, field: 'org_account_id' }
     },
     {

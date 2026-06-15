@@ -240,24 +240,43 @@ class LatePunchInService {
       finalDailySalary = baseSalary / daysForRate;
     }
 
-    // We track occurrences per unique Rule+Tier combination
-    const ruleOccurrences = {}; // { "ruleId_tierIndex": count }
+    const dayCalculations = [];
+    const ruleLateCounts = {}; // { ruleId: count }
 
     for (const row of rows) {
       // 1. Calculate raw penalty for this specific day
       const lp = await this.calculateLatePenalty(row, { id: orgAccountId }, 30, new Date(), finalDailySalary);
+      dayCalculations.push({ row, lp });
 
       row.latePunchInMinutes = lp.latePunchInMinutes || 0;
       row.latePunchInAmount = 0; // Default to 0, will set if threshold met
       row.lateOccurrence = null;
 
-      if (row.latePunchInMinutes > 0) {
+      if (row.latePunchInMinutes > 0 && lp.rule) {
         lateCount++;
+        const ruleId = lp.rule.id;
+        ruleLateCounts[ruleId] = (ruleLateCounts[ruleId] || 0) + 1;
+      }
+    }
 
-        const rule = lp.rule;
-        const tier = lp.tier;
+    // We track occurrences per unique Rule+Tier combination
+    const ruleOccurrences = {}; // { "ruleId_tierIndex": count }
 
-        if (rule && tier) {
+    for (const calc of dayCalculations) {
+      const { row, lp } = calc;
+      const rule = lp.rule;
+      const tier = lp.tier;
+
+      if (row.latePunchInMinutes > 0 && rule) {
+        const totalLatesForThisRule = ruleLateCounts[rule.id] || 0;
+        const pardonLimit = Number(rule.pardonLimit || 0);
+
+        if (pardonLimit > 0 && totalLatesForThisRule <= pardonLimit) {
+          row.lateOccurrence = `${totalLatesForThisRule}/${pardonLimit} (Pardoned)`;
+          continue; // Skip penalty application
+        }
+
+        if (tier) {
           const frequency = Number(tier.frequency || 1);
           const tierKey = `${rule.id}_${JSON.stringify(tier)}`; // Unique key for this specific threshold
 

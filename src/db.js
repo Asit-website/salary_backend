@@ -81,6 +81,13 @@ async function initDb() {
     console.log('Note on qr_punch_enabled column (might already exist):', err.message);
   }
 
+  // Ensure pardon_limit column exists in late_punchin_rules
+  try {
+    await sequelize.query('ALTER TABLE late_punchin_rules ADD COLUMN pardon_limit INT NOT NULL DEFAULT 0');
+  } catch (err) {
+    console.log('Note on pardon_limit column (might already exist):', err.message);
+  }
+
   // Ensure salary_register_enabled and other report columns exist in plans and subscriptions
   const reportCols = [
     'salary_register_enabled',

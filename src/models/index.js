@@ -76,10 +76,13 @@ const defineLocationPing = require('./LocationPing');
 const defineDeviceInfo = require('./DeviceInfo');
 const definePayrollCycle = require('./PayrollCycle');
 const definePayrollLine = require('./PayrollLine');
+const defineFnFSetting = require('./FnFSetting');
+const defineFnFSettlement = require('./FnFSettlement');
 const defineAsset = require('./Asset');
 const defineAssetAssignment = require('./AssetAssignment');
 const defineAssetMaintenance = require('./AssetMaintenance');
 const defineStaffLoan = require('./StaffLoan');
+const defineLoan = require('./loan');
 const defineLetterTemplate = require('./LetterTemplate');
 const defineStaffLetter = require('./StaffLetter');
 const defineSalesIncentiveRule = require('./SalesIncentiveRule');
@@ -208,10 +211,13 @@ const LocationPing = defineLocationPing(sequelize);
 const DeviceInfo = defineDeviceInfo(sequelize);
 const PayrollCycle = definePayrollCycle(sequelize);
 const PayrollLine = definePayrollLine(sequelize);
+const FnFSetting = defineFnFSetting(sequelize);
+const FnFSettlement = defineFnFSettlement(sequelize);
 const Asset = defineAsset(sequelize);
 const AssetAssignment = defineAssetAssignment(sequelize);
 const AssetMaintenance = defineAssetMaintenance(sequelize);
 const StaffLoan = defineStaffLoan(sequelize);
+const Loan = defineLoan(sequelize, require('sequelize'));
 const LetterTemplate = defineLetterTemplate(sequelize);
 const StaffLetter = defineStaffLetter(sequelize);
 const SalesIncentiveRule = defineSalesIncentiveRule(sequelize);
@@ -596,6 +602,10 @@ StaffLoan.belongsTo(User, { foreignKey: 'createdBy', as: 'creator' });
 User.hasMany(StaffLoan, { foreignKey: 'updatedBy', as: 'loansUpdated' });
 StaffLoan.belongsTo(User, { foreignKey: 'updatedBy', as: 'updater' });
 
+// Loan transactions associations
+User.hasMany(Loan, { foreignKey: 'userId', as: 'loanTransactions' });
+Loan.belongsTo(User, { foreignKey: 'userId', as: 'user' });
+
 // Letter Management associations
 OrgAccount.hasMany(LetterTemplate, { foreignKey: 'orgAccountId', as: 'letterTemplates' });
 LetterTemplate.belongsTo(OrgAccount, { foreignKey: 'orgAccountId', as: 'orgAccount' });
@@ -617,6 +627,16 @@ PayrollCycle.hasMany(PayrollLine, { foreignKey: 'cycleId', as: 'lines' });
 PayrollLine.belongsTo(PayrollCycle, { foreignKey: 'cycleId', as: 'cycle' });
 User.hasMany(PayrollLine, { foreignKey: 'userId', as: 'payrollLines' });
 PayrollLine.belongsTo(User, { foreignKey: 'userId', as: 'user' });
+
+// FnF associations
+FnFSetting.belongsTo(OrgAccount, { foreignKey: 'orgAccountId', as: 'orgAccount' });
+OrgAccount.hasOne(FnFSetting, { foreignKey: 'orgAccountId', as: 'fnfSetting' });
+
+FnFSettlement.belongsTo(User, { foreignKey: 'userId', as: 'user' });
+User.hasMany(FnFSettlement, { foreignKey: 'userId', as: 'fnfSettlements' });
+FnFSettlement.belongsTo(User, { foreignKey: 'createdById', as: 'creator' });
+FnFSettlement.belongsTo(OrgAccount, { foreignKey: 'orgAccountId', as: 'orgAccount' });
+OrgAccount.hasMany(FnFSettlement, { foreignKey: 'orgAccountId', as: 'fnfSettlements' });
 
 // Leave Encashment associations
 User.hasMany(LeaveEncashment, { foreignKey: 'userId', as: 'leaveEncashments' });
@@ -955,10 +975,12 @@ module.exports = {
   DeviceInfo,
   PayrollCycle,
   PayrollLine,
+  FnFSetting,
+  FnFSettlement,
   Asset,
   AssetAssignment,
   AssetMaintenance,
-  StaffLoan, LetterTemplate, StaffLetter, SalesIncentiveRule, StaffIncentiveRule, StaffSalesIncentive,
+  StaffLoan, Loan, LetterTemplate, StaffLetter, SalesIncentiveRule, StaffIncentiveRule, StaffSalesIncentive,
   AttendanceAutomationRule,
   LeaveEncashment,
   Activity,

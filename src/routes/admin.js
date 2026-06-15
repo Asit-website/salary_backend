@@ -4283,7 +4283,7 @@ router.post("/payroll/:cycleId/compute", async (req, res) => {
     let staff;
     if (staffId) {
       staff = await User.findAll({
-        where: { id: staffId, role: "staff", orgAccountId: orgId },
+        where: { id: staffId, role: "staff", orgAccountId: orgId, active: true },
         include: [
           { model: SalaryTemplate, as: "salaryTemplate" },
           { model: StaffProfile, as: "profile" },
@@ -4291,7 +4291,7 @@ router.post("/payroll/:cycleId/compute", async (req, res) => {
       });
     } else {
       staff = await User.findAll({
-        where: { role: "staff", orgAccountId: orgId },
+        where: { role: "staff", orgAccountId: orgId, active: true },
         include: [
           { model: SalaryTemplate, as: "salaryTemplate" },
           { model: StaffProfile, as: "profile" },
@@ -32512,7 +32512,7 @@ router.post("/settings/late-punchin-rules", async (req, res) => {
     const orgId = requireOrg(req, res);
     if (!orgId) return;
     const { LatePunchInRule } = require("../models");
-    const { name, active, thresholds, penaltyType } = req.body;
+    const { name, active, thresholds, penaltyType, bufferMinutes, pardonLimit } = req.body;
 
     const rule = await LatePunchInRule.create({
       orgAccountId: orgId,
@@ -32520,6 +32520,8 @@ router.post("/settings/late-punchin-rules", async (req, res) => {
       active: active !== undefined ? active : true,
       penaltyType: penaltyType || "SLABS",
       thresholds,
+      bufferMinutes: bufferMinutes !== undefined ? Number(bufferMinutes) : 0,
+      pardonLimit: pardonLimit !== undefined ? Number(pardonLimit) : 0,
     });
 
     logAudit({
@@ -33211,5 +33213,819 @@ router.post(
     }
   },
 );
+
+// Leave balance helper functions for FnF
+function getCycleRange(cycle, forDate, tpl = null) {
+  const d = new Date(`${forDate}T00:00:00`);
+  const y = d.getFullYear();
+  const m = d.getMonth();
+  const dt = d.getDate();
+
+  if (cycle === 'yearly') {
+    let startMonth = 0; // Jan
+    let startDay = 1;
+    if (tpl && tpl.cycleStartDate) {
+      const csd = new Date(tpl.cycleStartDate);
+      startMonth = csd.getMonth();
+      startDay = csd.getDate();
+    }
+    let start = new Date(y, startMonth, startDay);
+    if (d < start) {
+      start = new Date(y - 1, startMonth, startDay);
+    }
+    const end = new Date(start.getFullYear() + 1, startMonth, startDay - 1);
+    return { start: formatDate(start), end: formatDate(end) };
+  }
+
+  if (cycle === 'quarterly') {
+    let startMonth = 0; // Jan
+    let startDay = 1;
+    if (tpl && tpl.cycleStartDate) {
+      const csd = new Date(tpl.cycleStartDate);
+      startMonth = csd.getMonth();
+      startDay = csd.getDate();
+    }
+    const monthDiff = (m - startMonth + 12) % 12;
+    const qIndex = Math.floor(monthDiff / 3);
+    const cycleStartMonth = (startMonth + (qIndex * 3)) % 12;
+    let cycleStartYear = y;
+    if (m < startMonth && cycleStartMonth >= startMonth) cycleStartYear--;
+    const start = new Date(cycleStartYear, cycleStartMonth, startDay);
+    if (d < start) {
+      const prevStart = new Date(start.getFullYear(), start.getMonth() - 3, startDay);
+      return { start: formatDate(prevStart), end: formatDate(new Date(start.getFullYear(), start.getMonth(), startDay - 1)) };
+    }
+    const end = new Date(start.getFullYear(), start.getMonth() + 3, startDay - 1);
+    return { start: formatDate(start), end: formatDate(end) };
+  }
+
+  if (cycle === 'monthly') {
+    let startDay = 1;
+    if (tpl && tpl.cycleStartDay) {
+      startDay = Number(tpl.cycleStartDay);
+    }
+    let start = new Date(y, m, startDay);
+    if (dt < startDay) {
+      start = new Date(y, m - 1, startDay);
+    }
+    const end = new Date(start.getFullYear(), start.getMonth() + 1, startDay - 1);
+    return { start: formatDate(start), end: formatDate(end) };
+  }
+
+  const start = new Date(y, m, 1);
+  const end = new Date(y, m + 1, 0);
+  return { start: formatDate(start), end: formatDate(end) };
+}
+
+function getPrevCycleRange(cycle, forDate, tpl = null) {
+  const current = getCycleRange(cycle, forDate, tpl);
+  const prevDate = new Date(new Date(`${current.start}T00:00:00`).getTime() - 86400000);
+  return getCycleRange(cycle, formatDate(prevDate), tpl);
+}
+
+async function getActiveLeaveTemplateForUser(userId, onDate) {
+  const row = await StaffLeaveAssignment.findOne({
+    where: { userId },
+    order: [['effectiveFrom', 'DESC']],
+    include: [{ model: LeaveTemplate, as: 'template', include: [{ model: LeaveTemplateCategory, as: 'categories' }] }],
+  });
+  if (!row) return null;
+  const ef = row.effectiveFrom;
+  const et = row.effectiveTo; // can be null
+  if (onDate < ef) return null;
+  if (et && onDate > et) return null;
+  return row.template;
+}
+
+async function getEffectiveLeaveBalance(userId, categoryKey, onDate) {
+  const tpl = await getActiveLeaveTemplateForUser(userId, onDate);
+  if (!tpl) return null;
+
+  const cyc = tpl.cycle || 'monthly';
+  const { start, end } = getCycleRange(cyc, onDate, tpl);
+  const key = String(categoryKey).toLowerCase();
+
+  const lb = await LeaveBalance.findOne({ where: { userId, categoryKey: key, cycleStart: start, cycleEnd: end } });
+
+  const catCfg = (tpl.categories || []).find(c => String(c.key).toLowerCase() === key);
+  if (!catCfg) return null;
+
+  const total = Number(catCfg.leaveCount || 0);
+
+  if (lb) {
+    const used = Number(lb.used || 0);
+    const allocated = Number(lb.allocated || total);
+    const carried = Number(lb.carriedForward || 0);
+    const remaining = Number(lb.remaining || Math.max(0, allocated - used));
+    return { lb, total: allocated, used, remaining, start, end, cycle: cyc, carriedForward: carried };
+  }
+
+  let carry = 0;
+  const prev = getPrevCycleRange(cyc, onDate, tpl);
+  const prevBal = await LeaveBalance.findOne({ where: { userId, categoryKey: key, cycleStart: prev.start, cycleEnd: prev.end } });
+  
+  if (prevBal) {
+    const rem = Number(prevBal.remaining || 0);
+    const isCarryForward = !!catCfg.carryForward;
+    const rule = String(catCfg.unusedRule || 'lapse');
+    if (isCarryForward || rule === 'carry_forward') {
+      const cap = catCfg.carryLimitDays == null ? rem : Math.min(rem, Number(catCfg.carryLimitDays));
+      carry = cap;
+    }
+  }
+
+  const reqs = await LeaveRequest.findAll({
+    where: {
+      userId,
+      status: 'APPROVED',
+      categoryKey: key,
+      startDate: { [Op.gte]: start },
+      endDate: { [Op.lte]: end },
+    }
+  }).catch(() => []);
+
+  const totalWithCarry = total + carry;
+  const usedDays = Array.isArray(reqs) ? reqs.reduce((s, r) => s + (Number(r.days || 0) || 0), 0) : 0;
+  const used = Math.min(totalWithCarry, Math.max(0, usedDays));
+  const remaining = Math.max(0, totalWithCarry - used);
+
+  return { lb: null, total: totalWithCarry, used, remaining, start, end, cycle: cyc, carriedForward: carry };
+}
+
+const { FnFSetting, FnFSettlement } = require("../models");
+
+// Helper to get F&F Settings or defaults
+async function getFnFSettingsOrDefault(orgId) {
+  let settings = await FnFSetting.findOne({ where: { orgAccountId: orgId } });
+  if (!settings) {
+    settings = {
+      leaveBasis: 'basic_da',
+      leaveDivisor: 'calendar_month',
+      leaveMaxDays: null,
+      noticeBasis: 'gross',
+      noticeDivisor: 'calendar_month',
+      gratuityEnabled: true,
+      gratuityMinYears: 4.80,
+      gratuityDivisor: 26,
+      gratuityMultiplierDays: 15
+    };
+  }
+  return settings;
+}
+
+// 1. GET FnF settings
+router.get("/payroll/fnf/settings", async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res);
+    if (!orgId) return;
+
+    const settings = await FnFSetting.findOne({ where: { orgAccountId: orgId } });
+    return res.json({ 
+      success: true, 
+      data: settings || {
+        leaveBasis: 'basic_da',
+        leaveDivisor: 'calendar_month',
+        leaveMaxDays: null,
+        noticeBasis: 'gross',
+        noticeDivisor: 'calendar_month',
+        gratuityEnabled: true,
+        gratuityMinYears: 4.80,
+        gratuityDivisor: 26,
+        gratuityMultiplierDays: 15
+      } 
+    });
+  } catch (e) {
+    console.error("Error loading FnF settings:", e);
+    return res.status(500).json({ success: false, message: "Failed to load settings" });
+  }
+});
+
+// 2. POST FnF settings
+router.post("/payroll/fnf/settings", requireSettingsAccess, async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res);
+    if (!orgId) return;
+
+    const {
+      leaveBasis,
+      leaveDivisor,
+      leaveMaxDays,
+      noticeBasis,
+      noticeDivisor,
+      gratuityEnabled,
+      gratuityMinYears,
+      gratuityDivisor,
+      gratuityMultiplierDays
+    } = req.body;
+
+    let settings = await FnFSetting.findOne({ where: { orgAccountId: orgId } });
+    const payload = {
+      leaveBasis,
+      leaveDivisor,
+      leaveMaxDays: leaveMaxDays ? Number(leaveMaxDays) : null,
+      noticeBasis,
+      noticeDivisor,
+      gratuityEnabled: !!gratuityEnabled,
+      gratuityMinYears: Number(gratuityMinYears || 4.80),
+      gratuityDivisor: Number(gratuityDivisor || 26),
+      gratuityMultiplierDays: Number(gratuityMultiplierDays || 15)
+    };
+
+    if (settings) {
+      await settings.update(payload);
+    } else {
+      settings = await FnFSetting.create({
+        orgAccountId: orgId,
+        ...payload
+      });
+    }
+
+    return res.json({ success: true, message: "Settings saved successfully", data: settings });
+  } catch (e) {
+    console.error("Error saving FnF settings:", e);
+    return res.status(500).json({ success: false, message: "Failed to save settings" });
+  }
+});
+
+// 3. GET FnF settlements list
+router.get("/payroll/fnf", async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res);
+    if (!orgId) return;
+
+    const whereClause = { orgAccountId: orgId };
+    if (req.query.status) {
+      whereClause.status = req.query.status;
+    }
+
+    const rows = await FnFSettlement.findAll({
+      where: whereClause,
+      include: [
+        { model: User, as: "user", attributes: ["phone", "basicSalary", "grossSalary"], include: [{ association: "profile", attributes: ["name", "staffId", "designation", "department"] }] }
+      ],
+      order: [["id", "DESC"]]
+    });
+
+    return res.json({ success: true, data: rows });
+  } catch (e) {
+    console.error("Error loading settlements:", e);
+    return res.status(500).json({ success: false, message: "Failed to load settlements" });
+  }
+});
+
+// 4. GET eligible staff for FnF
+router.get("/payroll/fnf/eligible-staff", async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res);
+    if (!orgId) return;
+
+    const staff = await User.findAll({
+      where: { role: "staff", orgAccountId: orgId, active: true },
+      include: [{ association: "profile", attributes: ["name", "staffId"] }]
+    });
+
+    return res.json({ success: true, data: staff });
+  } catch (e) {
+    console.error("Error loading eligible staff:", e);
+    return res.status(500).json({ success: false, message: "Failed to load eligible staff" });
+  }
+});
+
+// 5. GET staff FnF details calculation parameters
+router.get("/payroll/fnf/staff-details/:userId", async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res);
+    if (!orgId) return;
+
+    const userId = Number(req.params.userId);
+    const u = await User.findOne({
+      where: { id: userId, orgAccountId: orgId, role: "staff" },
+      include: [
+        { association: "profile" },
+        { association: "salaryTemplate" }
+      ]
+    });
+
+    if (!u) {
+      return res.status(404).json({ success: false, message: "Staff member not found" });
+    }
+
+    const settings = await getFnFSettingsOrDefault(orgId);
+
+    // Profile details
+    const p = u.profile || {};
+    const joiningDate = p.dateOfJoining || p.date_of_joining || null;
+    const resignationDate = req.query.resignationDate || null;
+    const finalWorkingDate = req.query.finalWorkingDate || new Date().toISOString().split("T")[0];
+
+    // Get salary details — check salaryValues JSON first (same as payroll module),
+    // then fall back to direct user fields
+    let sv = {};
+    try {
+      sv = u.salaryValues
+        ? (typeof u.salaryValues === "string" ? JSON.parse(u.salaryValues) : u.salaryValues)
+        : {};
+    } catch (_) { sv = {}; }
+    const svE = (sv && typeof sv === "object" && sv.earnings && typeof sv.earnings === "object") ? sv.earnings : {};
+
+    // Sum all earnings from salaryValues to get gross
+    const svGross = Object.values(svE).reduce((sum, v) => sum + Number(v || 0), 0);
+
+    const basic = Number(u.basicSalary || 0) || Number(svE.basic_salary || svE.BASIC_SALARY || 0);
+    const da = Number(u.da || 0) || Number(svE.da || svE.DA || 0);
+    const basicDa = basic + da;
+    const gross = Number(u.grossSalary || 0) || Number(svE.gross_salary || svE.GROSS_SALARY || 0) || svGross || basicDa;
+
+    // 1. Notice period recovery
+    const noticeRequired = Number(req.query.noticeRequired || 0);
+    const noticeServed = Number(req.query.noticeServed || 0);
+    let noticeRecoveryAmount = 0;
+    let noticeGap = 0;
+    if (noticeServed < noticeRequired) {
+      noticeGap = noticeRequired - noticeServed;
+      const noticeBasisSalary = settings.noticeBasis === "gross" ? gross : (settings.noticeBasis === "basic" ? basic : basicDa);
+      let noticeDivisorVal = 30;
+      if (settings.noticeDivisor === "calendar_month") {
+        if (finalWorkingDate) {
+          const [y, m] = finalWorkingDate.split("-").map(Number);
+          noticeDivisorVal = new Date(y, m, 0).getDate();
+        } else {
+          noticeDivisorVal = 30;
+        }
+      } else {
+        noticeDivisorVal = Number(settings.noticeDivisor) || 30;
+      }
+      noticeRecoveryAmount = Math.round((noticeBasisSalary / noticeDivisorVal) * noticeGap * 100) / 100;
+    }
+
+    // 2. Leave encashment
+    let totalEligibleLeaves = 0;
+    const leavesBreakdown = [];
+    const tpl = await getActiveLeaveTemplateForUser(userId, finalWorkingDate);
+    const checkedCategories = new Set();
+
+    if (tpl && tpl.categories) {
+      for (const cat of tpl.categories) {
+        const key = String(cat.key).toLowerCase();
+        checkedCategories.add(key);
+        const effBal = await getEffectiveLeaveBalance(userId, key, finalWorkingDate);
+        if (effBal) {
+          const el = key === "el" || key === "earned leave" || key === "earned_leave" || key === "earned" || key === "cl" || key === "causal" || key === "casual";
+          const rem = Number(effBal.remaining || 0);
+          if (el && rem > 0) {
+            totalEligibleLeaves += rem;
+          }
+          leavesBreakdown.push({
+            categoryKey: cat.key,
+            remaining: rem,
+            eligible: el
+          });
+        }
+      }
+    }
+
+    const balances = await LeaveBalance.findAll({ where: { userId } });
+    for (const b of balances) {
+      const key = String(b.categoryKey).toLowerCase();
+      if (!checkedCategories.has(key)) {
+        checkedCategories.add(key);
+        const el = key === "el" || key === "earned leave" || key === "earned_leave" || key === "earned" || key === "cl" || key === "causal" || key === "casual";
+        const rem = Number(b.remaining || 0);
+        if (el && rem > 0) {
+          totalEligibleLeaves += rem;
+        }
+        leavesBreakdown.push({
+          categoryKey: b.categoryKey,
+          remaining: rem,
+          eligible: el
+        });
+      }
+    }
+
+    if (settings.leaveMaxDays !== null && settings.leaveMaxDays !== undefined && settings.leaveMaxDays > 0) {
+      if (totalEligibleLeaves > Number(settings.leaveMaxDays)) {
+        totalEligibleLeaves = Number(settings.leaveMaxDays);
+      }
+    }
+
+    const leaveBasisSalary = settings.leaveBasis === "gross" ? gross : (settings.leaveBasis === "basic" ? basic : basicDa);
+    let leaveDivisorVal = 30;
+    if (settings.leaveDivisor === "calendar_month") {
+      if (finalWorkingDate) {
+        const [y, m] = finalWorkingDate.split("-").map(Number);
+        leaveDivisorVal = new Date(y, m, 0).getDate();
+      } else {
+        leaveDivisorVal = 30;
+      }
+    } else {
+      leaveDivisorVal = Number(settings.leaveDivisor) || 30;
+    }
+    let leaveEncashmentAmount = Math.round((leaveBasisSalary / leaveDivisorVal) * totalEligibleLeaves * 100) / 100;
+
+    // 3. Gratuity estimation
+    let gratuityAmount = 0;
+    let tenureYears = 0;
+    if (joiningDate && finalWorkingDate) {
+      const diffTime = Math.abs(new Date(finalWorkingDate) - new Date(joiningDate));
+      tenureYears = diffTime / (1000 * 60 * 60 * 24 * 365.25);
+      if (settings.gratuityEnabled && tenureYears >= Number(settings.gratuityMinYears)) {
+        const basis = basicDa;
+        gratuityAmount = Math.round((basis / Number(settings.gratuityDivisor || 26)) * Number(settings.gratuityMultiplierDays || 15) * tenureYears * 100) / 100;
+      }
+    }
+
+    // 4. Prorated final month salary
+    let pendingSalaryAmount = 0;
+    let attendanceSummary = { present: 0, half: 0, leave: 0, paidLeave: 0, absent: 0, weeklyOff: 0, holidays: 0, payableDays: 0 };
+    if (finalWorkingDate) {
+      const [year, month] = finalWorkingDate.split("-").map(Number);
+      const startOfMonth = `${year}-${String(month).padStart(2, "0")}-01`;
+      const calendarDays = new Date(year, month, 0).getDate();
+
+      const { Attendance } = require("../models");
+      
+      const atts = await Attendance.findAll({
+        where: { userId, date: { [Op.gte]: startOfMonth, [Op.lte]: finalWorkingDate } }
+      });
+      const attMap = {};
+      atts.forEach(a => { attMap[String(a.date).slice(0, 10)] = String(a.status).toLowerCase(); });
+
+      for (let day = 1; day <= new Date(finalWorkingDate).getDate(); day++) {
+        const dtKey = `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+        const s = attMap[dtKey];
+        if (s === "present" || s === "overtime" || s === "work_from_home") {
+          attendanceSummary.present += 1;
+          attendanceSummary.payableDays += 1;
+        } else if (s === "half_day") {
+          attendanceSummary.half += 1;
+          attendanceSummary.payableDays += 0.5;
+        } else if (s === "leave") {
+          attendanceSummary.leave += 1;
+          attendanceSummary.payableDays += 1;
+        } else if (s === "weekly_off") {
+          attendanceSummary.weeklyOff += 1;
+          attendanceSummary.payableDays += 1;
+        } else if (s === "holiday") {
+          attendanceSummary.holidays += 1;
+          attendanceSummary.payableDays += 1;
+        } else {
+          attendanceSummary.absent += 1;
+        }
+      }
+
+      const salarySettingsRow = await AppSetting.findOne({
+        where: { key: "salary_settings", orgAccountId: orgId },
+      });
+      const salarySettings = salarySettingsRow?.value
+        ? JSON.parse(salarySettingsRow.value)
+        : getDefaultSalarySettings();
+      const salaryDivisorVal = computePayableDays(salarySettings, year, month);
+      const dailyRate = gross / (salaryDivisorVal || 30);
+      pendingSalaryAmount = Math.round(dailyRate * attendanceSummary.payableDays * 100) / 100;
+    }
+
+    // 5. Outstanding loans (from transactions table `loans`)
+    const { Loan } = require("../models");
+    const loanRows = await Loan.findAll({ where: { userId } });
+    let totalLoanAmt = 0, totalPaymentAmt = 0;
+    loanRows.forEach(r => {
+      if (r.type === 'payment') totalPaymentAmt += Number(r.amount || 0);
+      else totalLoanAmt += Number(r.amount || 0);
+    });
+    const outstandingLoan = Math.max(0, totalLoanAmt - totalPaymentAmt);
+
+    // 6. Pending advances
+    const pendingAdvances = await StaffAdvance.findAll({
+      where: { staffId: userId, status: "pending" }
+    });
+    const outstandingAdvance = pendingAdvances.reduce((sum, a) => sum + Number(a.amount || 0), 0);
+
+    // 7. Approved unpaid expenses
+    const approvedExpenses = await ExpenseClaim.findAll({
+      where: { userId, status: "approved" }
+    });
+    const outstandingExpense = approvedExpenses.reduce((sum, e) => sum + Number(e.approvedAmount || e.amount || 0), 0);
+
+    // 8. Pending unpaid previous monthly payroll lines
+    const unpaidPayrolls = await PayrollLine.findAll({
+      where: { userId, paidAt: { [Op.is]: null } },
+      include: [{ model: PayrollCycle, as: "cycle", attributes: ["monthKey"] }]
+    });
+
+    const pendingPayrollsList = unpaidPayrolls.map(l => {
+      let totalsObj = l.totals;
+      if (typeof totalsObj === "string") {
+        try { totalsObj = JSON.parse(totalsObj); } catch { totalsObj = {}; }
+      }
+      return {
+        lineId: l.id,
+        monthKey: l.cycle?.monthKey || "Unknown",
+        netSalary: Number(totalsObj?.netSalary || totalsObj?.net || l.paidAmount || 0)
+      };
+    });
+
+    const unpaidPayrollSalary = pendingPayrollsList.reduce((sum, p) => sum + p.netSalary, 0);
+
+    return res.json({
+      success: true,
+      data: {
+        staffInfo: {
+          id: u.id,
+          name: p.name || u.phone,
+          staffId: p.staffId || "—",
+          designation: p.designation || "—",
+          department: p.department || "—",
+          dateOfJoining: joiningDate,
+          basicSalary: basic,
+          daSalary: da,
+          grossSalary: gross
+        },
+        notice: {
+          gapDays: noticeGap,
+          recoveryAmount: noticeRecoveryAmount
+        },
+        leaves: {
+          remainingDays: totalEligibleLeaves,
+          encashmentAmount: leaveEncashmentAmount,
+          breakdown: leavesBreakdown
+        },
+        gratuity: {
+          tenureYears: Number(tenureYears.toFixed(2)),
+          gratuityAmount
+        },
+        salary: {
+          pendingSalaryAmount,
+          attendanceSummary
+        },
+        reconciliation: {
+          outstandingLoan,
+          outstandingAdvance,
+          outstandingExpense,
+          unpaidPayrollSalary,
+          pendingPayrollsList
+        }
+      }
+    });
+  } catch (e) {
+    console.error("Error computing FnF staff details:", e);
+    return res.status(500).json({ success: false, message: "Failed to load staff FnF details", error: e.message });
+  }
+});
+
+// 6. POST finalize FnF settlement
+router.post("/payroll/fnf/finalize", requireSettingsAccess, async (req, res) => {
+  const transaction = await sequelize.transaction();
+  try {
+    const orgId = requireOrg(req, res);
+    if (!orgId) return;
+
+    const {
+      userId,
+      resignationDate,
+      finalWorkingDate,
+      settlementDate,
+      noticeDaysRequired,
+      noticeDaysServed,
+      noticeRecoveryAmount,
+      leaveEncashmentDays,
+      leaveEncashmentAmount,
+      gratuityAmount,
+      pendingSalaryAmount,
+      loansDeductionAmount,
+      advancesDeductionAmount,
+      expenseReimbursementAmount,
+      otherEarnings,
+      otherDeductions,
+      totalEarnings,
+      totalDeductions,
+      netAmount,
+      remarks
+    } = req.body;
+
+    const u = await User.findOne({
+      where: { id: userId, orgAccountId: orgId },
+      include: [{ association: "profile" }]
+    });
+
+    if (!u) {
+      await transaction.rollback();
+      return res.status(404).json({ success: false, message: "User not found" });
+    }
+
+    // A. Create Settlement Record
+    const settlement = await FnFSettlement.create({
+      orgAccountId: orgId,
+      userId,
+      resignationDate,
+      finalWorkingDate,
+      settlementDate,
+      noticeDaysRequired: Number(noticeDaysRequired || 0),
+      noticeDaysServed: Number(noticeDaysServed || 0),
+      noticeRecoveryAmount: Number(noticeRecoveryAmount || 0),
+      leaveEncashmentDays: Number(leaveEncashmentDays || 0),
+      leaveEncashmentAmount: Number(leaveEncashmentAmount || 0),
+      gratuityAmount: Number(gratuityAmount || 0),
+      pendingSalaryAmount: Number(pendingSalaryAmount || 0),
+      loansDeductionAmount: Number(loansDeductionAmount || 0),
+      advancesDeductionAmount: Number(advancesDeductionAmount || 0),
+      expenseReimbursementAmount: Number(expenseReimbursementAmount || 0),
+      otherEarnings: otherEarnings || [],
+      otherDeductions: otherDeductions || [],
+      totalEarnings: Number(totalEarnings || 0),
+      totalDeductions: Number(totalDeductions || 0),
+      netAmount: Number(netAmount || 0),
+      status: "SETTLED",
+      remarks,
+      createdById: req.user?.id || null,
+      settledAt: new Date()
+    }, { transaction });
+
+    // B. Deactivate User
+    await u.update({ active: false }, { transaction });
+
+    // C. Reconcile Loans
+    const loanDeduct = Number(loansDeductionAmount || 0);
+    if (loanDeduct > 0) {
+      const { Loan } = require("../models");
+      await Loan.create({
+        userId,
+        orgAccountId: orgId,
+        date: settlementDate,
+        amount: loanDeduct,
+        type: 'payment',
+        description: `Settled via FnF (Settlement ID: ${settlement.id})`
+      }, { transaction });
+
+      // Also mark any active StaffLoan as completed if fully recovered
+      const staffLoans = await StaffLoan.findAll({ where: { staffId: userId, status: "active" } });
+      for (const loan of staffLoans) {
+        await loan.update({ status: "completed" }, { transaction });
+      }
+    }
+
+    // D. Reconcile Advances
+    const advDeduct = Number(advancesDeductionAmount || 0);
+    if (advDeduct > 0) {
+      const pendingAdvances = await StaffAdvance.findAll({
+        where: { staffId: userId, status: "pending" }
+      });
+      for (const adv of pendingAdvances) {
+        await adv.update({ status: "deducted", notes: `${adv.notes || ""}\nSettled via FnF (Settlement ID: ${settlement.id})` }, { transaction });
+      }
+    }
+
+    // E. Reconcile Expense Claims
+    const expReimb = Number(expenseReimbursementAmount || 0);
+    if (expReimb > 0) {
+      const approvedExpenses = await ExpenseClaim.findAll({
+        where: { userId, status: "approved" }
+      });
+      for (const exp of approvedExpenses) {
+        await exp.update({ status: "settled", settledAt: new Date() }, { transaction });
+      }
+    }
+
+    // F. Reconcile Pending Unpaid Payrolls
+    const unpaidPayrolls = await PayrollLine.findAll({
+      where: { userId, paidAt: { [Op.is]: null } }
+    });
+    for (const line of unpaidPayrolls) {
+      let netVal = 0;
+      try {
+        let t = line.totals;
+        if (typeof t === "string") t = JSON.parse(t);
+        netVal = Number(t?.netSalary || t?.net || line.paidAmount || 0);
+      } catch (_) {}
+
+      await line.update({
+        paidAt: new Date(),
+        paidAmount: netVal,
+        paidMode: "FNF_SETTLEMENT",
+        paidRef: `FNF-${settlement.id}`,
+        paidBy: req.user?.id || null,
+        remarks: `${line.remarks || ""}\nSettled via FnF (Settlement ID: ${settlement.id})`
+      }, { transaction });
+    }
+
+    await transaction.commit();
+
+    // G. Generate PDF Statement
+    try {
+      const pdfDir = path.join(process.cwd(), "uploads", "payslips");
+      if (!fs.existsSync(pdfDir)) {
+        fs.mkdirSync(pdfDir, { recursive: true });
+      }
+      const pdfPath = path.join(pdfDir, `fnf-${settlement.id}.pdf`);
+      
+      const { generateFnFStatementPDF } = require("../services/payrollService");
+      
+      const p = u.profile || {};
+      const pdfData = {
+        settlementId: settlement.id,
+        employeeName: p.name || u.phone,
+        employeeId: p.staffId || u.id,
+        designation: p.designation || "—",
+        department: p.department || "—",
+        dateOfJoining: p.dateOfJoining || p.date_of_joining || "—",
+        finalWorkingDate: settlement.finalWorkingDate,
+        resignationDate: settlement.resignationDate || "—",
+        settlementDate: settlement.settlementDate,
+        noticeDaysRequired: settlement.noticeDaysRequired,
+        noticeDaysServed: settlement.noticeDaysServed,
+        noticeRecoveryAmount: settlement.noticeRecoveryAmount,
+        leaveEncashmentDays: settlement.leaveEncashmentDays,
+        leaveEncashmentAmount: settlement.leaveEncashmentAmount,
+        gratuityAmount: settlement.gratuityAmount,
+        pendingSalaryAmount: settlement.pendingSalaryAmount,
+        loansDeductionAmount: settlement.loansDeductionAmount,
+        advancesDeductionAmount: settlement.advancesDeductionAmount,
+        expenseReimbursementAmount: settlement.expenseReimbursementAmount,
+        otherEarnings: settlement.otherEarnings || [],
+        otherDeductions: settlement.otherDeductions || [],
+        totalEarnings: settlement.totalEarnings,
+        totalDeductions: settlement.totalDeductions,
+        netAmount: settlement.netAmount,
+        remarks: settlement.remarks || "—",
+        orgName: req.user?.orgAccount?.name || "Thinktech Software"
+      };
+
+      await generateFnFStatementPDF(pdfData, pdfPath);
+      await settlement.update({ payslipPath: `/uploads/payslips/fnf-${settlement.id}.pdf` });
+    } catch (pdfErr) {
+      console.error("PDF generation failed, but transaction saved:", pdfErr);
+    }
+
+    return res.json({ success: true, message: "Settlement finalized successfully", data: settlement });
+  } catch (e) {
+    await transaction.rollback();
+    console.error("Error finalizing FnF settlement:", e);
+    return res.status(500).json({ success: false, message: "Failed to finalize settlement", error: e.message });
+  }
+});
+
+// 7. POST record FnF payment details
+router.post("/payroll/fnf/:id/pay", requireSettingsAccess, async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res);
+    if (!orgId) return;
+
+    const id = Number(req.params.id);
+    const { paymentMode, referenceNumber, remarks } = req.body;
+
+    const settlement = await FnFSettlement.findOne({
+      where: { id, orgAccountId: orgId }
+    });
+
+    if (!settlement) {
+      return res.status(404).json({ success: false, message: "Settlement not found" });
+    }
+
+    const payDetail = {
+      paymentMode: paymentMode || "Bank Transfer",
+      referenceNumber: referenceNumber || "—",
+      paidAt: new Date()
+    };
+
+    await settlement.update({
+      status: "PAID",
+      paymentDetails: [payDetail],
+      remarks: remarks || settlement.remarks
+    });
+
+    return res.json({ success: true, message: "Payment recorded successfully", data: settlement });
+  } catch (e) {
+    console.error("Error recording payment:", e);
+    return res.status(500).json({ success: false, message: "Failed to record payment" });
+  }
+});
+
+// 8. GET stream FnF PDF statement
+router.get("/payroll/fnf/:id/pdf", async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res);
+    if (!orgId) return;
+
+    const id = Number(req.params.id);
+    const settlement = await FnFSettlement.findOne({
+      where: { id, orgAccountId: orgId }
+    });
+
+    if (!settlement || !settlement.payslipPath) {
+      return res.status(404).json({ success: false, message: "PDF not found" });
+    }
+
+    const fullPath = path.join(process.cwd(), settlement.payslipPath);
+    if (!fs.existsSync(fullPath)) {
+      return res.status(404).json({ success: false, message: "PDF file does not exist on disk" });
+    }
+
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader("Content-Disposition", `attachment; filename=fnf-${id}.pdf`);
+    return res.sendFile(fullPath);
+  } catch (e) {
+    console.error("Error streaming PDF:", e);
+    return res.status(500).json({ success: false, message: "Failed to download PDF" });
+  }
+});
 
 module.exports = router;

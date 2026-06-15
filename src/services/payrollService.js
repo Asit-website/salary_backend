@@ -1482,6 +1482,216 @@ async function generatePayslipPDF(data, savePath = null) {
   return pdfBuffer;
 }
 
+async function generateFnFStatementPDF(data, savePath = null) {
+  const browser = await puppeteer.launch({
+    headless: 'new',
+    args: ['--no-sandbox', '--disable-setuid-sandbox']
+  });
+  const page = await browser.newPage();
+
+  const {
+    settlementId,
+    employeeName,
+    employeeId,
+    designation,
+    department,
+    dateOfJoining,
+    finalWorkingDate,
+    resignationDate,
+    settlementDate,
+    noticeDaysRequired,
+    noticeDaysServed,
+    noticeRecoveryAmount,
+    leaveEncashmentDays,
+    leaveEncashmentAmount,
+    gratuityAmount,
+    pendingSalaryAmount,
+    loansDeductionAmount,
+    advancesDeductionAmount,
+    expenseReimbursementAmount,
+    otherEarnings,
+    otherDeductions,
+    totalEarnings,
+    totalDeductions,
+    netAmount,
+    remarks,
+    orgName
+  } = data;
+
+  const fmt = (n) => Number(n || 0).toLocaleString('en-IN', { minimumFractionDigits: 0, maximumFractionDigits: 0 });
+  const dateFmt = (d) => d && d !== '—' ? new Date(d).toLocaleDateString('en-IN') : '—';
+
+  // Earnings Rows
+  const earningItems = [];
+  if (pendingSalaryAmount > 0) earningItems.push(`<tr><td>FINAL MONTH PRORATED SALARY</td><td class="text-right">${fmt(pendingSalaryAmount)}</td></tr>`);
+  if (leaveEncashmentAmount > 0) earningItems.push(`<tr><td>LEAVE ENCASHMENT (${leaveEncashmentDays} days)</td><td class="text-right">${fmt(leaveEncashmentAmount)}</td></tr>`);
+  if (gratuityAmount > 0) earningItems.push(`<tr><td>GRATUITY PAYOUT</td><td class="text-right">${fmt(gratuityAmount)}</td></tr>`);
+  if (expenseReimbursementAmount > 0) earningItems.push(`<tr><td>EXPENSE REIMBURSEMENT</td><td class="text-right">${fmt(expenseReimbursementAmount)}</td></tr>`);
+  
+  (otherEarnings || []).forEach(e => {
+    earningItems.push(`<tr><td>${String(e.label).toUpperCase()}</td><td class="text-right">${fmt(e.amount)}</td></tr>`);
+  });
+
+  // Deductions Rows
+  const deductionItems = [];
+  if (noticeRecoveryAmount > 0) deductionItems.push(`<tr><td>NOTICE PERIOD RECOVERY</td><td class="text-right">${fmt(noticeRecoveryAmount)}</td></tr>`);
+  if (loansDeductionAmount > 0) deductionItems.push(`<tr><td>LOAN RECOVERY</td><td class="text-right">${fmt(loansDeductionAmount)}</td></tr>`);
+  if (advancesDeductionAmount > 0) deductionItems.push(`<tr><td>ADVANCE DEDUCTION</td><td class="text-right">${fmt(advancesDeductionAmount)}</td></tr>`);
+
+  (otherDeductions || []).forEach(d => {
+    deductionItems.push(`<tr><td>${String(d.label).toUpperCase()}</td><td class="text-right">${fmt(d.amount)}</td></tr>`);
+  });
+
+  const earningRows = earningItems.join('') || '<tr><td>No Earnings</td><td class="text-right">0</td></tr>';
+  const deductionRows = deductionItems.join('') || '<tr><td>No Deductions</td><td class="text-right">0</td></tr>';
+
+  const html = `
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <title>Full & Final Settlement Statement</title>
+      <style>
+        body { font-family: Helvetica, Arial, sans-serif; padding: 40px; color: #1e293b; max-width: 800px; margin: 0 auto; line-height: 1.5; }
+        .header { text-align: center; margin-bottom: 30px; border-bottom: 2px solid #3b82f6; padding-bottom: 15px; }
+        .company-name { font-size: 20px; font-weight: bold; color: #1e3a8a; margin-bottom: 5px; text-transform: uppercase; }
+        .doc-title { font-size: 14px; color: #64748b; font-weight: 600; letter-spacing: 0.5px; }
+        
+        .grid-header { display: flex; justify-content: space-between; margin-bottom: 25px; border-bottom: 1px solid #e2e8f0; padding-bottom: 15px; font-size: 11px; }
+        .info-col { width: 48%; }
+        .info-row { margin-bottom: 6px; display: flex; }
+        .info-label { width: 150px; font-weight: bold; color: #475569; }
+        .info-val { flex: 1; color: #0f172a; }
+        
+        .tables-container { display: flex; gap: 20px; margin-bottom: 25px; }
+        .table-box { flex: 1; }
+        
+        table { width: 100%; border-collapse: collapse; font-size: 11px; }
+        th { text-align: left; font-weight: bold; background-color: #f8fafc; border-bottom: 2px solid #cbd5e1; padding: 8px; color: #334155; }
+        td { padding: 8px; border-bottom: 1px solid #f1f5f9; color: #334155; }
+        .text-right { text-align: right; }
+        .amount-col { width: 80px; }
+        
+        .total-row td { font-weight: bold; border-top: 2px solid #cbd5e1; padding-top: 8px; color: #0f172a; }
+        
+        .net-pay-container { text-align: center; margin-top: 25px; margin-bottom: 35px; border: 1px solid #93c5fd; background-color: #eff6ff; border-radius: 8px; padding: 15px; }
+        .net-pay-label { font-size: 12px; color: #1e40af; font-weight: bold; margin-bottom: 4px; }
+        .net-pay { font-size: 18px; font-weight: 900; color: #1d4ed8; }
+        
+        .remarks-container { font-size: 11px; background-color: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 12px; margin-bottom: 35px; }
+        .remarks-title { font-weight: bold; color: #475569; margin-bottom: 4px; }
+        
+        .signatures { display: flex; justify-content: space-between; margin-top: 60px; font-size: 11px; }
+        .sig-box { width: 220px; text-align: center; }
+        .sig-line { border-top: 1px solid #94a3b8; margin-top: 45px; padding-top: 6px; color: #475569; }
+        
+        .footer { margin-top: 40px; text-align: center; font-size: 9px; color: #94a3b8; border-top: 1px solid #f1f5f9; padding-top: 15px; }
+      </style>
+    </head>
+    <body>
+      <div class="header">
+        <div class="company-name">${orgName}</div>
+        <div class="doc-title">FULL & FINAL SETTLEMENT STATEMENT</div>
+      </div>
+
+      <div class="grid-header">
+        <div class="info-col">
+          <div class="info-row"><span class="info-label">Employee Name:</span> <span class="info-val">${employeeName}</span></div>
+          <div class="info-row"><span class="info-label">Employee ID:</span> <span class="info-val">${employeeId}</span></div>
+          <div class="info-row"><span class="info-label">Designation:</span> <span class="info-val">${designation}</span></div>
+          <div class="info-row"><span class="info-label">Department:</span> <span class="info-val">${department}</span></div>
+        </div>
+        <div class="info-col">
+          <div class="info-row"><span class="info-label">Date of Joining:</span> <span class="info-val">${dateFmt(dateOfJoining)}</span></div>
+          <div class="info-row"><span class="info-label">Resignation Date:</span> <span class="info-val">${dateFmt(resignationDate)}</span></div>
+          <div class="info-row"><span class="info-label">Last Working Day:</span> <span class="info-val">${dateFmt(finalWorkingDate)}</span></div>
+          <div class="info-row"><span class="info-label">Settlement Date:</span> <span class="info-val">${dateFmt(settlementDate)}</span></div>
+        </div>
+      </div>
+
+      <div class="tables-container">
+        <div class="table-box">
+          <table>
+            <thead>
+              <tr>
+                <th>EARNINGS & PAYOUTS</th>
+                <th class="text-right amount-col">AMOUNT (₹)</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${earningRows}
+            </tbody>
+            <tfoot>
+              <tr class="total-row">
+                <td>Total Earnings (A)</td>
+                <td class="text-right">${fmt(totalEarnings)}</td>
+              </tr>
+            </tfoot>
+          </table>
+        </div>
+        
+        <div class="table-box">
+          <table>
+            <thead>
+              <tr>
+                <th>DEDUCTIONS & RECOVERIES</th>
+                <th class="text-right amount-col">AMOUNT (₹)</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${deductionRows}
+            </tbody>
+             <tfoot>
+              <tr class="total-row">
+                <td>Total Deductions (B)</td>
+                <td class="text-right">${fmt(totalDeductions)}</td>
+              </tr>
+            </tfoot>
+          </table>
+        </div>
+      </div>
+
+      <div class="net-pay-container">
+        <div class="net-pay-label">NET SETTLEMENT PAYABLE (A - B)</div>
+        <div class="net-pay">INR ${fmt(netAmount)}</div>
+      </div>
+
+      ${remarks && remarks !== '—' ? `
+      <div class="remarks-container">
+        <div class="remarks-title">Remarks:</div>
+        <div>${remarks}</div>
+      </div>
+      ` : ''}
+
+      <div class="signatures">
+        <div class="sig-box">
+          <div class="sig-line">Employee Signature</div>
+        </div>
+        <div class="sig-box">
+          <div class="sig-line">Authorized Signatory</div>
+        </div>
+      </div>
+
+      <div class="footer">
+        Settlement Statement ID: FNF-${settlementId} | Generated on ${new Date().toLocaleString('en-IN')} <br>
+        This is a computer generated document and does not require physical signature.
+      </div>
+    </body>
+    </html>
+  `;
+
+  await page.setContent(html, { waitUntil: 'networkidle0' });
+  const pdfBuffer = await page.pdf({ format: 'A4', printBackground: true });
+  await browser.close();
+
+  if (savePath) {
+    const dir = path.dirname(savePath);
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(savePath, pdfBuffer);
+  }
+
+  return pdfBuffer;
+}
+
 module.exports = {
   calculateSalary,
   computeOvertimeMeta,
@@ -1489,5 +1699,6 @@ module.exports = {
   computeEarlyExitMeta,
   computeBreakMeta,
   computeLatePenaltyMeta,
-  generatePayslipPDF
+  generatePayslipPDF,
+  generateFnFStatementPDF
 };
