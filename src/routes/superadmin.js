@@ -1210,26 +1210,175 @@ router.get('/client/:id/staff-count', async (req, res) => {
 const { runSubscriptionExpiryCheck } = require('../jobs');
 
 // Superadmin Dashboard metrics
-router.get('/dashboard', async (_req, res) => {
+router.get('/dashboard', async (req, res) => {
   try {
     const now = new Date();
     const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
     const startOfYear = new Date(now.getFullYear(), 0, 1);
 
-    const orgs = await OrgAccount.findAll();
-    let active = 0, disabled = 0, suspended = 0, expired = 0;
-    for (const org of orgs) {
-      if (org.status === 'ACTIVE') active += 1;
-      else if (org.status === 'DISABLED') disabled += 1;
-      else if (org.status === 'SUSPENDED') suspended += 1;
-      try {
-        const sub = await Subscription.findOne({ where: { orgAccountId: org.id, status: 'ACTIVE' }, order: [['endAt', 'DESC']] });
-        if (!sub || new Date(sub.endAt) < now) expired += 1;
-      } catch (_) { }
+    const user = req.user;
+    let where = {};
+
+    if (user.role !== 'superadmin') {
+      const perms = user.permissions || {};
+      if (perms.clients === 'manage_own') {
+        where = { createdBy: user.id };
+      } else if (perms.clients === 'manage_selected') {
+        const selectedIds = Array.isArray(perms.selectedClients) ? perms.selectedClients : [];
+        where = { id: { [Op.in]: selectedIds } };
+      }
     }
 
-    const subsMonth = await Subscription.findAll({ where: { startAt: { [Op.gte]: startOfMonth } }, include: [{ model: Plan, as: 'plan' }] });
-    const subsYear = await Subscription.findAll({ where: { startAt: { [Op.gte]: startOfYear } }, include: [{ model: Plan, as: 'plan' }] });
+    const { User, Subscription, Plan, ChannelPartner, Permission, Role } = require('../models');
+    const geoPermission = await Permission.findOne({ where: { name: 'geolocation_access' } });
+    const allOrgs = await OrgAccount.findAll({
+      where,
+      include: [{
+        model: User,
+        as: 'creator',
+        attributes: ['id', 'role', 'orgAccountId']
+      }],
+      order: [['createdAt', 'ASC']]
+    });
+
+    // Group organizations by Root Owner Phone to identify parent/children
+    const rootGroups = {}; // rootPhone -> OrgAccount[]
+    const userToRootPhone = {}; // userId -> rootPhone
+
+    for (const org of allOrgs) {
+      let rootPhone = org.phone;
+
+      // 1. If creator is known, try to find their root phone
+      if (org.createdBy && !userToRootPhone[org.createdBy]) {
+        try {
+          const creator = await User.findByPk(org.createdBy);
+          if (creator) {
+            // Find the oldest admin record for this person's phone
+            const firstAdmin = await User.findOne({ 
+              where: { phone: creator.phone, role: 'admin' }, 
+              order: [['id', 'ASC']] 
+            });
+            if (firstAdmin) {
+              const rootOrg = await OrgAccount.findByPk(firstAdmin.orgAccountId);
+              if (rootOrg) rootPhone = rootOrg.phone;
+            }
+          }
+          userToRootPhone[org.createdBy] = rootPhone;
+        } catch (e) { console.error('Grouping logic error:', e); }
+      } else if (org.createdBy) {
+        rootPhone = userToRootPhone[org.createdBy];
+      }
+
+      // 2. Cross-link via Admin Phone (if phone itself is an admin in another org)
+      if (rootPhone) {
+        const adminCheck = await User.findOne({ 
+          where: { phone: rootPhone, role: 'admin' }, 
+          order: [['id', 'ASC']] 
+        });
+        if (adminCheck && adminCheck.orgAccountId) {
+           const adminOrg = await OrgAccount.findByPk(adminCheck.orgAccountId);
+           if (adminOrg && adminOrg.phone) rootPhone = adminOrg.phone;
+        }
+      }
+
+      // Fallback: If no root phone found yet, use current org phone
+      const groupKey = rootPhone || `no-identity-${org.id}`;
+
+      if (!rootGroups[groupKey]) rootGroups[groupKey] = [];
+      rootGroups[groupKey].push(org);
+    }
+
+    const parentOrgs = [];
+    let active = 0, disabled = 0, suspended = 0, expired = 0;
+    let totalUsers = 0, attendancePayrollUsers = 0, taskUsers = 0, geoSalesUsers = 0;
+
+    for (const ph in rootGroups) {
+      const groupOrgs = rootGroups[ph];
+      const parentOrg = groupOrgs[0]; // Oldest is the parent
+      parentOrgs.push(parentOrg);
+      const linkedOrgIds = groupOrgs.map(o => o.id);
+
+      // Get Effective Subscription from Parent
+      const effectiveSub = await Subscription.findOne({
+        where: { orgAccountId: parentOrg.id, status: 'ACTIVE' },
+        order: [['endAt', 'DESC'], ['updatedAt', 'DESC']],
+        include: [{ model: Plan, as: 'plan' }]
+      });
+
+      // Update Parent Org status based on sub
+      const shouldBeActive = !!(effectiveSub && new Date(effectiveSub.endAt) >= now);
+      const targetStatus = shouldBeActive ? 'ACTIVE' : 'DISABLED';
+      if (parentOrg.status !== targetStatus && parentOrg.status !== 'SUSPENDED') {
+        await parentOrg.update({ status: targetStatus });
+      }
+
+      // Read status
+      if (parentOrg.status === 'ACTIVE') active += 1;
+      else if (parentOrg.status === 'DISABLED') disabled += 1;
+      else if (parentOrg.status === 'SUSPENDED') suspended += 1;
+
+      if (!effectiveSub || new Date(effectiveSub.endAt) < now) expired += 1;
+
+      // Count active staff in this parent group
+      const groupStaffCount = await User.count({
+        where: {
+          role: 'staff',
+          active: true,
+          orgAccountId: { [Op.in]: linkedOrgIds }
+        }
+      });
+
+      // Count geolocation staff in this parent group
+      let groupGeoStaffCount = 0;
+      if (geoPermission) {
+        groupGeoStaffCount = await User.count({
+          where: {
+            role: 'staff',
+            active: true,
+            orgAccountId: { [Op.in]: linkedOrgIds }
+          },
+          include: [{
+            model: Role,
+            as: 'roles',
+            required: true,
+            include: [{
+              model: Permission,
+              as: 'permissions',
+              where: { id: geoPermission.id },
+              required: true
+            }]
+          }]
+        });
+      }
+
+      totalUsers += groupStaffCount;
+      geoSalesUsers += groupGeoStaffCount;
+
+      const isPayroll = !!(effectiveSub && (effectiveSub.payrollEnabled || effectiveSub.plan?.payrollEnabled));
+      const isTask = !!(effectiveSub && (effectiveSub.taskManagementEnabled || effectiveSub.plan?.taskManagementEnabled));
+
+      if (isPayroll) attendancePayrollUsers += groupStaffCount;
+      if (isTask) taskUsers += groupStaffCount;
+    }
+
+    const parentOrgIds = parentOrgs.map(o => o.id);
+
+    const subsMonth = await Subscription.findAll({
+      where: {
+        orgAccountId: { [Op.in]: parentOrgIds },
+        startAt: { [Op.gte]: startOfMonth }
+      },
+      include: [{ model: Plan, as: 'plan' }]
+    });
+
+    const subsYear = await Subscription.findAll({
+      where: {
+        orgAccountId: { [Op.in]: parentOrgIds },
+        startAt: { [Op.gte]: startOfYear }
+      },
+      include: [{ model: Plan, as: 'plan' }]
+    });
+
     const sumPrice = (rows) => rows.reduce((s, r) => s + Number(r.plan?.price || 0), 0);
     const revenue = { month: sumPrice(subsMonth), year: sumPrice(subsYear) };
 
@@ -1237,12 +1386,29 @@ router.get('/dashboard', async (_req, res) => {
     for (let i = 11; i >= 0; i--) {
       const from = new Date(now.getFullYear(), now.getMonth() - i, 1);
       const to = new Date(now.getFullYear(), now.getMonth() - i + 1, 1);
-      const count = orgs.filter(o => new Date(o.createdAt) >= from && new Date(o.createdAt) < to).length;
+      const count = parentOrgs.filter(o => new Date(o.createdAt) >= from && new Date(o.createdAt) < to).length;
       growth.push({ month: `${from.getFullYear()}-${String(from.getMonth() + 1).padStart(2, '0')}`, clients: count });
     }
 
-    return res.json({ success: true, counts: { active, disabled, suspended, expired }, revenue, growth });
+    let partnerWhere = {};
+    if (user.role !== 'superadmin') {
+      const perms = user.permissions || {};
+      if (perms.partners === 'manage_own') {
+        partnerWhere = { createdBy: user.id };
+      }
+    }
+    const channelPartners = await ChannelPartner.count({ where: partnerWhere });
+
+    const userMetrics = {
+      totalUsers,
+      attendancePayrollUsers,
+      taskUsers,
+      geoSalesUsers
+    };
+
+    return res.json({ success: true, counts: { active, disabled, suspended, expired, channelPartners }, userMetrics, revenue, growth });
   } catch (e) {
+    console.error('Dashboard calculation error:', e);
     return res.status(500).json({ success: false, message: 'Failed to load dashboard' });
   }
 });

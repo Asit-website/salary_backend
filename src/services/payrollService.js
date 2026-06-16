@@ -1521,6 +1521,27 @@ async function generateFnFStatementPDF(data, savePath = null) {
   const fmt = (n) => Number(n || 0).toLocaleString('en-IN', { minimumFractionDigits: 0, maximumFractionDigits: 0 });
   const dateFmt = (d) => d && d !== '—' ? new Date(d).toLocaleDateString('en-IN') : '—';
 
+  // Safely parse otherEarnings and otherDeductions which might be JSON strings or arrays
+  let parsedEarnings = [];
+  try {
+    parsedEarnings = otherEarnings
+      ? (typeof otherEarnings === 'string' ? JSON.parse(otherEarnings) : otherEarnings)
+      : [];
+  } catch (_) {
+    parsedEarnings = [];
+  }
+  if (!Array.isArray(parsedEarnings)) parsedEarnings = [];
+
+  let parsedDeductions = [];
+  try {
+    parsedDeductions = otherDeductions
+      ? (typeof otherDeductions === 'string' ? JSON.parse(otherDeductions) : otherDeductions)
+      : [];
+  } catch (_) {
+    parsedDeductions = [];
+  }
+  if (!Array.isArray(parsedDeductions)) parsedDeductions = [];
+
   // Earnings Rows
   const earningItems = [];
   if (pendingSalaryAmount > 0) earningItems.push(`<tr><td>FINAL MONTH PRORATED SALARY</td><td class="text-right">${fmt(pendingSalaryAmount)}</td></tr>`);
@@ -1528,8 +1549,8 @@ async function generateFnFStatementPDF(data, savePath = null) {
   if (gratuityAmount > 0) earningItems.push(`<tr><td>GRATUITY PAYOUT</td><td class="text-right">${fmt(gratuityAmount)}</td></tr>`);
   if (expenseReimbursementAmount > 0) earningItems.push(`<tr><td>EXPENSE REIMBURSEMENT</td><td class="text-right">${fmt(expenseReimbursementAmount)}</td></tr>`);
   
-  (otherEarnings || []).forEach(e => {
-    earningItems.push(`<tr><td>${String(e.label).toUpperCase()}</td><td class="text-right">${fmt(e.amount)}</td></tr>`);
+  parsedEarnings.forEach(e => {
+    earningItems.push(`<tr><td>${String(e.label || '').toUpperCase()}</td><td class="text-right">${fmt(e.amount)}</td></tr>`);
   });
 
   // Deductions Rows
@@ -1538,8 +1559,8 @@ async function generateFnFStatementPDF(data, savePath = null) {
   if (loansDeductionAmount > 0) deductionItems.push(`<tr><td>LOAN RECOVERY</td><td class="text-right">${fmt(loansDeductionAmount)}</td></tr>`);
   if (advancesDeductionAmount > 0) deductionItems.push(`<tr><td>ADVANCE DEDUCTION</td><td class="text-right">${fmt(advancesDeductionAmount)}</td></tr>`);
 
-  (otherDeductions || []).forEach(d => {
-    deductionItems.push(`<tr><td>${String(d.label).toUpperCase()}</td><td class="text-right">${fmt(d.amount)}</td></tr>`);
+  parsedDeductions.forEach(d => {
+    deductionItems.push(`<tr><td>${String(d.label || '').toUpperCase()}</td><td class="text-right">${fmt(d.amount)}</td></tr>`);
   });
 
   const earningRows = earningItems.join('') || '<tr><td>No Earnings</td><td class="text-right">0</td></tr>';

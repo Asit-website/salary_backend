@@ -33772,6 +33772,92 @@ router.get("/payroll/fnf/staff-details/:userId", async (req, res) => {
   }
 });
 
+async function executeSettlementSideEffects(settlement, u, orgId, userId, req, transaction) {
+  // B. Deactivate User
+  await u.update({ active: false }, { transaction });
+
+  // C. Reconcile Loans
+  const loanDeduct = Number(settlement.loansDeductionAmount || 0);
+  const { Loan, ExpenseClaim } = require("../models");
+  const existingLoanPayment = await Loan.findOne({
+    where: {
+      userId,
+      orgAccountId: orgId,
+      description: `Settled via FnF (Settlement ID: ${settlement.id})`
+    }
+  });
+
+  if (loanDeduct > 0) {
+    if (!existingLoanPayment) {
+      await Loan.create({
+        userId,
+        orgAccountId: orgId,
+        date: settlement.settlementDate,
+        amount: loanDeduct,
+        type: 'payment',
+        description: `Settled via FnF (Settlement ID: ${settlement.id})`
+      }, { transaction });
+    } else {
+      await existingLoanPayment.update({
+        amount: loanDeduct,
+        date: settlement.settlementDate
+      }, { transaction });
+    }
+
+    // Also mark any active StaffLoan as completed if fully recovered
+    const staffLoans = await StaffLoan.findAll({ where: { staffId: userId, status: "active" } });
+    for (const loan of staffLoans) {
+      await loan.update({ status: "completed" }, { transaction });
+    }
+  } else if (existingLoanPayment) {
+    await existingLoanPayment.destroy({ transaction });
+  }
+
+  // D. Reconcile Advances
+  const advDeduct = Number(settlement.advancesDeductionAmount || 0);
+  if (advDeduct > 0) {
+    const pendingAdvances = await StaffAdvance.findAll({
+      where: { staffId: userId, status: "pending" }
+    });
+    for (const adv of pendingAdvances) {
+      await adv.update({ status: "deducted", notes: `${adv.notes || ""}\nSettled via FnF (Settlement ID: ${settlement.id})` }, { transaction });
+    }
+  }
+
+  // E. Reconcile Expense Claims
+  const expReimb = Number(settlement.expenseReimbursementAmount || 0);
+  if (expReimb > 0) {
+    const approvedExpenses = await ExpenseClaim.findAll({
+      where: { userId, status: "approved" }
+    });
+    for (const exp of approvedExpenses) {
+      await exp.update({ status: "settled", settledAt: new Date() }, { transaction });
+    }
+  }
+
+  // F. Reconcile Pending Unpaid Payrolls
+  const unpaidPayrolls = await PayrollLine.findAll({
+    where: { userId, paidAt: { [Op.is]: null } }
+  });
+  for (const line of unpaidPayrolls) {
+    let netVal = 0;
+    try {
+      let t = line.totals;
+      if (typeof t === "string") t = JSON.parse(t);
+      netVal = Number(t?.netSalary || t?.net || line.paidAmount || 0);
+    } catch (_) {}
+
+    await line.update({
+      paidAt: new Date(),
+      paidAmount: netVal,
+      paidMode: "FNF_SETTLEMENT",
+      paidRef: `FNF-${settlement.id}`,
+      paidBy: req.user?.id || null,
+      remarks: `${line.remarks || ""}\nSettled via FnF (Settlement ID: ${settlement.id})`
+    }, { transaction });
+  }
+}
+
 // 6. POST finalize FnF settlement
 router.post("/payroll/fnf/finalize", requireSettingsAccess, async (req, res) => {
   const transaction = await sequelize.transaction();
@@ -33780,6 +33866,7 @@ router.post("/payroll/fnf/finalize", requireSettingsAccess, async (req, res) => 
     if (!orgId) return;
 
     const {
+      id,
       userId,
       resignationDate,
       finalWorkingDate,
@@ -33799,6 +33886,7 @@ router.post("/payroll/fnf/finalize", requireSettingsAccess, async (req, res) => 
       totalEarnings,
       totalDeductions,
       netAmount,
+      status,
       remarks
     } = req.body;
 
@@ -33812,99 +33900,76 @@ router.post("/payroll/fnf/finalize", requireSettingsAccess, async (req, res) => 
       return res.status(404).json({ success: false, message: "User not found" });
     }
 
-    // A. Create Settlement Record
-    const settlement = await FnFSettlement.create({
-      orgAccountId: orgId,
-      userId,
-      resignationDate,
-      finalWorkingDate,
-      settlementDate,
-      noticeDaysRequired: Number(noticeDaysRequired || 0),
-      noticeDaysServed: Number(noticeDaysServed || 0),
-      noticeRecoveryAmount: Number(noticeRecoveryAmount || 0),
-      leaveEncashmentDays: Number(leaveEncashmentDays || 0),
-      leaveEncashmentAmount: Number(leaveEncashmentAmount || 0),
-      gratuityAmount: Number(gratuityAmount || 0),
-      pendingSalaryAmount: Number(pendingSalaryAmount || 0),
-      loansDeductionAmount: Number(loansDeductionAmount || 0),
-      advancesDeductionAmount: Number(advancesDeductionAmount || 0),
-      expenseReimbursementAmount: Number(expenseReimbursementAmount || 0),
-      otherEarnings: otherEarnings || [],
-      otherDeductions: otherDeductions || [],
-      totalEarnings: Number(totalEarnings || 0),
-      totalDeductions: Number(totalDeductions || 0),
-      netAmount: Number(netAmount || 0),
-      status: "SETTLED",
-      remarks,
-      createdById: req.user?.id || null,
-      settledAt: new Date()
-    }, { transaction });
+    let settlement;
+    if (id) {
+      settlement = await FnFSettlement.findOne({
+        where: { id, orgAccountId: orgId, userId }
+      });
+      if (settlement) {
+        if (settlement.status === 'PAID') {
+          await transaction.rollback();
+          return res.status(400).json({ success: false, message: "Cannot edit a paid settlement" });
+        }
+        await settlement.update({
+          resignationDate,
+          finalWorkingDate,
+          settlementDate,
+          noticeDaysRequired: Number(noticeDaysRequired || 0),
+          noticeDaysServed: Number(noticeDaysServed || 0),
+          noticeRecoveryAmount: Number(noticeRecoveryAmount || 0),
+          leaveEncashmentDays: Number(leaveEncashmentDays || 0),
+          leaveEncashmentAmount: Number(leaveEncashmentAmount || 0),
+          gratuityAmount: Number(gratuityAmount || 0),
+          pendingSalaryAmount: Number(pendingSalaryAmount || 0),
+          loansDeductionAmount: Number(loansDeductionAmount || 0),
+          advancesDeductionAmount: Number(advancesDeductionAmount || 0),
+          expenseReimbursementAmount: Number(expenseReimbursementAmount || 0),
+          otherEarnings: otherEarnings || [],
+          otherDeductions: otherDeductions || [],
+          totalEarnings: Number(totalEarnings || 0),
+          totalDeductions: Number(totalDeductions || 0),
+          netAmount: Number(netAmount || 0),
+          status: status || settlement.status || "DRAFT",
+          remarks,
+          updatedById: req.user?.id || null,
+          settledAt: new Date()
+        }, { transaction });
+      }
+    }
 
-    // B. Deactivate User
-    await u.update({ active: false }, { transaction });
-
-    // C. Reconcile Loans
-    const loanDeduct = Number(loansDeductionAmount || 0);
-    if (loanDeduct > 0) {
-      const { Loan } = require("../models");
-      await Loan.create({
-        userId,
+    if (!settlement) {
+      // A. Create Settlement Record
+      settlement = await FnFSettlement.create({
         orgAccountId: orgId,
-        date: settlementDate,
-        amount: loanDeduct,
-        type: 'payment',
-        description: `Settled via FnF (Settlement ID: ${settlement.id})`
+        userId,
+        resignationDate,
+        finalWorkingDate,
+        settlementDate,
+        noticeDaysRequired: Number(noticeDaysRequired || 0),
+        noticeDaysServed: Number(noticeDaysServed || 0),
+        noticeRecoveryAmount: Number(noticeRecoveryAmount || 0),
+        leaveEncashmentDays: Number(leaveEncashmentDays || 0),
+        leaveEncashmentAmount: Number(leaveEncashmentAmount || 0),
+        gratuityAmount: Number(gratuityAmount || 0),
+        pendingSalaryAmount: Number(pendingSalaryAmount || 0),
+        loansDeductionAmount: Number(loansDeductionAmount || 0),
+        advancesDeductionAmount: Number(advancesDeductionAmount || 0),
+        expenseReimbursementAmount: Number(expenseReimbursementAmount || 0),
+        otherEarnings: otherEarnings || [],
+        otherDeductions: otherDeductions || [],
+        totalEarnings: Number(totalEarnings || 0),
+        totalDeductions: Number(totalDeductions || 0),
+        netAmount: Number(netAmount || 0),
+        status: status || "DRAFT",
+        remarks,
+        createdById: req.user?.id || null,
+        settledAt: new Date()
       }, { transaction });
-
-      // Also mark any active StaffLoan as completed if fully recovered
-      const staffLoans = await StaffLoan.findAll({ where: { staffId: userId, status: "active" } });
-      for (const loan of staffLoans) {
-        await loan.update({ status: "completed" }, { transaction });
-      }
     }
 
-    // D. Reconcile Advances
-    const advDeduct = Number(advancesDeductionAmount || 0);
-    if (advDeduct > 0) {
-      const pendingAdvances = await StaffAdvance.findAll({
-        where: { staffId: userId, status: "pending" }
-      });
-      for (const adv of pendingAdvances) {
-        await adv.update({ status: "deducted", notes: `${adv.notes || ""}\nSettled via FnF (Settlement ID: ${settlement.id})` }, { transaction });
-      }
-    }
-
-    // E. Reconcile Expense Claims
-    const expReimb = Number(expenseReimbursementAmount || 0);
-    if (expReimb > 0) {
-      const approvedExpenses = await ExpenseClaim.findAll({
-        where: { userId, status: "approved" }
-      });
-      for (const exp of approvedExpenses) {
-        await exp.update({ status: "settled", settledAt: new Date() }, { transaction });
-      }
-    }
-
-    // F. Reconcile Pending Unpaid Payrolls
-    const unpaidPayrolls = await PayrollLine.findAll({
-      where: { userId, paidAt: { [Op.is]: null } }
-    });
-    for (const line of unpaidPayrolls) {
-      let netVal = 0;
-      try {
-        let t = line.totals;
-        if (typeof t === "string") t = JSON.parse(t);
-        netVal = Number(t?.netSalary || t?.net || line.paidAmount || 0);
-      } catch (_) {}
-
-      await line.update({
-        paidAt: new Date(),
-        paidAmount: netVal,
-        paidMode: "FNF_SETTLEMENT",
-        paidRef: `FNF-${settlement.id}`,
-        paidBy: req.user?.id || null,
-        remarks: `${line.remarks || ""}\nSettled via FnF (Settlement ID: ${settlement.id})`
-      }, { transaction });
+    // Run side-effects ONLY if status is SETTLED
+    if (settlement.status === "SETTLED") {
+      await executeSettlementSideEffects(settlement, u, orgId, userId, req, transaction);
     }
 
     await transaction.commit();
@@ -33960,6 +34025,103 @@ router.post("/payroll/fnf/finalize", requireSettingsAccess, async (req, res) => 
     await transaction.rollback();
     console.error("Error finalizing FnF settlement:", e);
     return res.status(500).json({ success: false, message: "Failed to finalize settlement", error: e.message });
+  }
+});
+
+// POST settle FnF settlement (moves status from DRAFT to SETTLED and runs side-effects)
+router.post("/payroll/fnf/:id/settle", requireSettingsAccess, async (req, res) => {
+  const transaction = await sequelize.transaction();
+  try {
+    const orgId = requireOrg(req, res);
+    if (!orgId) return;
+
+    const id = Number(req.params.id);
+    const settlement = await FnFSettlement.findOne({
+      where: { id, orgAccountId: orgId }
+    });
+
+    if (!settlement) {
+      await transaction.rollback();
+      return res.status(404).json({ success: false, message: "Settlement not found" });
+    }
+
+    if (settlement.status !== "DRAFT") {
+      await transaction.rollback();
+      return res.status(400).json({ success: false, message: `Settlement cannot be settled from status ${settlement.status}` });
+    }
+
+    const u = await User.findOne({
+      where: { id: settlement.userId, orgAccountId: orgId },
+      include: [{ association: "profile" }]
+    });
+
+    if (!u) {
+      await transaction.rollback();
+      return res.status(404).json({ success: false, message: "User not found" });
+    }
+
+    // A. Update Status to SETTLED
+    await settlement.update({
+      status: "SETTLED",
+      settledAt: new Date()
+    }, { transaction });
+
+    // B. Run side-effects
+    await executeSettlementSideEffects(settlement, u, orgId, settlement.userId, req, transaction);
+
+    await transaction.commit();
+
+    // C. Re-generate PDF Statement
+    try {
+      const pdfDir = path.join(process.cwd(), "uploads", "payslips");
+      if (!fs.existsSync(pdfDir)) {
+        fs.mkdirSync(pdfDir, { recursive: true });
+      }
+      const pdfPath = path.join(pdfDir, `fnf-${settlement.id}.pdf`);
+      
+      const { generateFnFStatementPDF } = require("../services/payrollService");
+      
+      const p = u.profile || {};
+      const pdfData = {
+        settlementId: settlement.id,
+        employeeName: p.name || u.phone,
+        employeeId: p.staffId || u.id,
+        designation: p.designation || "—",
+        department: p.department || "—",
+        dateOfJoining: p.dateOfJoining || p.date_of_joining || "—",
+        finalWorkingDate: settlement.finalWorkingDate,
+        resignationDate: settlement.resignationDate || "—",
+        settlementDate: settlement.settlementDate,
+        noticeDaysRequired: settlement.noticeDaysRequired,
+        noticeDaysServed: settlement.noticeDaysServed,
+        noticeRecoveryAmount: settlement.noticeRecoveryAmount,
+        leaveEncashmentDays: settlement.leaveEncashmentDays,
+        leaveEncashmentAmount: settlement.leaveEncashmentAmount,
+        gratuityAmount: settlement.gratuityAmount,
+        pendingSalaryAmount: settlement.pendingSalaryAmount,
+        loansDeductionAmount: settlement.loansDeductionAmount,
+        advancesDeductionAmount: settlement.advancesDeductionAmount,
+        expenseReimbursementAmount: settlement.expenseReimbursementAmount,
+        otherEarnings: settlement.otherEarnings || [],
+        otherDeductions: settlement.otherDeductions || [],
+        totalEarnings: settlement.totalEarnings,
+        totalDeductions: settlement.totalDeductions,
+        netAmount: settlement.netAmount,
+        remarks: settlement.remarks || "—",
+        orgName: req.user?.orgAccount?.name || "Thinktech Software"
+      };
+
+      await generateFnFStatementPDF(pdfData, pdfPath);
+      await settlement.update({ payslipPath: `/uploads/payslips/fnf-${settlement.id}.pdf` });
+    } catch (pdfErr) {
+      console.error("PDF generation failed, but transaction saved:", pdfErr);
+    }
+
+    return res.json({ success: true, message: "Settlement finalized and settled successfully", data: settlement });
+  } catch (e) {
+    await transaction.rollback();
+    console.error("Error settling FnF:", e);
+    return res.status(500).json({ success: false, message: "Failed to settle FnF", error: e.message });
   }
 });
 

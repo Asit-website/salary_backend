@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
-const { MailCampaign, MailQueue, OrgAccount, sequelize } = require('../models');
+const { Op } = require('sequelize');
+const { MailCampaign, MailQueue, OrgAccount, Lead, sequelize } = require('../models');
 const { tenantEnforce } = require('../middleware/tenant');
 const multer = require('multer');
 const ExcelJS = require('exceljs');
@@ -69,14 +70,65 @@ router.post('/campaign', upload.single('attachment'), async (req, res) => {
     let recipients = [];
 
     if (recipientType === 'all_clients') {
-      // Fetch all active client business emails and names
-      const clients = await OrgAccount.findAll({
-        attributes: ['businessEmail', 'businessName'],
-        where: { status: 'ACTIVE' }
-      });
+      let selected = req.body.selectedClients;
+      if (typeof selected === 'string') {
+        try {
+          selected = JSON.parse(selected);
+        } catch (_) {
+          selected = [];
+        }
+      }
+      if (!Array.isArray(selected)) selected = [];
+
+      let clients = [];
+      if (selected.includes('ALL_CLIENTS') || selected.length === 0) {
+        // Fetch all active client business emails and names
+        clients = await OrgAccount.findAll({
+          attributes: ['businessEmail', 'businessName'],
+          where: { status: 'ACTIVE' }
+        });
+      } else {
+        // Fetch only selected active client business emails and names
+        clients = await OrgAccount.findAll({
+          where: {
+            businessEmail: { [Op.in]: selected },
+            status: 'ACTIVE'
+          },
+          attributes: ['businessEmail', 'businessName']
+        });
+      }
+
       recipients = clients
         .filter(c => !!c.businessEmail && c.businessEmail.includes('@'))
         .map(c => ({ email: c.businessEmail, name: c.businessName }));
+    } else if (recipientType === 'leads') {
+      let selected = req.body.selectedLeads;
+      if (typeof selected === 'string') {
+        try {
+          selected = JSON.parse(selected);
+        } catch (_) {
+          selected = [];
+        }
+      }
+      if (!Array.isArray(selected)) selected = [];
+
+      let leads = [];
+      if (selected.includes('ALL_LEADS') || selected.length === 0) {
+        // Fetch all leads
+        leads = await Lead.findAll({
+          attributes: ['email', 'personName', 'companyName']
+        });
+      } else {
+        // Fetch only selected leads
+        leads = await Lead.findAll({
+          where: { email: { [Op.in]: selected } },
+          attributes: ['email', 'personName', 'companyName']
+        });
+      }
+
+      recipients = leads
+        .filter(l => !!l.email && l.email.includes('@'))
+        .map(l => ({ email: l.email, name: l.personName || l.companyName }));
     } else if (recipientType === 'custom') {
       let emails = customEmails;
       if (typeof emails === 'string') {
