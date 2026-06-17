@@ -3,6 +3,8 @@ const dayjs = require("dayjs");
 const { formatDate, todayKey } = require("../utils/dateUtils");
 const { logAudit } = require("../utils/auditLogger");
 
+const mockPayments = new Map();
+
 const bcrypt = require("bcryptjs");
 
 const exceljs = require("exceljs");
@@ -198,6 +200,319 @@ async function requireSettingsAccess(req, res, next) {
     });
   }
 }
+
+// GET mock sandbox payment page (supports both hyphen and underscore, bypasses authRequired)
+const handleMockPgCheckout = (req, res) => {
+  const link_id = req.query.link_id || req.query.linkId;
+  if (!link_id) {
+    return res.status(400).send("link_id is required");
+  }
+  const mockPayment = mockPayments.get(link_id);
+  if (!mockPayment) {
+    return res.status(404).send("Mock payment transaction not found or expired");
+  }
+  const amount = mockPayment.amount;
+
+  const html = `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Cashfree Sandbox Payment Simulation</title>
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg-gradient: linear-gradient(135deg, #0f172a 0%, #1e1b4b 100%);
+      --card-bg: rgba(30, 41, 59, 0.7);
+      --card-border: rgba(255, 255, 255, 0.08);
+      --text-main: #f8fafc;
+      --text-muted: #94a3b8;
+      --primary: #6366f1;
+      --primary-hover: #4f46e5;
+      --success: #10b981;
+      --success-hover: #059669;
+      --error: #ef4444;
+      --error-hover: #dc2626;
+    }
+    
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+      font-family: 'Outfit', sans-serif;
+    }
+    
+    body {
+      background: var(--bg-gradient);
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: var(--text-main);
+      padding: 20px;
+    }
+    
+    .checkout-container {
+      width: 100%;
+      max-width: 480px;
+      background: var(--card-bg);
+      border: 1px solid var(--card-border);
+      backdrop-filter: blur(16px);
+      border-radius: 24px;
+      padding: 40px 32px;
+      box-shadow: 0 20px 40px rgba(0, 0, 0, 0.3);
+      text-align: center;
+    }
+    
+    .logo-container {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 12px;
+      margin-bottom: 32px;
+    }
+    
+    .cashfree-badge {
+      background: rgba(99, 102, 241, 0.15);
+      color: var(--primary);
+      padding: 6px 12px;
+      border-radius: 50px;
+      font-size: 13px;
+      font-weight: 600;
+      letter-spacing: 0.05em;
+      border: 1px solid rgba(99, 102, 241, 0.2);
+    }
+    
+    .sandbox-tag {
+      background: rgba(245, 158, 11, 0.15);
+      color: #f59e0b;
+      padding: 6px 12px;
+      border-radius: 50px;
+      font-size: 13px;
+      font-weight: 600;
+      letter-spacing: 0.05em;
+      border: 1px solid rgba(245, 158, 11, 0.2);
+    }
+    
+    .amount-display {
+      margin-bottom: 24px;
+    }
+    
+    .amount-label {
+      font-size: 14px;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+      margin-bottom: 8px;
+    }
+    
+    .amount-value {
+      font-size: 42px;
+      font-weight: 700;
+      color: var(--text-main);
+      letter-spacing: -0.02em;
+    }
+    
+    .details-table {
+      width: 100%;
+      background: rgba(15, 23, 42, 0.4);
+      border-radius: 16px;
+      padding: 16px;
+      margin-bottom: 32px;
+      text-align: left;
+      border: 1px solid var(--card-border);
+    }
+    
+    .detail-row {
+      display: flex;
+      justify-content: space-between;
+      margin-bottom: 12px;
+      font-size: 14px;
+    }
+    
+    .detail-row:last-child {
+      margin-bottom: 0;
+    }
+    
+    .detail-label {
+      color: var(--text-muted);
+    }
+    
+    .detail-value {
+      font-weight: 500;
+      color: var(--text-main);
+    }
+    
+    .btn {
+      width: 100%;
+      padding: 16px;
+      border-radius: 14px;
+      font-size: 16px;
+      font-weight: 600;
+      border: none;
+      cursor: pointer;
+      transition: all 0.2s ease;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 10px;
+      margin-bottom: 16px;
+    }
+    
+    .btn-success {
+      background: var(--success);
+      color: white;
+      box-shadow: 0 4px 14px rgba(16, 185, 129, 0.3);
+    }
+    
+    .btn-success:hover {
+      background: var(--success-hover);
+      transform: translateY(-1px);
+    }
+    
+    .btn-error {
+      background: rgba(239, 68, 68, 0.1);
+      color: var(--error);
+      border: 1px solid rgba(239, 68, 68, 0.2);
+    }
+    
+    .btn-error:hover {
+      background: rgba(239, 68, 68, 0.15);
+      border-color: var(--error);
+    }
+    
+    .loading-spinner {
+      width: 20px;
+      height: 20px;
+      border: 2px solid rgba(255, 255, 255, 0.3);
+      border-radius: 50%;
+      border-top-color: white;
+      animation: spin 0.8s linear infinite;
+      display: none;
+    }
+    
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
+    
+    .footer-note {
+      font-size: 12px;
+      color: var(--text-muted);
+      margin-top: 24px;
+      line-height: 1.5;
+    }
+  </style>
+</head>
+<body>
+  <div class="checkout-container">
+    <div class="logo-container">
+      <span class="cashfree-badge">CASHFREE</span>
+      <span class="sandbox-tag">SANDBOX</span>
+    </div>
+    
+    <div class="amount-display">
+      <div class="amount-label">Payment Amount</div>
+      <div class="amount-value">₹${amount.toLocaleString('en-IN', { minimumFractionDigits: 2 })}</div>
+    </div>
+    
+    <div class="details-table">
+      <div class="detail-row">
+        <span class="detail-label">Order ID</span>
+        <span class="detail-value">${link_id}</span>
+      </div>
+      <div class="detail-row">
+        <span class="detail-label">Gateway Mode</span>
+        <span class="detail-value">Mock Sandbox Simulator</span>
+      </div>
+      <div class="detail-row">
+        <span class="detail-label">Status</span>
+        <span class="detail-value" style="color: #f59e0b;">Awaiting Payment</span>
+      </div>
+    </div>
+    
+    <button class="btn btn-success" id="paySuccessBtn" onclick="handlePayment('PAID')">
+      <div class="loading-spinner" id="spinner"></div>
+      <span>Simulate Success Payment</span>
+    </button>
+    
+    <button class="btn btn-error" onclick="handlePayment('FAILED')">
+      Cancel & Return
+    </button>
+    
+    <p class="footer-note">
+      This is a secure local simulation sandbox. No real money will be charged. Clicking simulate will redirect you back to Vetansutra with the payment result.
+    </p>
+  </div>
+
+  <script>
+    async function handlePayment(status) {
+      if (status === 'FAILED') {
+        window.location.href = 'http://localhost:3000/settings/payout-wallet?link_id=${link_id}&status=FAILED';
+        return;
+      }
+      
+      const btn = document.getElementById('paySuccessBtn');
+      const spinner = document.getElementById('spinner');
+      btn.disabled = true;
+      spinner.style.display = 'block';
+      
+      try {
+        const currentPath = window.location.pathname;
+        const payUrl = currentPath.endsWith('/') ? currentPath + 'pay' : currentPath + '/pay';
+        const response = await fetch(payUrl, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({
+            linkId: '${link_id}',
+            status: 'PAID'
+          })
+        });
+        
+        const data = await response.json();
+        if (data.success) {
+          window.location.href = 'http://localhost:3000/settings/payout-wallet?link_id=${link_id}';
+        } else {
+          alert('Failed to simulate payment: ' + (data.message || 'Unknown error'));
+          btn.disabled = false;
+          spinner.style.display = 'none';
+        }
+      } catch (err) {
+        alert('Connection error: ' + err.message);
+        btn.disabled = false;
+        spinner.style.display = 'none';
+      }
+    }
+  </script>
+</body>
+</html>`;
+  res.send(html);
+};
+
+router.get("/mock-pg-checkout", handleMockPgCheckout);
+router.get("/mock_pg_checkout", handleMockPgCheckout);
+
+const handleMockPgCheckoutPay = async (req, res) => {
+  try {
+    const { linkId, status } = req.body;
+    if (!linkId) {
+      return res.status(400).json({ success: false, message: "Link ID is required" });
+    }
+    const mockPayment = mockPayments.get(linkId);
+    if (!mockPayment) {
+      return res.status(404).json({ success: false, message: "Mock transaction not found" });
+    }
+    mockPayment.status = status || "PAID";
+    mockPayments.set(linkId, mockPayment);
+    return res.json({ success: true, message: "Payment simulated successfully" });
+  } catch (err) {
+    return res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+router.post("/mock-pg-checkout/pay", handleMockPgCheckoutPay);
+router.post("/mock_pg_checkout/pay", handleMockPgCheckoutPay);
 
 router.use(authRequired);
 
@@ -34190,4 +34505,1022 @@ router.get("/payroll/fnf/:id/pdf", async (req, res) => {
   }
 });
 
+// Payout Payroll Bank Configuration Defaults
+const defaultPayoutBankConfigs = [
+  {
+    id: "layout_generic_neft",
+    name: "Generic NEFT Template",
+    mappings: [
+      { fieldName: "employeeName", headerName: "Beneficiary Name" },
+      { fieldName: "bankAccountNumber", headerName: "Beneficiary Account Number" },
+      { fieldName: "bankIfsc", headerName: "Beneficiary IFSC" },
+      { fieldName: "netSalary", headerName: "Amount" },
+      { fieldName: "reference", headerName: "Reference" }
+    ]
+  },
+  {
+    id: "layout_axis_salary",
+    name: "Axis Salary Upload Template",
+    mappings: [
+      { fieldName: "staffId", headerName: "Employee ID" },
+      { fieldName: "bankAccountNumber", headerName: "Account No" },
+      { fieldName: "bankIfsc", headerName: "IFSC" },
+      { fieldName: "netSalary", headerName: "Net Salary" }
+    ]
+  },
+  {
+    id: "layout_hdfc_salary",
+    name: "HDFC Salary File Template",
+    mappings: [
+      { fieldName: "bankAccountNumber", headerName: "Beneficiary Account Number" },
+      { fieldName: "netSalary", headerName: "Amount" },
+      { fieldName: "employeeName", headerName: "Beneficiary Name" },
+      { fieldName: "bankIfsc", headerName: "Beneficiary IFSC" }
+    ]
+  },
+  {
+    id: "layout_icici_salary",
+    name: "ICICI Salary File Template",
+    mappings: [
+      { fieldName: "staffId", headerName: "Employee ID" },
+      { fieldName: "employeeName", headerName: "Beneficiary Name" },
+      { fieldName: "bankAccountNumber", headerName: "Beneficiary Account Number" },
+      { fieldName: "bankIfsc", headerName: "Beneficiary IFSC" },
+      { fieldName: "netSalary", headerName: "Amount" }
+    ]
+  },
+  {
+    id: "layout_sbi_salary",
+    name: "SBI Salary File Template",
+    mappings: [
+      { fieldName: "bankAccountNumber", headerName: "Beneficiary Account Number" },
+      { fieldName: "netSalary", headerName: "Amount" },
+      { fieldName: "employeeName", headerName: "Beneficiary Name" },
+      { fieldName: "bankIfsc", headerName: "Beneficiary IFSC" }
+    ]
+  }
+];
+
+// 9. GET payout bank configurations
+router.get("/settings/payout-bank-config", async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res);
+    if (!orgId) return;
+
+    const { OrgAccount } = require("../models");
+    const org = await OrgAccount.findByPk(orgId);
+    if (!org) {
+      return res.status(404).json({ success: false, message: "Organization not found" });
+    }
+
+    let extra = org.extra;
+    if (typeof extra === "string") {
+      try {
+        extra = JSON.parse(extra);
+      } catch (e) {
+        extra = {};
+      }
+    }
+    extra = extra || {};
+
+    let configs = extra.payoutBankConfigs;
+    if (!configs || !Array.isArray(configs) || configs.length === 0) {
+      configs = defaultPayoutBankConfigs;
+    }
+
+    return res.json({ success: true, configs });
+  } catch (e) {
+    console.error("Failed to load payout configurations", e);
+    return res.status(500).json({ success: false, message: "Failed to load payout configurations" });
+  }
+});
+
+// 10. PUT payout bank configurations
+router.put("/settings/payout-bank-config", async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res);
+    if (!orgId) return;
+
+    const { configs } = req.body;
+    if (!configs || !Array.isArray(configs)) {
+      return res.status(400).json({ success: false, message: "Invalid payload: configs must be an array" });
+    }
+
+    const { OrgAccount } = require("../models");
+    const org = await OrgAccount.findByPk(orgId);
+    if (!org) {
+      return res.status(404).json({ success: false, message: "Organization not found" });
+    }
+
+    let extra = org.extra;
+    if (typeof extra === "string") {
+      try {
+        extra = JSON.parse(extra);
+      } catch (e) {
+        extra = {};
+      }
+    }
+    extra = extra || {};
+
+    extra.payoutBankConfigs = configs;
+    await org.update({ extra });
+
+    return res.json({ success: true, message: "Configurations saved successfully", configs });
+  } catch (e) {
+    console.error("Failed to save payout configurations", e);
+    return res.status(500).json({ success: false, message: "Failed to save payout configurations" });
+  }
+});
+
+// 11. GET stream payout bank file
+router.get("/payroll/:cycleId/export-bank-file", async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res);
+    if (!orgId) return;
+
+    const { layoutId, bypassValidation } = req.query;
+    if (!layoutId) {
+      return res.status(400).json({ success: false, message: "Missing layoutId parameter" });
+    }
+
+    const {
+      PayrollCycle,
+      PayrollLine,
+      User,
+      StaffProfile,
+      OrgAccount
+    } = require("../models");
+
+    const id = Number(req.params.cycleId);
+    const cycle = await PayrollCycle.findOne({
+      where: { id, orgAccountId: orgId },
+    });
+
+    if (!cycle) {
+      return res.status(404).json({ success: false, message: "Cycle not found" });
+    }
+
+    const org = await OrgAccount.findByPk(orgId);
+    if (!org) {
+      return res.status(404).json({ success: false, message: "Organization not found" });
+    }
+
+    let extra = org.extra;
+    if (typeof extra === "string") {
+      try {
+        extra = JSON.parse(extra);
+      } catch (e) {
+        extra = {};
+      }
+    }
+    extra = extra || {};
+
+    let configs = extra.payoutBankConfigs;
+    if (!configs || !Array.isArray(configs) || configs.length === 0) {
+      configs = defaultPayoutBankConfigs;
+    }
+
+    const config = configs.find(c => c.id === layoutId);
+    if (!config) {
+      return res.status(404).json({ success: false, message: "Selected bank layout configuration not found" });
+    }
+
+    const mappings = config.mappings || [];
+    if (mappings.length === 0) {
+      return res.status(400).json({ success: false, message: "Selected bank layout has no columns configured" });
+    }
+
+    const lines = await PayrollLine.findAll({ where: { cycleId: id, status: "INCLUDED" } });
+    if (lines.length === 0) {
+      return res.status(400).json({ success: false, message: "No payroll lines included in this cycle" });
+    }
+
+    const userIds = [...new Set(lines.map((l) => l.userId))];
+    const users = await User.findAll({
+      where: { id: userIds },
+      include: [{ model: StaffProfile, as: "profile" }],
+    });
+
+    const userMap = new Map(
+      users.map((u) => [
+        u.id,
+        {
+          name: u.profile?.name || u.phone || `User ${u.id}`,
+          staffId: u.profile?.staffId || "",
+          bankAccountNumber: u.profile?.bankAccountNumber || "",
+          bankIfsc: u.profile?.bankIfsc || "",
+        },
+      ]),
+    );
+
+    if (bypassValidation !== "true") {
+      const errors = [];
+      for (const line of lines) {
+        const u = userMap.get(line.userId);
+        if (!u) continue;
+
+        let totals = line.totals;
+        if (typeof totals === "string") {
+          try { totals = JSON.parse(totals); } catch (e) { totals = {}; }
+        }
+        totals = totals || {};
+
+        const netPay = Number(totals.netSalary || 0);
+        if (netPay <= 0) continue; // Skip zero payout
+
+        const requiresAccount = mappings.some(m => m.fieldName === "bankAccountNumber");
+        const requiresIfsc = mappings.some(m => m.fieldName === "bankIfsc");
+        const requiresName = mappings.some(m => m.fieldName === "employeeName");
+
+        if (requiresAccount && !u.bankAccountNumber) {
+          errors.push(`${u.name}: Missing bank account number`);
+        }
+        if (requiresIfsc && !u.bankIfsc) {
+          errors.push(`${u.name}: Missing bank IFSC`);
+        } else if (requiresIfsc && u.bankIfsc.length !== 11) {
+          errors.push(`${u.name}: Invalid IFSC code (must be 11 characters)`);
+        }
+        if (requiresName && !u.name) {
+          errors.push(`${u.name}: Missing name`);
+        }
+      }
+
+      if (errors.length > 0) {
+        return res.status(400).json({ success: false, errors });
+      }
+    }
+
+    const workbook = new exceljs.Workbook();
+    const worksheet = workbook.addWorksheet(config.name || "Payout List");
+
+    const headerLabels = mappings.map(m => m.headerName || "");
+    const headerRow = worksheet.addRow(headerLabels);
+    headerRow.font = { bold: true };
+    headerRow.eachCell((cell) => {
+      cell.fill = {
+        type: "pattern",
+        pattern: "solid",
+        fgColor: { argb: "FFE2E8F0" },
+      };
+      cell.border = {
+        top: { style: "thin" },
+        left: { style: "thin" },
+        bottom: { style: "thin" },
+        right: { style: "thin" },
+      };
+    });
+
+    let refIndex = 1;
+    for (const line of lines) {
+      const u = userMap.get(line.userId);
+      if (!u) continue;
+
+      let totals = line.totals;
+      if (typeof totals === "string") {
+        try { totals = JSON.parse(totals); } catch (e) { totals = {}; }
+      }
+      totals = totals || {};
+
+      const netPay = Number(totals.netSalary || 0);
+      if (netPay <= 0) continue;
+
+      const rowValues = [];
+      for (const m of mappings) {
+        let val = "";
+        switch (m.fieldName) {
+          case "employeeName":
+            val = u.name;
+            break;
+          case "staffId":
+            val = u.staffId;
+            break;
+          case "bankAccountNumber":
+            val = u.bankAccountNumber;
+            break;
+          case "bankIfsc":
+            val = u.bankIfsc;
+            break;
+          case "netSalary":
+            val = netPay;
+            break;
+          case "reference":
+            val = `PAYROLL${String(cycle.monthKey).replace("-", "")}${String(refIndex).padStart(3, "0")}`;
+            break;
+          case "customConstant":
+            val = m.customValue || "";
+            break;
+          default:
+            val = "";
+        }
+        rowValues.push(val);
+      }
+      refIndex++;
+
+      const r = worksheet.addRow(rowValues);
+      r.eachCell((cell, colNumber) => {
+        cell.border = {
+          top: { style: "thin" },
+          left: { style: "thin" },
+          bottom: { style: "thin" },
+          right: { style: "thin" },
+        };
+        const mapping = mappings[colNumber - 1];
+        if (mapping && mapping.fieldName === "netSalary") {
+          cell.numFmt = "0.00";
+        }
+      });
+    }
+
+    worksheet.columns.forEach((col, idx) => {
+      let maxLen = 0;
+      const colHeader = headerLabels[idx];
+      if (colHeader) maxLen = colHeader.length + 5;
+      col.width = Math.min(30, Math.max(15, maxLen));
+    });
+
+    const safeName = String(config.name || "payout").replace(/[^a-zA-Z0-9]/g, "-").toLowerCase();
+    res.setHeader(
+      "Content-Type",
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    );
+    res.setHeader(
+      "Content-Disposition",
+      `attachment; filename=payout-${safeName}-${cycle.monthKey}.xlsx`,
+    );
+
+    await workbook.xlsx.write(res);
+    res.end();
+  } catch (e) {
+    console.error("Failed to export bank file", e);
+    return res.status(500).json({ success: false, message: "Failed to export bank file: " + e.message });
+  }
+});
+
+// --- Payout Cashfree & Wallet System ---
+const axios = require("axios");
+const crypto = require("crypto");
+
+// Default Cashfree Sandbox Payout credentials
+const DEFAULT_CASHFREE_CLIENT_ID = "CF10526614D8JDQ6IQ0A0C73AQOKV0";
+const DEFAULT_CASHFREE_CLIENT_SECRET = "cfsk_ma_test_cf9a002212abeba9ab57b6062687a1f7_d4a1910a";
+
+function getCashfreeKeys() {
+  return {
+    clientId: process.env.CASHFREE_CLIENT_ID || DEFAULT_CASHFREE_CLIENT_ID,
+    clientSecret: process.env.CASHFREE_CLIENT_SECRET || DEFAULT_CASHFREE_CLIENT_SECRET
+  };
+}
+
+function getCashfreePGKeys() {
+  return {
+    clientId: process.env.CASHFREE_PG_CLIENT_ID || process.env.CASHFREE_CLIENT_ID || DEFAULT_CASHFREE_CLIENT_ID,
+    clientSecret: process.env.CASHFREE_PG_CLIENT_SECRET || process.env.CASHFREE_CLIENT_SECRET || DEFAULT_CASHFREE_CLIENT_SECRET
+  };
+}
+
+// const axios = require("axios");
+
+async function getCashfreePayoutToken(clientId, clientSecret) {
+  try {
+    const cId = clientId || DEFAULT_CASHFREE_CLIENT_ID;
+    const cSecret = clientSecret || DEFAULT_CASHFREE_CLIENT_SECRET;
+
+    console.log("Cashfree Client ID:", cId);
+
+    const response = await axios.post(
+      "https://payout-gamma.cashfree.com/payout/v1/authorize",
+      {},
+      {
+        headers: {
+          "X-Client-Id": cId,
+          "X-Client-Secret": cSecret,
+          "Content-Type": "application/json"
+        }
+      }
+    );
+
+    console.log(
+      "Cashfree Authorize Response:",
+      JSON.stringify(response.data, null, 2)
+    );
+
+    if (
+      response.data &&
+      response.data.status === "SUCCESS" &&
+      response.data.data &&
+      response.data.data.token
+    ) {
+      return response.data.data.token;
+    }
+
+    throw new Error(
+      response.data?.message ||
+      response.data?.subCode ||
+      "Authorization failed"
+    );
+  } catch (e) {
+    console.error(
+      "Cashfree Authorize Error:",
+      e.response?.status,
+      JSON.stringify(e.response?.data, null, 2)
+    );
+
+    throw new Error(
+      "Cashfree auth failed: " +
+      (
+        e.response?.data?.message ||
+        e.response?.data?.subCode ||
+        e.message
+      )
+    );
+  }
+}
+
+async function getCashfreePayoutBalance(token) {
+  try {
+    if (!token) {
+      throw new Error("Cashfree token is empty");
+    }
+
+    console.log("Cashfree Token:", token);
+
+    const response = await axios.get(
+      "https://payout-gamma.cashfree.com/payout/v1.2/getBalance",
+      {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          Accept: "application/json"
+        }
+      }
+    );
+
+    console.log(
+      "Cashfree Balance Response:",
+      JSON.stringify(response.data, null, 2)
+    );
+
+    if (
+      response.data &&
+      response.data.status === "SUCCESS"
+    ) {
+      return {
+        balance: Number(response.data.data?.balance || 0),
+        availableBalance: Number(
+          response.data.data?.availableBalance || 0
+        )
+      };
+    }
+
+    throw new Error(
+      response.data?.message ||
+      response.data?.subCode ||
+      "Failed to fetch balance"
+    );
+  } catch (e) {
+    console.error(
+      "Cashfree Balance Error:",
+      e.response?.status,
+      JSON.stringify(e.response?.data, null, 2)
+    );
+
+    throw new Error(
+      "Cashfree getBalance failed: " +
+      (
+        e.response?.data?.message ||
+        e.response?.data?.subCode ||
+        e.message
+      )
+    );
+  }
+}
+
+// 12. GET payout wallet details & Cashfree balance
+router.get("/settings/payout-wallet", async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res);
+    if (!orgId) return;
+
+    const { OrgAccount } = require("../models");
+    const org = await OrgAccount.findByPk(orgId);
+    if (!org) {
+      return res.status(404).json({ success: false, message: "Organization not found" });
+    }
+
+    let extra = org.extra;
+    if (typeof extra === "string") {
+      try { extra = JSON.parse(extra); } catch (_) { extra = {}; }
+    }
+    extra = extra || {};
+
+    let wallet = extra.payoutWallet || { balance: 0, used: 0, transactions: [] };
+    let keys = getCashfreeKeys();
+
+    // Fetch real Cashfree sandbox balance
+    let cashfreeBalance = { balance: 0, availableBalance: 0 };
+    let cfError = null;
+    if (keys && keys.clientId && keys.clientSecret) {
+      try {
+        const token = await getCashfreePayoutToken(keys.clientId, keys.clientSecret);
+        cashfreeBalance = await getCashfreePayoutBalance(token);
+      } catch (err) {
+        cfError = err.message;
+      }
+    } else {
+      cfError = "Cashfree Payout credentials not configured.";
+    }
+
+    let maskedKeys = {
+      clientId: keys.clientId,
+      clientSecret: keys.clientSecret ? "••••••••••••••••" : ""
+    };
+
+    return res.json({
+      success: true,
+      wallet,
+      keys: maskedKeys,
+      cashfreeBalance,
+      cfError
+    });
+  } catch (e) {
+    console.error("Failed to load wallet settings:", e);
+    return res.status(500).json({ success: false, message: "Failed to load wallet settings" });
+  }
+});
+
+// 13. POST topup simulated wallet balance
+router.post("/settings/payout-wallet/topup", async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res);
+    if (!orgId) return;
+
+    const amount = Number(req.body.amount);
+    if (isNaN(amount) || amount <= 0) {
+      return res.status(400).json({ success: false, message: "Invalid topup amount" });
+    }
+
+    const { OrgAccount } = require("../models");
+    const org = await OrgAccount.findByPk(orgId);
+    if (!org) {
+      return res.status(404).json({ success: false, message: "Organization not found" });
+    }
+
+    let extra = org.extra;
+    if (typeof extra === "string") {
+      try { extra = JSON.parse(extra); } catch (_) { extra = {}; }
+    }
+    extra = extra || {};
+
+    let wallet = extra.payoutWallet || { balance: 0, used: 0, transactions: [] };
+    wallet.balance = Number((Number(wallet.balance) + amount).toFixed(2));
+    
+    // Add transaction log
+    wallet.transactions.unshift({
+      id: `txn_${Date.now()}`,
+      type: "DEPOSIT",
+      amount,
+      date: new Date(),
+      status: "SUCCESS",
+      remarks: "Simulated Wallet Top Up"
+    });
+
+    extra.payoutWallet = wallet;
+    await org.update({ extra });
+
+    return res.json({ success: true, message: "Wallet topped up successfully", wallet });
+  } catch (e) {
+    console.error("Failed to topup wallet:", e);
+    return res.status(500).json({ success: false, message: "Failed to topup wallet" });
+  }
+});
+
+// 14. POST save custom Cashfree keys
+router.post("/settings/payout-wallet/credentials", async (req, res) => {
+  return res.status(400).json({
+    success: false,
+    message: "Credentials must be configured in environment variables (.env)"
+  });
+});
+
+// 15. POST run Cashfree direct payouts for payroll cycle
+router.post("/payroll/:cycleId/disburse-cashfree", async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res);
+    if (!orgId) return;
+
+    const id = Number(req.params.cycleId);
+    const {
+      PayrollCycle,
+      PayrollLine,
+      User,
+      StaffProfile,
+      OrgAccount
+    } = require("../models");
+
+    const cycle = await PayrollCycle.findOne({
+      where: { id, orgAccountId: orgId },
+    });
+
+    if (!cycle) {
+      return res.status(404).json({ success: false, message: "Cycle not found" });
+    }
+
+    if (cycle.status === "DRAFT") {
+      return res.status(400).json({ success: false, message: "You must lock the payroll cycle before disbursement" });
+    }
+
+    const org = await OrgAccount.findByPk(orgId);
+    if (!org) {
+      return res.status(404).json({ success: false, message: "Organization not found" });
+    }
+
+    let extra = org.extra;
+    if (typeof extra === "string") {
+      try { extra = JSON.parse(extra); } catch (_) { extra = {}; }
+    }
+    extra = extra || {};
+
+    let wallet = extra.payoutWallet || { balance: 0, used: 0, transactions: [] };
+    let keys = getCashfreeKeys();
+
+    const lines = await PayrollLine.findAll({ where: { cycleId: id, status: "INCLUDED" } });
+    const unpaidLines = lines.filter(l => {
+      let totals = l.totals;
+      if (typeof totals === "string") {
+        try { totals = JSON.parse(totals); } catch (_) { totals = {}; }
+      }
+      totals = totals || {};
+      const netPay = Number(totals.netSalary || 0);
+      return netPay > 0 && l.paidMode !== "CASHFREE";
+    });
+
+    if (unpaidLines.length === 0) {
+      return res.status(400).json({ success: false, message: "All included staff in this cycle have already been paid or have zero salary" });
+    }
+
+    let totalNeeded = 0;
+    const parsedLines = unpaidLines.map(l => {
+      let totals = l.totals;
+      if (typeof totals === "string") {
+        try { totals = JSON.parse(totals); } catch (_) { totals = {}; }
+      }
+      totals = totals || {};
+      const netPay = Number(totals.netSalary || 0);
+      totalNeeded += netPay;
+      return { line: l, netPay };
+    });
+
+    totalNeeded = Number(totalNeeded.toFixed(2));
+
+    if (Number(wallet.balance) < totalNeeded) {
+      return res.status(400).json({
+        success: false,
+        message: `Insufficient wallet balance! Needed: ₹${totalNeeded.toLocaleString('en-IN')}, Available: ₹${Number(wallet.balance).toLocaleString('en-IN')}`
+      });
+    }
+
+    let cfToken;
+    try {
+      cfToken = await getCashfreePayoutToken(keys.clientId, keys.clientSecret);
+    } catch (err) {
+      return res.status(400).json({ success: false, message: "Cashfree authentication failed: " + err.message });
+    }
+
+    const userIds = [...new Set(unpaidLines.map((l) => l.userId))];
+    const users = await User.findAll({
+      where: { id: userIds },
+      include: [{ model: StaffProfile, as: "profile" }],
+    });
+
+    const userMap = new Map(
+      users.map((u) => [
+        u.id,
+        {
+          name: u.profile?.name || u.phone || `User ${u.id}`,
+          phone: u.profile?.phone || u.phone || "9999999999",
+          email: u.profile?.email || "staff@example.com",
+          bankAccountNumber: u.profile?.bankAccountNumber || "",
+          bankIfsc: u.profile?.bankIfsc || "",
+        },
+      ]),
+    );
+
+    let processed = 0;
+    let failed = 0;
+    const errors = [];
+
+    for (const pl of parsedLines) {
+      const line = pl.line;
+      const netPay = pl.netPay;
+      const u = userMap.get(line.userId);
+
+      if (!u || !u.bankAccountNumber || !u.bankIfsc) {
+        failed++;
+        errors.push(`${u?.name || "Staff"}: Missing bank details`);
+        continue;
+      }
+
+      const transferId = `TXN_${id}_${line.userId}_${Date.now()}`;
+      try {
+        const transferPayload = {
+          amount: netPay,
+          transferId: transferId,
+          transferMode: "banktransfer",
+          beneDetails: {
+            name: u.name,
+            phone: String(u.phone).slice(-10),
+            email: u.email,
+            bankAccount: u.bankAccountNumber,
+            ifsc: u.bankIfsc
+          }
+        };
+
+        const cfResp = await axios.post(
+          "https://payout-gamma.cashfree.com/payout/v1.2/directTransfer",
+          transferPayload,
+          {
+            headers: {
+              "Authorization": `Bearer ${cfToken}`,
+              "Content-Type": "application/json"
+            }
+          }
+        );
+
+        if (cfResp.data && (cfResp.data.status === "SUCCESS" || cfResp.data.status === "PENDING")) {
+          const refId = cfResp.data.data?.referenceId || transferId;
+          
+          wallet.balance = Number((Number(wallet.balance) - netPay).toFixed(2));
+          wallet.used = Number((Number(wallet.used) + netPay).toFixed(2));
+          
+          wallet.transactions.unshift({
+            id: transferId,
+            type: "DISBURSEMENT",
+            amount: netPay,
+            date: new Date(),
+            status: "SUCCESS",
+            remarks: `Salary disburse to ${u.name} (Ref: ${refId})`
+          });
+
+          await line.update({
+            paidAt: new Date(),
+            paidMode: "CASHFREE",
+            paidRef: refId,
+            paidAmount: netPay,
+            paidBy: req.user?.id || null
+          });
+
+          processed++;
+        } else {
+          failed++;
+          errors.push(`${u.name}: ${cfResp.data?.message || "Transfer declined"}`);
+          wallet.transactions.unshift({
+            id: transferId,
+            type: "DISBURSEMENT",
+            amount: netPay,
+            date: new Date(),
+            status: "FAILED",
+            remarks: `Failed: ${cfResp.data?.message || "Transfer declined"}`
+          });
+        }
+      } catch (err) {
+        failed++;
+        const errMsg = err.response?.data?.message || err.message;
+        errors.push(`${u.name}: ${errMsg}`);
+        wallet.transactions.unshift({
+          id: transferId,
+          type: "DISBURSEMENT",
+          amount: netPay,
+          date: new Date(),
+          status: "FAILED",
+          remarks: `Failed: ${errMsg}`
+        });
+      }
+    }
+
+    extra.payoutWallet = wallet;
+    await org.update({ extra });
+
+    const remainingUnpaid = await PayrollLine.count({
+      where: {
+        cycleId: id,
+        status: "INCLUDED",
+        paidAt: null
+      }
+    });
+
+    if (remainingUnpaid === 0) {
+      await cycle.update({ status: "PAID" });
+    }
+
+    return res.json({
+      success: true,
+      processed,
+      failed,
+      errors,
+      walletBalance: wallet.balance
+    });
+  } catch (e) {
+    console.error("Cashfree disburse error:", e);
+    return res.status(500).json({ success: false, message: "Failed to disburse payroll: " + e.message });
+  }
+});
+
+// --- Cashfree PG Integration ---
+async function createCashfreePGLink(clientId, clientSecret, amount, linkId) {
+  try {
+    const cId = clientId || DEFAULT_CASHFREE_CLIENT_ID;
+    const cSecret = clientSecret || DEFAULT_CASHFREE_CLIENT_SECRET;
+
+    const resp = await axios.post(
+      "https://sandbox.cashfree.com/pg/links",
+      {
+        link_id: linkId,
+        link_amount: Number(amount),
+        link_currency: "INR",
+        link_purpose: "Payroll Payout Wallet Top Up",
+        customer_details: {
+          customer_name: "Org Admin",
+          customer_phone: "9999999999",
+          customer_email: "admin@example.com"
+        },
+        link_meta: {
+          return_url: `http://localhost:3000/settings/payout-wallet?link_id=${linkId}`
+        }
+      },
+      {
+        headers: {
+          "x-client-id": cId,
+          "x-client-secret": cSecret,
+          "x-api-version": "2023-08-01",
+          "Content-Type": "application/json"
+        }
+      }
+    );
+
+    if (resp.data && resp.data.link_url) {
+      return resp.data.link_url;
+    }
+    throw new Error("Failed to generate payment link URL");
+  } catch (e) {
+    console.error("Cashfree create PG link error:", e.response?.data || e.message);
+    throw new Error("PG Link creation failed: " + (e.response?.data?.message || e.message));
+  }
+}
+
+async function fetchCashfreePGLinkDetails(clientId, clientSecret, linkId) {
+  try {
+    const cId = clientId || DEFAULT_CASHFREE_CLIENT_ID;
+    const cSecret = clientSecret || DEFAULT_CASHFREE_CLIENT_SECRET;
+
+    const resp = await axios.get(
+      `https://sandbox.cashfree.com/pg/links/${linkId}`,
+      {
+        headers: {
+          "x-client-id": cId,
+          "x-client-secret": cSecret,
+          "x-api-version": "2023-08-01"
+        }
+      }
+    );
+    return resp.data;
+  } catch (e) {
+    console.error("Cashfree fetch PG details error:", e.response?.data || e.message);
+    throw new Error("PG details fetch failed: " + (e.response?.data?.message || e.message));
+  }
+}
+
+// 16. POST create PG checkout link
+router.post("/settings/payout-wallet/create-pg-link", async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res);
+    if (!orgId) return;
+
+    const amount = Number(req.body.amount);
+    if (isNaN(amount) || amount <= 0) {
+      return res.status(400).json({ success: false, message: "Invalid deposit amount" });
+    }
+
+    const { OrgAccount } = require("../models");
+    const org = await OrgAccount.findByPk(orgId);
+    if (!org) {
+      return res.status(404).json({ success: false, message: "Organization not found" });
+    }
+
+    let extra = org.extra;
+    if (typeof extra === "string") {
+      try { extra = JSON.parse(extra); } catch (_) { extra = {}; }
+    }
+    extra = extra || {};
+
+    let keys = getCashfreePGKeys();
+
+    const linkId = `link_${Date.now()}`;
+    try {
+      const linkUrl = await createCashfreePGLink(keys.clientId, keys.clientSecret, amount, linkId);
+      return res.json({ success: true, linkUrl, linkId });
+    } catch (err) {
+      console.warn("Cashfree PG Link creation failed, falling back to simulated sandbox payment link:", err.message);
+
+      const mockLinkId = `link_mock_${Date.now()}`;
+      mockPayments.set(mockLinkId, { orgId, amount, status: "PENDING" });
+
+      const host = req.headers.host || "localhost:4000";
+      const protocol = req.secure || req.headers["x-forwarded-proto"] === "https" ? "https" : "http";
+      const mockLinkUrl = `${protocol}://${host}/admin/mock-pg-checkout?link_id=${mockLinkId}`;
+
+      return res.json({ success: true, linkUrl: mockLinkUrl, linkId: mockLinkId });
+    }
+  } catch (e) {
+    console.error("Failed to create PG link:", e);
+    return res.status(500).json({ success: false, message: e.message });
+  }
+});
+
+// 17. POST verify PG checkout transaction status
+router.post("/settings/payout-wallet/verify-pg-payment", async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res);
+    if (!orgId) return;
+
+    const { linkId } = req.body;
+    if (!linkId) {
+      return res.status(400).json({ success: false, message: "Link ID is required" });
+    }
+
+    const { OrgAccount } = require("../models");
+    const org = await OrgAccount.findByPk(orgId);
+    if (!org) {
+      return res.status(404).json({ success: false, message: "Organization not found" });
+    }
+
+    let extra = org.extra;
+    if (typeof extra === "string") {
+      try { extra = JSON.parse(extra); } catch (_) { extra = {}; }
+    }
+    extra = extra || {};
+
+    let wallet = extra.payoutWallet || { balance: 0, used: 0, transactions: [] };
+
+    const alreadyCredited = wallet.transactions.some(tx => tx.id === linkId && tx.status === "SUCCESS");
+    if (alreadyCredited) {
+      return res.json({ success: true, message: "Payment already verified", wallet });
+    }
+
+    if (linkId.startsWith("link_mock_")) {
+      const mockPayment = mockPayments.get(linkId);
+      if (!mockPayment) {
+        return res.status(404).json({ success: false, message: "Mock payment transaction not found" });
+      }
+      if (mockPayment.status !== "PAID") {
+        return res.status(400).json({ success: false, message: "Payment was not completed in the mock gateway" });
+      }
+
+      const payAmt = Number(mockPayment.amount || 0);
+      wallet.balance = Number((Number(wallet.balance) + payAmt).toFixed(2));
+
+      wallet.transactions.unshift({
+        id: linkId,
+        type: "DEPOSIT",
+        amount: payAmt,
+        date: new Date(),
+        status: "SUCCESS",
+        remarks: "Deposit via Mock Sandbox Payment Gateway"
+      });
+
+      extra.payoutWallet = wallet;
+      await org.update({ extra });
+
+      // Clean up from memory
+      mockPayments.delete(linkId);
+
+      return res.json({ success: true, message: "Mock payment verified successfully", wallet });
+    }
+
+    let keys = getCashfreePGKeys();
+    const details = await fetchCashfreePGLinkDetails(keys.clientId, keys.clientSecret, linkId);
+    if (details && details.link_status === "PAID") {
+      const payAmt = Number(details.link_amount || 0);
+
+      wallet.balance = Number((Number(wallet.balance) + payAmt).toFixed(2));
+
+      wallet.transactions.unshift({
+        id: linkId,
+        type: "DEPOSIT",
+        amount: payAmt,
+        date: new Date(),
+        status: "SUCCESS",
+        remarks: "Deposit via Cashfree Payment Gateway"
+      });
+
+      extra.payoutWallet = wallet;
+      await org.update({ extra });
+
+      return res.json({ success: true, message: "Payment verified successfully", wallet });
+    }
+
+    return res.status(400).json({ success: false, message: "Payment not completed or failed. Status: " + (details?.link_status || "UNKNOWN") });
+  } catch (e) {
+    console.error("Failed to verify payment:", e);
+    return res.status(500).json({ success: false, message: e.message });
+  }
+});
 module.exports = router;

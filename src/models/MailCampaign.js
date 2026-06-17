@@ -6,7 +6,7 @@ module.exports = (sequelize) => {
     {
       id: { type: DataTypes.BIGINT.UNSIGNED, primaryKey: true, autoIncrement: true },
       subject: { type: DataTypes.STRING(255), allowNull: false },
-      body: { type: DataTypes.TEXT, allowNull: false },
+      body: { type: DataTypes.TEXT('long'), allowNull: false },
       status: { 
         type: DataTypes.ENUM('PENDING', 'SENDING', 'COMPLETED', 'PAUSED'), 
         allowNull: false, 
