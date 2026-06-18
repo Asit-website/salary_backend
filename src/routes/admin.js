@@ -35317,7 +35317,7 @@ router.post("/settings/payout-wallet/verify-pg-payment", async (req, res) => {
     const orgId = requireOrg(req, res);
     if (!orgId) return;
 
-    const { linkId } = req.body;
+    const { linkId, razorpayPaymentId } = req.body;
     if (!linkId) {
       return res.status(400).json({ success: false, message: "Link ID is required" });
     }
@@ -35354,20 +35354,22 @@ router.post("/settings/payout-wallet/verify-pg-payment", async (req, res) => {
       const payAmt = Number(mockPayment.amount || 0);
       wallet.balance = Number((Number(wallet.balance) + payAmt).toFixed(2));
 
+      const mockPaymentId = `pay_mock_${Date.now()}`;
       wallet.transactions.unshift({
         id: linkId,
         type: "DEPOSIT",
         amount: payAmt,
         date: new Date(),
         status: "SUCCESS",
-        remarks: "Deposit via Mock Sandbox Payment Gateway"
+        remarks: "Deposit via Mock Sandbox Payment Gateway",
+        rzpPaymentId: mockPaymentId
       });
 
       extra.payoutWallet = wallet;
       await org.update({ extra });
       mockPayments.delete(linkId);
 
-      return res.json({ success: true, message: "Mock payment verified successfully", wallet });
+      return res.json({ success: true, message: "Mock payment verified successfully", wallet, amount: payAmt, paymentId: mockPaymentId });
     }
 
     // Razorpay payment link verification
@@ -35400,20 +35402,27 @@ router.post("/settings/payout-wallet/verify-pg-payment", async (req, res) => {
 
       wallet.balance = Number((Number(wallet.balance) + payAmt).toFixed(2));
 
+      let finalRazorpayPaymentId = razorpayPaymentId || null;
+      if (!finalRazorpayPaymentId && details.payments && details.payments.length > 0) {
+        const activePayment = details.payments.find(p => p.status === 'captured') || details.payments[0];
+        finalRazorpayPaymentId = activePayment?.id;
+      }
+
       wallet.transactions.unshift({
         id: linkId,
         type: "DEPOSIT",
         amount: payAmt,
         date: new Date(),
         status: "SUCCESS",
-        remarks: `Deposit via Razorpay (Link: ${rzpLinkId})`
+        remarks: `Deposit via Razorpay (Link: ${rzpLinkId})${finalRazorpayPaymentId ? ` [Payment ID: ${finalRazorpayPaymentId}]` : ""}`,
+        rzpPaymentId: finalRazorpayPaymentId
       });
 
       extra.payoutWallet = wallet;
       await org.update({ extra });
       if (pendingEntry) mockPayments.delete(linkId);
 
-      return res.json({ success: true, message: "Payment verified successfully", wallet });
+      return res.json({ success: true, message: "Payment verified successfully", wallet, amount: payAmt, paymentId: razorpayPaymentId || rzpLinkId });
     }
 
     return res.status(400).json({

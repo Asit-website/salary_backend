@@ -241,7 +241,7 @@ class LatePunchInService {
     }
 
     const dayCalculations = [];
-    const ruleLateCounts = {}; // { ruleId: count }
+    const ruleEligibleLateCounts = {}; // { ruleId: count of tier-matching lates }
 
     for (const row of rows) {
       // 1. Calculate raw penalty for this specific day
@@ -254,13 +254,16 @@ class LatePunchInService {
 
       if (row.latePunchInMinutes > 0 && lp.rule) {
         lateCount++;
-        const ruleId = lp.rule.id;
-        ruleLateCounts[ruleId] = (ruleLateCounts[ruleId] || 0) + 1;
+        if (lp.tier) {
+          const ruleId = lp.rule.id;
+          ruleEligibleLateCounts[ruleId] = (ruleEligibleLateCounts[ruleId] || 0) + 1;
+        }
       }
     }
 
     // We track occurrences per unique Rule+Tier combination
     const ruleOccurrences = {}; // { "ruleId_tierIndex": count }
+    const ruleRunningEligibleCounts = {}; // { ruleId: running count of eligible lates }
 
     for (const calc of dayCalculations) {
       const { row, lp } = calc;
@@ -268,15 +271,18 @@ class LatePunchInService {
       const tier = lp.tier;
 
       if (row.latePunchInMinutes > 0 && rule) {
-        const totalLatesForThisRule = ruleLateCounts[rule.id] || 0;
-        const pardonLimit = Number(rule.pardonLimit || 0);
-
-        if (pardonLimit > 0 && totalLatesForThisRule <= pardonLimit) {
-          row.lateOccurrence = `${totalLatesForThisRule}/${pardonLimit} (Pardoned)`;
-          continue; // Skip penalty application
-        }
-
         if (tier) {
+          const totalEligibleLates = ruleEligibleLateCounts[rule.id] || 0;
+          const pardonLimit = Number(rule.pardonLimit || 0);
+
+          ruleRunningEligibleCounts[rule.id] = (ruleRunningEligibleCounts[rule.id] || 0) + 1;
+          const currentEligibleCount = ruleRunningEligibleCounts[rule.id];
+
+          if (pardonLimit > 0 && totalEligibleLates <= pardonLimit) {
+            row.lateOccurrence = `${currentEligibleCount}/${pardonLimit} (Pardoned)`;
+            continue; // Skip penalty application
+          }
+
           const frequency = Number(tier.frequency || 1);
           const tierKey = `${rule.id}_${JSON.stringify(tier)}`; // Unique key for this specific threshold
 
