@@ -43,8 +43,9 @@ router.use((req, res, next) => {
   }
   req.user.permissions = perms || {};
 
-  // Allow if superadmin OR has explicit mailing access
-  const hasAccess = req.user.role === 'superadmin' || req.user.permissions.mailing === 'manage_own';
+  // Allow if superadmin OR has explicit mailing access (manage_own OR manage_all)
+  const mailingPerm = req.user.permissions.mailing;
+  const hasAccess = req.user.role === 'superadmin' || mailingPerm === 'manage_own' || mailingPerm === 'manage_all';
   if (hasAccess) return next();
 
   return res.status(403).json({ success: false, message: 'Forbidden' });
@@ -283,7 +284,9 @@ router.post('/campaign/excel', upload.fields([{ name: 'file', maxCount: 1 }, { n
 router.get('/campaigns', async (req, res) => {
   try {
     let where = {};
-    if (req.user.role !== 'superadmin') {
+    const mailingPerm = req.user.permissions ? req.user.permissions.mailing : null;
+    // manage_all staff see all campaigns; manage_own staff see only their own
+    if (req.user.role !== 'superadmin' && mailingPerm !== 'manage_all') {
       where = { createdBy: req.user.id };
     }
 
