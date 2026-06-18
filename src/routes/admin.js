@@ -35434,4 +35434,104 @@ router.post("/settings/payout-wallet/verify-pg-payment", async (req, res) => {
     return res.status(500).json({ success: false, message: e.message });
   }
 });
+
+// Staff login/logout report with location data
+router.get("/reports/staff-login-logout", async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res);
+    if (!orgId) return;
+
+    if (req.user?.role === "staff")
+      return res.status(403).json({ success: false, message: "Unauthorized" });
+
+    const { AuditLog, LocationPing, User, StaffProfile } = sequelize.models;
+    
+    const { fromDate, toDate, staffId } = req.query;
+
+    // Default to last 30 days if no date range provided
+    const from = fromDate ? new Date(fromDate) : new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+    const to = toDate ? new Date(toDate) : new Date();
+
+    // Build where clause for staff filter
+    let staffWhere = { orgAccountId: orgId, role: "staff" };
+    if (staffId) staffWhere.id = Number(staffId);
+
+    // Get all staff for organization
+    const allStaff = await User.findAll({
+      where: staffWhere,
+      include: [{ model: StaffProfile, as: "profile", attributes: ["name", "phone"] }],
+      attributes: ["id", "phone"],
+      order: [["id", "ASC"]],
+    });
+
+    // Get audit logs for login/logout events
+    const auditLogs = await AuditLog.findAll({
+      where: {
+        orgAccountId: orgId,
+        action: { [Op.in]: ["LOGIN_SUCCESS", "LOGOUT_SUCCESS"] },
+        createdAt: { [Op.between]: [from, to] },
+      },
+      order: [["createdAt", "DESC"]],
+    });
+
+    // Get all location pings for the date range and staff
+    const staffIds = allStaff.map(s => s.id);
+    const locationPings = await LocationPing.findAll({
+      where: {
+        userId: { [Op.in]: staffIds },
+        createdAt: { [Op.between]: [from, to] },
+      },
+    });
+
+    // Create map of locations by userId and time window (within 5 minutes)
+    const locationMap = new Map();
+    locationPings.forEach(ping => {
+      const key = `${ping.userId}`;
+      if (!locationMap.has(key)) locationMap.set(key, []);
+      locationMap.get(key).push(ping);
+    });
+
+    // Organize data by staff with their login/logout events
+    const reportData = allStaff.map(staff => {
+      const events = auditLogs
+        .filter(log => log.userId === staff.id)
+        .map(log => {
+          // Find nearby location ping (within 5 minutes)
+          const staffLocations = locationMap.get(String(staff.id)) || [];
+          const nearbyPing = staffLocations.find(ping => {
+            const timeDiff = Math.abs(new Date(ping.createdAt) - new Date(log.createdAt));
+            return timeDiff < 5 * 60 * 1000; // 5 minutes
+          });
+
+          return {
+            id: log.id,
+            type: log.action === "LOGIN_SUCCESS" ? "Login" : "Logout",
+            timestamp: log.createdAt,
+            remarks: log.remarks,
+            ipAddress: log.ipAddress,
+            latitude: nearbyPing?.latitude || null,
+            longitude: nearbyPing?.longitude || null,
+            address: nearbyPing?.address || null,
+            accuracy: nearbyPing?.accuracyMeters || null,
+          };
+        })
+        .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+
+      return {
+        userId: staff.id,
+        staffName: staff.profile?.name || staff.phone || `Staff #${staff.id}`,
+        phone: staff.phone,
+        totalLogins: events.filter(e => e.type === "Login").length,
+        totalLogouts: events.filter(e => e.type === "Logout").length,
+        events: events,
+      };
+    }).filter(s => s.events.length > 0); // Only show staff with events
+
+    return res.json({ success: true, data: reportData, fromDate: from, toDate: to });
+  } catch (e) {
+    console.error("Failed to fetch staff login/logout report:", e);
+    return res.status(500).json({ success: false, message: e.message });
+  }
+});
+
 module.exports = router;
