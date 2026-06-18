@@ -34856,145 +34856,91 @@ router.get("/payroll/:cycleId/export-bank-file", async (req, res) => {
   }
 });
 
-// --- Payout Cashfree & Wallet System ---
+// --- Razorpay Payout & Wallet System ---
 const axios = require("axios");
 const crypto = require("crypto");
 
-// Default Cashfree Sandbox Payout credentials
-const DEFAULT_CASHFREE_CLIENT_ID = "CF10526614D8JDQ6IQ0A0C73AQOKV0";
-const DEFAULT_CASHFREE_CLIENT_SECRET = "cfsk_ma_test_cf9a002212abeba9ab57b6062687a1f7_d4a1910a";
-
-function getCashfreeKeys() {
+function getRazorpayKeys() {
   return {
-    clientId: process.env.CASHFREE_CLIENT_ID || DEFAULT_CASHFREE_CLIENT_ID,
-    clientSecret: process.env.CASHFREE_CLIENT_SECRET || DEFAULT_CASHFREE_CLIENT_SECRET
+    keyId: process.env.RAZORPAY_KEY_ID, 
+    keySecret: process.env.RAZORPAY_KEY_SECRET 
   };
 }
 
-function getCashfreePGKeys() {
+// Razorpay X Payout — create a fund account then payout to bank
+async function razorpayXPayout({ keyId, keySecret, accountNumber, accountName, ifsc, amount, referenceId, existingContactId, existingFundAccountId }) {
+  const auth = { username: keyId, password: keySecret };
+  const headers = { "Content-Type": "application/json", "X-Payout-Idempotency": referenceId };
+
+  const rzpAccountNumber = process.env.RAZORPAY_ACCOUNT_NUMBER;
+  let activeAccountNumber = rzpAccountNumber;
+  if (!activeAccountNumber) {
+    // Try to dynamically fetch the merchant's active RazorpayX account number
+    try {
+      const balanceResp = await axios.get("https://api.razorpay.com/v1/banking_balances", { auth });
+      if (balanceResp.data && balanceResp.data.items && balanceResp.data.items.length > 0) {
+        activeAccountNumber = balanceResp.data.items[0].account_number;
+      }
+    } catch (err) {
+      console.error("Failed to dynamically fetch RazorpayX account number:", err.message);
+    }
+  }
+
+  if (!activeAccountNumber) {
+    activeAccountNumber = keyId.startsWith("rzp_test_") ? "2323230077283719" : "7878780080316316";
+  }
+
+  let contactId = existingContactId;
+  if (!contactId) {
+    // Step 1: Create contact
+    const contactResp = await axios.post(
+      "https://api.razorpay.com/v1/contacts",
+      { name: accountName, type: "employee", reference_id: referenceId },
+      { auth, headers: { "Content-Type": "application/json" } }
+    );
+    contactId = contactResp.data.id;
+  }
+
+  let fundAccountId = existingFundAccountId;
+  if (!fundAccountId) {
+    // Step 2: Create fund account
+    const faResp = await axios.post(
+      "https://api.razorpay.com/v1/fund_accounts",
+      {
+        contact_id: contactId,
+        account_type: "bank_account",
+        bank_account: { name: accountName, ifsc, account_number: accountNumber }
+      },
+      { auth, headers: { "Content-Type": "application/json" } }
+    );
+    fundAccountId = faResp.data.id;
+  }
+
+  // Step 3: Create payout (amount in paise)
+  const payoutResp = await axios.post(
+    "https://api.razorpay.com/v1/payouts",
+    {
+      account_number: activeAccountNumber,
+      fund_account_id: fundAccountId,
+      amount: Math.round(amount * 100),
+      currency: "INR",
+      mode: "IMPS",
+      purpose: "salary",
+      queue_if_low_balance: true,
+      reference_id: referenceId,
+      narration: "Salary Payout"
+    },
+    { auth, headers }
+  );
+
   return {
-    clientId: process.env.CASHFREE_PG_CLIENT_ID || process.env.CASHFREE_CLIENT_ID || DEFAULT_CASHFREE_CLIENT_ID,
-    clientSecret: process.env.CASHFREE_PG_CLIENT_SECRET || process.env.CASHFREE_CLIENT_SECRET || DEFAULT_CASHFREE_CLIENT_SECRET
+    contactId,
+    fundAccountId,
+    payout: payoutResp.data
   };
 }
 
-// const axios = require("axios");
-
-async function getCashfreePayoutToken(clientId, clientSecret) {
-  try {
-    const cId = clientId || DEFAULT_CASHFREE_CLIENT_ID;
-    const cSecret = clientSecret || DEFAULT_CASHFREE_CLIENT_SECRET;
-
-    console.log("Cashfree Client ID:", cId);
-
-    const response = await axios.post(
-      "https://payout-gamma.cashfree.com/payout/v1/authorize",
-      {},
-      {
-        headers: {
-          "X-Client-Id": cId,
-          "X-Client-Secret": cSecret,
-          "Content-Type": "application/json"
-        }
-      }
-    );
-
-    console.log(
-      "Cashfree Authorize Response:",
-      JSON.stringify(response.data, null, 2)
-    );
-
-    if (
-      response.data &&
-      response.data.status === "SUCCESS" &&
-      response.data.data &&
-      response.data.data.token
-    ) {
-      return response.data.data.token;
-    }
-
-    throw new Error(
-      response.data?.message ||
-      response.data?.subCode ||
-      "Authorization failed"
-    );
-  } catch (e) {
-    console.error(
-      "Cashfree Authorize Error:",
-      e.response?.status,
-      JSON.stringify(e.response?.data, null, 2)
-    );
-
-    throw new Error(
-      "Cashfree auth failed: " +
-      (
-        e.response?.data?.message ||
-        e.response?.data?.subCode ||
-        e.message
-      )
-    );
-  }
-}
-
-async function getCashfreePayoutBalance(token) {
-  try {
-    if (!token) {
-      throw new Error("Cashfree token is empty");
-    }
-
-    console.log("Cashfree Token:", token);
-
-    const response = await axios.get(
-      "https://payout-gamma.cashfree.com/payout/v1.2/getBalance",
-      {
-        headers: {
-          Authorization: `Bearer ${token}`,
-          Accept: "application/json"
-        }
-      }
-    );
-
-    console.log(
-      "Cashfree Balance Response:",
-      JSON.stringify(response.data, null, 2)
-    );
-
-    if (
-      response.data &&
-      response.data.status === "SUCCESS"
-    ) {
-      return {
-        balance: Number(response.data.data?.balance || 0),
-        availableBalance: Number(
-          response.data.data?.availableBalance || 0
-        )
-      };
-    }
-
-    throw new Error(
-      response.data?.message ||
-      response.data?.subCode ||
-      "Failed to fetch balance"
-    );
-  } catch (e) {
-    console.error(
-      "Cashfree Balance Error:",
-      e.response?.status,
-      JSON.stringify(e.response?.data, null, 2)
-    );
-
-    throw new Error(
-      "Cashfree getBalance failed: " +
-      (
-        e.response?.data?.message ||
-        e.response?.data?.subCode ||
-        e.message
-      )
-    );
-  }
-}
-
-// 12. GET payout wallet details & Cashfree balance
+// 12. GET payout wallet details
 router.get("/settings/payout-wallet", async (req, res) => {
   try {
     const orgId = requireOrg(req, res);
@@ -35013,31 +34959,39 @@ router.get("/settings/payout-wallet", async (req, res) => {
     extra = extra || {};
 
     let wallet = extra.payoutWallet || { balance: 0, used: 0, transactions: [] };
-    let keys = getCashfreeKeys();
+    const rzpKeys = getRazorpayKeys();
 
-    // Fetch real Cashfree sandbox balance
     let cashfreeBalance = { balance: 0, availableBalance: 0 };
     let cfError = null;
-    if (keys && keys.clientId && keys.clientSecret) {
-      try {
-        const token = await getCashfreePayoutToken(keys.clientId, keys.clientSecret);
-        cashfreeBalance = await getCashfreePayoutBalance(token);
-      } catch (err) {
-        cfError = err.message;
-      }
-    } else {
-      cfError = "Cashfree Payout credentials not configured.";
-    }
 
-    let maskedKeys = {
-      clientId: keys.clientId,
-      clientSecret: keys.clientSecret ? "••••••••••••••••" : ""
-    };
+    if (rzpKeys.keyId && rzpKeys.keySecret) {
+      try {
+        const auth = { username: rzpKeys.keyId, password: rzpKeys.keySecret };
+        const balanceResp = await axios.get("https://api.razorpay.com/v1/banking_balances", { auth });
+        
+        if (balanceResp.data && balanceResp.data.items && balanceResp.data.items.length > 0) {
+          const item = balanceResp.data.items[0];
+          // Razorpay returns amount in paise, convert to rupees
+          const liveBal = Number((item.available_amount / 100).toFixed(2));
+          cashfreeBalance = {
+            balance: liveBal,
+            availableBalance: liveBal
+          };
+        }
+      } catch (err) {
+        console.error("Failed to fetch Razorpay banking balances:", err.response?.data || err.message);
+        // Suppress API errors on the frontend UI for test keys
+        if (rzpKeys.keyId && !rzpKeys.keyId.startsWith("rzp_test_")) {
+          cfError = err.response?.data?.error?.description || err.message;
+        }
+      }
+    }
 
     return res.json({
       success: true,
       wallet,
-      keys: maskedKeys,
+      gateway: "razorpay",
+      keyId: rzpKeys.keyId ? rzpKeys.keyId.substring(0, 12) + "••••" : "",
       cashfreeBalance,
       cfError
     });
@@ -35093,82 +35047,58 @@ router.post("/settings/payout-wallet/topup", async (req, res) => {
   }
 });
 
-// 14. POST save custom Cashfree keys
+// 14. POST save credentials — managed via env, not DB
 router.post("/settings/payout-wallet/credentials", async (req, res) => {
+
   return res.status(400).json({
     success: false,
     message: "Credentials must be configured in environment variables (.env)"
   });
 });
 
-// 15. POST run Cashfree direct payouts for payroll cycle
+// 15. POST run Razorpay X direct payouts for payroll cycle
 router.post("/payroll/:cycleId/disburse-cashfree", async (req, res) => {
   try {
     const orgId = requireOrg(req, res);
     if (!orgId) return;
 
     const id = Number(req.params.cycleId);
-    const {
-      PayrollCycle,
-      PayrollLine,
-      User,
-      StaffProfile,
-      OrgAccount
-    } = require("../models");
+    const { PayrollCycle, PayrollLine, User, StaffProfile, OrgAccount } = require("../models");
 
-    const cycle = await PayrollCycle.findOne({
-      where: { id, orgAccountId: orgId },
-    });
-
-    if (!cycle) {
-      return res.status(404).json({ success: false, message: "Cycle not found" });
-    }
-
-    if (cycle.status === "DRAFT") {
-      return res.status(400).json({ success: false, message: "You must lock the payroll cycle before disbursement" });
-    }
+    const cycle = await PayrollCycle.findOne({ where: { id, orgAccountId: orgId } });
+    if (!cycle) return res.status(404).json({ success: false, message: "Cycle not found" });
+    if (cycle.status === "DRAFT") return res.status(400).json({ success: false, message: "Lock the payroll cycle before disbursement" });
 
     const org = await OrgAccount.findByPk(orgId);
-    if (!org) {
-      return res.status(404).json({ success: false, message: "Organization not found" });
-    }
+    if (!org) return res.status(404).json({ success: false, message: "Organization not found" });
 
     let extra = org.extra;
-    if (typeof extra === "string") {
-      try { extra = JSON.parse(extra); } catch (_) { extra = {}; }
-    }
+    if (typeof extra === "string") { try { extra = JSON.parse(extra); } catch (_) { extra = {}; } }
     extra = extra || {};
 
     let wallet = extra.payoutWallet || { balance: 0, used: 0, transactions: [] };
-    let keys = getCashfreeKeys();
+    const rzpKeys = getRazorpayKeys();
 
     const lines = await PayrollLine.findAll({ where: { cycleId: id, status: "INCLUDED" } });
     const unpaidLines = lines.filter(l => {
       let totals = l.totals;
-      if (typeof totals === "string") {
-        try { totals = JSON.parse(totals); } catch (_) { totals = {}; }
-      }
-      totals = totals || {};
-      const netPay = Number(totals.netSalary || 0);
-      return netPay > 0 && l.paidMode !== "CASHFREE";
+      if (typeof totals === "string") { try { totals = JSON.parse(totals); } catch (_) { totals = {}; } }
+      const netPay = Number((totals || {}).netSalary || 0);
+      return netPay > 0 && l.paidMode !== "RAZORPAY";
     });
 
     if (unpaidLines.length === 0) {
-      return res.status(400).json({ success: false, message: "All included staff in this cycle have already been paid or have zero salary" });
+      return res.status(400).json({ success: false, message: "All included staff are already paid or have zero salary" });
     }
 
     let totalNeeded = 0;
     const parsedLines = unpaidLines.map(l => {
       let totals = l.totals;
-      if (typeof totals === "string") {
-        try { totals = JSON.parse(totals); } catch (_) { totals = {}; }
-      }
-      totals = totals || {};
-      const netPay = Number(totals.netSalary || 0);
+      if (typeof totals === "string") { try { totals = JSON.parse(totals); } catch (_) { totals = {}; } }
+      const netPay = Number((totals || {}).netSalary || 0);
       totalNeeded += netPay;
       return { line: l, netPay };
     });
-
     totalNeeded = Number(totalNeeded.toFixed(2));
 
     if (Number(wallet.balance) < totalNeeded) {
@@ -35178,217 +35108,167 @@ router.post("/payroll/:cycleId/disburse-cashfree", async (req, res) => {
       });
     }
 
-    let cfToken;
-    try {
-      cfToken = await getCashfreePayoutToken(keys.clientId, keys.clientSecret);
-    } catch (err) {
-      return res.status(400).json({ success: false, message: "Cashfree authentication failed: " + err.message });
-    }
-
-    const userIds = [...new Set(unpaidLines.map((l) => l.userId))];
+    const userIds = [...new Set(unpaidLines.map(l => l.userId))];
     const users = await User.findAll({
       where: { id: userIds },
-      include: [{ model: StaffProfile, as: "profile" }],
+      include: [{ model: StaffProfile, as: "profile" }]
     });
+    const userMap = new Map(users.map(u => [
+      u.id,
+      {
+        name: u.profile?.name || u.phone || `User ${u.id}`,
+        bankAccountNumber: u.profile?.bankAccountNumber || "",
+        bankIfsc: u.profile?.bankIfsc || "",
+        profile: u.profile
+      }
+    ]));
 
-    const userMap = new Map(
-      users.map((u) => [
-        u.id,
-        {
-          name: u.profile?.name || u.phone || `User ${u.id}`,
-          phone: u.profile?.phone || u.phone || "9999999999",
-          email: u.profile?.email || "staff@example.com",
-          bankAccountNumber: u.profile?.bankAccountNumber || "",
-          bankIfsc: u.profile?.bankIfsc || "",
-        },
-      ]),
-    );
-
-    let processed = 0;
-    let failed = 0;
+    let processed = 0, failed = 0;
     const errors = [];
 
     for (const pl of parsedLines) {
-      const line = pl.line;
-      const netPay = pl.netPay;
+      const { line, netPay } = pl;
       const u = userMap.get(line.userId);
+      const transferId = `TXN_${id}_${line.userId}_${Date.now()}`;
 
       if (!u || !u.bankAccountNumber || !u.bankIfsc) {
         failed++;
         errors.push(`${u?.name || "Staff"}: Missing bank details`);
+        wallet.transactions.unshift({ id: transferId, type: "DISBURSEMENT", amount: netPay, date: new Date(), status: "FAILED", staffName: u?.name || "Unknown", remarks: "Missing bank details" });
         continue;
       }
 
-      const transferId = `TXN_${id}_${line.userId}_${Date.now()}`;
-      try {
-        const transferPayload = {
-          amount: netPay,
-          transferId: transferId,
-          transferMode: "banktransfer",
-          beneDetails: {
-            name: u.name,
-            phone: String(u.phone).slice(-10),
-            email: u.email,
-            bankAccount: u.bankAccountNumber,
-            ifsc: u.bankIfsc
-          }
-        };
-
-        const cfResp = await axios.post(
-          "https://payout-gamma.cashfree.com/payout/v1.2/directTransfer",
-          transferPayload,
-          {
-            headers: {
-              "Authorization": `Bearer ${cfToken}`,
-              "Content-Type": "application/json"
-            }
-          }
-        );
-
-        if (cfResp.data && (cfResp.data.status === "SUCCESS" || cfResp.data.status === "PENDING")) {
-          const refId = cfResp.data.data?.referenceId || transferId;
-          
-          wallet.balance = Number((Number(wallet.balance) - netPay).toFixed(2));
-          wallet.used = Number((Number(wallet.used) + netPay).toFixed(2));
-          
-          wallet.transactions.unshift({
-            id: transferId,
-            type: "DISBURSEMENT",
-            amount: netPay,
-            date: new Date(),
-            status: "SUCCESS",
-            remarks: `Salary disburse to ${u.name} (Ref: ${refId})`
-          });
-
-          await line.update({
-            paidAt: new Date(),
-            paidMode: "CASHFREE",
-            paidRef: refId,
-            paidAmount: netPay,
-            paidBy: req.user?.id || null
-          });
-
-          processed++;
-        } else {
-          failed++;
-          errors.push(`${u.name}: ${cfResp.data?.message || "Transfer declined"}`);
-          wallet.transactions.unshift({
-            id: transferId,
-            type: "DISBURSEMENT",
-            amount: netPay,
-            date: new Date(),
-            status: "FAILED",
-            remarks: `Failed: ${cfResp.data?.message || "Transfer declined"}`
-          });
+      let profileExtra = {};
+      if (u.profile) {
+        profileExtra = u.profile.extra;
+        if (typeof profileExtra === "string") {
+          try { profileExtra = JSON.parse(profileExtra); } catch (_) { profileExtra = {}; }
         }
+        profileExtra = profileExtra || {};
+      }
+
+      let existingContactId = profileExtra.razorpayContactId || null;
+      let existingFundAccountId = profileExtra.razorpayFundAccountId || null;
+
+      // If bank details changed, recreate fund account
+      if (existingFundAccountId) {
+        const registeredAcc = profileExtra.razorpayBankAccount;
+        const registeredIfsc = profileExtra.razorpayBankIfsc;
+        if (registeredAcc !== u.bankAccountNumber || registeredIfsc !== u.bankIfsc) {
+          existingFundAccountId = null;
+        }
+      }
+
+      try {
+        const { contactId, fundAccountId, payout } = await razorpayXPayout({
+          keyId: rzpKeys.keyId,
+          keySecret: rzpKeys.keySecret,
+          accountNumber: u.bankAccountNumber,
+          accountName: u.name,
+          ifsc: u.bankIfsc,
+          amount: netPay,
+          referenceId: transferId,
+          existingContactId,
+          existingFundAccountId
+        });
+
+        const status = payout.status; // queued / processing / processed
+        const refId = payout.id || transferId;
+
+        // Save Razorpay IDs to employee profile so we don't recreate them next time
+        if (u.profile) {
+          profileExtra.razorpayContactId = contactId;
+          profileExtra.razorpayFundAccountId = fundAccountId;
+          profileExtra.razorpayBankAccount = u.bankAccountNumber;
+          profileExtra.razorpayBankIfsc = u.bankIfsc;
+          await u.profile.update({ extra: profileExtra });
+        }
+
+        wallet.balance = Number((Number(wallet.balance) - netPay).toFixed(2));
+        wallet.used = Number((Number(wallet.used) + netPay).toFixed(2));
+        wallet.transactions.unshift({
+          id: transferId, type: "DISBURSEMENT", amount: netPay,
+          date: new Date(), status: "SUCCESS",
+          staffName: u.name,
+          remarks: `Salary to ${u.name} via Razorpay (${status}) Ref: ${refId}`
+        });
+
+        await line.update({ paidAt: new Date(), paidMode: "RAZORPAY", paidRef: refId, paidAmount: netPay, paidBy: req.user?.id || null });
+        processed++;
       } catch (err) {
         failed++;
-        const errMsg = err.response?.data?.message || err.message;
+        const errMsg = err.response?.data?.error?.description || err.message;
         errors.push(`${u.name}: ${errMsg}`);
-        wallet.transactions.unshift({
-          id: transferId,
-          type: "DISBURSEMENT",
-          amount: netPay,
-          date: new Date(),
-          status: "FAILED",
-          remarks: `Failed: ${errMsg}`
-        });
+        wallet.transactions.unshift({ id: transferId, type: "DISBURSEMENT", amount: netPay, date: new Date(), status: "FAILED", staffName: u.name, remarks: `Failed: ${errMsg}` });
       }
     }
 
     extra.payoutWallet = wallet;
     await org.update({ extra });
 
-    const remainingUnpaid = await PayrollLine.count({
-      where: {
-        cycleId: id,
-        status: "INCLUDED",
-        paidAt: null
-      }
-    });
+    const remainingUnpaid = await PayrollLine.count({ where: { cycleId: id, status: "INCLUDED", paidAt: null } });
+    if (remainingUnpaid === 0) await cycle.update({ status: "PAID" });
 
-    if (remainingUnpaid === 0) {
-      await cycle.update({ status: "PAID" });
-    }
-
-    return res.json({
-      success: true,
-      processed,
-      failed,
-      errors,
-      walletBalance: wallet.balance
-    });
+    return res.json({ success: true, processed, failed, errors, walletBalance: wallet.balance });
   } catch (e) {
-    console.error("Cashfree disburse error:", e);
+    console.error("Razorpay disburse error:", e);
     return res.status(500).json({ success: false, message: "Failed to disburse payroll: " + e.message });
   }
 });
 
-// --- Cashfree PG Integration ---
-async function createCashfreePGLink(clientId, clientSecret, amount, linkId) {
+// --- Razorpay PG Integration ---
+async function createRazorpayPaymentLink(keyId, keySecret, amount, linkId, req) {
   try {
-    const cId = clientId || DEFAULT_CASHFREE_CLIENT_ID;
-    const cSecret = clientSecret || DEFAULT_CASHFREE_CLIENT_SECRET;
+    const amountPaise = Math.round(Number(amount) * 100); // Razorpay uses paise
+
+    // Build callback URL from request host
+    const protocol = req.secure || req.headers["x-forwarded-proto"] === "https" ? "https" : "http";
+    const host = req.headers.host || "localhost:4000";
+    const frontendBase = process.env.FRONTEND_URL || `${protocol}://${host.replace(/:4000$/, ":3000")}`;
+    const callbackUrl = `${frontendBase}/settings/payout-wallet?link_id=${linkId}`;
 
     const resp = await axios.post(
-      "https://sandbox.cashfree.com/pg/links",
+      "https://api.razorpay.com/v1/payment_links",
       {
-        link_id: linkId,
-        link_amount: Number(amount),
-        link_currency: "INR",
-        link_purpose: "Payroll Payout Wallet Top Up",
-        customer_details: {
-          customer_name: "Org Admin",
-          customer_phone: "9999999999",
-          customer_email: "admin@example.com"
-        },
-        link_meta: {
-          return_url: `http://localhost:3000/settings/payout-wallet?link_id=${linkId}`
-        }
+        amount: amountPaise,
+        currency: "INR",
+        accept_partial: false,
+        description: "Payroll Wallet Top Up",
+        reference_id: linkId,
+        callback_url: callbackUrl,
+        callback_method: "get",
+        notify: { sms: false, email: false }
       },
       {
-        headers: {
-          "x-client-id": cId,
-          "x-client-secret": cSecret,
-          "x-api-version": "2023-08-01",
-          "Content-Type": "application/json"
-        }
+        auth: { username: keyId, password: keySecret },
+        headers: { "Content-Type": "application/json" }
       }
     );
 
-    if (resp.data && resp.data.link_url) {
-      return resp.data.link_url;
+    if (resp.data && resp.data.short_url) {
+      return { url: resp.data.short_url, rzpLinkId: resp.data.id, amount: Number(amount) };
     }
-    throw new Error("Failed to generate payment link URL");
+    throw new Error("Failed to generate Razorpay payment link URL");
   } catch (e) {
-    console.error("Cashfree create PG link error:", e.response?.data || e.message);
-    throw new Error("PG Link creation failed: " + (e.response?.data?.message || e.message));
+    console.error("Razorpay create payment link error:", e.response?.data || e.message);
+    throw new Error("Razorpay link creation failed: " + (e.response?.data?.error?.description || e.message));
   }
 }
 
-async function fetchCashfreePGLinkDetails(clientId, clientSecret, linkId) {
+async function fetchRazorpayLinkDetails(keyId, keySecret, rzpLinkId) {
   try {
-    const cId = clientId || DEFAULT_CASHFREE_CLIENT_ID;
-    const cSecret = clientSecret || DEFAULT_CASHFREE_CLIENT_SECRET;
-
     const resp = await axios.get(
-      `https://sandbox.cashfree.com/pg/links/${linkId}`,
-      {
-        headers: {
-          "x-client-id": cId,
-          "x-client-secret": cSecret,
-          "x-api-version": "2023-08-01"
-        }
-      }
+      `https://api.razorpay.com/v1/payment_links/${rzpLinkId}`,
+      { auth: { username: keyId, password: keySecret } }
     );
     return resp.data;
   } catch (e) {
-    console.error("Cashfree fetch PG details error:", e.response?.data || e.message);
-    throw new Error("PG details fetch failed: " + (e.response?.data?.message || e.message));
+    console.error("Razorpay fetch link details error:", e.response?.data || e.message);
+    throw new Error("Razorpay link fetch failed: " + (e.response?.data?.error?.description || e.message));
   }
 }
 
-// 16. POST create PG checkout link
+// 16. POST create Razorpay payment link for wallet top-up
 router.post("/settings/payout-wallet/create-pg-link", async (req, res) => {
   try {
     const orgId = requireOrg(req, res);
@@ -35405,20 +35285,16 @@ router.post("/settings/payout-wallet/create-pg-link", async (req, res) => {
       return res.status(404).json({ success: false, message: "Organization not found" });
     }
 
-    let extra = org.extra;
-    if (typeof extra === "string") {
-      try { extra = JSON.parse(extra); } catch (_) { extra = {}; }
-    }
-    extra = extra || {};
-
-    let keys = getCashfreePGKeys();
-
     const linkId = `link_${Date.now()}`;
+    const keys = getRazorpayKeys();
+
     try {
-      const linkUrl = await createCashfreePGLink(keys.clientId, keys.clientSecret, amount, linkId);
-      return res.json({ success: true, linkUrl, linkId });
+      const result = await createRazorpayPaymentLink(keys.keyId, keys.keySecret, amount, linkId, req);
+      // Store rzpLinkId so we can verify later
+      mockPayments.set(linkId, { orgId, amount, rzpLinkId: result.rzpLinkId, status: "PENDING", gateway: "RAZORPAY" });
+      return res.json({ success: true, linkUrl: result.url, linkId });
     } catch (err) {
-      console.warn("Cashfree PG Link creation failed, falling back to simulated sandbox payment link:", err.message);
+      console.warn("Razorpay payment link creation failed, falling back to mock sandbox:", err.message);
 
       const mockLinkId = `link_mock_${Date.now()}`;
       mockPayments.set(mockLinkId, { orgId, amount, status: "PENDING" });
@@ -35430,12 +35306,12 @@ router.post("/settings/payout-wallet/create-pg-link", async (req, res) => {
       return res.json({ success: true, linkUrl: mockLinkUrl, linkId: mockLinkId });
     }
   } catch (e) {
-    console.error("Failed to create PG link:", e);
+    console.error("Failed to create payment link:", e);
     return res.status(500).json({ success: false, message: e.message });
   }
 });
 
-// 17. POST verify PG checkout transaction status
+// 17. POST verify Razorpay payment status
 router.post("/settings/payout-wallet/verify-pg-payment", async (req, res) => {
   try {
     const orgId = requireOrg(req, res);
@@ -35465,6 +35341,7 @@ router.post("/settings/payout-wallet/verify-pg-payment", async (req, res) => {
       return res.json({ success: true, message: "Payment already verified", wallet });
     }
 
+    // Mock sandbox payment verification
     if (linkId.startsWith("link_mock_")) {
       const mockPayment = mockPayments.get(linkId);
       if (!mockPayment) {
@@ -35488,17 +35365,38 @@ router.post("/settings/payout-wallet/verify-pg-payment", async (req, res) => {
 
       extra.payoutWallet = wallet;
       await org.update({ extra });
-
-      // Clean up from memory
       mockPayments.delete(linkId);
 
       return res.json({ success: true, message: "Mock payment verified successfully", wallet });
     }
 
-    let keys = getCashfreePGKeys();
-    const details = await fetchCashfreePGLinkDetails(keys.clientId, keys.clientSecret, linkId);
-    if (details && details.link_status === "PAID") {
-      const payAmt = Number(details.link_amount || 0);
+    // Razorpay payment link verification
+    const pendingEntry = mockPayments.get(linkId);
+    const keys = getRazorpayKeys();
+
+    let rzpLinkId = pendingEntry?.rzpLinkId;
+    // If rzpLinkId is not in memory (e.g. server restarted), use linkId's reference_id to find via API
+    if (!rzpLinkId) {
+      // Try fetching by reference_id from Razorpay
+      try {
+        const searchResp = await axios.get(
+          `https://api.razorpay.com/v1/payment_links?reference_id=${linkId}`,
+          { auth: { username: keys.keyId, password: keys.keySecret } }
+        );
+        const items = searchResp.data?.items;
+        if (items && items.length > 0) rzpLinkId = items[0].id;
+      } catch (_) { /* ignore */ }
+    }
+
+    if (!rzpLinkId) {
+      return res.status(404).json({ success: false, message: "Payment link not found. Please try again or contact support." });
+    }
+
+    const details = await fetchRazorpayLinkDetails(keys.keyId, keys.keySecret, rzpLinkId);
+
+    if (details && details.status === "paid") {
+      // amount_paid is in paise
+      const payAmt = Number((details.amount_paid / 100).toFixed(2));
 
       wallet.balance = Number((Number(wallet.balance) + payAmt).toFixed(2));
 
@@ -35508,18 +35406,22 @@ router.post("/settings/payout-wallet/verify-pg-payment", async (req, res) => {
         amount: payAmt,
         date: new Date(),
         status: "SUCCESS",
-        remarks: "Deposit via Cashfree Payment Gateway"
+        remarks: `Deposit via Razorpay (Link: ${rzpLinkId})`
       });
 
       extra.payoutWallet = wallet;
       await org.update({ extra });
+      if (pendingEntry) mockPayments.delete(linkId);
 
       return res.json({ success: true, message: "Payment verified successfully", wallet });
     }
 
-    return res.status(400).json({ success: false, message: "Payment not completed or failed. Status: " + (details?.link_status || "UNKNOWN") });
+    return res.status(400).json({
+      success: false,
+      message: "Payment not completed. Status: " + (details?.status || "UNKNOWN")
+    });
   } catch (e) {
-    console.error("Failed to verify payment:", e);
+    console.error("Failed to verify Razorpay payment:", e);
     return res.status(500).json({ success: false, message: e.message });
   }
 });
