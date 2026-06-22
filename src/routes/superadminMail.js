@@ -505,4 +505,203 @@ router.post('/campaign/:id/resend', async (req, res) => {
   }
 });
 
+// Pause an ongoing mailing campaign
+router.post('/campaign/:id/pause', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const campaign = await MailCampaign.findByPk(id);
+    if (!campaign) {
+      return res.status(404).json({ success: false, message: 'Campaign not found' });
+    }
+
+    // Ownership check for non-superadmins
+    const mailingPerm = req.user.permissions ? req.user.permissions.mailing : null;
+    if (req.user.role !== 'superadmin' && mailingPerm !== 'manage_all' && campaign.createdBy !== req.user.id) {
+      return res.status(403).json({ success: false, message: 'Forbidden: You do not have access to this campaign' });
+    }
+
+    if (campaign.status === 'COMPLETED') {
+      return res.status(400).json({ success: false, message: 'Completed campaign cannot be paused' });
+    }
+
+    await campaign.update({ status: 'PAUSED' });
+    res.json({ success: true, message: 'Campaign paused successfully' });
+  } catch (error) {
+    console.error('Error pausing campaign:', error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+// Resume a paused campaign
+router.post('/campaign/:id/resume', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const campaign = await MailCampaign.findByPk(id);
+    if (!campaign) {
+      return res.status(404).json({ success: false, message: 'Campaign not found' });
+    }
+
+    // Ownership check for non-superadmins
+    const mailingPerm = req.user.permissions ? req.user.permissions.mailing : null;
+    if (req.user.role !== 'superadmin' && mailingPerm !== 'manage_all' && campaign.createdBy !== req.user.id) {
+      return res.status(403).json({ success: false, message: 'Forbidden: You do not have access to this campaign' });
+    }
+
+    if (campaign.status !== 'PAUSED') {
+      return res.status(400).json({ success: false, message: 'Only paused campaigns can be resumed' });
+    }
+
+    await campaign.update({ status: 'PENDING' }); // Worker will transition it back to SENDING
+    res.json({ success: true, message: 'Campaign resumed successfully' });
+  } catch (error) {
+    console.error('Error resuming campaign:', error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+// Pause a single queued email recipient
+router.post('/queue/:queueId/pause', async (req, res) => {
+  try {
+    const { queueId } = req.params;
+    const mail = await MailQueue.findByPk(queueId, {
+      include: [{ model: MailCampaign, as: 'campaign' }]
+    });
+
+    if (!mail) {
+      return res.status(404).json({ success: false, message: 'Queue item not found' });
+    }
+
+    // Ownership check for non-superadmins
+    const mailingPerm = req.user.permissions ? req.user.permissions.mailing : null;
+    if (req.user.role !== 'superadmin' && mailingPerm !== 'manage_all' && mail.campaign.createdBy !== req.user.id) {
+      return res.status(403).json({ success: false, message: 'Forbidden' });
+    }
+
+    if (mail.status !== 'PENDING') {
+      return res.status(400).json({ success: false, message: 'Only pending emails can be paused' });
+    }
+
+    await mail.update({
+      status: 'FAILED',
+      error: 'PAUSED'
+    });
+
+    res.json({ success: true, message: 'Recipient paused successfully' });
+  } catch (error) {
+    console.error('Error pausing queue item:', error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+// Resume a single paused email recipient
+router.post('/queue/:queueId/resume', async (req, res) => {
+  try {
+    const { queueId } = req.params;
+    const mail = await MailQueue.findByPk(queueId, {
+      include: [{ model: MailCampaign, as: 'campaign' }]
+    });
+
+    if (!mail) {
+      return res.status(404).json({ success: false, message: 'Queue item not found' });
+    }
+
+    // Ownership check for non-superadmins
+    const mailingPerm = req.user.permissions ? req.user.permissions.mailing : null;
+    if (req.user.role !== 'superadmin' && mailingPerm !== 'manage_all' && mail.campaign.createdBy !== req.user.id) {
+      return res.status(403).json({ success: false, message: 'Forbidden' });
+    }
+
+    if (mail.status !== 'FAILED' || mail.error !== 'PAUSED') {
+      return res.status(400).json({ success: false, message: 'Only paused emails can be resumed' });
+    }
+
+    await mail.update({
+      status: 'PENDING',
+      error: null
+    });
+
+    res.json({ success: true, message: 'Recipient resumed successfully' });
+  } catch (error) {
+    console.error('Error resuming queue item:', error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+// Batch pause selected queued emails
+router.post('/queue/batch-pause', async (req, res) => {
+  try {
+    const { ids } = req.body;
+    if (!Array.isArray(ids) || ids.length === 0) {
+      return res.status(400).json({ success: false, message: 'No recipients selected' });
+    }
+
+    let where = {
+      id: { [Op.in]: ids },
+      status: 'PENDING'
+    };
+
+    // For non-superadmins, verify they own the campaigns
+    if (req.user.role !== 'superadmin') {
+      const mailingPerm = req.user.permissions ? req.user.permissions.mailing : null;
+      if (mailingPerm !== 'manage_all') {
+        const ownedCampaigns = await MailCampaign.findAll({
+          where: { createdBy: req.user.id },
+          attributes: ['id']
+        });
+        const campaignIds = ownedCampaigns.map(c => c.id);
+        where.campaignId = { [Op.in]: campaignIds };
+      }
+    }
+
+    const [updatedCount] = await MailQueue.update(
+      { status: 'FAILED', error: 'PAUSED' },
+      { where }
+    );
+
+    res.json({ success: true, message: `Paused ${updatedCount} recipients` });
+  } catch (error) {
+    console.error('Error batch pausing queue items:', error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+// Batch resume selected paused queued emails
+router.post('/queue/batch-resume', async (req, res) => {
+  try {
+    const { ids } = req.body;
+    if (!Array.isArray(ids) || ids.length === 0) {
+      return res.status(400).json({ success: false, message: 'No recipients selected' });
+    }
+
+    let where = {
+      id: { [Op.in]: ids },
+      status: 'FAILED',
+      error: 'PAUSED'
+    };
+
+    // For non-superadmins, verify they own the campaigns
+    if (req.user.role !== 'superadmin') {
+      const mailingPerm = req.user.permissions ? req.user.permissions.mailing : null;
+      if (mailingPerm !== 'manage_all') {
+        const ownedCampaigns = await MailCampaign.findAll({
+          where: { createdBy: req.user.id },
+          attributes: ['id']
+        });
+        const campaignIds = ownedCampaigns.map(c => c.id);
+        where.campaignId = { [Op.in]: campaignIds };
+      }
+    }
+
+    const [updatedCount] = await MailQueue.update(
+      { status: 'PENDING', error: null },
+      { where }
+    );
+
+    res.json({ success: true, message: `Resumed ${updatedCount} recipients` });
+  } catch (error) {
+    console.error('Error batch resuming queue items:', error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
 module.exports = router;

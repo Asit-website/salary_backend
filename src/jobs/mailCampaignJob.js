@@ -1,4 +1,5 @@
 const { MailQueue, MailCampaign, sequelize } = require('../models');
+const { Op } = require('sequelize');
 const nodemailer = require('nodemailer');
 const fs = require('fs');
 
@@ -18,10 +19,18 @@ const transporter = nodemailer.createTransport(emailConfig);
 const processMailQueue = async () => {
   console.log('📬 [MailJob] Checking for pending emails in queue...');
 
-  // Find the oldest pending email
+  // Find the oldest pending email belonging to an active (PENDING or SENDING) campaign
   const pendingMail = await MailQueue.findOne({
     where: { status: 'PENDING' },
-    include: [{ model: MailCampaign, as: 'campaign' }],
+    include: [{
+      model: MailCampaign,
+      as: 'campaign',
+      where: {
+        status: {
+          [Op.in]: ['PENDING', 'SENDING']
+        }
+      }
+    }],
     order: [['createdAt', 'ASC']]
   });
 
