@@ -112,6 +112,7 @@ app.get('/uploads/payslips/:month/:filename', (req, res) => {
 app.use('/uploads', express.static(uploadsDir));
 
 app.use('/health', (_req, res) => res.json({ ok: true }));
+app.use('/api/webhook/essl', require('./src/routes/esslWebhook'));
 app.use('/auth', authRoutes);
 app.use('/kiosk', kioskRoutes);
 

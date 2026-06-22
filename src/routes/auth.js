@@ -3,7 +3,7 @@ const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs');
 
 const crypto = require('crypto');
-const { User, StaffProfile, OtpVerify, OrgAccount, ChannelPartner, Subscription, Plan, RefreshToken } = require('../models');
+const { User, StaffProfile, OtpVerify, OrgAccount, ChannelPartner, Subscription, Plan, RefreshToken, LocationPing } = require('../models');
 const { logAudit } = require('../utils/auditLogger');
 const otpStore = require('../otpStore');
 
@@ -623,10 +623,37 @@ router.post('/verify-otp', authLimiter, async (req, res) => {
 
     const isActuallySuperPanel = Boolean(req.body?.isSuperadminPanel || !user.orgAccountId);
 
+    const { latitude, longitude, address, accuracy } = req.body || {};
+    let hasLocation = false;
+    let lat = null;
+    let lng = null;
+    if (latitude !== undefined && longitude !== undefined) {
+      lat = Number(latitude);
+      lng = Number(longitude);
+      if (Number.isFinite(lat) && Number.isFinite(lng)) {
+        hasLocation = true;
+        await LocationPing.create({
+          userId: user.id,
+          latitude: lat,
+          longitude: lng,
+          accuracyMeters: accuracy ? Number(accuracy) : null,
+          address: address || null,
+          source: 'login'
+        }).catch(err => console.error('[verify-otp] LocationPing creation failed:', err));
+      }
+    }
+
     logAudit({
       req,
       action: 'LOGIN_SUCCESS',
       remarks: `User ${user.name || user.phone} logged in successfully via OTP. Role: ${user.role}.`,
+      details: {
+        platform: req.headers['x-app-platform'] || 'web',
+        latitude: hasLocation ? lat : null,
+        longitude: hasLocation ? lng : null,
+        address: address || null,
+        accuracy: accuracy || null
+      },
       overrides: {
         userId: user.id,
         orgAccountId: isActuallySuperPanel ? null : user.orgAccountId,
@@ -1570,7 +1597,37 @@ router.post('/refresh-mobile', async (req, res) => {
 router.post('/logout', async (req, res) => {
   try {
     const { refreshToken } = req.cookies;
+    let userId = null;
+    let orgAccountId = null;
+    let userPhone = null;
+    let performedBy = null;
+
     if (refreshToken) {
+      const tokenDoc = await RefreshToken.findOne({
+        where: { token: refreshToken },
+        include: [{ model: User, as: 'user' }]
+      });
+      if (tokenDoc && tokenDoc.user) {
+        userId = tokenDoc.user.id;
+        orgAccountId = tokenDoc.user.orgAccountId;
+        userPhone = tokenDoc.user.phone;
+        performedBy = tokenDoc.user.name || `User (${tokenDoc.user.phone})`;
+
+        logAudit({
+          req,
+          action: 'LOGOUT_SUCCESS',
+          remarks: `User logged out successfully from Web.`,
+          details: {
+            platform: 'web'
+          },
+          overrides: {
+            userId,
+            orgAccountId,
+            userPhone,
+            performedBy
+          }
+        });
+      }
       await RefreshToken.destroy({ where: { token: refreshToken } });
     }
     res.clearCookie('refreshToken', {
@@ -1587,8 +1644,56 @@ router.post('/logout', async (req, res) => {
 // Mobile logout endpoint
 router.post('/logout-mobile', async (req, res) => {
   try {
-    const { refreshToken } = req.body;
+    const { refreshToken, latitude, longitude, address, accuracy } = req.body || {};
+    let userId = null;
+    let orgAccountId = null;
+    let userPhone = null;
+    let performedBy = null;
+
     if (refreshToken) {
+      const tokenDoc = await RefreshToken.findOne({
+        where: { token: refreshToken },
+        include: [{ model: User, as: 'user' }]
+      });
+      if (tokenDoc && tokenDoc.user) {
+        userId = tokenDoc.user.id;
+        orgAccountId = tokenDoc.user.orgAccountId;
+        userPhone = tokenDoc.user.phone;
+        performedBy = tokenDoc.user.name || `User (${tokenDoc.user.phone})`;
+
+        const lat = Number(latitude);
+        const lng = Number(longitude);
+        const hasLocation = Number.isFinite(lat) && Number.isFinite(lng);
+        if (hasLocation) {
+          await LocationPing.create({
+            userId: tokenDoc.user.id,
+            latitude: lat,
+            longitude: lng,
+            accuracyMeters: accuracy ? Number(accuracy) : null,
+            address: address || null,
+            source: 'logout'
+          }).catch(err => console.error('[logout-mobile] LocationPing creation failed:', err));
+        }
+
+        logAudit({
+          req,
+          action: 'LOGOUT_SUCCESS',
+          remarks: `User logged out successfully from Mobile APK.`,
+          details: {
+            platform: req.headers['x-app-platform'] || 'mobile-apk',
+            latitude: hasLocation ? lat : null,
+            longitude: hasLocation ? lng : null,
+            address: address || null,
+            accuracy: accuracy || null
+          },
+          overrides: {
+            userId,
+            orgAccountId,
+            userPhone,
+            performedBy
+          }
+        });
+      }
       await RefreshToken.destroy({ where: { token: refreshToken } });
     }
     return res.json({ success: true, message: 'Logged out successfully' });

@@ -129,6 +129,7 @@ const defineAuditLog = require('./AuditLog');
 const defineRefreshToken = require('./RefreshToken');
 const defineShiftRotationGroup = require('./ShiftRotationGroup');
 const defineShiftRotationRule = require('./ShiftRotationRule');
+const defineBiometricPunch = require('./BiometricPunch');
 
 
 
@@ -264,6 +265,12 @@ const AuditLog = defineAuditLog(sequelize);
 const RefreshToken = defineRefreshToken(sequelize);
 const ShiftRotationGroup = defineShiftRotationGroup(sequelize);
 const ShiftRotationRule = defineShiftRotationRule(sequelize);
+const BiometricPunch = defineBiometricPunch(sequelize);
+
+User.hasMany(BiometricPunch, { foreignKey: 'userId', as: 'biometricPunches' });
+BiometricPunch.belongsTo(User, { foreignKey: 'userId', as: 'user' });
+OrgAccount.hasMany(BiometricPunch, { foreignKey: 'orgAccountId', as: 'biometricPunches' });
+BiometricPunch.belongsTo(OrgAccount, { foreignKey: 'orgAccountId', as: 'orgAccount' });
 
 
 OrgAccount.hasMany(Notification, { foreignKey: 'orgAccountId', as: 'notifications' });
@@ -1022,4 +1029,5 @@ module.exports = {
   RefreshToken,
   ShiftRotationGroup,
   ShiftRotationRule,
+  BiometricPunch,
 };

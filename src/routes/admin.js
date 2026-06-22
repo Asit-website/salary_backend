@@ -34860,20 +34860,38 @@ router.get("/payroll/:cycleId/export-bank-file", async (req, res) => {
 const axios = require("axios");
 const crypto = require("crypto");
 
-function getRazorpayKeys() {
+const { encrypt, decrypt } = require("../utils/encryption");
+
+function getRazorpayKeysForOrg(org) {
+  let extra = org.extra;
+  if (typeof extra === "string") {
+    try { extra = JSON.parse(extra); } catch (_) { extra = {}; }
+  }
+  extra = extra || {};
+  const rzp = extra.razorpay || {};
+
+  const keyId = rzp.keyId || "";
+  let keySecret = rzp.keySecret || "";
+  if (keySecret) {
+    try {
+      keySecret = decrypt(keySecret);
+    } catch (_) {}
+  }
+  const accountNumber = rzp.accountNumber || "";
+
   return {
-    keyId: process.env.RAZORPAY_KEY_ID, 
-    keySecret: process.env.RAZORPAY_KEY_SECRET 
+    keyId,
+    keySecret,
+    accountNumber
   };
 }
 
 // Razorpay X Payout — create a fund account then payout to bank
-async function razorpayXPayout({ keyId, keySecret, accountNumber, accountName, ifsc, amount, referenceId, existingContactId, existingFundAccountId }) {
+async function razorpayXPayout({ keyId, keySecret, merchantAccountNumber, accountNumber, accountName, ifsc, amount, referenceId, existingContactId, existingFundAccountId }) {
   const auth = { username: keyId, password: keySecret };
   const headers = { "Content-Type": "application/json", "X-Payout-Idempotency": referenceId };
 
-  const rzpAccountNumber = process.env.RAZORPAY_ACCOUNT_NUMBER;
-  let activeAccountNumber = rzpAccountNumber;
+  let activeAccountNumber = merchantAccountNumber;
   if (!activeAccountNumber) {
     // Try to dynamically fetch the merchant's active RazorpayX account number
     try {
@@ -34959,7 +34977,7 @@ router.get("/settings/payout-wallet", async (req, res) => {
     extra = extra || {};
 
     let wallet = extra.payoutWallet || { balance: 0, used: 0, transactions: [] };
-    const rzpKeys = getRazorpayKeys();
+    const rzpKeys = getRazorpayKeysForOrg(org);
 
     let cashfreeBalance = { balance: 0, availableBalance: 0 };
     let cfError = null;
@@ -34987,17 +35005,428 @@ router.get("/settings/payout-wallet", async (req, res) => {
       }
     }
 
+    const returnedKeys = {
+      keyId: rzpKeys.keyId,
+      hasKeySecret: !!rzpKeys.keySecret,
+      accountNumber: rzpKeys.accountNumber
+    };
+
     return res.json({
       success: true,
       wallet,
       gateway: "razorpay",
-      keyId: rzpKeys.keyId ? rzpKeys.keyId.substring(0, 12) + "••••" : "",
+      keys: returnedKeys,
       cashfreeBalance,
       cfError
     });
   } catch (e) {
     console.error("Failed to load wallet settings:", e);
     return res.status(500).json({ success: false, message: "Failed to load wallet settings" });
+  }
+});
+
+// 12.5 GET export payout/deposit history as Excel
+router.get("/settings/payout-wallet/export-excel", async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res);
+    if (!orgId) return;
+
+    const { type, startDate, endDate, status } = req.query;
+
+    const { OrgAccount } = require("../models");
+    const org = await OrgAccount.findByPk(orgId);
+    if (!org) {
+      return res.status(404).json({ success: false, message: "Organization not found" });
+    }
+
+    let extra = org.extra;
+    if (typeof extra === "string") {
+      try { extra = JSON.parse(extra); } catch (_) { extra = {}; }
+    }
+    extra = extra || {};
+
+    let wallet = extra.payoutWallet || { balance: 0, used: 0, transactions: [] };
+    let txs = wallet.transactions || [];
+
+    // Filter deposits helper
+    const filterDeposits = () => {
+      let filtered = txs.filter(t => t.type === "DEPOSIT");
+      if (startDate) {
+        const start = new Date(startDate);
+        filtered = filtered.filter(t => new Date(t.date) >= start);
+      }
+      if (endDate) {
+        const end = new Date(endDate);
+        filtered = filtered.filter(t => new Date(t.date) <= end);
+      }
+      if (type === "DEPOSIT" && status && status !== "ALL") {
+        filtered = filtered.filter(t => String(t.status).toUpperCase() === String(status).toUpperCase());
+      }
+      return filtered;
+    };
+
+    // Filter payouts helper
+    const filterPayouts = () => {
+      let filtered = txs.filter(t => t.type === "DISBURSEMENT");
+      if (startDate) {
+        const start = new Date(startDate);
+        filtered = filtered.filter(t => new Date(t.date) >= start);
+      }
+      if (endDate) {
+        const end = new Date(endDate);
+        filtered = filtered.filter(t => new Date(t.date) <= end);
+      }
+      if (type === "DISBURSEMENT" && status && status !== "ALL") {
+        filtered = filtered.filter(t => {
+          let actStatus = String(t.status || '').toUpperCase();
+          if (actStatus === 'SUCCESS' && t.remarks) {
+            const remarksLower = t.remarks.toLowerCase();
+            if (remarksLower.includes('(queued)')) actStatus = 'QUEUED';
+            else if (remarksLower.includes('(pending)')) actStatus = 'PENDING';
+            else if (remarksLower.includes('(processing)')) actStatus = 'PROCESSING';
+            else if (remarksLower.includes('(initiated)')) actStatus = 'INITIATED';
+          }
+          
+          if (status === "SUCCESS") {
+            return actStatus === "SUCCESS" || actStatus === "PROCESSED";
+          }
+          if (status === "PENDING") {
+            return actStatus === "QUEUED" || actStatus === "PENDING" || actStatus === "PROCESSING" || actStatus === "INITIATED";
+          }
+          if (status === "FAILED") {
+            return actStatus !== "SUCCESS" && actStatus !== "PROCESSED" && actStatus !== "QUEUED" && actStatus !== "PENDING" && actStatus !== "PROCESSING" && actStatus !== "INITIATED";
+          }
+          return actStatus === String(status).toUpperCase();
+        });
+      }
+      return filtered;
+    };
+
+    const deposits = filterDeposits();
+    const payouts = filterPayouts();
+
+    const exceljs = require("exceljs");
+    const workbook = new exceljs.Workbook();
+
+    // Styling configuration
+    const primaryColor = "0B1C3C"; // Navy Blue
+    const headerFont = { name: "Arial", size: 11, bold: true, color: { argb: "FFFFFFFF" } };
+    const titleFont = { name: "Arial", size: 16, bold: true, color: { argb: "0B1C3C" } };
+    const boldFont = { name: "Arial", size: 10, bold: true };
+    const regularFont = { name: "Arial", size: 10 };
+
+    const dateRangeStr = (startDate && endDate) 
+      ? `Period: ${new Date(startDate).toLocaleDateString()} to ${new Date(endDate).toLocaleDateString()}`
+      : "Period: All Time";
+
+    // ==========================================
+    // SHEET 1: Added Funds History (Deposits)
+    // ==========================================
+    const sheet1 = workbook.addWorksheet("Added Funds History");
+    sheet1.views = [{ showGridLines: true }];
+
+    // Title Row
+    sheet1.mergeCells("A1:F1");
+    const titleCell1 = sheet1.getCell("A1");
+    titleCell1.value = `${org.name || "Organization"} - Payout Wallet Deposits Report`;
+    titleCell1.font = titleFont;
+    titleCell1.alignment = { vertical: "middle", horizontal: "left" };
+    sheet1.getRow(1).height = 35;
+
+    // Generated At Row
+    sheet1.mergeCells("A2:F2");
+    const dateCell1 = sheet1.getCell("A2");
+    dateCell1.value = `${dateRangeStr} | Generated on: ${new Date().toLocaleString()}`;
+    dateCell1.font = { name: "Arial", size: 10, italic: true, color: { argb: "FF475569" } };
+    dateCell1.alignment = { vertical: "middle", horizontal: "left" };
+    sheet1.getRow(2).height = 20;
+
+    sheet1.getRow(3).height = 10; // Blank row
+
+    // Summary Box
+    const totalDeposited = deposits.filter(t => t.status === "SUCCESS").reduce((sum, t) => sum + Number(t.amount || 0), 0);
+    const successCountDep = deposits.filter(t => t.status === "SUCCESS").length;
+    const failedCountDep = deposits.filter(t => t.status === "FAILED").length;
+
+    sheet1.getCell("A4").value = "Total Deposited Amount";
+    sheet1.getCell("A4").font = boldFont;
+    sheet1.getCell("B4").value = totalDeposited;
+    sheet1.getCell("B4").font = boldFont;
+    sheet1.getCell("B4").numFmt = "₹#,##0.00";
+
+    sheet1.getCell("D4").value = "Successful Deposits";
+    sheet1.getCell("D4").font = regularFont;
+    sheet1.getCell("E4").value = successCountDep;
+    sheet1.getCell("E4").font = boldFont;
+
+    sheet1.getCell("D5").value = "Failed Deposits";
+    sheet1.getCell("D5").font = regularFont;
+    sheet1.getCell("E5").value = failedCountDep;
+    sheet1.getCell("E5").font = boldFont;
+
+    [4, 5].forEach(rNum => {
+      const row = sheet1.getRow(rNum);
+      row.height = 20;
+      row.eachCell((cell) => {
+        cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFF1F5F9" } };
+      });
+    });
+
+    sheet1.getRow(6).height = 15; // Blank row
+
+    const headersDep = [
+      "Transaction Reference ID",
+      "Razorpay Payment ID",
+      "Deposit Date & Time",
+      "Amount (INR)",
+      "Status",
+      "Remarks / Details"
+    ];
+
+    const headerRow1 = sheet1.addRow(headersDep);
+    headerRow1.height = 25;
+    headerRow1.eachCell((cell) => {
+      cell.font = headerFont;
+      cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: primaryColor } };
+      cell.alignment = { vertical: "middle", horizontal: "center" };
+      cell.border = {
+        top: { style: "thin", color: { argb: "FF475569" } },
+        bottom: { style: "medium", color: { argb: "FF0F172A" } },
+        left: { style: "thin", color: { argb: "FF475569" } },
+        right: { style: "thin", color: { argb: "FF475569" } }
+      };
+    });
+
+    deposits.forEach((t, idx) => {
+      const rowValues = [
+        t.id || "",
+        t.rzpPaymentId || "",
+        t.date ? new Date(t.date).toLocaleString() : "",
+        Number(t.amount || 0),
+        String(t.status || "").toUpperCase(),
+        t.remarks || ""
+      ];
+
+      const row = sheet1.addRow(rowValues);
+      row.height = 20;
+
+      row.eachCell((cell, colNum) => {
+        cell.font = regularFont;
+        cell.border = {
+          top: { style: "thin", color: { argb: "FFE2E8F0" } },
+          bottom: { style: "thin", color: { argb: "FFE2E8F0" } },
+          left: { style: "thin", color: { argb: "FFE2E8F0" } },
+          right: { style: "thin", color: { argb: "FFE2E8F0" } }
+        };
+
+        if (idx % 2 === 1) {
+          cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFF8FAFC" } };
+        }
+
+        if (colNum === 4) {
+          cell.alignment = { horizontal: "right", vertical: "middle" };
+          cell.numFmt = "₹#,##0.00";
+          cell.font = boldFont;
+        } else if (colNum === 5) {
+          cell.alignment = { horizontal: "center", vertical: "middle" };
+          const statusVal = String(cell.value).toUpperCase();
+          if (statusVal === "SUCCESS") cell.font = { name: "Arial", size: 10, bold: true, color: { argb: "FF15803D" } };
+          if (statusVal === "FAILED") cell.font = { name: "Arial", size: 10, bold: true, color: { argb: "FFB91C1C" } };
+        } else {
+          cell.alignment = { horizontal: "left", vertical: "middle" };
+        }
+      });
+    });
+
+    sheet1.columns.forEach((col, colIdx) => {
+      let maxLen = 0;
+      col.eachCell((cell, rowIdx) => {
+        if (rowIdx > 3 && cell.value) {
+          const valStr = cell.value instanceof Date ? cell.value.toLocaleString() : String(cell.value);
+          if (valStr.length > maxLen) maxLen = valStr.length;
+        }
+      });
+      col.width = Math.min(45, Math.max(12, maxLen + 4));
+    });
+
+    // ==========================================
+    // SHEET 2: Payouts History (Funds Used)
+    // ==========================================
+    const sheet2 = workbook.addWorksheet("Payouts History");
+    sheet2.views = [{ showGridLines: true }];
+
+    // Title Row
+    sheet2.mergeCells("A1:K1");
+    const titleCell2 = sheet2.getCell("A1");
+    titleCell2.value = `${org.name || "Organization"} - Payouts History (Funds Used) Report`;
+    titleCell2.font = titleFont;
+    titleCell2.alignment = { vertical: "middle", horizontal: "left" };
+    sheet2.getRow(1).height = 35;
+
+    // Generated At Row
+    sheet2.mergeCells("A2:K2");
+    const dateCell2 = sheet2.getCell("A2");
+    dateCell2.value = `${dateRangeStr} | Generated on: ${new Date().toLocaleString()}`;
+    dateCell2.font = { name: "Arial", size: 10, italic: true, color: { argb: "FF475569" } };
+    dateCell2.alignment = { vertical: "middle", horizontal: "left" };
+    sheet2.getRow(2).height = 20;
+
+    sheet2.getRow(3).height = 10; // Blank row
+
+    // Summary Box
+    const totalSuccessPay = payouts.filter(t => t.status === "SUCCESS").reduce((sum, t) => sum + Number(t.amount || 0), 0);
+    const totalPendingPay = payouts.filter(t => t.status === "PENDING" || t.status === "PROCESSING" || t.status === "QUEUED").reduce((sum, t) => sum + Number(t.amount || 0), 0);
+    const totalFailedPay = payouts.filter(t => t.status === "FAILED").reduce((sum, t) => sum + Number(t.amount || 0), 0);
+
+    sheet2.getCell("A4").value = "Total Disbursed (Success)";
+    sheet2.getCell("A4").font = boldFont;
+    sheet2.getCell("B4").value = totalSuccessPay;
+    sheet2.getCell("B4").font = boldFont;
+    sheet2.getCell("B4").numFmt = "₹#,##0.00";
+
+    sheet2.getCell("D4").value = "Total Pending/Processing";
+    sheet2.getCell("D4").font = regularFont;
+    sheet2.getCell("E4").value = totalPendingPay;
+    sheet2.getCell("E4").font = boldFont;
+    sheet2.getCell("E4").numFmt = "₹#,##0.00";
+
+    sheet2.getCell("A5").value = "Total Failed Payouts";
+    sheet2.getCell("A5").font = regularFont;
+    sheet2.getCell("B5").value = totalFailedPay;
+    sheet2.getCell("B5").font = boldFont;
+    sheet2.getCell("B5").numFmt = "₹#,##0.00";
+
+    sheet2.getCell("D5").value = "Total Payout Count";
+    sheet2.getCell("D5").font = regularFont;
+    sheet2.getCell("E5").value = payouts.length;
+    sheet2.getCell("E5").font = boldFont;
+
+    [4, 5].forEach(rNum => {
+      const row = sheet2.getRow(rNum);
+      row.height = 20;
+      row.eachCell((cell) => {
+        cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFF1F5F9" } };
+      });
+    });
+
+    sheet2.getRow(6).height = 15; // Blank row
+
+    const headersPay = [
+      "Razorpay Payout ID",
+      "Reference ID",
+      "UTR",
+      "Employee Name",
+      "Staff ID",
+      "Bank Account",
+      "IFSC Code",
+      "Net Salary (INR)",
+      "Disbursement Date",
+      "Status",
+      "Failure Reason / Remarks"
+    ];
+
+    const headerRow2 = sheet2.addRow(headersPay);
+    headerRow2.height = 25;
+    headerRow2.eachCell((cell) => {
+      cell.font = headerFont;
+      cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: primaryColor } };
+      cell.alignment = { vertical: "middle", horizontal: "center" };
+      cell.border = {
+        top: { style: "thin", color: { argb: "FF475569" } },
+        bottom: { style: "medium", color: { argb: "FF0F172A" } },
+        left: { style: "thin", color: { argb: "FF475569" } },
+        right: { style: "thin", color: { argb: "FF475569" } }
+      };
+    });
+
+    payouts.forEach((t, idx) => {
+      let finalPayoutId = t.payoutId || "";
+      let finalUtr = t.utr || "";
+      if (!finalPayoutId && t.remarks) {
+        const matchId = t.remarks.match(/Ref:\s*([^\s]+)/);
+        if (matchId) finalPayoutId = matchId[1];
+      }
+      if (!finalUtr && t.remarks && t.remarks.includes("UTR:")) {
+        const matchUtr = t.remarks.match(/UTR:\s*([^\s]+)/);
+        if (matchUtr) finalUtr = matchUtr[1];
+      }
+
+      const rowValues = [
+        finalPayoutId,
+        t.id || "",
+        finalUtr,
+        t.staffName || "Unknown",
+        t.staffId || "",
+        t.bankAccount || "",
+        t.bankIfsc || "",
+        Number(t.amount || 0),
+        t.date ? new Date(t.date).toLocaleString() : "",
+        String(t.status || "").toUpperCase(),
+        t.remarks || ""
+      ];
+
+      const row = sheet2.addRow(rowValues);
+      row.height = 20;
+
+      row.eachCell((cell, colNum) => {
+        cell.font = regularFont;
+        cell.border = {
+          top: { style: "thin", color: { argb: "FFE2E8F0" } },
+          bottom: { style: "thin", color: { argb: "FFE2E8F0" } },
+          left: { style: "thin", color: { argb: "FFE2E8F0" } },
+          right: { style: "thin", color: { argb: "FFE2E8F0" } }
+        };
+
+        if (idx % 2 === 1) {
+          cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFF8FAFC" } };
+        }
+
+        if (colNum === 8) {
+          cell.alignment = { horizontal: "right", vertical: "middle" };
+          cell.numFmt = "₹#,##0.00";
+          cell.font = boldFont;
+        } else if (colNum === 10) {
+          cell.alignment = { horizontal: "center", vertical: "middle" };
+          const statusVal = String(cell.value).toUpperCase();
+          if (statusVal === "SUCCESS" || statusVal === "PROCESSED") {
+            cell.font = { name: "Arial", size: 10, bold: true, color: { argb: "FF15803D" } };
+          } else if (statusVal === "FAILED" || statusVal === "REJECTED") {
+            cell.font = { name: "Arial", size: 10, bold: true, color: { argb: "FFB91C1C" } };
+          } else {
+            cell.font = { name: "Arial", size: 10, bold: true, color: { argb: "FFD97706" } };
+          }
+        } else {
+          cell.alignment = { horizontal: "left", vertical: "middle" };
+        }
+      });
+    });
+
+    sheet2.columns.forEach((col, colIdx) => {
+      let maxLen = 0;
+      col.eachCell((cell, rowIdx) => {
+        if (rowIdx > 3 && cell.value) {
+          const valStr = cell.value instanceof Date ? cell.value.toLocaleString() : String(cell.value);
+          if (valStr.length > maxLen) maxLen = valStr.length;
+        }
+      });
+      col.width = Math.min(45, Math.max(12, maxLen + 4));
+    });
+
+    // Send workbook
+    res.setHeader(
+      "Content-Type",
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    );
+    res.setHeader(
+      "Content-Disposition",
+      `attachment; filename=wallet-ledger-report.xlsx`,
+    );
+
+    await workbook.xlsx.write(res);
+    res.end();
+  } catch (e) {
+    console.error("Failed to export wallet excel report:", e);
+    return res.status(500).json({ success: false, message: "Failed to export Excel report: " + e.message });
   }
 });
 
@@ -35047,13 +35476,57 @@ router.post("/settings/payout-wallet/topup", async (req, res) => {
   }
 });
 
-// 14. POST save credentials — managed via env, not DB
+// 14. POST save credentials to org DB
 router.post("/settings/payout-wallet/credentials", async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res);
+    if (!orgId) return;
 
-  return res.status(400).json({
-    success: false,
-    message: "Credentials must be configured in environment variables (.env)"
-  });
+    const { keyId, keySecret, accountNumber } = req.body;
+    if (!keyId || !keySecret) {
+      return res.status(400).json({ success: false, message: "Key ID and Key Secret are required" });
+    }
+
+    const { OrgAccount } = require("../models");
+    const org = await OrgAccount.findByPk(orgId);
+    if (!org) {
+      return res.status(404).json({ success: false, message: "Organization not found" });
+    }
+
+    let extra = org.extra;
+    if (typeof extra === "string") {
+      try { extra = JSON.parse(extra); } catch (_) { extra = {}; }
+    }
+    extra = extra || {};
+
+    let encryptedSecret = "";
+    if (keySecret.trim() === "••••••••••••") {
+      const existingKeys = extra.razorpay || {};
+      encryptedSecret = existingKeys.keySecret;
+      if (!encryptedSecret) {
+        return res.status(400).json({ success: false, message: "Key Secret is required" });
+      }
+    } else {
+      encryptedSecret = encrypt(keySecret.trim());
+    }
+
+    extra.razorpay = {
+      keyId: keyId.trim(),
+      keySecret: encryptedSecret,
+      accountNumber: (accountNumber || "").trim()
+    };
+
+    org.extra = extra;
+    await org.update({ extra });
+
+    return res.json({
+      success: true,
+      message: "Razorpay credentials saved successfully"
+    });
+  } catch (e) {
+    console.error("Failed to save Razorpay credentials:", e);
+    return res.status(500).json({ success: false, message: e.message });
+  }
 });
 
 // 15. POST run Razorpay X direct payouts for payroll cycle
@@ -35077,7 +35550,13 @@ router.post("/payroll/:cycleId/disburse-cashfree", async (req, res) => {
     extra = extra || {};
 
     let wallet = extra.payoutWallet || { balance: 0, used: 0, transactions: [] };
-    const rzpKeys = getRazorpayKeys();
+    const rzpKeys = getRazorpayKeysForOrg(org);
+    if (!rzpKeys.keyId || !rzpKeys.keySecret) {
+      return res.status(400).json({
+        success: false,
+        message: "Razorpay credentials not configured. Please add your API keys in Payroll Wallet settings."
+      });
+    }
 
     const lines = await PayrollLine.findAll({ where: { cycleId: id, status: "INCLUDED" } });
     const unpaidLines = lines.filter(l => {
@@ -35134,7 +35613,18 @@ router.post("/payroll/:cycleId/disburse-cashfree", async (req, res) => {
       if (!u || !u.bankAccountNumber || !u.bankIfsc) {
         failed++;
         errors.push(`${u?.name || "Staff"}: Missing bank details`);
-        wallet.transactions.unshift({ id: transferId, type: "DISBURSEMENT", amount: netPay, date: new Date(), status: "FAILED", staffName: u?.name || "Unknown", remarks: "Missing bank details" });
+        wallet.transactions.unshift({
+          id: transferId,
+          type: "DISBURSEMENT",
+          amount: netPay,
+          date: new Date(),
+          status: "FAILED",
+          staffName: u?.name || "Unknown",
+          staffId: u?.staffId || "",
+          bankAccount: "",
+          bankIfsc: "",
+          remarks: "Missing bank details"
+        });
         continue;
       }
 
@@ -35163,6 +35653,7 @@ router.post("/payroll/:cycleId/disburse-cashfree", async (req, res) => {
         const { contactId, fundAccountId, payout } = await razorpayXPayout({
           keyId: rzpKeys.keyId,
           keySecret: rzpKeys.keySecret,
+          merchantAccountNumber: rzpKeys.accountNumber,
           accountNumber: u.bankAccountNumber,
           accountName: u.name,
           ifsc: u.bankIfsc,
@@ -35190,7 +35681,12 @@ router.post("/payroll/:cycleId/disburse-cashfree", async (req, res) => {
           id: transferId, type: "DISBURSEMENT", amount: netPay,
           date: new Date(), status: "SUCCESS",
           staffName: u.name,
-          remarks: `Salary to ${u.name} via Razorpay (${status}) Ref: ${refId}`
+          remarks: `Salary to ${u.name} via Razorpay (${status}) Ref: ${refId}`,
+          payoutId: refId,
+          utr: payout?.utr || null,
+          staffId: u.staffId,
+          bankAccount: u.bankAccountNumber,
+          bankIfsc: u.bankIfsc
         });
 
         await line.update({ paidAt: new Date(), paidMode: "RAZORPAY", paidRef: refId, paidAmount: netPay, paidBy: req.user?.id || null });
@@ -35199,7 +35695,18 @@ router.post("/payroll/:cycleId/disburse-cashfree", async (req, res) => {
         failed++;
         const errMsg = err.response?.data?.error?.description || err.message;
         errors.push(`${u.name}: ${errMsg}`);
-        wallet.transactions.unshift({ id: transferId, type: "DISBURSEMENT", amount: netPay, date: new Date(), status: "FAILED", staffName: u.name, remarks: `Failed: ${errMsg}` });
+        wallet.transactions.unshift({
+          id: transferId,
+          type: "DISBURSEMENT",
+          amount: netPay,
+          date: new Date(),
+          status: "FAILED",
+          staffName: u.name,
+          remarks: `Failed: ${errMsg}`,
+          staffId: u.staffId,
+          bankAccount: u.bankAccountNumber,
+          bankIfsc: u.bankIfsc
+        });
       }
     }
 
@@ -35286,7 +35793,13 @@ router.post("/settings/payout-wallet/create-pg-link", async (req, res) => {
     }
 
     const linkId = `link_${Date.now()}`;
-    const keys = getRazorpayKeys();
+    const keys = getRazorpayKeysForOrg(org);
+    if (!keys.keyId || !keys.keySecret) {
+      return res.status(400).json({
+        success: false,
+        message: "Razorpay credentials not configured. Please add your API keys in Payroll Wallet settings."
+      });
+    }
 
     try {
       const result = await createRazorpayPaymentLink(keys.keyId, keys.keySecret, amount, linkId, req);
@@ -35374,7 +35887,13 @@ router.post("/settings/payout-wallet/verify-pg-payment", async (req, res) => {
 
     // Razorpay payment link verification
     const pendingEntry = mockPayments.get(linkId);
-    const keys = getRazorpayKeys();
+    const keys = getRazorpayKeysForOrg(org);
+    if (!keys.keyId || !keys.keySecret) {
+      return res.status(400).json({
+        success: false,
+        message: "Razorpay credentials not configured. Please add your API keys in Payroll Wallet settings."
+      });
+    }
 
     let rzpLinkId = pendingEntry?.rzpLinkId;
     // If rzpLinkId is not in memory (e.g. server restarted), use linkId's reference_id to find via API
