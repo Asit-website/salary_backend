@@ -129,6 +129,7 @@ app.use(rosterRoutes);
 app.use('/admin/shift-rotation', shiftRotationRoutes);
 app.use('/admin/ai', aiRoutes);
 app.use('/admin', adminRoutes);
+app.use('/admin/tally', require('./src/routes/tally'));
 app.use('/superadmin/mail', superadminMailRoutes);
 app.use('/superadmin', superadminRoutes);
 app.use('/attendance', attendanceRoutes);
