@@ -380,8 +380,8 @@ class ZktecoService {
             if (targetDate) {
                 datesToSync.push(targetDate);
             } else {
-                // Sync last 12 days as requested
-                for (let i = 0; i <= 12; i++) {
+                // Sync last 2 days as requested
+                for (let i = 0; i <= 1; i++) {
                     datesToSync.push(nowIST.subtract(i, 'day').format('YYYY-MM-DD'));
                 }
                 datesToSync.reverse(); // Reverse to process oldest first (chronological order)
