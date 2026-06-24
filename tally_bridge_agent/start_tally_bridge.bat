@@ -1,9 +1,9 @@
 @echo off
-title Tally Prime Bridge Agent Launcher
+title Vetansutra Tally Prime Bridge Agent Launcher
 color 0b
 
 echo ===================================================
-echo   ThinkTech Tally Prime Bridge Agent Auto-Launcher
+echo   Vetansutra Tally Prime Bridge Agent Auto-Launcher
 echo ===================================================
 echo.
 

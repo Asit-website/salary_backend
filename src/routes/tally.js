@@ -3,9 +3,26 @@ const router = express.Router();
 const tallyService = require('../services/tallyService');
 const { authRequired } = require('../middleware/auth');
 const { tenantEnforce } = require('../middleware/tenant');
+const path = require('path');
+const fs = require('fs');
 
 router.use(authRequired);
 router.use(tenantEnforce);
+
+router.get('/download-bridge', async (req, res) => {
+  try {
+    const filePath = path.join(__dirname, '..', '..', 'tally_bridge_agent', 'dist', 'tally-bridge-agent.exe');
+    if (fs.existsSync(filePath)) {
+      res.setHeader('Content-Disposition', 'attachment; filename="vetansutra-tally-bridge.exe"');
+      res.setHeader('Content-Type', 'application/octet-stream');
+      fs.createReadStream(filePath).pipe(res);
+    } else {
+      res.status(404).json({ success: false, message: 'Bridge agent executable not found on server' });
+    }
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
 
 router.get('/config', async (req, res) => {
   try {

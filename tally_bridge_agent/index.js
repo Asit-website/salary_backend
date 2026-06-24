@@ -68,5 +68,14 @@ app.post('/tally/push', async (req, res) => {
 
 const PORT = process.env.PORT || 7000;
 app.listen(PORT, () => {
-  console.log(`Tally Bridge Agent running on port ${PORT}`);
+  console.log('\x1b[36m%s\x1b[0m', '=====================================================');
+  console.log('\x1b[36m%s\x1b[0m', '         VETANSUTRA TALLY PRIME BRIDGE AGENT         ');
+  console.log('\x1b[36m%s\x1b[0m', '=====================================================');
+  console.log(` Status:     \x1b[32mActive & Running\x1b[0m`);
+  console.log(` Local Port: \x1b[33m${PORT}\x1b[0m`);
+  console.log(` Tally URL:  \x1b[33mhttp://localhost:9000\x1b[0m`);
+  console.log('\x1b[36m%s\x1b[0m', '-----------------------------------------------------');
+  console.log(' Keep this console window open while syncing data.');
+  console.log(' Press Ctrl+C to stop the agent.');
+  console.log('\x1b[36m%s\x1b[0m', '=====================================================');
 });
