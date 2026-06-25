@@ -38,6 +38,7 @@ const superadminMailRoutes = require('./src/routes/superadminMail');
 const recruitmentRoutes = require('./src/routes/recruitment');
 const socialRoutes = require('./src/routes/social');
 const notificationRoutes = require('./src/routes/notification');
+const wishesRoutes = require('./src/routes/wishes');
 
 
 
@@ -124,6 +125,7 @@ app.use('/admin/task-management', taskManagementRoutes);
 app.use('/admin/recruitment', recruitmentRoutes);
 app.use('/admin/social', socialRoutes);
 app.use('/admin/notifications', notificationRoutes);
+app.use('/admin/wishes', wishesRoutes);
 app.use('/channel-partner', channelPartnerRoutes);
 app.use(rosterRoutes);
 app.use('/admin/shift-rotation', shiftRotationRoutes);
