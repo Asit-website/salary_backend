@@ -74,6 +74,14 @@ async function initDb() {
     console.log('AWS Rekognition: Note on face_id column (might already exist):', err.message);
   }
 
+  // Ensure financial_year column exists in holiday_templates
+  try {
+    await sequelize.query('ALTER TABLE holiday_templates ADD COLUMN IF NOT EXISTS financial_year VARCHAR(16) NULL');
+    console.log('⏰ financial_year column in holiday_templates checked/verified.');
+  } catch (err) {
+    console.log('Note on financial_year column in holiday_templates (might already exist):', err.message);
+  }
+
   // Ensure qr_punch_enabled column exists in users
   try {
     await sequelize.query('ALTER TABLE users ADD COLUMN qr_punch_enabled BOOLEAN NOT NULL DEFAULT TRUE');

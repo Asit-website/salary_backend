@@ -10,6 +10,7 @@ const SIDEBAR_PERMISSION_OPTIONS = [
   { key: 'dashboard_tab', label: 'Dashboard' },
   { key: 'staff_management_tab', label: 'Staff Management' },
   { key: 'attendance_tab', label: 'Attendance' },
+  { key: 'leave_tab', label: 'Leave Management' },
   { key: 'payroll_tab', label: 'Payroll' },
   { key: 'loans_tab', label: 'Loans' },
   { key: 'sales_tab', label: 'Sales' },

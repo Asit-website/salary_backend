@@ -9338,7 +9338,34 @@ router.delete("/leave/assign/:id", async (req, res) => {
   }
 });
 
-// --- Holiday Templates & Assignments --- (org-scoped)
+// GET /admin/holidays/master - Fetch global master holidays by financial year
+router.get("/holidays/master", async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res);
+    if (!orgId) return;
+
+    const { financialYear } = req.query || {};
+    if (!financialYear) {
+      return res.status(400).json({ success: false, message: "financialYear required" });
+    }
+
+    const template = await HolidayTemplate.findOne({
+      where: { orgAccountId: null, financialYear: String(financialYear) },
+      include: [{ model: HolidayDate, as: "holidays", where: { active: true }, required: false }]
+    });
+
+    const holidays = template ? template.holidays || [] : [];
+    return res.json({
+      success: true,
+      holidays: holidays.map(h => ({
+        name: h.name,
+        date: h.date
+      }))
+    });
+  } catch (e) {
+    return res.status(500).json({ success: false, message: "Failed to load master holidays" });
+  }
+});
 
 // List holiday templates with holidays and assigned count
 
@@ -9374,6 +9401,8 @@ router.get("/holidays/templates", async (req, res) => {
 
         endMonth: t.endMonth,
 
+        financialYear: t.financialYear,
+
         active: t.active !== false,
 
         holidays: (t.holidays || []).map((h) => ({
@@ -9400,7 +9429,7 @@ router.post("/holidays/templates", async (req, res) => {
     const orgId = requireOrg(req, res);
     if (!orgId) return;
 
-    const { name, startMonth, endMonth, active, holidays } = req.body || {};
+    const { name, startMonth, endMonth, active, holidays, financialYear } = req.body || {};
 
     if (!name)
       return res.status(400).json({ success: false, message: "name required" });
@@ -9413,6 +9442,8 @@ router.post("/holidays/templates", async (req, res) => {
         : null,
 
       endMonth: Number.isFinite(Number(endMonth)) ? Number(endMonth) : null,
+
+      financialYear: financialYear ? String(financialYear) : null,
 
       active: active === undefined ? true : !!active,
 
@@ -9479,7 +9510,7 @@ router.put("/holidays/templates/:id", async (req, res) => {
     if (!row)
       return res.status(404).json({ success: false, message: "not found" });
 
-    const { name, startMonth, endMonth, active, holidays } = req.body || {};
+    const { name, startMonth, endMonth, active, holidays, financialYear } = req.body || {};
 
     await row.update({
       name: name !== undefined ? String(name) : row.name,
@@ -9497,6 +9528,13 @@ router.put("/holidays/templates/:id", async (req, res) => {
             ? Number(endMonth)
             : null
           : row.endMonth,
+
+      financialYear:
+        financialYear !== undefined
+          ? financialYear
+            ? String(financialYear)
+            : null
+          : row.financialYear,
 
       active: active !== undefined ? !!active : row.active,
     });

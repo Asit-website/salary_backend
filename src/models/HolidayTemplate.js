@@ -6,6 +6,7 @@ module.exports = (sequelize) => {
     name: { type: DataTypes.STRING(128), allowNull: false },
     startMonth: { type: DataTypes.INTEGER, allowNull: true },
     endMonth: { type: DataTypes.INTEGER, allowNull: true },
+    financialYear: { type: DataTypes.STRING(16), allowNull: true, field: 'financial_year' },
     active: { type: DataTypes.BOOLEAN, defaultValue: true },
     orgAccountId: { type: DataTypes.BIGINT.UNSIGNED, allowNull: true, field: 'org_account_id' },
   }, { tableName: 'holiday_templates' });

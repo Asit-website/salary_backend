@@ -3,7 +3,7 @@ const router = express.Router();
 const jwt = require('jsonwebtoken');
 
 const { sequelize } = require('../sequelize');
-const { Plan, OrgAccount, Subscription, User, Permission, Role, StaffProfile, ChannelPartner, Lead, LeadConfig } = require('../models');
+const { Plan, OrgAccount, Subscription, User, Permission, Role, StaffProfile, ChannelPartner, Lead, LeadConfig, HolidayTemplate, HolidayDate } = require('../models');
 const bcrypt = require('bcryptjs');
 const { authRequired } = require('../middleware/auth');
 const { requireRole } = require('../middleware/roles');
@@ -2104,6 +2104,110 @@ router.delete('/leads/:id', async (req, res) => {
     return res.json({ success: true, message: 'Lead deleted' });
   } catch (e) {
     return res.status(500).json({ success: false, message: 'Failed to delete lead' });
+  }
+});
+
+// Master Holidays (Superadmin scoped)
+router.get('/holidays', async (req, res) => {
+  try {
+    const rows = await HolidayTemplate.findAll({
+      where: { orgAccountId: null },
+      include: [{ model: HolidayDate, as: 'holidays' }],
+      order: [['financialYear', 'DESC'], ['createdAt', 'DESC']]
+    });
+    return res.json({ success: true, templates: rows });
+  } catch (e) {
+    return res.status(500).json({ success: false, message: 'Failed to load master holidays' });
+  }
+});
+
+router.post('/holidays', async (req, res) => {
+  try {
+    const { name, financialYear, holidays } = req.body || {};
+    if (!name || !financialYear) {
+      return res.status(400).json({ success: false, message: 'name and financialYear required' });
+    }
+    const template = await HolidayTemplate.create({
+      name: String(name),
+      financialYear: String(financialYear),
+      startMonth: 4, // April
+      endMonth: 3,   // March
+      active: true,
+      orgAccountId: null // Global
+    });
+
+    if (Array.isArray(holidays) && holidays.length) {
+      const dates = holidays
+        .filter(h => h && h.name && h.date)
+        .map(h => ({
+          holidayTemplateId: template.id,
+          name: String(h.name),
+          date: String(h.date),
+          active: true
+        }));
+      if (dates.length) {
+        await HolidayDate.bulkCreate(dates);
+      }
+    }
+
+    const result = await HolidayTemplate.findByPk(template.id, {
+      include: [{ model: HolidayDate, as: 'holidays' }]
+    });
+    return res.json({ success: true, template: result });
+  } catch (e) {
+    return res.status(500).json({ success: false, message: 'Failed to create master holidays: ' + e.message });
+  }
+});
+
+router.put('/holidays/:id', async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    const template = await HolidayTemplate.findOne({ where: { id, orgAccountId: null } });
+    if (!template) {
+      return res.status(404).json({ success: false, message: 'Master holiday template not found' });
+    }
+
+    const { name, financialYear, holidays } = req.body || {};
+    await template.update({
+      name: name !== undefined ? String(name) : template.name,
+      financialYear: financialYear !== undefined ? String(financialYear) : template.financialYear
+    });
+
+    if (Array.isArray(holidays)) {
+      await HolidayDate.destroy({ where: { holidayTemplateId: template.id } });
+      const dates = holidays
+        .filter(h => h && h.name && h.date)
+        .map(h => ({
+          holidayTemplateId: template.id,
+          name: String(h.name),
+          date: String(h.date),
+          active: true
+        }));
+      if (dates.length) {
+        await HolidayDate.bulkCreate(dates);
+      }
+    }
+
+    const result = await HolidayTemplate.findByPk(template.id, {
+      include: [{ model: HolidayDate, as: 'holidays' }]
+    });
+    return res.json({ success: true, template: result });
+  } catch (e) {
+    return res.status(500).json({ success: false, message: 'Failed to update master holidays' });
+  }
+});
+
+router.delete('/holidays/:id', async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    const template = await HolidayTemplate.findOne({ where: { id, orgAccountId: null } });
+    if (!template) {
+      return res.status(404).json({ success: false, message: 'Master holiday template not found' });
+    }
+    await template.destroy();
+    return res.json({ success: true, message: 'Master holiday template deleted' });
+  } catch (e) {
+    return res.status(500).json({ success: false, message: 'Failed to delete master holidays' });
   }
 });
 
