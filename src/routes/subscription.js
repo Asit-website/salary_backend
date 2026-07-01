@@ -48,7 +48,8 @@ router.post('/plans', authRequired, requireRole('superadmin'), async (req, res) 
       esiAsTaEnabled,
       rmoEnabled,
       pfSettingsEnabled,
-      attendanceLocationEnabled
+      attendanceLocationEnabled,
+      weeklyOffDeductionEnabled
     } = req.body;
 
     const planFeatures = features || {};
@@ -60,6 +61,9 @@ router.post('/plans', authRequired, requireRole('superadmin'), async (req, res) 
     }
     if (pfSettingsEnabled !== undefined) {
       planFeatures.pfSettingsEnabled = !!pfSettingsEnabled;
+    }
+    if (weeklyOffDeductionEnabled !== undefined) {
+      planFeatures.weeklyOffDeductionEnabled = !!weeklyOffDeductionEnabled;
     }
 
     const plan = await Plan.create({
@@ -127,7 +131,8 @@ router.put('/plans/:id', authRequired, requireRole('superadmin'), async (req, re
       esiAsTaEnabled,
       rmoEnabled,
       pfSettingsEnabled,
-      attendanceLocationEnabled
+      attendanceLocationEnabled,
+      weeklyOffDeductionEnabled
     } = req.body;
 
     const planFeatures = features || {};
@@ -139,6 +144,9 @@ router.put('/plans/:id', authRequired, requireRole('superadmin'), async (req, re
     }
     if (pfSettingsEnabled !== undefined) {
       planFeatures.pfSettingsEnabled = !!pfSettingsEnabled;
+    }
+    if (weeklyOffDeductionEnabled !== undefined) {
+      planFeatures.weeklyOffDeductionEnabled = !!weeklyOffDeductionEnabled;
     }
 
     await plan.update({
@@ -213,7 +221,8 @@ router.post('/assign-subscription', authRequired, requireRole('superadmin'), asy
       meta: {
         esiAsTaEnabled: !!plan.features?.esiAsTaEnabled,
         rmoEnabled: !!plan.features?.rmoEnabled,
-        pfSettingsEnabled: !!plan.features?.pfSettingsEnabled
+        pfSettingsEnabled: !!plan.features?.pfSettingsEnabled,
+        weeklyOffDeductionEnabled: !!plan.features?.weeklyOffDeductionEnabled
       },
       staffLimit: plan.staffLimit,
       salesEnabled: plan.salesEnabled,
@@ -386,6 +395,15 @@ router.get('/subscription-info', authRequired, tenantEnforce, async (req, res) =
           } catch (e) {}
         }
         return !!metaObj?.esiAsTaEnabled;
+      })(),
+      weeklyOffDeductionEnabled: (() => {
+        let metaObj = {};
+        if (subscription.meta) {
+          try {
+            metaObj = typeof subscription.meta === 'string' ? JSON.parse(subscription.meta) : subscription.meta;
+          } catch (e) {}
+        }
+        return !!metaObj?.weeklyOffDeductionEnabled;
       })(),
       rmoEnabled: (() => {
         let metaObj = {};

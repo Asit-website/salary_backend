@@ -868,7 +868,7 @@ router.post('/clients/:id/subscription', async (req, res) => {
       payrollEnabled, performanceEnabled, aiReportsEnabled, aiAssistantEnabled, taskManagementEnabled,
       rosterEnabled, recruitmentEnabled, communityEnabled, salaryRegisterEnabled,
       monthlySummaryEnabled, perDaySalaryEnabled, comparisonEnabled, otImpactEnabled, latePenaltyEnabled,
-      esiAsTaEnabled, rmoEnabled, pfSettingsEnabled, attendanceLocationEnabled
+      esiAsTaEnabled, rmoEnabled, pfSettingsEnabled, attendanceLocationEnabled, weeklyOffDeductionEnabled
     } = req.body || {};
 
     // Handle subscription queuing or updates
@@ -1001,6 +1001,12 @@ router.post('/clients/:id/subscription', async (req, res) => {
         messageArr.push(`ESI as TA Mapping ${req.body.esiAsTaEnabled ? 'enabled' : 'disabled'}`);
       }
 
+      if (req.body.weeklyOffDeductionEnabled !== undefined && !!metaObj.weeklyOffDeductionEnabled !== !!req.body.weeklyOffDeductionEnabled) {
+        metaObj.weeklyOffDeductionEnabled = !!req.body.weeklyOffDeductionEnabled;
+        metaUpdated = true;
+        messageArr.push(`Weekly Off Deduction Rule ${req.body.weeklyOffDeductionEnabled ? 'enabled' : 'disabled'}`);
+      }
+
       if (req.body.rmoEnabled !== undefined && !!metaObj.rmoEnabled !== !!req.body.rmoEnabled) {
         metaObj.rmoEnabled = !!req.body.rmoEnabled;
         metaUpdated = true;
@@ -1062,7 +1068,8 @@ router.post('/clients/:id/subscription', async (req, res) => {
       meta: {
         esiAsTaEnabled: esiAsTaEnabled !== undefined ? !!esiAsTaEnabled : !!plan.features?.esiAsTaEnabled,
         rmoEnabled: rmoEnabled !== undefined ? !!rmoEnabled : !!plan.features?.rmoEnabled,
-        pfSettingsEnabled: pfSettingsEnabled !== undefined ? !!pfSettingsEnabled : !!plan.features?.pfSettingsEnabled
+        pfSettingsEnabled: pfSettingsEnabled !== undefined ? !!pfSettingsEnabled : !!plan.features?.pfSettingsEnabled,
+        weeklyOffDeductionEnabled: weeklyOffDeductionEnabled !== undefined ? !!weeklyOffDeductionEnabled : !!plan.features?.weeklyOffDeductionEnabled
       },
       staffLimit: staffLimit !== undefined && staffLimit !== null ? Number(staffLimit) : (plan.staffLimit || 0),
       maxGeolocationStaff: maxGeolocationStaff !== undefined && maxGeolocationStaff !== null ? Number(maxGeolocationStaff) : (plan.maxGeolocationStaff || 0),

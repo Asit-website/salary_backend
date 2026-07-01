@@ -3868,6 +3868,32 @@ router.get("/staff/:id/salary-compute", async (req, res) => {
     } catch (_) {}
 
     // Classify calendar days (for current month, only count till today)
+    let excludeWoLimit = 0;
+    let excludeWoEffectiveDate = null;
+    try {
+      const salarySettingsRow = await AppSetting.findOne({
+        where: { key: "salary_settings", orgAccountId: u.orgAccountId },
+      });
+      if (salarySettingsRow?.value) {
+        const salarySettings = JSON.parse(salarySettingsRow.value);
+        excludeWoLimit = Number(salarySettings?.excludeWoOnAbsentsLimit || 0);
+        excludeWoEffectiveDate = salarySettings?.excludeWoOnAbsentsEffectiveDate || null;
+      }
+    } catch (_) {}
+
+    const weekExclusions = await computeWeekExclusions({
+      userId: u.id,
+      yy,
+      mm,
+      daysInMonth: end.getDate(),
+      excludeWoLimit,
+      woConfig,
+      hasWeeklyOffAssignment,
+      holidaySet,
+      orgAccountId: u.orgAccountId,
+      excludeWoEffectiveDate
+    });
+
     let present = 0,
       actualPresent = 0,
       half = 0,
@@ -3909,7 +3935,9 @@ router.get("/staff/:id/salary-compute", async (req, res) => {
         continue;
       }
       if (s === "weekly_off") {
-        weeklyOff += 1;
+        if (!weekExclusions.has(key)) {
+          weeklyOff += 1;
+        }
         continue;
       }
       if (s === "holiday") {
@@ -3927,7 +3955,9 @@ router.get("/staff/:id/salary-compute", async (req, res) => {
         continue;
       }
       if (isWO) {
-        weeklyOff += 1;
+        if (!weekExclusions.has(key)) {
+          weeklyOff += 1;
+        }
         continue;
       }
 
@@ -4000,6 +4030,7 @@ router.get("/staff/:id/salary-compute", async (req, res) => {
       weeklyOff,
       holidays,
       ratio,
+      excludedWeeklyOffDates: Array.from(weekExclusions),
       overtimeMinutes,
       overtimeHours: Number(overtimeHours.toFixed(2)),
       overtimeHourlyRate: Number(overtimeHourlyRate.toFixed(2)),
@@ -5243,6 +5274,19 @@ router.post("/payroll/:cycleId/compute", async (req, res) => {
       const isCurrentMonth =
         Number(yy) === now.getFullYear() && Number(mm) === now.getMonth() + 1;
 
+      const weekExclusions = await computeWeekExclusions({
+        userId: u.id,
+        yy,
+        mm,
+        daysInMonth,
+        excludeWoLimit: Number(salarySettings?.excludeWoOnAbsentsLimit || 0),
+        woConfig,
+        hasWeeklyOffAssignment,
+        holidaySet: _holidaySet,
+        orgAccountId: orgId,
+        excludeWoEffectiveDate: salarySettings?.excludeWoOnAbsentsEffectiveDate || null
+      });
+
       for (let dnum = 1; dnum <= daysInMonth; dnum++) {
         const dt = new Date(yy, mm - 1, dnum);
         const key = `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, "0")}-${String(dnum).padStart(2, "0")}`;
@@ -5337,7 +5381,9 @@ router.post("/payroll/:cycleId/compute", async (req, res) => {
 
         // Handle other statuses with mutual exclusivity (WO/H take precedence over leave/absent)
         if (s === "weekly_off") {
-          weeklyOff += 1;
+          if (!weekExclusions.has(key)) {
+            weeklyOff += 1;
+          }
           continue;
         }
         if (s === "holiday") {
@@ -5349,7 +5395,9 @@ router.post("/payroll/:cycleId/compute", async (req, res) => {
           continue;
         }
         if (isWO) {
-          weeklyOff += 1;
+          if (!weekExclusions.has(key)) {
+            weeklyOff += 1;
+          }
           continue;
         }
 
@@ -5961,6 +6009,7 @@ router.post("/payroll/:cycleId/compute", async (req, res) => {
         weeklyOff,
         holidays,
         ratio,
+        excludedWeeklyOffDates: Array.from(weekExclusions),
         payableDays: computedPayableUnits,
         overtimeMinutes: totalOvertimeMinutes,
         overtimeHours: Number(overtimeHours.toFixed(2)),
@@ -12326,6 +12375,8 @@ function getDefaultSalarySettings() {
     weeklyOffs: [0], // 0 = Sunday ... 6 = Saturday
     hoursPerDay: 8,
     pfCalculationMode: "basic_only",
+    excludeWoOnAbsentsLimit: 0,
+    excludeWoOnAbsentsEffectiveDate: null,
   };
 }
 
@@ -12353,7 +12404,148 @@ function coerceSalarySettings(input) {
       ? hoursPerDay
       : def.hoursPerDay;
   const pfCalculationMode = input?.pfCalculationMode ? String(input.pfCalculationMode) : def.pfCalculationMode;
-  return { payableDaysMode: mode, weeklyOffs, hoursPerDay: hp, pfCalculationMode };
+  const limit = input?.excludeWoOnAbsentsLimit !== undefined ? Number(input.excludeWoOnAbsentsLimit) : def.excludeWoOnAbsentsLimit;
+  const excludeWoOnAbsentsLimit = Number.isInteger(limit) && limit >= 0 ? limit : def.excludeWoOnAbsentsLimit;
+  const excludeWoOnAbsentsEffectiveDate = input?.excludeWoOnAbsentsEffectiveDate && typeof input.excludeWoOnAbsentsEffectiveDate === 'string'
+    ? input.excludeWoOnAbsentsEffectiveDate
+    : null;
+  return { payableDaysMode: mode, weeklyOffs, hoursPerDay: hp, pfCalculationMode, excludeWoOnAbsentsLimit, excludeWoOnAbsentsEffectiveDate };
+}
+
+async function computeWeekExclusions({ userId, yy, mm, daysInMonth, excludeWoLimit, woConfig, hasWeeklyOffAssignment, holidaySet, orgAccountId, excludeWoEffectiveDate }) {
+  const weekExclusions = new Set();
+  if (!excludeWoLimit || excludeWoLimit <= 0) return weekExclusions;
+
+  const { Attendance, LeaveRequest, StaffRoster } = require("../models");
+  const { Op } = require("sequelize");
+
+  const getMondayOfDate = (d) => {
+    const day = d.getDay();
+    const diff = d.getDate() - day + (day === 0 ? -6 : 1);
+    return new Date(d.getFullYear(), d.getMonth(), diff);
+  };
+
+  const firstDt = new Date(yy, mm - 1, 1);
+  const lastDt = new Date(yy, mm - 1, daysInMonth);
+  const mondayOfFirst = getMondayOfDate(firstDt);
+  const sundayOfLast = new Date(getMondayOfDate(lastDt).getTime() + 6 * 24 * 60 * 60 * 1000);
+
+  const queryStart = `${mondayOfFirst.getFullYear()}-${String(mondayOfFirst.getMonth() + 1).padStart(2, '0')}-${String(mondayOfFirst.getDate()).padStart(2, '0')}`;
+  const queryEnd = `${sundayOfLast.getFullYear()}-${String(sundayOfLast.getMonth() + 1).padStart(2, '0')}-${String(sundayOfLast.getDate()).padStart(2, '0')}`;
+
+  const atts = await Attendance.findAll({
+    where: { userId, date: { [Op.gte]: queryStart, [Op.lte]: queryEnd } }
+  });
+  const attMap = {};
+  for (const a of atts) {
+    attMap[String(a.date).slice(0, 10)] = String(a.status || '').toLowerCase();
+  }
+
+  const paidLeaveSet = new Set();
+  const unpaidLeaveSet = new Set();
+  const lrs = await LeaveRequest.findAll({
+    where: { userId, status: 'APPROVED', startDate: { [Op.lte]: queryEnd }, endDate: { [Op.gte]: queryStart } }
+  });
+  for (const lr of lrs || []) {
+    const lrStart = new Date(Math.max(new Date(String(lr.startDate)), new Date(queryStart)));
+    const lrEnd = new Date(Math.min(new Date(String(lr.endDate)), new Date(queryEnd)));
+    let paidRem = Number(lr.paidDays || 0);
+    let unpaidRem = Number(lr.unpaidDays || 0);
+    for (let dte = new Date(lrStart); dte <= lrEnd; dte.setDate(dte.getDate() + 1)) {
+      const k = `${dte.getFullYear()}-${String(dte.getMonth() + 1).padStart(2, '0')}-${String(dte.getDate()).padStart(2, '0')}`;
+      if (paidRem > 0) { paidLeaveSet.add(k); paidRem -= 1; }
+      else if (unpaidRem > 0) { unpaidLeaveSet.add(k); unpaidRem -= 1; }
+      else { paidLeaveSet.add(k); }
+    }
+  }
+
+  const rosterWOSet = new Set();
+  const rosterHSet = new Set();
+  const rosters = await StaffRoster.findAll({
+    where: { userId, date: { [Op.gte]: queryStart, [Op.lte]: queryEnd } }
+  });
+  for (const r of rosters) {
+    const k = String(r.date).slice(0, 10);
+    if (r.status === 'WEEKLY_OFF') rosterWOSet.add(k);
+    else if (r.status === 'HOLIDAY') rosterHSet.add(k);
+  }
+
+  const weeksMap = {};
+  let curr = new Date(mondayOfFirst);
+  while (curr <= sundayOfLast) {
+    const mon = getMondayOfDate(curr);
+    const monKey = `${mon.getFullYear()}-${String(mon.getMonth() + 1).padStart(2, '0')}-${String(mon.getDate()).padStart(2, '0')}`;
+    if (!weeksMap[monKey]) {
+      weeksMap[monKey] = [];
+      for (let i = 0; i < 7; i++) {
+        const d = new Date(mon.getFullYear(), mon.getMonth(), mon.getDate() + i);
+        weeksMap[monKey].push(d);
+      }
+    }
+    curr = new Date(curr.getTime() + 7 * 24 * 60 * 60 * 1000);
+  }
+
+  const todayStart = new Date();
+  todayStart.setHours(0, 0, 0, 0);
+
+  const isWeeklyOffForDateHelper = (configArray, jsDate) => {
+    try {
+      let config = configArray;
+      while (typeof config === 'string' && config.trim().startsWith('[')) {
+        try { config = JSON.parse(config); } catch (e) { break; }
+      }
+      if (!Array.isArray(config)) return false;
+      const dow = jsDate.getDay();
+      const wk = Math.floor((jsDate.getDate() - 1) / 7) + 1;
+      for (const cfg of config) {
+        if (cfg && Number(cfg.day) === dow) {
+          if (cfg.weeks === 'all') return true;
+          if (Array.isArray(cfg.weeks) && cfg.weeks.includes(wk)) return true;
+        }
+      }
+      return false;
+    } catch (_) { return false; }
+  };
+
+  for (const monKey of Object.keys(weeksMap)) {
+    let absentCountInWeek = 0;
+    const daysOfSubWeek = weeksMap[monKey];
+
+    for (const d of daysOfSubWeek) {
+      if (d > todayStart) continue;
+
+      const k = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+      const s = attMap[k];
+
+      if (s === 'present' || s === 'overtime' || s === 'work_from_home' || s === 'half_day') continue;
+
+      const isWO = rosterWOSet.has(k) || (hasWeeklyOffAssignment ? isWeeklyOffForDateHelper(woConfig, d) : false);
+      const isH = (holidaySet && holidaySet.has(k)) || rosterHSet.has(k);
+      const isPL = paidLeaveSet.has(k);
+
+      if (isWO || isH || isPL) continue;
+
+      if (excludeWoEffectiveDate && k < excludeWoEffectiveDate) continue;
+
+      if (s === 'absent' || unpaidLeaveSet.has(k) || !s) {
+        absentCountInWeek += 1;
+      }
+    }
+
+    if (absentCountInWeek >= excludeWoLimit) {
+      for (const d of daysOfSubWeek) {
+        const k = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+        const isWO = rosterWOSet.has(k) || (hasWeeklyOffAssignment ? isWeeklyOffForDateHelper(woConfig, d) : false);
+        if (isWO) {
+          if (!excludeWoEffectiveDate || k >= excludeWoEffectiveDate) {
+            weekExclusions.add(k);
+          }
+        }
+      }
+    }
+  }
+
+  return weekExclusions;
 }
 
 function daysInMonth(year, month /* 1-12 */) {

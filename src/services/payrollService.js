@@ -586,9 +586,43 @@ async function calculateSalary(userId, monthKey) {
     }
   }
 
+  // Calculate excludeWoLimit from settings
+  let excludeWoLimit = 0;
+  let excludeWoEffectiveDate = null;
+  try {
+    const orgAccountId = u.orgAccountId || u.org_account_id;
+    if (orgAccountId) {
+      const salarySettingsRow = await AppSetting.findOne({
+        where: { key: 'salary_settings', orgAccountId }
+      });
+      if (salarySettingsRow?.value) {
+        const salarySettings = JSON.parse(salarySettingsRow.value);
+        excludeWoLimit = Number(salarySettings?.excludeWoOnAbsentsLimit || 0);
+        excludeWoEffectiveDate = salarySettings?.excludeWoOnAbsentsEffectiveDate || null;
+      }
+    }
+  } catch (err) {
+    console.error('[Payroll] Failed to load excludeWoLimit:', err.message);
+  }
+
+  // Calculate extended range to cover full calendar weeks overlapping the month
+  const getMondayOfDate = (d) => {
+    const day = d.getDay();
+    const diff = d.getDate() - day + (day === 0 ? -6 : 1);
+    return new Date(d.getFullYear(), d.getMonth(), diff);
+  };
+  const firstDt = new Date(yy, mm - 1, 1);
+  const lastDt = new Date(yy, mm - 1, end.getDate());
+  
+  const mondayOfFirst = getMondayOfDate(firstDt);
+  const sundayOfLast = new Date(getMondayOfDate(lastDt).getTime() + 6 * 24 * 60 * 60 * 1000);
+
+  const queryStart = `${mondayOfFirst.getFullYear()}-${String(mondayOfFirst.getMonth() + 1).padStart(2, '0')}-${String(mondayOfFirst.getDate()).padStart(2, '0')}`;
+  const queryEnd = `${sundayOfLast.getFullYear()}-${String(sundayOfLast.getMonth() + 1).padStart(2, '0')}-${String(sundayOfLast.getDate()).padStart(2, '0')}`;
+
   // Calculate REAL attendance from database
   const atts = await Attendance.findAll({
-    where: { userId: u.id, date: { [Op.gte]: start, [Op.lte]: endKey } },
+    where: { userId: u.id, date: { [Op.gte]: queryStart, [Op.lte]: queryEnd } },
     attributes: ['status', 'date', 'totalWorkHours', 'punchedInAt', 'punchedOutAt']
   });
   const attMap = {};
@@ -601,11 +635,11 @@ async function calculateSalary(userId, monthKey) {
   let unpaidLeaveSet = new Set();
   try {
     const lrs = await LeaveRequest.findAll({
-      where: { userId: u.id, status: 'APPROVED', startDate: { [Op.lte]: endKey }, endDate: { [Op.gte]: start } }
+      where: { userId: u.id, status: 'APPROVED', startDate: { [Op.lte]: queryEnd }, endDate: { [Op.gte]: queryStart } }
     });
     for (const lr of (lrs || [])) {
-      const lrStart = new Date(Math.max(new Date(String(lr.startDate)), new Date(start)));
-      const lrEnd = new Date(Math.min(new Date(String(lr.endDate)), new Date(endKey)));
+      const lrStart = new Date(Math.max(new Date(String(lr.startDate)), new Date(queryStart)));
+      const lrEnd = new Date(Math.min(new Date(String(lr.endDate)), new Date(queryEnd)));
       let paidRem = Number(lr.paidDays || 0);
       let unpaidRem = Number(lr.unpaidDays || 0);
       for (let dte = new Date(lrStart); dte <= lrEnd; dte.setDate(dte.getDate() + 1)) {
@@ -625,8 +659,8 @@ async function calculateSalary(userId, monthKey) {
       const asg = await StaffWeeklyOffAssignment.findOne({
         where: {
           userId: u.id,
-          effectiveFrom: { [Op.lte]: endKey },
-          [Op.or]: [{ effectiveTo: null }, { effectiveTo: { [Op.gte]: start } }],
+          effectiveFrom: { [Op.lte]: queryEnd },
+          [Op.or]: [{ effectiveTo: null }, { effectiveTo: { [Op.gte]: queryStart } }],
         },
         order: [['effectiveFrom', 'DESC'], ['id', 'DESC']]
       });
@@ -634,7 +668,6 @@ async function calculateSalary(userId, monthKey) {
         hasWeeklyOffAssignment = true;
         const tpl = await WeeklyOffTemplate.findByPk(asg.weeklyOffTemplateId || asg.weekly_off_template_id);
         let rawCfg = tpl?.config;
-        // Robust mult-stage parsing for potentially multi-stringified JSON
         while (typeof rawCfg === 'string' && rawCfg.trim().startsWith('[')) {
           try {
             const p = JSON.parse(rawCfg);
@@ -669,7 +702,7 @@ async function calculateSalary(userId, monthKey) {
   const rosterHSet = new Set();
   try {
     const rosters = await StaffRoster.findAll({
-      where: { userId: u.id, date: { [Op.gte]: start, [Op.lte]: endKey } }
+      where: { userId: u.id, date: { [Op.gte]: queryStart, [Op.lte]: queryEnd } }
     });
     for (const r of rosters) {
       const k = toDateKey(r.date);
@@ -687,8 +720,8 @@ async function calculateSalary(userId, monthKey) {
     let hasg = await StaffHolidayAssignment.findOne({
       where: {
         userId: u.id,
-        effectiveFrom: { [Op.lte]: endKey },
-        [Op.or]: [{ effectiveTo: null }, { effectiveTo: { [Op.gte]: start } }],
+        effectiveFrom: { [Op.lte]: queryEnd },
+        [Op.or]: [{ effectiveTo: null }, { effectiveTo: { [Op.gte]: queryStart } }],
       },
       order: [['effectiveFrom', 'DESC'], ['id', 'DESC']],
     });
@@ -699,7 +732,7 @@ async function calculateSalary(userId, monthKey) {
           where: {
             holidayTemplateId: tplId,
             active: { [Op.not]: false },
-            date: { [Op.gte]: start, [Op.lte]: endKey },
+            date: { [Op.gte]: queryStart, [Op.lte]: queryEnd },
           },
           attributes: ['date', 'active'],
         })
@@ -707,11 +740,10 @@ async function calculateSalary(userId, monthKey) {
       holidaySet = new Set(
         hs
           .map(h => ({ h, key: toDateKey(h?.date) }))
-          .filter(x => x.h && x.h.active !== false && x.key && x.key >= start && x.key <= endKey)
+          .filter(x => x.h && x.h.active !== false && x.key && x.key >= queryStart && x.key <= queryEnd)
           .map(x => x.key)
       );
     } else {
-      // No holiday assignment for this staff in org -> do not apply org-wide holidays.
       holidaySet = new Set();
     }
   } catch (_) { }
@@ -720,7 +752,6 @@ async function calculateSalary(userId, monthKey) {
   const isWeeklyOffForDate = (configArray, jsDate) => {
     try {
       let config = configArray;
-      // Robust mult-stage parsing for potentially multi-stringified JSON
       while (typeof config === 'string' && config.trim().startsWith('[')) {
         try {
           const p = JSON.parse(config);
@@ -730,8 +761,8 @@ async function calculateSalary(userId, monthKey) {
       }
       if (!Array.isArray(config)) return false;
 
-      const dow = jsDate.getDay(); // 0=Sun
-      const wk = Math.floor((jsDate.getDate() - 1) / 7) + 1; // 1..5
+      const dow = jsDate.getDay();
+      const wk = Math.floor((jsDate.getDate() - 1) / 7) + 1;
       for (const cfg of config) {
         if (cfg && Number(cfg.day) === dow) {
           if (cfg.weeks === 'all') return true;
@@ -748,8 +779,8 @@ async function calculateSalary(userId, monthKey) {
     payRuleAssignments = await StaffHolidayWorkPayAssignment.findAll({
       where: {
         userId: u.id,
-        effectiveFrom: { [Op.lte]: endKey },
-        [Op.or]: [{ effectiveTo: null }, { effectiveTo: { [Op.gte]: start } }],
+        effectiveFrom: { [Op.lte]: queryEnd },
+        [Op.or]: [{ effectiveTo: null }, { effectiveTo: { [Op.gte]: queryStart } }],
         active: true
       },
       include: [{ model: HolidayWorkPayRule, as: 'rule' }],
@@ -757,6 +788,65 @@ async function calculateSalary(userId, monthKey) {
     });
   } catch (err) {
     console.error(`Error fetching pay rule assignments for user ${u.id}:`, err);
+  }
+
+  // Pre-calculate weekly off exclusions based on weekly absents limit
+  const weekExclusions = new Set();
+  if (excludeWoLimit > 0) {
+    const weeksMap = {};
+    let curr = new Date(mondayOfFirst);
+    while (curr <= sundayOfLast) {
+      const mon = getMondayOfDate(curr);
+      const monKey = `${mon.getFullYear()}-${String(mon.getMonth() + 1).padStart(2, '0')}-${String(mon.getDate()).padStart(2, '0')}`;
+      if (!weeksMap[monKey]) {
+        weeksMap[monKey] = [];
+        for (let i = 0; i < 7; i++) {
+          const d = new Date(mon.getFullYear(), mon.getMonth(), mon.getDate() + i);
+          weeksMap[monKey].push(d);
+        }
+      }
+      curr = new Date(curr.getTime() + 7 * 24 * 60 * 60 * 1000);
+    }
+
+    const todayStart = new Date();
+    todayStart.setHours(0, 0, 0, 0);
+
+    for (const monKey of Object.keys(weeksMap)) {
+      let absentCountInWeek = 0;
+      const daysOfSubWeek = weeksMap[monKey];
+      for (const d of daysOfSubWeek) {
+        if (d > todayStart) continue;
+
+        const k = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+        const s = attMap[k];
+
+        const isWO = rosterWOSet.has(k) || (hasWeeklyOffAssignment ? isWeeklyOffForDate(woConfig, d) : false);
+        const isH = holidaySet.has(k) || rosterHSet.has(k);
+        const isPL = paidLeaveSet.has(k);
+
+        if (s === 'present' || s === 'overtime' || s === 'work_from_home' || s === 'half_day') {
+          // not absent
+        } else if (isWO || isH || isPL) {
+          // not absent
+        } else if (excludeWoEffectiveDate && k < excludeWoEffectiveDate) {
+          // not absent (before effective date)
+        } else if (s === 'absent' || unpaidLeaveSet.has(k) || !s) {
+          absentCountInWeek += 1;
+        }
+      }
+
+      if (absentCountInWeek >= excludeWoLimit) {
+        for (const d of daysOfSubWeek) {
+          const k = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+          const isWO = rosterWOSet.has(k) || (hasWeeklyOffAssignment ? isWeeklyOffForDate(woConfig, d) : false);
+          if (isWO) {
+            if (!excludeWoEffectiveDate || k >= excludeWoEffectiveDate) {
+              weekExclusions.add(k);
+            }
+          }
+        }
+      }
+    }
   }
 
   // Classify calendar days (for current month, only count till today)
@@ -781,7 +871,11 @@ async function calculateSalary(userId, monthKey) {
       const isUnpaidL = unpaidLeaveSet.has(key);
 
       if (isH || s === 'holiday') { holidaysCount += 1; }
-      else if (isWO || s === 'weekly_off') { weeklyOffCount += 1; }
+      else if (isWO || s === 'weekly_off') { 
+        if (!weekExclusions.has(key)) {
+          weeklyOffCount += 1; 
+        }
+      }
       else if (isPaidL || s === 'leave') { leave += 1; paidLeaveCount += 1; paidLeaveDates.push(key); }
       else if (isUnpaidL) { leave += 1; unpaidLeave += 1; }
       continue;
@@ -854,7 +948,12 @@ async function calculateSalary(userId, monthKey) {
       continue;
     }
     if (s === 'leave') { leave += 1; if (paidLeaveSet.has(key)) { paidLeaveCount += 1; paidLeaveDates.push(key); } else if (unpaidLeaveSet.has(key)) unpaidLeave += 1; continue; }
-    if (s === 'weekly_off') { weeklyOffCount += 1; continue; }
+    if (s === 'weekly_off') { 
+      if (!weekExclusions.has(key)) {
+        weeklyOffCount += 1; 
+      }
+      continue; 
+    }
     if (s === 'holiday') { holidaysCount += 1; continue; }
 
     // No explicit attendance or 'absent' marked: check if it's a WO/Holiday first
@@ -862,7 +961,12 @@ async function calculateSalary(userId, monthKey) {
     const isH = holidaySet.has(key) || rosterHSet.has(key);
 
     if (isH) { holidaysCount += 1; continue; }
-    if (isWO) { weeklyOffCount += 1; continue; }
+    if (isWO) { 
+      if (!weekExclusions.has(key)) {
+        weeklyOffCount += 1; 
+      }
+      continue; 
+    }
 
     if (s === 'absent') { absent += 1; continue; }
 
@@ -1231,6 +1335,7 @@ async function calculateSalary(userId, monthKey) {
     attendanceSummary: {
       present: actualPresent, half, leave, paidLeave: paidLeaveCount, paidLeaveDates,
       absent, weeklyOff: weeklyOffCount, holidays: holidaysCount, ratio,
+      excludedWeeklyOffDates: Array.from(weekExclusions),
       payableDays: computedPayableUnits, // This is the gross payable days (e.g. 28)
       isRmo,
       rmoTargetHours,

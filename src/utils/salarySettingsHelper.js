@@ -6,6 +6,7 @@ function coerceSalarySettings(input) {
     weeklyOffs: [0], // 0 = Sunday ... 6 = Saturday
     hoursPerDay: 8,
     pfCalculationMode: "basic",
+    excludeWoOnAbsentsLimit: 0,
   };
   const modes = [
     "calendar_month",
@@ -33,7 +34,12 @@ function coerceSalarySettings(input) {
     ["basic", "basic_minus_penalties"].includes(String(input.pfCalculationMode))
       ? String(input.pfCalculationMode)
       : def.pfCalculationMode;
-  return { payableDaysMode: mode, weeklyOffs, hoursPerDay: hp, pfCalculationMode };
+  const limit = input?.excludeWoOnAbsentsLimit !== undefined ? Number(input.excludeWoOnAbsentsLimit) : def.excludeWoOnAbsentsLimit;
+  const excludeWoOnAbsentsLimit = Number.isInteger(limit) && limit >= 0 ? limit : def.excludeWoOnAbsentsLimit;
+  const excludeWoOnAbsentsEffectiveDate = input?.excludeWoOnAbsentsEffectiveDate && typeof input.excludeWoOnAbsentsEffectiveDate === 'string'
+    ? input.excludeWoOnAbsentsEffectiveDate
+    : null;
+  return { payableDaysMode: mode, weeklyOffs, hoursPerDay: hp, pfCalculationMode, excludeWoOnAbsentsLimit, excludeWoOnAbsentsEffectiveDate };
 }
 
 function computePayableDays(settings, year, month /* 1-12 */) {
