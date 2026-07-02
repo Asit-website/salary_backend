@@ -3767,3 +3767,14 @@
 [2026-07-01T12:38:09.298Z] [Late-Dbg] User 182 Final: LateCount=1, Amt=30, Days=0.03
 [2026-07-01T12:38:09.785Z] [Late-Dbg] User 185 Final: LateCount=0, Amt=0, Days=0
 [2026-07-01T12:38:10.788Z] [Late-Dbg] User 186 Final: LateCount=0, Amt=0, Days=0
+[2026-07-02T07:22:59.131Z] [User 57] Date 2026-06-27: HOLIDAY PRESENT. Multiplier=1. New Present Total=21
+[2026-07-02T07:22:59.151Z] [User 57] calculateSalary (Live): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0,"lateDetails":[]}
+[2026-07-02T07:22:59.291Z] [User 57] Date 2026-06-27: HOLIDAY PRESENT. Multiplier=1. New Present Total=21
+[2026-07-02T07:22:59.292Z] [User 57] Date 2026-06-28: WEEKLY_OFF PRESENT. Multiplier=1. New Present Total=22
+[2026-07-02T07:22:59.298Z] [User 57] calculateSalary (Live): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0,"lateDetails":[]}
+[2026-07-02T07:22:59.405Z] [User 57] Date 2026-06-27: HOLIDAY PRESENT. Multiplier=1. New Present Total=21
+[2026-07-02T07:22:59.411Z] [User 57] calculateSalary (Live): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0,"lateDetails":[]}
+[2026-07-02T07:22:59.453Z] [User 57] Date 2026-06-27: HOLIDAY PRESENT. Multiplier=1. New Present Total=21
+[2026-07-02T07:22:59.459Z] [User 57] calculateSalary (Live): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0,"lateDetails":[]}
+[2026-07-02T07:22:59.588Z] [User 57] Date 2026-06-27: HOLIDAY PRESENT. Multiplier=1. New Present Total=21
+[2026-07-02T07:22:59.594Z] [User 57] calculateSalary (Live): lpResult: {"latePunchInMinutes":0,"latePunchInPenalty":0,"latePenaltyDays":0,"lateCount":0,"lateDetails":[]}

@@ -1020,7 +1020,7 @@ router.post('/clients/:id/subscription', async (req, res) => {
       }
 
       if (metaUpdated) {
-        updateData.meta = metaObj;
+        updateData.meta = { ...metaObj };
       }
 
       if (Object.keys(updateData).length > 0) {

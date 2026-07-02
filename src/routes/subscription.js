@@ -311,7 +311,7 @@ router.put('/clients/:subscriptionId/geolocation-limit', authRequired, requireRo
     const meta = subscription.meta || {};
     meta.maxGeolocationStaff = maxGeolocationStaff;
 
-    await subscription.update({ meta });
+    await subscription.update({ meta: { ...meta } });
 
     res.json({ success: true, maxGeolocationStaff });
   } catch (error) {
