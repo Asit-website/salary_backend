@@ -892,6 +892,56 @@ ShiftRotationRule.belongsTo(ShiftTemplate, { foreignKey: 'alternateShiftTemplate
         // Ignore
       }
     }
+
+    // Fix 3: Dynamic columns for travel details in expense_claims
+    try {
+      await sequelize.query(`ALTER TABLE expense_claims ADD COLUMN travelFrom VARCHAR(255) NULL`);
+      console.log('[DB FIX] Successfully added column travelFrom to expense_claims');
+    } catch (e) {
+      // Ignore if column already exists
+    }
+    try {
+      await sequelize.query(`ALTER TABLE expense_claims ADD COLUMN travelTo VARCHAR(255) NULL`);
+      console.log('[DB FIX] Successfully added column travelTo to expense_claims');
+    } catch (e) {
+      // Ignore
+    }
+    try {
+      await sequelize.query(`ALTER TABLE expense_claims ADD COLUMN mode VARCHAR(255) NULL`);
+      console.log('[DB FIX] Successfully added column mode to expense_claims');
+    } catch (e) {
+      // Ignore
+    }
+    try {
+      await sequelize.query(`ALTER TABLE expense_claims ADD COLUMN items JSON NULL`);
+      console.log('[DB FIX] Successfully added column items to expense_claims');
+    } catch (e) {
+      // Ignore
+    }
+    try {
+      await sequelize.query(`ALTER TABLE expense_claims ADD COLUMN paid_amount DECIMAL(12, 2) NOT NULL DEFAULT 0`);
+      console.log('[DB FIX] Successfully added column paid_amount to expense_claims');
+    } catch (e) {
+      // Ignore
+    }
+    try {
+      await sequelize.query(`ALTER TABLE expense_claims ADD COLUMN paid_at DATETIME NULL`);
+      console.log('[DB FIX] Successfully added column paid_at to expense_claims');
+    } catch (e) {
+      // Ignore
+    }
+    try {
+      await sequelize.query(`ALTER TABLE expense_claims ADD COLUMN payments JSON NULL`);
+      console.log('[DB FIX] Successfully added column payments to expense_claims');
+    } catch (e) {
+      // Ignore
+    }
+    try {
+      await sequelize.query(`ALTER TABLE leave_template_categories ADD COLUMN max_leave_per_month DECIMAL(10, 2) NULL DEFAULT NULL`);
+      console.log('[DB FIX] Successfully added column max_leave_per_month to leave_template_categories');
+    } catch (e) {
+      // Ignore
+    }
     
     console.log('[DB FIX] Schema repair script finished.');
   } catch (err) {

@@ -13,6 +13,7 @@ module.exports = (sequelize) => {
       carryLimitDays: { type: DataTypes.DECIMAL(10, 2), allowNull: true },
       encashLimitDays: { type: DataTypes.DECIMAL(10, 2), allowNull: true },
       carryForward: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: false },
+      maxLeavePerMonth: { type: DataTypes.DECIMAL(10, 2), allowNull: true, field: 'max_leave_per_month' },
     },
     { tableName: 'leave_template_categories', underscored: true }
   );

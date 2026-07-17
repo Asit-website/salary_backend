@@ -5518,9 +5518,12 @@ router.post("/payroll/:cycleId/compute", async (req, res) => {
 
         for (const exp of settledExpenses) {
           const label = `EXPENSE: ${exp.expenseType || "Claim"}`;
-          finalE[label] =
-            (finalE[label] || 0) +
-            Number(exp.approvedAmount || exp.amount || 0);
+          const baseAmt = Number(exp.approvedAmount !== null && exp.approvedAmount !== undefined ? exp.approvedAmount : (exp.amount || 0));
+          const paidAmt = Number(exp.paidAmount || 0);
+          const remainingAmt = Math.max(0, baseAmt - paidAmt);
+          if (remainingAmt > 0) {
+            finalE[label] = (finalE[label] || 0) + remainingAmt;
+          }
         }
       } catch (err) {
         console.error("Error fetching expenses for persistent payroll:", err);
@@ -9011,6 +9014,7 @@ router.get("/leave/templates", async (req, res) => {
           carryLimitDays: c.carryLimitDays,
           encashLimitDays: c.encashLimitDays,
           carryForward: !!c.carryForward,
+          maxLeavePerMonth: c.maxLeavePerMonth,
         })),
 
         assignedCount: (t.assignments || []).length,
@@ -9087,6 +9091,7 @@ router.post("/leave/templates", async (req, res) => {
             c.encashLimitDays == null ? null : Number(c.encashLimitDays),
 
           carryForward: !!(c.carryForward ?? c.carry_forward),
+          maxLeavePerMonth: c.maxLeavePerMonth == null || c.maxLeavePerMonth === "" ? null : Number(c.maxLeavePerMonth),
         }));
 
       if (payload.length) await LeaveTemplateCategory.bulkCreate(payload);
@@ -9192,6 +9197,7 @@ router.put("/leave/templates/:id", async (req, res) => {
             c.encashLimitDays == null ? null : Number(c.encashLimitDays),
 
           carryForward: !!(c.carryForward ?? c.carry_forward),
+          maxLeavePerMonth: c.maxLeavePerMonth == null || c.maxLeavePerMonth === "" ? null : Number(c.maxLeavePerMonth),
         }));
 
       if (payload.length) await LeaveTemplateCategory.bulkCreate(payload);
@@ -11492,7 +11498,7 @@ router.put("/documents/:docId/status", async (req, res) => {
 
 router.post(
   "/staff/:id/expenses",
-  upload.single("attachment"),
+  upload.any(),
   async (req, res) => {
     try {
       const orgId = requireOrg(req, res);
@@ -11500,7 +11506,7 @@ router.post(
 
       const id = Number(req.params.id);
 
-      const { expenseType, expenseDate, billNumber, amount, description } =
+      const { expenseType, expenseDate, billNumber, amount, description, travelFrom, travelTo, mode } =
         req.body || {};
 
       const user = await User.findOne({
@@ -11512,42 +11518,76 @@ router.post(
           .status(404)
           .json({ success: false, message: "Staff not found" });
 
-      const amt = Number(amount);
+      let itemsArray = null;
+      let amt = 0;
+      let attachmentUrl = null;
+      let billNo = billNumber || null;
+      let desc = description || null;
+      let fromLoc = travelFrom || null;
+      let toLoc = travelTo || null;
+      let transportMode = mode || null;
+
+      if (req.body.items) {
+        try {
+          itemsArray = JSON.parse(req.body.items);
+        } catch (e) {
+          itemsArray = [];
+        }
+      }
+
+      if (Array.isArray(itemsArray) && itemsArray.length > 0) {
+        itemsArray.forEach((item, index) => {
+          const file = (req.files || []).find(f => f.fieldname === `attachment_${index}`);
+          if (file) {
+            const rel = path.join("uploads", "claims", file.filename).replace(/\\/g, "/");
+            item.attachmentUrl = `/${rel}`;
+          }
+        });
+        amt = itemsArray.reduce((sum, item) => sum + Number(item.amount || 0), 0);
+        billNo = itemsArray[0]?.billNumber || null;
+        desc = description || itemsArray[0]?.description || null;
+        fromLoc = itemsArray[0]?.travelFrom || null;
+        toLoc = itemsArray[0]?.travelTo || null;
+        transportMode = itemsArray[0]?.mode || null;
+        attachmentUrl = itemsArray[0]?.attachmentUrl || null;
+      } else {
+        amt = Number(amount);
+        const legacyFile = (req.files || []).find(f => f.fieldname === "attachment");
+        if (legacyFile) {
+          const rel = path.join("uploads", "claims", legacyFile.filename).replace(/\\/g, "/");
+          attachmentUrl = `/${rel}`;
+        }
+        itemsArray = [{
+          amount: amt,
+          billNumber: billNo,
+          description: desc,
+          travelFrom: fromLoc,
+          travelTo: toLoc,
+          mode: transportMode,
+          attachmentUrl: attachmentUrl
+        }];
+      }
 
       if (!Number.isFinite(amt) || amt <= 0)
         return res
           .status(400)
           .json({ success: false, message: "Valid amount required" });
 
-      let attachmentUrl = null;
-
-      if (req.file) {
-        const rel = path
-          .join("uploads", "claims", req.file.filename)
-          .replace(/\\/g, "/");
-
-        attachmentUrl = `/${rel}`;
-      }
-
       const row = await ExpenseClaim.create({
         userId: id,
-
         claimId: `EC-${Date.now()}`,
-
         expenseType: expenseType || null,
-
         expenseDate: expenseDate || todayKey(),
-
-        billNumber: billNumber || null,
-
+        billNumber: billNo,
         amount: amt,
-
-        description: description || null,
-
+        description: desc,
         attachmentUrl,
-
         status: "pending",
         orgAccountId: req.user.orgAccountId || null,
+        travelFrom: fromLoc,
+        travelTo: toLoc,
+        mode: transportMode,
+        items: itemsArray,
       });
 
       return res.json({ success: true, claim: row });
@@ -11562,7 +11602,7 @@ router.post(
 // Update expense claim details by admin (org-scoped, any status)
 router.put(
   "/expenses/:claimId",
-  upload.single("attachment"),
+  upload.any(),
   async (req, res) => {
     try {
       const orgId = requireOrg(req, res);
@@ -11578,6 +11618,9 @@ router.put(
         approvedAmount,
         description,
         status,
+        travelFrom,
+        travelTo,
+        mode,
       } = req.body || {};
 
       const orgStaffIds = (
@@ -11596,30 +11639,72 @@ router.put(
           .status(404)
           .json({ success: false, message: "Claim not found" });
 
-      const amt = Number(amount);
+      let itemsArray = null;
+      let amt = 0;
+      let attachmentUrl = row.attachmentUrl;
+      let billNo = billNumber || null;
+      let desc = description || null;
+      let fromLoc = travelFrom || null;
+      let toLoc = travelTo || null;
+      let transportMode = mode || null;
+
+      if (req.body.items) {
+        try {
+          itemsArray = JSON.parse(req.body.items);
+        } catch (e) {
+          itemsArray = [];
+        }
+      }
+
+      if (Array.isArray(itemsArray) && itemsArray.length > 0) {
+        itemsArray.forEach((item, index) => {
+          const file = (req.files || []).find(f => f.fieldname === `attachment_${index}`);
+          if (file) {
+            const rel = path.join("uploads", "claims", file.filename).replace(/\\/g, "/");
+            item.attachmentUrl = `/${rel}`;
+          }
+        });
+        amt = itemsArray.reduce((sum, item) => sum + Number(item.amount || 0), 0);
+        billNo = itemsArray[0]?.billNumber || null;
+        desc = itemsArray[0]?.description || null;
+        fromLoc = itemsArray[0]?.travelFrom || null;
+        toLoc = itemsArray[0]?.travelTo || null;
+        transportMode = itemsArray[0]?.mode || null;
+        attachmentUrl = itemsArray[0]?.attachmentUrl || null;
+      } else {
+        amt = Number(amount);
+        const legacyFile = (req.files || []).find(f => f.fieldname === "attachment");
+        if (legacyFile) {
+          const rel = path.join("uploads", "claims", legacyFile.filename).replace(/\\/g, "/");
+          attachmentUrl = `/${rel}`;
+        }
+        itemsArray = [{
+          amount: amt,
+          billNumber: billNo,
+          description: desc,
+          travelFrom: fromLoc,
+          travelTo: toLoc,
+          mode: transportMode,
+          attachmentUrl: attachmentUrl
+        }];
+      }
 
       if (!Number.isFinite(amt) || amt <= 0)
         return res
           .status(400)
           .json({ success: false, message: "Valid amount required" });
 
-      let attachmentUrl = row.attachmentUrl;
-
-      if (req.file) {
-        const rel = path
-          .join("uploads", "claims", req.file.filename)
-          .replace(/\\/g, "/");
-
-        attachmentUrl = `/${rel}`;
-      }
-
       const patch = {
         expenseType: expenseType || null,
         expenseDate: expenseDate || row.expenseDate,
-        billNumber: billNumber || null,
+        billNumber: billNo,
         amount: amt,
-        description: description || null,
+        description: desc,
         attachmentUrl,
+        travelFrom: fromLoc,
+        travelTo: toLoc,
+        mode: transportMode,
+        items: itemsArray,
       };
 
       if (status !== undefined && status !== "") {
@@ -11730,6 +11815,85 @@ router.put("/expenses/:claimId/status", async (req, res) => {
     return res
       .status(500)
       .json({ success: false, message: "Failed to update claim status" });
+  }
+});
+
+router.post("/expenses/:claimId/pay", async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res);
+    if (!orgId) return;
+
+    const id = Number(req.params.claimId);
+    const { amount } = req.body || {};
+    const payAmt = Number(amount);
+
+    if (!payAmt || isNaN(payAmt) || payAmt <= 0) {
+      return res.status(400).json({ success: false, message: "Invalid payment amount" });
+    }
+
+    const orgStaffIds = (
+      await User.findAll({
+        where: { orgAccountId: orgId, role: "staff" },
+        attributes: ["id"],
+      })
+    ).map((u) => u.id);
+
+    const row = await ExpenseClaim.findOne({
+      where: { id, userId: orgStaffIds },
+    });
+
+    if (!row) {
+      return res.status(404).json({ success: false, message: "Claim not found" });
+    }
+
+    if (row.status !== "approved" && row.status !== "settled") {
+      return res.status(400).json({ success: false, message: "Only approved or settled claims can be paid directly" });
+    }
+
+    const totalAllowed = Number(row.approvedAmount !== null && row.approvedAmount !== undefined ? row.approvedAmount : row.amount);
+    const currentPaid = Number(row.paidAmount || 0);
+    const remaining = Math.max(0, totalAllowed - currentPaid);
+
+    if (payAmt > remaining) {
+      return res.status(400).json({ success: false, message: `Payment amount ₹${payAmt} exceeds remaining unpaid balance of ₹${remaining}` });
+    }
+
+    let paymentsList = [];
+    if (row.payments) {
+      if (typeof row.payments === "string") {
+        try {
+          paymentsList = JSON.parse(row.payments);
+        } catch (e) {
+          paymentsList = [];
+        }
+      } else if (Array.isArray(row.payments)) {
+        paymentsList = row.payments;
+      }
+    }
+
+    paymentsList.push({
+      amount: payAmt,
+      date: new Date(),
+    });
+
+    const newPaid = currentPaid + payAmt;
+    const patch = {
+      paidAmount: newPaid,
+      paidAt: new Date(),
+      payments: paymentsList,
+    };
+
+    if (newPaid >= totalAllowed) {
+      patch.status = "settled";
+      patch.settledAt = new Date();
+    }
+
+    await row.update(patch);
+
+    return res.json({ success: true, claim: row });
+  } catch (e) {
+    console.error("Expense direct payment error:", e);
+    return res.status(500).json({ success: false, message: "Failed to process expense payment" });
   }
 });
 
@@ -11892,38 +12056,297 @@ router.get("/expenses/export", async (req, res) => {
       order: [["expenseDate", "DESC"]],
     });
 
+    let companyName = "THINKTECH SOFTWARE";
+    if (orgId) {
+      const org = await OrgAccount.findOne({ where: { id: orgId } });
+      if (org && org.name && org.name.trim()) {
+        companyName = org.name.trim();
+      }
+    }
+    companyName = companyName.toUpperCase();
+
     const workbook = new exceljs.Workbook();
     const worksheet = workbook.addWorksheet("Expenses");
 
-    worksheet.columns = [
-      { header: "Claim ID", key: "claimId", width: 20 },
-      { header: "Staff Name", key: "staffName", width: 25 },
-      { header: "Department", key: "department", width: 20 },
-      { header: "Type", key: "expenseType", width: 15 },
-      { header: "Date", key: "expenseDate", width: 15 },
-      { header: "Amount", key: "amount", width: 12 },
-      { header: "Approved Amt", key: "approvedAmount", width: 12 },
-      { header: "Status", key: "status", width: 12 },
-      { header: "Bill No", key: "billNumber", width: 15 },
-      { header: "Description", key: "description", width: 30 },
+    // Add Title Row
+    worksheet.mergeCells("A1:P1");
+    const titleRow = worksheet.getRow(1);
+    titleRow.height = 40;
+    for (let i = 1; i <= 16; i++) {
+      const cell = titleRow.getCell(i);
+      cell.font = { name: "Arial", size: 16, bold: true, color: { argb: "FFFFFFFF" } };
+      cell.fill = {
+        type: "pattern",
+        pattern: "solid",
+        fgColor: { argb: "FF1E3A8A" }, // Dark Navy Blue
+      };
+      cell.alignment = { horizontal: "center", vertical: "middle" };
+      cell.border = {
+        top: { style: "thin", color: { argb: "FF1E3A8A" } },
+        bottom: { style: "thin", color: { argb: "FF1E3A8A" } },
+        left: { style: "thin", color: { argb: "FF1E3A8A" } },
+        right: { style: "thin", color: { argb: "FF1E3A8A" } },
+      };
+    }
+    titleRow.getCell(1).value = `${companyName} - EXPENSE CLAIMS REPORT`;
+
+    // Add Subtitle Row
+    worksheet.mergeCells("A2:P2");
+    const subtitleRow = worksheet.getRow(2);
+    subtitleRow.height = 24;
+    for (let i = 1; i <= 16; i++) {
+      const cell = subtitleRow.getCell(i);
+      cell.font = { name: "Arial", size: 10, italic: true, color: { argb: "FF475569" } };
+      cell.fill = {
+        type: "pattern",
+        pattern: "solid",
+        fgColor: { argb: "FFF1F5F9" }, // Soft Gray
+      };
+      cell.alignment = { horizontal: "center", vertical: "middle" };
+      cell.border = {
+        top: { style: "thin", color: { argb: "FFE2E8F0" } },
+        bottom: { style: "thin", color: { argb: "FFE2E8F0" } },
+        left: { style: "thin", color: { argb: "FFE2E8F0" } },
+        right: { style: "thin", color: { argb: "FFE2E8F0" } },
+      };
+    }
+    subtitleRow.getCell(1).value = `Report Generated: ${dayjs().format("DD MMMM YYYY, hh:mm A")} | Filtered by: ${status ? status.toUpperCase() : "ALL"}`;
+
+    // Row 3 is a spacer
+    worksheet.getRow(3).height = 12;
+
+    // Define column headers starting at Row 4
+    const headerRowIndex = 4;
+    worksheet.getRow(headerRowIndex).values = [
+      "Claim ID",
+      "Staff Name",
+      "Department",
+      "Type",
+      "Date",
+      "Amount",
+      "Approved Amt",
+      "Paid Amt",
+      "Payment Date",
+      "Balance",
+      "Status",
+      "Bill No",
+      "From Location",
+      "To Location",
+      "Mode",
+      "Description"
+    ];
+    worksheet.getRow(headerRowIndex).height = 28;
+
+    const headers = [
+      { key: "claimId", width: 22 },
+      { key: "staffName", width: 25 },
+      { key: "department", width: 18 },
+      { key: "expenseType", width: 15 },
+      { key: "expenseDate", width: 15 },
+      { key: "amount", width: 14 },
+      { key: "approvedAmount", width: 14 },
+      { key: "paidAmount", width: 14 },
+      { key: "paymentDate", width: 18 },
+      { key: "balance", width: 14 },
+      { key: "status", width: 12 },
+      { key: "billNumber", width: 16 },
+      { key: "travelFrom", width: 20 },
+      { key: "travelTo", width: 20 },
+      { key: "mode", width: 14 },
+      { key: "description", width: 30 },
     ];
 
-    rows.forEach((r) => {
-      worksheet.addRow({
-        claimId: r.claimId,
-        staffName: staffMap[r.userId]?.staffName || "Unknown",
-        department: staffMap[r.userId]?.department || "-",
-        expenseType: r.expenseType || "Other",
-        expenseDate: dayjs(r.expenseDate).format("YYYY-MM-DD"),
-        amount: Number(r.amount || 0),
-        approvedAmount: r.approvedAmount ? Number(r.approvedAmount) : "-",
-        status: (r.status || "").toUpperCase(),
-        billNumber: r.billNumber || "-",
-        description: r.description || "-",
-      });
+    headers.forEach((h, idx) => {
+      const col = worksheet.getColumn(idx + 1);
+      col.key = h.key;
+      col.width = h.width;
     });
 
-    worksheet.getRow(1).font = { bold: true };
+    // Style Header Row
+    const headerRow = worksheet.getRow(headerRowIndex);
+    headerRow.eachCell((cell) => {
+      cell.font = { name: "Arial", size: 11, bold: true, color: { argb: "FFFFFFFF" } };
+      cell.fill = {
+        type: "pattern",
+        pattern: "solid",
+        fgColor: { argb: "FF0F172A" }, // Dark charcoal/slate
+      };
+      cell.alignment = { horizontal: "center", vertical: "middle" };
+      cell.border = {
+        top: { style: "thin", color: { argb: "FF94A3B8" } },
+        bottom: { style: "medium", color: { argb: "FF475569" } },
+        left: { style: "thin", color: { argb: "FF94A3B8" } },
+        right: { style: "thin", color: { argb: "FF94A3B8" } },
+      };
+    });
+
+    let currentDataRow = 5;
+    rows.forEach((r) => {
+      let items = [];
+      if (r.items) {
+        if (typeof r.items === "string") {
+          try {
+            items = JSON.parse(r.items);
+          } catch (e) {
+            items = [];
+          }
+        } else if (Array.isArray(r.items)) {
+          items = r.items;
+        }
+      }
+
+      const totalAllowed = Number(r.approvedAmount !== null && r.approvedAmount !== undefined ? r.approvedAmount : r.amount);
+      const paidAmt = Number(r.paidAmount || 0);
+      const balanceAmt = r.status === "settled" ? 0 : Math.max(0, totalAllowed - paidAmt);
+
+      let paymentsList = [];
+      if (r.payments) {
+        if (typeof r.payments === "string") {
+          try {
+            paymentsList = JSON.parse(r.payments);
+          } catch (e) {
+            paymentsList = [];
+          }
+        } else if (Array.isArray(r.payments)) {
+          paymentsList = r.payments;
+        }
+      }
+
+      if (paymentsList.length === 0 && paidAmt > 0) {
+        paymentsList = [{ amount: paidAmt, date: r.paidAt || r.settledAt || r.updatedAt }];
+      }
+
+      let paidAmountCellVal = paidAmt > 0 ? paidAmt : 0;
+      let paymentDateCellVal = r.paidAt ? dayjs(r.paidAt).format("YYYY-MM-DD HH:mm") : "-";
+
+      if (paymentsList.length > 0) {
+        paidAmountCellVal = paymentsList.map(p => "₹" + Number(p.amount || 0).toLocaleString('en-IN', { minimumFractionDigits: 2 })).join("\n");
+        paymentDateCellVal = paymentsList.map(p => dayjs(p.date).format("YYYY-MM-DD HH:mm")).join("\n");
+      }
+
+      if (items.length > 0) {
+        const startRow = currentDataRow;
+        const N = items.length;
+        items.forEach((item, idx) => {
+          worksheet.addRow({
+            claimId: r.claimId,
+            staffName: staffMap[r.userId]?.staffName || "Unknown",
+            department: staffMap[r.userId]?.department || "-",
+            expenseType: item.expenseType || r.expenseType || "Other",
+            expenseDate: dayjs(r.expenseDate).format("YYYY-MM-DD"),
+            amount: Number(item.amount || 0),
+            approvedAmount: r.approvedAmount !== null && r.approvedAmount !== undefined ? Number(r.approvedAmount) : "-",
+            paidAmount: paidAmountCellVal,
+            paymentDate: paymentDateCellVal,
+            balance: balanceAmt,
+            status: (r.status || "").toUpperCase(),
+            billNumber: item.billNumber || "-",
+            travelFrom: item.travelFrom || "-",
+            travelTo: item.travelTo || "-",
+            mode: item.mode || "-",
+            description: item.description || "-",
+          });
+          currentDataRow++;
+        });
+
+        if (N > 1) {
+          worksheet.mergeCells(`A${startRow}:A${startRow + N - 1}`); // Claim ID
+          worksheet.mergeCells(`B${startRow}:B${startRow + N - 1}`); // Staff Name
+          worksheet.mergeCells(`C${startRow}:C${startRow + N - 1}`); // Department
+          worksheet.mergeCells(`E${startRow}:E${startRow + N - 1}`); // Date
+          worksheet.mergeCells(`G${startRow}:G${startRow + N - 1}`); // Approved Amt
+          worksheet.mergeCells(`H${startRow}:H${startRow + N - 1}`); // Paid Amt
+          worksheet.mergeCells(`I${startRow}:I${startRow + N - 1}`); // Payment Date
+          worksheet.mergeCells(`J${startRow}:J${startRow + N - 1}`); // Balance
+          worksheet.mergeCells(`K${startRow}:K${startRow + N - 1}`); // Status
+        }
+      } else {
+        worksheet.addRow({
+          claimId: r.claimId,
+          staffName: staffMap[r.userId]?.staffName || "Unknown",
+          department: staffMap[r.userId]?.department || "-",
+          expenseType: r.expenseType || "Other",
+          expenseDate: dayjs(r.expenseDate).format("YYYY-MM-DD"),
+          amount: Number(r.amount || 0),
+          approvedAmount: r.approvedAmount !== null && r.approvedAmount !== undefined ? Number(r.approvedAmount) : "-",
+          paidAmount: paidAmountCellVal,
+          paymentDate: paymentDateCellVal,
+          balance: balanceAmt,
+          status: (r.status || "").toUpperCase(),
+          billNumber: r.billNumber || "-",
+          travelFrom: r.travelFrom || "-",
+          travelTo: r.travelTo || "-",
+          mode: r.mode || "-",
+          description: r.description || "-",
+        });
+        currentDataRow++;
+      }
+    });
+
+    // Style data rows starting from index 5
+    const borderStyle = {
+      top: { style: "thin", color: { argb: "FFCBD5E1" } },
+      bottom: { style: "thin", color: { argb: "FFCBD5E1" } },
+      left: { style: "thin", color: { argb: "FFCBD5E1" } },
+      right: { style: "thin", color: { argb: "FFCBD5E1" } },
+    };
+
+    worksheet.eachRow((row, rowNumber) => {
+      if (rowNumber < 5) return;
+
+      let maxLines = 1;
+      row.eachCell((cell) => {
+        if (cell.value && typeof cell.value === "string") {
+          const lines = cell.value.split("\n").length;
+          if (lines > maxLines) maxLines = lines;
+        }
+      });
+      row.height = maxLines > 1 ? maxLines * 16 : 20;
+
+      // Alternating background color
+      const isEven = rowNumber % 2 === 0;
+      const rowBgColor = isEven ? "FFFFFFFF" : "FFF8FAFC"; // white vs light slate tint
+
+      row.eachCell((cell, colNumber) => {
+        // Set standard fonts and borders
+        cell.font = { name: "Arial", size: 10, color: { argb: "FF1E293B" } };
+        cell.border = borderStyle;
+        cell.fill = {
+          type: "pattern",
+          pattern: "solid",
+          fgColor: { argb: rowBgColor },
+        };
+
+        // Alignments based on columns
+        const colKey = headers[colNumber - 1]?.key;
+        const hasNewlines = typeof cell.value === "string" && cell.value.includes("\n");
+
+        if (["amount", "approvedAmount", "paidAmount", "balance"].includes(colKey)) {
+          cell.alignment = { horizontal: "right", vertical: "middle", wrapText: hasNewlines };
+          if (typeof cell.value === "number") {
+            cell.numFmt = '"₹"#,##0.00';
+          }
+        } else if (["claimId", "expenseDate", "paymentDate", "status", "billNumber", "travelFrom", "travelTo", "mode"].includes(colKey)) {
+          cell.alignment = { horizontal: "center", vertical: "middle", wrapText: hasNewlines };
+        } else {
+          cell.alignment = { horizontal: "left", vertical: "middle", wrapText: hasNewlines };
+        }
+
+        // Highlight Status
+        if (colKey === "status" && typeof cell.value === "string") {
+          const statusVal = cell.value.toUpperCase();
+          if (statusVal === "PENDING") {
+            cell.font = { name: "Arial", size: 10, bold: true, color: { argb: "FFD97706" } }; // Amber
+          } else if (statusVal === "APPROVED") {
+            cell.font = { name: "Arial", size: 10, bold: true, color: { argb: "FF16A34A" } }; // Green
+          } else if (statusVal === "REJECTED") {
+            cell.font = { name: "Arial", size: 10, bold: true, color: { argb: "FFDC2626" } }; // Red
+          } else if (statusVal === "SETTLED") {
+            cell.font = { name: "Arial", size: 10, bold: true, color: { argb: "FF2563EB" } }; // Blue
+          }
+        }
+      });
+    });
 
     res.setHeader(
       "Content-Type",
@@ -13841,6 +14264,12 @@ router.post("/leave/templates/:id/categories-bulk", async (req, res) => {
             ? null
             : Number(c.encashLimitDays),
         carryForward: !!(c.carryForward ?? c.carry_forward),
+        maxLeavePerMonth:
+          c.maxLeavePerMonth === undefined ||
+          c.maxLeavePerMonth === null ||
+          c.maxLeavePerMonth === ""
+            ? null
+            : Number(c.maxLeavePerMonth),
       });
     }
     const out = await LeaveTemplate.findByPk(id, {
@@ -20081,6 +20510,7 @@ router.post("/staff", requireRole(["admin", "staff"]), async (req, res) => {
       education,
       experience,
       extra,
+      sendOfferLetter,
     } = req.body || {};
 
     // Accept phone under different common keys just in case
@@ -20531,6 +20961,69 @@ router.post("/staff", requireRole(["admin", "staff"]), async (req, res) => {
           faceError.message,
         );
         // We don't fail the whole request since staff is already created
+      }
+    }
+
+    // Send Offer Letter if requested
+    if (sendOfferLetter) {
+      try {
+        const { LetterTemplate, StaffLetter } = require("../models");
+        const { sendStaffLetterEmail } = require("../services/emailService");
+
+        // Find the active template
+        const template = await LetterTemplate.findOne({
+          where: {
+            orgAccountId: orgId,
+            active: true,
+            title: { [Op.like]: "%Offer%" }
+          }
+        });
+
+        if (template) {
+          // Helper placeholders replacement
+          const placeholders = {
+            name: name || '',
+            staffId: staffId || String(staffUser.id),
+            email: email || '',
+            phone: normalizedPhone || '',
+            designation: designation || '',
+            department: department || '',
+            dateOfJoining: dateOfJoining || '',
+            city: '',
+            state: '',
+            currentDate: new Date().toLocaleDateString(),
+          };
+
+          let finalContent = template.content;
+          for (const key in placeholders) {
+            const regex = new RegExp(`{{${key}}}`, 'g');
+            finalContent = finalContent.replace(regex, placeholders[key]);
+          }
+
+          // Create the issued letter
+          await StaffLetter.create({
+            staffId: staffUser.id,
+            letterTemplateId: template.id,
+            title: template.title || 'Offer Letter',
+            content: finalContent,
+            issuedBy: req.user.id,
+            orgAccountId: orgId
+          });
+
+          // Send the letter email
+          if (email && email.trim() !== '') {
+            sendStaffLetterEmail(
+              email,
+              name || 'Staff Member',
+              template.title || 'Offer Letter',
+              finalContent,
+              []
+            ).then(() => console.log('Offer letter email sent successfully'))
+            .catch(err => console.error('Failed to send offer letter email:', err));
+          }
+        }
+      } catch (err) {
+        console.error("Failed to auto-issue offer letter on staff creation:", err);
       }
     }
 
@@ -34249,7 +34742,11 @@ router.get("/payroll/fnf/staff-details/:userId", async (req, res) => {
     const approvedExpenses = await ExpenseClaim.findAll({
       where: { userId, status: "approved" }
     });
-    const outstandingExpense = approvedExpenses.reduce((sum, e) => sum + Number(e.approvedAmount || e.amount || 0), 0);
+    const outstandingExpense = approvedExpenses.reduce((sum, e) => {
+      const base = Number(e.approvedAmount !== null && e.approvedAmount !== undefined ? e.approvedAmount : (e.amount || 0));
+      const paid = Number(e.paidAmount || 0);
+      return sum + Math.max(0, base - paid);
+    }, 0);
 
     // 8. Pending unpaid previous monthly payroll lines
     const unpaidPayrolls = await PayrollLine.findAll({

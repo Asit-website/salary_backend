@@ -199,6 +199,61 @@ async function getActiveLeaveTemplateForUser(userId, onDate /* YYYY-MM-DD */) {
   return row.template;
 }
 
+function getLeaveDaysSplitByMonth(startDateStr, endDateStr) {
+  const start = new Date(`${startDateStr}T00:00:00`);
+  const end = new Date(`${endDateStr}T00:00:00`);
+  const splits = {}; // "YYYY-MM" -> days
+  
+  let current = new Date(start);
+  while (current <= end) {
+    const year = current.getFullYear();
+    const month = String(current.getMonth() + 1).padStart(2, '0');
+    const key = `${year}-${month}`;
+    splits[key] = (splits[key] || 0) + 1;
+    
+    current.setDate(current.getDate() + 1);
+  }
+  return splits;
+}
+
+async function getLeavesTakenInMonth(userId, categoryKey, yearMonthStr, excludeRequestId = null) {
+  const startOfMonth = `${yearMonthStr}-01`;
+  const [year, month] = yearMonthStr.split('-').map(Number);
+  const endOfMonth = formatDate(new Date(year, month, 0)); // last day of month
+  
+  const whereClause = {
+    userId,
+    categoryKey: String(categoryKey).toLowerCase(),
+    status: { [Op.in]: ['APPROVED', 'PENDING'] },
+    startDate: { [Op.lte]: endOfMonth },
+    endDate: { [Op.gte]: startOfMonth }
+  };
+  
+  if (excludeRequestId) {
+    whereClause.id = { [Op.ne]: excludeRequestId };
+  }
+  
+  const reqs = await LeaveRequest.findAll({ where: whereClause });
+  
+  let totalDays = 0;
+  for (const req of reqs) {
+    const reqStart = new Date(`${req.startDate}T00:00:00`);
+    const reqEnd = new Date(`${req.endDate}T00:00:00`);
+    
+    const monthStart = new Date(`${startOfMonth}T00:00:00`);
+    const monthEnd = new Date(`${endOfMonth}T00:00:00`);
+    
+    const overlapStart = new Date(Math.max(reqStart, monthStart));
+    const overlapEnd = new Date(Math.min(reqEnd, monthEnd));
+    
+    if (overlapEnd >= overlapStart) {
+      const overlapDays = Math.round((overlapEnd - overlapStart) / (24 * 3600 * 1000)) + 1;
+      totalDays += overlapDays;
+    }
+  }
+  return totalDays;
+}
+
 // STAFF/ADMIN: create leave request
 router.post('/', requireRole(['staff', 'admin', 'superadmin']), async (req, res) => {
   try {
@@ -244,6 +299,26 @@ router.post('/', requireRole(['staff', 'admin', 'superadmin']), async (req, res)
               success: false,
               message: `Insufficient balance. Staff has only ${balanceInfo.remaining} leaves remaining.`
             });
+          }
+        }
+
+        // CHECK MONTHLY MAXIMUM LIMIT FOR YEARLY/QUARTERLY CYCLE
+        const catCfg = (tpl.categories || []).find((c) => String(c.key).toLowerCase() === catKey);
+        if (catCfg && (tpl.cycle === 'yearly' || tpl.cycle === 'quarterly') && catCfg.maxLeavePerMonth != null) {
+          const maxLimit = Number(catCfg.maxLeavePerMonth);
+          if (maxLimit > 0) {
+            const split = getLeaveDaysSplitByMonth(startDate, endDate);
+            for (const monthKey in split) {
+              const currentMonthRequested = split[monthKey];
+              const alreadyTaken = await getLeavesTakenInMonth(userId, catKey, monthKey);
+              if (alreadyTaken + currentMonthRequested > maxLimit) {
+                const monthName = new Date(`${monthKey}-01T00:00:00`).toLocaleString('default', { month: 'long', year: 'numeric' });
+                return res.status(400).json({
+                  success: false,
+                  message: `Monthly limit exceeded for ${monthName}. Maximum allowed per month is ${maxLimit} days, but requested/applied total is ${alreadyTaken + currentMonthRequested} days.`
+                });
+              }
+            }
           }
         }
       } else {
@@ -527,6 +602,29 @@ router.patch('/:id/status', requireRole(['admin', 'superadmin']), async (req, re
 
     if (catKey === 'unpaid') {
       return res.status(400).json({ success: false, message: 'Unpaid leave is no longer allowed. Only company provided leaves can be approved.' });
+    }
+
+    // CHECK MONTHLY MAXIMUM LIMIT FOR YEARLY/QUARTERLY CYCLE
+    const tpl = await getActiveLeaveTemplateForUser(record.userId, record.startDate);
+    if (tpl) {
+      const catCfg = (tpl.categories || []).find((c) => String(c.key).toLowerCase() === catKey);
+      if (catCfg && (tpl.cycle === 'yearly' || tpl.cycle === 'quarterly') && catCfg.maxLeavePerMonth != null) {
+        const maxLimit = Number(catCfg.maxLeavePerMonth);
+        if (maxLimit > 0) {
+          const split = getLeaveDaysSplitByMonth(record.startDate, record.endDate);
+          for (const monthKey in split) {
+            const currentMonthRequested = split[monthKey];
+            const alreadyTaken = await getLeavesTakenInMonth(record.userId, catKey, monthKey, record.id);
+            if (alreadyTaken + currentMonthRequested > maxLimit) {
+              const monthName = new Date(`${monthKey}-01T00:00:00`).toLocaleString('default', { month: 'long', year: 'numeric' });
+              return res.status(400).json({
+                success: false,
+                message: `Monthly limit exceeded for ${monthName}. Maximum allowed per month is ${maxLimit} days, but requested/applied total is ${alreadyTaken + currentMonthRequested} days.`
+              });
+            }
+          }
+        }
+      }
     }
 
     const need = Number(record.days || 0);

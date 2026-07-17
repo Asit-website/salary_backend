@@ -616,31 +616,78 @@ router.get('/expenses', async (req, res) => {
 });
 
 // Create expense claim for current logged-in user
-router.post('/expenses', upload.single('attachment'), async (req, res) => {
+router.post('/expenses', upload.any(), async (req, res) => {
   try {
     const userId = req.user.id;
-    const { expenseType, expenseDate, billNumber, amount, description } = req.body || {};
+    const { expenseType, expenseDate, billNumber, amount, description, travelFrom, travelTo, mode } = req.body || {};
 
-    const amt = Number(amount);
-    if (!Number.isFinite(amt) || amt <= 0) return res.status(400).json({ success: false, message: 'Valid amount required' });
-
+    let itemsArray = null;
+    let amt = 0;
     let attachmentUrl = null;
-    if (req.file) {
-      const rel = path.join('uploads', 'claims', req.file.filename).replace(/\\/g, '/');
-      attachmentUrl = `/${rel}`;
+    let billNo = billNumber || null;
+    let desc = description || null;
+    let fromLoc = travelFrom || null;
+    let toLoc = travelTo || null;
+    let transportMode = mode || null;
+
+    if (req.body.items) {
+      try {
+        itemsArray = JSON.parse(req.body.items);
+      } catch (e) {
+        itemsArray = [];
+      }
     }
+
+    if (Array.isArray(itemsArray) && itemsArray.length > 0) {
+      itemsArray.forEach((item, index) => {
+        const file = (req.files || []).find(f => f.fieldname === `attachment_${index}`);
+        if (file) {
+          const rel = path.join('uploads', 'claims', file.filename).replace(/\\/g, '/');
+          item.attachmentUrl = `/${rel}`;
+        }
+      });
+      amt = itemsArray.reduce((sum, item) => sum + Number(item.amount || 0), 0);
+      billNo = itemsArray[0]?.billNumber || null;
+      desc = description || itemsArray[0]?.description || null;
+      fromLoc = itemsArray[0]?.travelFrom || null;
+      toLoc = itemsArray[0]?.travelTo || null;
+      transportMode = itemsArray[0]?.mode || null;
+      attachmentUrl = itemsArray[0]?.attachmentUrl || null;
+    } else {
+      amt = Number(amount);
+      const legacyFile = (req.files || []).find(f => f.fieldname === 'attachment');
+      if (legacyFile) {
+        const rel = path.join('uploads', 'claims', legacyFile.filename).replace(/\\/g, '/');
+        attachmentUrl = `/${rel}`;
+      }
+      itemsArray = [{
+        amount: amt,
+        billNumber: billNo,
+        description: desc,
+        travelFrom: fromLoc,
+        travelTo: toLoc,
+        mode: transportMode,
+        attachmentUrl: attachmentUrl
+      }];
+    }
+
+    if (!Number.isFinite(amt) || amt <= 0) return res.status(400).json({ success: false, message: 'Valid amount required' });
 
     const row = await ExpenseClaim.create({
       userId,
       claimId: `EC-${Date.now()}`,
       expenseType: expenseType || null,
       expenseDate: expenseDate || new Date().toISOString().slice(0, 10),
-      billNumber: billNumber || null,
+      billNumber: billNo,
       amount: amt,
-      description: description || null,
+      description: desc,
       attachmentUrl,
       status: 'pending',
       orgAccountId: req.user.orgAccountId || null,
+      travelFrom: fromLoc,
+      travelTo: toLoc,
+      mode: transportMode,
+      items: itemsArray,
     });
 
     return res.json({ success: true, claim: row });
@@ -651,7 +698,7 @@ router.post('/expenses', upload.single('attachment'), async (req, res) => {
 });
 
 // Update pending expense claim for current logged-in user
-router.put('/expenses/:id', upload.single('attachment'), async (req, res) => {
+router.put('/expenses/:id', upload.any(), async (req, res) => {
   try {
     const userId = req.user.id;
     const id = Number(req.params.id);
@@ -667,25 +714,73 @@ router.put('/expenses/:id', upload.single('attachment'), async (req, res) => {
       return res.status(403).json({ success: false, message: 'Approved expense cannot be edited' });
     }
 
-    const { expenseType, expenseDate, billNumber, amount, description } = req.body || {};
-    const amt = Number(amount);
-    if (!Number.isFinite(amt) || amt <= 0) {
-      return res.status(400).json({ success: false, message: 'Valid amount required' });
+    const { expenseType, expenseDate, billNumber, amount, description, travelFrom, travelTo, mode } = req.body || {};
+
+    let itemsArray = null;
+    let amt = 0;
+    let attachmentUrl = row.attachmentUrl;
+    let billNo = billNumber || null;
+    let desc = description || null;
+    let fromLoc = travelFrom || null;
+    let toLoc = travelTo || null;
+    let transportMode = mode || null;
+
+    if (req.body.items) {
+      try {
+        itemsArray = JSON.parse(req.body.items);
+      } catch (e) {
+        itemsArray = [];
+      }
     }
 
-    let attachmentUrl = row.attachmentUrl;
-    if (req.file) {
-      const rel = path.join('uploads', 'claims', req.file.filename).replace(/\\/g, '/');
-      attachmentUrl = `/${rel}`;
+    if (Array.isArray(itemsArray) && itemsArray.length > 0) {
+      itemsArray.forEach((item, index) => {
+        const file = (req.files || []).find(f => f.fieldname === `attachment_${index}`);
+        if (file) {
+          const rel = path.join('uploads', 'claims', file.filename).replace(/\\/g, '/');
+          item.attachmentUrl = `/${rel}`;
+        }
+      });
+      amt = itemsArray.reduce((sum, item) => sum + Number(item.amount || 0), 0);
+      billNo = itemsArray[0]?.billNumber || null;
+      desc = itemsArray[0]?.description || null;
+      fromLoc = itemsArray[0]?.travelFrom || null;
+      toLoc = itemsArray[0]?.travelTo || null;
+      transportMode = itemsArray[0]?.mode || null;
+      attachmentUrl = itemsArray[0]?.attachmentUrl || null;
+    } else {
+      amt = Number(amount);
+      const legacyFile = (req.files || []).find(f => f.fieldname === 'attachment');
+      if (legacyFile) {
+        const rel = path.join('uploads', 'claims', legacyFile.filename).replace(/\\/g, '/');
+        attachmentUrl = `/${rel}`;
+      }
+      itemsArray = [{
+        amount: amt,
+        billNumber: billNo,
+        description: desc,
+        travelFrom: fromLoc,
+        travelTo: toLoc,
+        mode: transportMode,
+        attachmentUrl: attachmentUrl
+      }];
+    }
+
+    if (!Number.isFinite(amt) || amt <= 0) {
+      return res.status(400).json({ success: false, message: 'Valid amount required' });
     }
 
     await row.update({
       expenseType: expenseType || null,
       expenseDate: expenseDate ? String(expenseDate).slice(0, 10) : row.expenseDate,
-      billNumber: billNumber || null,
+      billNumber: billNo,
       amount: amt,
-      description: description || null,
+      description: desc,
       attachmentUrl,
+      travelFrom: fromLoc,
+      travelTo: toLoc,
+      mode: transportMode,
+      items: itemsArray,
     });
 
     return res.json({ success: true, claim: row });

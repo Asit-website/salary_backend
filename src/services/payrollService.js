@@ -1085,7 +1085,12 @@ async function calculateSalary(userId, monthKey) {
 
     for (const exp of settledExpenses) {
       const label = `EXPENSE: ${exp.expenseType || 'Claim'}`;
-      finalEarnings[label] = (finalEarnings[label] || 0) + Number(exp.approvedAmount || exp.amount || 0);
+      const baseAmt = Number(exp.approvedAmount !== null && exp.approvedAmount !== undefined ? exp.approvedAmount : (exp.amount || 0));
+      const paidAmt = Number(exp.paidAmount || 0);
+      const remainingAmt = Math.max(0, baseAmt - paidAmt);
+      if (remainingAmt > 0) {
+        finalEarnings[label] = (finalEarnings[label] || 0) + remainingAmt;
+      }
     }
   } catch (e) {
     console.error('Error fetching expenses for payroll:', e);

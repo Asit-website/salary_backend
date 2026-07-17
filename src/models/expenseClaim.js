@@ -60,10 +60,41 @@ module.exports = (sequelize, DataTypes) => {
       type: DataTypes.STRING(500),
       allowNull: true,
     },
+    travelFrom: {
+      type: DataTypes.STRING(255),
+      allowNull: true,
+    },
+    travelTo: {
+      type: DataTypes.STRING(255),
+      allowNull: true,
+    },
+    mode: {
+      type: DataTypes.STRING(255),
+      allowNull: true,
+    },
+    items: {
+      type: DataTypes.JSON,
+      allowNull: true,
+    },
     orgAccountId: {
       type: DataTypes.BIGINT.UNSIGNED,
       allowNull: true,
       field: 'org_account_id',
+    },
+    paidAmount: {
+      type: DataTypes.DECIMAL(12, 2),
+      allowNull: false,
+      defaultValue: 0,
+      field: 'paid_amount',
+    },
+    paidAt: {
+      type: DataTypes.DATE,
+      allowNull: true,
+      field: 'paid_at',
+    },
+    payments: {
+      type: DataTypes.JSON,
+      allowNull: true,
     },
   }, {
     tableName: 'expense_claims',
