@@ -4,6 +4,7 @@ const { ShiftRotationGroup, ShiftRotationRule, User, StaffProfile, ShiftTemplate
 const { authRequired } = require('../middleware/auth');
 const { tenantEnforce } = require('../middleware/tenant');
 const rotationService = require('../services/rotationService');
+const dayjs = require('dayjs');
 
 const router = express.Router();
 
@@ -220,6 +221,26 @@ router.post('/rules', async (req, res) => {
       where: { shiftRotationGroupId, orgAccountId }
     });
 
+    let finalAnchorDate = anchorDate || null;
+    if (!finalAnchorDate) {
+      if (rule && rule.anchorDate) {
+        finalAnchorDate = rule.anchorDate;
+      } else {
+        const type = cycleStartType || 'FIRST_MONDAY_OF_MONTH';
+        if (type === 'FIRST_MONDAY_OF_MONTH') {
+          let d = dayjs().date(1).startOf('day');
+          while (d.day() !== 1) {
+            d = d.add(1, 'day');
+          }
+          finalAnchorDate = d.format('YYYY-MM-DD');
+        } else if (type === 'FIRST_DAY_OF_MONTH') {
+          finalAnchorDate = dayjs().startOf('month').format('YYYY-MM-DD');
+        } else {
+          finalAnchorDate = dayjs().format('YYYY-MM-DD');
+        }
+      }
+    }
+
     const ruleData = {
       orgAccountId,
       shiftRotationGroupId,
@@ -228,7 +249,7 @@ router.post('/rules', async (req, res) => {
       cycleDays: Number(cycleDays || 14),
       cycleStartType: cycleStartType || 'FIRST_MONDAY_OF_MONTH',
       excludeWeeklyOff: excludeWeeklyOff !== undefined ? !!excludeWeeklyOff : true,
-      anchorDate: anchorDate || null,
+      anchorDate: finalAnchorDate,
       active: active !== undefined ? !!active : true
     };
 

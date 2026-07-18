@@ -77,14 +77,17 @@ async function generateRotatedRoster(orgAccountId, startDateStr, endDateStr) {
       include: [{ model: WeeklyOffTemplate, as: 'template' }]
     });
 
-    // Calculate fixed anchor for the entire generation range (prevents resets at month boundaries)
     let anchor = dayjs(rule.anchorDate).startOf('day');
     if (!anchor.isValid()) {
+      const earliestRoster = await StaffRoster.findOne({
+        where: { orgAccountId, status: 'SHIFT' },
+        order: [['date', 'ASC']]
+      });
+      const baseDate = earliestRoster ? dayjs(earliestRoster.date) : (rule.createdAt ? dayjs(rule.createdAt) : dayjs(startDateStr));
       if (rule.cycleStartType === 'FIRST_MONDAY_OF_MONTH') {
-        const startTarget = dayjs(startDateStr).startOf('day');
-        anchor = getFirstMondayOfMonth(startTarget.year(), startTarget.month());
+        anchor = getFirstMondayOfMonth(baseDate.year(), baseDate.month());
       } else {
-        anchor = dayjs(startDateStr).startOf('month').startOf('day'); // Fallback
+        anchor = baseDate.startOf('month').startOf('day'); // Fallback
       }
     }
     anchor = anchor.startOf('day');
