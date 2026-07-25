@@ -5901,9 +5901,10 @@ router.post("/payroll/:cycleId/compute", async (req, res) => {
         } catch (e) {}
 
         for (const rule of templateDeductions) {
-          // ESI Rule: 0.75% only if gross <= 21000
+          // ESI Rule: 0.75% only if gross <= dynamic salaryLimit (default 21000)
           if (rule.key === "ESI_EMPLOYEE" || rule.type === "ESI") {
-            if (grossSalary > 21000) {
+            const limit = rule.meta?.salaryLimit !== undefined && rule.meta?.salaryLimit !== null ? Number(rule.meta.salaryLimit) : 21000;
+            if (grossSalary > limit) {
               finalD.esi = 0;
               if (finalD.ESI) finalD.ESI = 0;
             } else {
@@ -8219,6 +8220,26 @@ router.post("/weekly-off/assign", async (req, res) => {
         .status(400)
         .json({ success: false, message: "userId(s) required" });
 
+    // Check if any of these users are already assigned to a weekly off template
+    for (const uid of users) {
+      const existingAssignment = await StaffWeeklyOffAssignment.findOne({
+        where: { userId: uid },
+        include: [
+          { model: WeeklyOffTemplate, as: "template" },
+          { model: User, as: "user", include: [{ model: StaffProfile, as: "profile" }] }
+        ]
+      });
+
+      if (existingAssignment) {
+        const staffName = existingAssignment.user?.profile?.name || existingAssignment.user?.phone || `Staff #${uid}`;
+        const templateName = existingAssignment.template?.name || `Template #${existingAssignment.weeklyOffTemplateId}`;
+        return res.status(400).json({
+          success: false,
+          message: `${staffName} is already assigned to ${templateName}`
+        });
+      }
+    }
+
     const from = String(effectiveFrom || "").trim();
 
     if (!/\d{4}-\d{2}-\d{2}/.test(from))
@@ -9263,6 +9284,26 @@ router.post("/leave/assign", async (req, res) => {
         .status(400)
         .json({ success: false, message: "userId(s) required" });
 
+    // Check if any of these users are already assigned to a leave template
+    for (const uid of users) {
+      const existingAssignment = await StaffLeaveAssignment.findOne({
+        where: { userId: uid },
+        include: [
+          { model: LeaveTemplate, as: "template" },
+          { model: User, as: "user", include: [{ model: StaffProfile, as: "profile" }] }
+        ]
+      });
+
+      if (existingAssignment) {
+        const staffName = existingAssignment.user?.profile?.name || existingAssignment.user?.phone || `Staff #${uid}`;
+        const templateName = existingAssignment.template?.name || `Template #${existingAssignment.leaveTemplateId}`;
+        return res.status(400).json({
+          success: false,
+          message: `${staffName} is already assigned to ${templateName}`
+        });
+      }
+    }
+
     const from = String(effectiveFrom || "").trim();
 
     if (!/\d{4}-\d{2}-\d{2}/.test(from))
@@ -9708,6 +9749,26 @@ router.post("/holidays/assign", async (req, res) => {
         success: false,
         message: "Selected staff not found in this organization",
       });
+
+    // Check if any of these users are already assigned to a holiday template
+    for (const uid of validIds) {
+      const existingAssignment = await StaffHolidayAssignment.findOne({
+        where: { userId: uid },
+        include: [
+          { model: HolidayTemplate, as: "template" },
+          { model: User, as: "user", include: [{ model: StaffProfile, as: "profile" }] }
+        ]
+      });
+
+      if (existingAssignment) {
+        const staffName = existingAssignment.user?.profile?.name || existingAssignment.user?.phone || `Staff #${uid}`;
+        const templateName = existingAssignment.template?.name || `Template #${existingAssignment.holidayTemplateId}`;
+        return res.status(400).json({
+          success: false,
+          message: `${staffName} is already assigned to ${templateName}`
+        });
+      }
+    }
 
     // Keep latest assignment row per user+template to avoid duplicate confusion.
     await StaffHolidayAssignment.destroy({
@@ -10422,6 +10483,9 @@ router.post(
 
 router.get("/staff/import-template", async (req, res) => {
   try {
+    const orgId = requireOrg(req, res);
+    if (!orgId) return;
+
     const workbook = new exceljs.Workbook();
     const worksheet = workbook.addWorksheet("Staff Import Template");
     const STAFF_IMPORT_HEADERS = [
@@ -10433,23 +10497,101 @@ router.get("/staff/import-template", async (req, res) => {
       "Email Address",
     ];
 
-    worksheet.columns = [
-      { header: STAFF_IMPORT_HEADERS[0], key: "name", width: 25 },
-      { header: STAFF_IMPORT_HEADERS[1], key: "staffId", width: 15 },
-      { header: STAFF_IMPORT_HEADERS[2], key: "phone", width: 15 },
-      { header: STAFF_IMPORT_HEADERS[3], key: "designation", width: 20 },
-      { header: STAFF_IMPORT_HEADERS[4], key: "joiningDate", width: 25 },
-      { header: STAFF_IMPORT_HEADERS[5], key: "email", width: 30 },
-    ];
+    let tpl = null;
+    const tplId = Number(req.query.salaryTemplateId);
+    if (tplId) {
+      tpl = await SalaryTemplate.findOne({
+        where: { id: tplId, orgAccountId: orgId },
+      });
+    }
+
+    const autoCalcCols = [];
+    if (tpl) {
+      const earnings = typeof tpl.earnings === "string" ? JSON.parse(tpl.earnings) : tpl.earnings || [];
+      const allDeductions = typeof tpl.deductions === "string" ? JSON.parse(tpl.deductions) : tpl.deductions || [];
+      const deductions = allDeductions.filter(d => {
+        const keyUpper = String(d.key || "").toUpperCase();
+        const labelLower = String(d.label || "").toLowerCase();
+        const isEmployer = keyUpper.includes("EMPLOYER") || labelLower.includes("employer");
+        return !isEmployer;
+      });
+      
+      let currentCol = 7;
+      earnings.forEach(e => {
+        STAFF_IMPORT_HEADERS.push(`Earning: ${e.label || e.key}`);
+        currentCol++;
+      });
+      deductions.forEach(d => {
+        const keyUpper = String(d.key || "").toUpperCase();
+        const isPF = keyUpper.includes("PROVIDENT_FUND") || keyUpper === "PF";
+        const isESI = keyUpper.includes("ESI");
+        const isPT = keyUpper.includes("PROFESSIONAL_TAX") || keyUpper.includes("PROFESSIONAL TAX") || keyUpper === "PT";
+        
+        STAFF_IMPORT_HEADERS.push(`Deduction: ${d.label || d.key}`);
+        if (isPF || isESI || isPT) {
+          autoCalcCols.push(currentCol);
+        }
+        currentCol++;
+      });
+    }
+
+    worksheet.columns = STAFF_IMPORT_HEADERS.map((h, idx) => {
+      const key = `col_${idx}`;
+      return { header: h, key, width: Math.max(h.length + 5, 15) };
+    });
 
     // Add a sample row
-    worksheet.addRow({
-      name: "John Doe",
-      staffId: "ST001",
-      phone: "9876543210",
-      designation: "Software Engineer",
-      joiningDate: "2024-01-01",
-      email: "john@example.com",
+    const sampleRow = {
+      col_0: "John Doe",
+      col_1: "ST001",
+      col_2: "9876543210",
+      col_3: "Software Engineer",
+      col_4: "2024-01-01",
+      col_5: "john@example.com",
+    };
+
+    if (tpl) {
+      const earnings = typeof tpl.earnings === "string" ? JSON.parse(tpl.earnings) : tpl.earnings || [];
+      const allDeductions = typeof tpl.deductions === "string" ? JSON.parse(tpl.deductions) : tpl.deductions || [];
+      const deductions = allDeductions.filter(d => {
+        const keyUpper = String(d.key || "").toUpperCase();
+        const labelLower = String(d.label || "").toLowerCase();
+        const isEmployer = keyUpper.includes("EMPLOYER") || labelLower.includes("employer");
+        return !isEmployer;
+      });
+      let colIdx = 6;
+      earnings.forEach(() => {
+        sampleRow[`col_${colIdx++}`] = 10000;
+      });
+      deductions.forEach(d => {
+        const keyUpper = String(d.key || "").toUpperCase();
+        const isPF = keyUpper.includes("PROVIDENT_FUND") || keyUpper === "PF";
+        const isESI = keyUpper.includes("ESI");
+        const isPT = keyUpper.includes("PROFESSIONAL_TAX") || keyUpper.includes("PROFESSIONAL TAX") || keyUpper === "PT";
+        
+        if (isPF || isESI || isPT) {
+          sampleRow[`col_${colIdx++}`] = "Auto-Calculated";
+        } else {
+          sampleRow[`col_${colIdx++}`] = 500;
+        }
+      });
+    }
+
+    worksheet.addRow(sampleRow);
+
+    // Apply data validation to auto-calculated columns for rows 2 to 200
+    autoCalcCols.forEach(colIdx => {
+      for (let r = 2; r <= 200; r++) {
+        const cell = worksheet.getCell(r, colIdx);
+        cell.dataValidation = {
+          type: 'custom',
+          allowBlank: true,
+          formulae: ['=FALSE'],
+          showErrorMessage: true,
+          errorTitle: 'Auto-Calculated Field',
+          error: 'This field is automatically calculated based on the employee\'s earnings. Please do not edit it manually.'
+        };
+      }
     });
 
     res.setHeader(
@@ -10496,7 +10638,61 @@ router.post("/staff/import", uploadMemory.single("file"), async (req, res) => {
         .status(400)
         .json({ success: false, message: "Invalid Excel file" });
 
-    const STAFF_IMPORT_HEADERS = [
+    let tpl = null;
+    const tplId = req.query.salaryTemplateId ? Number(req.query.salaryTemplateId) : null;
+    if (tplId) {
+      tpl = await SalaryTemplate.findOne({
+        where: { id: tplId, orgAccountId: orgId },
+      });
+    }
+
+    const headerRow = worksheet.getRow(1);
+    const allUploadedHeaders = [];
+    if (headerRow.values && headerRow.values.length) {
+      for (let col = 1; col <= headerRow.values.length; col++) {
+        const val = String(getCellValue(headerRow.getCell(col)) || "").trim();
+        if (val) allUploadedHeaders.push(val);
+      }
+    }
+
+    // Auto-detect template if not explicitly specified via query param but the file has extra headers
+    if (!tpl && allUploadedHeaders.length > 6) {
+      const allTemplates = await SalaryTemplate.findAll({
+        where: { orgAccountId: orgId }
+      });
+      for (const t of allTemplates) {
+        const tEarnings = typeof t.earnings === "string" ? JSON.parse(t.earnings) : t.earnings || [];
+        const tAllDeductions = typeof t.deductions === "string" ? JSON.parse(t.deductions) : t.deductions || [];
+        const tDeductions = tAllDeductions.filter(d => {
+          const keyUpper = String(d.key || "").toUpperCase();
+          const labelLower = String(d.label || "").toLowerCase();
+          const isEmployer = keyUpper.includes("EMPLOYER") || labelLower.includes("employer");
+          return !isEmployer;
+        });
+
+        const tHeaders = [
+          "Name",
+          "Staff ID",
+          "Phone Number",
+          "Designation",
+          "Joining Date (YYYY-MM-DD)",
+          "Email Address",
+        ];
+        tEarnings.forEach(e => tHeaders.push(`Earning: ${e.label || e.key}`));
+        tDeductions.forEach(d => tHeaders.push(`Deduction: ${d.label || d.key}`));
+
+        const tExpected = tHeaders.map(h => String(h).trim());
+        if (tExpected.length === allUploadedHeaders.length) {
+          const match = tExpected.every((h, idx) => allUploadedHeaders[idx] === h);
+          if (match) {
+            tpl = t;
+            break;
+          }
+        }
+      }
+    }
+
+    const expectedHeaders = [
       "Name",
       "Staff ID",
       "Phone Number",
@@ -10504,37 +10700,48 @@ router.post("/staff/import", uploadMemory.single("file"), async (req, res) => {
       "Joining Date (YYYY-MM-DD)",
       "Email Address",
     ];
-    const headerRow = worksheet.getRow(1);
-    const uploadedHeaders = STAFF_IMPORT_HEADERS.map((_, idx) =>
-      String(getCellValue(headerRow.getCell(idx + 1)) || "").trim(),
-    );
-    const expectedHeaders = STAFF_IMPORT_HEADERS.map((h) => String(h).trim());
-    const headersMatch = expectedHeaders.every(
-      (h, idx) => uploadedHeaders[idx] === h,
+
+    if (tpl) {
+      const earnings = typeof tpl.earnings === "string" ? JSON.parse(tpl.earnings) : tpl.earnings || [];
+      const allDeductions = typeof tpl.deductions === "string" ? JSON.parse(tpl.deductions) : tpl.deductions || [];
+      const deductions = allDeductions.filter(d => {
+        const keyUpper = String(d.key || "").toUpperCase();
+        const labelLower = String(d.label || "").toLowerCase();
+        const isEmployer = keyUpper.includes("EMPLOYER") || labelLower.includes("employer");
+        return !isEmployer;
+      });
+      
+      earnings.forEach(e => {
+        expectedHeaders.push(`Earning: ${e.label || e.key}`);
+      });
+      deductions.forEach(d => {
+        expectedHeaders.push(`Deduction: ${d.label || d.key}`);
+      });
+    }
+
+    const expectedHeadersClean = expectedHeaders.map((h) => String(h).trim());
+    const headersMatch = expectedHeadersClean.every(
+      (h, idx) => allUploadedHeaders[idx] === h,
     );
 
-    // Reject if there are extra non-empty headers beyond expected columns
     let hasExtraHeaders = false;
-    if (Array.isArray(headerRow.values)) {
-      for (
-        let col = STAFF_IMPORT_HEADERS.length + 1;
-        col <= headerRow.values.length;
-        col++
-      ) {
-        const v = String(getCellValue(headerRow.getCell(col)) || "").trim();
-        if (v) {
-          hasExtraHeaders = true;
-          break;
-        }
+    if (!tpl) {
+      if (allUploadedHeaders.length > expectedHeadersClean.length) {
+        hasExtraHeaders = true;
       }
     }
 
     if (!headersMatch || hasExtraHeaders) {
       return res.status(400).json({
         success: false,
-        message: `Invalid Excel headers. Please use the downloaded template exactly. Expected: ${expectedHeaders.join(", ")}`,
+        message: `Invalid Excel headers. Please use the downloaded template exactly. Expected: ${expectedHeadersClean.join(", ")}`,
       });
     }
+
+    const headerToColIndex = {};
+    allUploadedHeaders.forEach((h, idx) => {
+      headerToColIndex[h.toUpperCase()] = idx + 1;
+    });
 
     const results = {
       success: 0,
@@ -10615,6 +10822,162 @@ router.post("/staff/import", uploadMemory.single("file"), async (req, res) => {
           }
         }
 
+        const toUserAttr = (key) => {
+          const cleanKey = String(key || "").trim().toUpperCase().replace(/[\s\-]+/g, "_");
+          const map = {
+            BASIC_SALARY: "basicSalary",
+            HRA: "hra",
+            DA: "da",
+            SPECIAL_ALLOWANCE: "specialAllowance",
+            CONVEYANCE_ALLOWANCE: "conveyanceAllowance",
+            MEDICAL_ALLOWANCE: "medicalAllowance",
+            TELEPHONE_ALLOWANCE: "telephoneAllowance",
+            OTHER_ALLOWANCES: "otherAllowances",
+            TRAVEL_ALLOWANCE: "otherAllowances",
+            BONUS: "bonus",
+            OVERTIME: "overtime",
+            PROVIDENT_FUND: "pfDeduction",
+            PROVIDENT_FUND_EMPLOYEE: "pfDeduction",
+            ESI: "esiDeduction",
+            ESI_EMPLOYEE: "esiDeduction",
+            PROFESSIONAL_TAX: "professionalTax",
+            "PROFESSIONAL TAX": "professionalTax",
+            INCOME_TAX: "tdsDeduction",
+            "INCOME TAX": "tdsDeduction",
+          };
+          return map[cleanKey] || null;
+        };
+
+        let userSalaryUpdate = {};
+
+        if (tpl) {
+          const row = worksheet.getRow(data.rowNumber);
+          const salaryValues = { earnings: {}, deductions: {}, incentives: {} };
+          
+          const earnings = typeof tpl.earnings === "string" ? JSON.parse(tpl.earnings) : tpl.earnings || [];
+          const allDeductions = typeof tpl.deductions === "string" ? JSON.parse(tpl.deductions) : tpl.deductions || [];
+          const deductions = allDeductions.filter(d => {
+            const keyUpper = String(d.key || "").toUpperCase();
+            const labelLower = String(d.label || "").toLowerCase();
+            
+            const isEmployer = keyUpper.includes("EMPLOYER") || labelLower.includes("employer");
+            const isPF = keyUpper.includes("PROVIDENT_FUND") || keyUpper === "PF";
+            const isESI = keyUpper.includes("ESI");
+            const isPT = keyUpper.includes("PROFESSIONAL_TAX") || keyUpper.includes("PROFESSIONAL TAX") || keyUpper === "PT";
+            
+            return !isEmployer && !isPF && !isESI && !isPT;
+          });
+
+          let totalEarnings = 0;
+          let totalDeductions = 0;
+
+          earnings.forEach((item) => {
+            const fieldName = item.key;
+            const headerName = `EARNING: ${String(item.label || item.key).toUpperCase()}`;
+            const colIdx = headerToColIndex[headerName];
+            const fieldValue = colIdx ? Number(getCellValue(row.getCell(colIdx)) || 0) : Number(item.valueNumber || 0);
+
+            salaryValues.earnings[fieldName] = fieldValue;
+            const attr = toUserAttr(fieldName);
+            if (attr) userSalaryUpdate[attr] = parseFloat(fieldValue);
+            totalEarnings += parseFloat(fieldValue);
+          });
+
+          deductions.forEach((item) => {
+            const fieldName = item.key;
+            const headerName = `DEDUCTION: ${String(item.label || item.key).toUpperCase()}`;
+            const colIdx = headerToColIndex[headerName];
+            const fieldValue = colIdx ? Number(getCellValue(row.getCell(colIdx)) || 0) : Number(item.valueNumber || 0);
+
+            salaryValues.deductions[fieldName] = fieldValue;
+            const attr = toUserAttr(fieldName);
+            if (attr) userSalaryUpdate[attr] = parseFloat(fieldValue);
+            totalDeductions += parseFloat(fieldValue);
+          });
+
+          // Calculate PF, ESI, and Professional Tax automatically from rules
+          const pfRule = allDeductions.find(d => {
+            const k = String(d.key || "").toUpperCase();
+            const isEmployer = k.includes("EMPLOYER");
+            return !isEmployer && (k.includes("PROVIDENT_FUND") || k === "PF");
+          });
+          const esiRule = allDeductions.find(d => {
+            const k = String(d.key || "").toUpperCase();
+            const isEmployer = k.includes("EMPLOYER");
+            return !isEmployer && k.includes("ESI");
+          });
+          const ptRule = allDeductions.find(d => {
+            const k = String(d.key || "").toUpperCase();
+            const isEmployer = k.includes("EMPLOYER");
+            return !isEmployer && (k.includes("PROFESSIONAL_TAX") || k.includes("PROFESSIONAL TAX") || k === "PT");
+          });
+
+          // Calculate PF
+          if (pfRule) {
+            let pfVal = 0;
+            if (pfRule.type === 'fixed') {
+              pfVal = Number(pfRule.valueNumber || 0);
+            } else if (pfRule.type === 'percent') {
+              const baseAttr = pfRule.meta?.basedOn || 'basic_salary';
+              const baseVal = salaryValues.earnings[baseAttr] || salaryValues.earnings['basic_salary'] || 0;
+              pfVal = Number((baseVal * (pfRule.valueNumber || 12) / 100).toFixed(2));
+            }
+            salaryValues.deductions[pfRule.key] = pfVal;
+            const attr = toUserAttr(pfRule.key);
+            if (attr) userSalaryUpdate[attr] = parseFloat(pfVal);
+            totalDeductions += pfVal;
+          }
+
+          // Calculate ESI
+          if (esiRule) {
+            let esiVal = 0;
+            const esiLimit = Number(esiRule.meta?.salaryLimit ?? 21000);
+            if (totalEarnings <= esiLimit) {
+              if (esiRule.type === 'fixed') {
+                esiVal = Number(esiRule.valueNumber || 0);
+              } else if (esiRule.type === 'percent') {
+                const percent = Number(esiRule.valueNumber || 0.75);
+                esiVal = Number((totalEarnings * (percent / 100)).toFixed(2));
+              }
+            }
+            salaryValues.deductions[esiRule.key] = esiVal;
+            const attr = toUserAttr(esiRule.key);
+            if (attr) userSalaryUpdate[attr] = parseFloat(esiVal);
+            totalDeductions += esiVal;
+          }
+
+          // Calculate PT
+          if (ptRule) {
+            let ptVal = 0;
+            if (ptRule.type === 'fixed') {
+              ptVal = Number(ptRule.valueNumber || 0);
+            } else if (ptRule.type === 'percent') {
+              const baseVal = ptRule.meta?.basedOn === 'gross_salary' ? totalEarnings : (salaryValues.earnings[ptRule.meta?.basedOn] || 0);
+              ptVal = Number((baseVal * (ptRule.valueNumber || 0) / 100).toFixed(2));
+            } else if (ptRule.slabs && ptRule.slabs.length) {
+              const slabs = Array.isArray(ptRule.slabs) ? ptRule.slabs : [];
+              const matchedSlab = slabs.find(s => totalEarnings >= Number(s.min || 0) && totalEarnings <= Number(s.max || 9999999));
+              if (matchedSlab) {
+                ptVal = Number(matchedSlab.amount || 0);
+              }
+            }
+            salaryValues.deductions[ptRule.key] = ptVal;
+            const attr = toUserAttr(ptRule.key);
+            if (attr) userSalaryUpdate[attr] = parseFloat(ptVal);
+            totalDeductions += ptVal;
+          }
+
+          const grossSalary = totalEarnings;
+          const netSalary = grossSalary - totalDeductions;
+
+          userSalaryUpdate.salaryTemplateId = tpl.id;
+          userSalaryUpdate.salaryValues = salaryValues;
+          userSalaryUpdate.totalEarnings = totalEarnings;
+          userSalaryUpdate.totalDeductions = totalDeductions;
+          userSalaryUpdate.grossSalary = grossSalary;
+          userSalaryUpdate.netSalary = netSalary;
+        }
+
         const passwordHash = await bcrypt.hash(phone, 10);
         const user = await User.create({
           role: "staff",
@@ -10622,6 +10985,7 @@ router.post("/staff/import", uploadMemory.single("file"), async (req, res) => {
           passwordHash,
           orgAccountId: orgId,
           active: true,
+          ...userSalaryUpdate
         });
 
         currentTotalCount++;
@@ -14307,6 +14671,24 @@ router.post("/leave/assign", async (req, res) => {
       return res
         .status(400)
         .json({ success: false, message: "Valid leaveTemplateId is required" });
+    }
+
+    // Check if user is already assigned to a leave template
+    const existingAssignment = await StaffLeaveAssignment.findOne({
+      where: { userId },
+      include: [
+        { model: LeaveTemplate, as: "template" },
+        { model: User, as: "user", include: [{ model: StaffProfile, as: "profile" }] }
+      ]
+    });
+
+    if (existingAssignment) {
+      const staffName = existingAssignment.user?.profile?.name || existingAssignment.user?.phone || `Staff #${userId}`;
+      const templateName = existingAssignment.template?.name || `Template #${existingAssignment.leaveTemplateId}`;
+      return res.status(400).json({
+        success: false,
+        message: `${staffName} is already assigned to ${templateName}`
+      });
     }
 
     if (!effectiveFrom || effectiveFrom === "Invalid Date") {

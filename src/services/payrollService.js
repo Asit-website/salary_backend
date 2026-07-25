@@ -581,7 +581,7 @@ async function calculateSalary(userId, monthKey) {
       const esiRule = getRule('ESI_EMPLOYEE');
       if (esiRule && esiRule.type === 'percent' && (esiRule.meta?.basedOn === 'TOTAL EARNINGS' || esiRule.meta?.basedOn === 'TOTAL_EARNINGS')) {
         const currentGross = Object.values(earnings).reduce((s, v) => s + (Number(v) || 0), 0);
-        deductions.esi = Math.round(currentGross * (Number(esiRule.valueNumber || 0) / 100));
+        deductions.esi = Number((currentGross * (Number(esiRule.valueNumber || 0) / 100)).toFixed(2));
       }
     }
   }
@@ -1265,9 +1265,10 @@ async function calculateSalary(userId, monthKey) {
     } catch (e) { }
 
     for (const rule of templateDeductions) {
-      // ESI Rule: 0.75% only if gross <= 21000
+      // ESI Rule: 0.75% only if gross <= dynamic salaryLimit (default 21000)
       if (rule.key === 'ESI_EMPLOYEE' || rule.type === 'ESI') {
-        if (grossSalary > 21000) {
+        const limit = rule.meta?.salaryLimit !== undefined && rule.meta?.salaryLimit !== null ? Number(rule.meta.salaryLimit) : 21000;
+        if (grossSalary > limit) {
           finalDeductions.esi = 0;
           if (finalDeductions.ESI) finalDeductions.ESI = 0;
         } else {
