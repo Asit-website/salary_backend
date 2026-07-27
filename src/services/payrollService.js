@@ -10,7 +10,7 @@ const {
   HolidayTemplate, HolidayDate, StaffHolidayAssignment, PayrollCycle, PayrollLine,
   AppSetting, StaffLoan, OrgAccount, StaffSalesIncentive, SalesIncentiveRule,
   AttendanceAutomationRule, LeaveEncashment, StaffAdvance, TenureBonusRule, StaffTenureBonusAssignment,
-  HolidayWorkPayRule, StaffHolidayWorkPayAssignment
+  HolidayWorkPayRule, StaffHolidayWorkPayAssignment, StaffRoster
 } = require('../models');
 const holidayWorkPayService = require('./holidayWorkPayService');
 const { coerceSalarySettings, computePayableDays, getSettingsPayableDays } = require('../utils/salarySettingsHelper');
@@ -38,8 +38,8 @@ function calculateTenureMonths(joiningDate, targetMonthKey) {
   if (!joiningDate) return 0;
   const join = new Date(joiningDate);
   const [targetYear, targetMonth] = targetMonthKey.split('-').map(Number);
-  // Target date is the last day of the payroll month for tenure completion check
-  const targetEnd = new Date(targetYear, targetMonth, 0);
+  // Target date is the first day of the next month to check completed calendar months
+  const targetEnd = new Date(targetYear, targetMonth, 1);
 
   let months = (targetEnd.getFullYear() - join.getFullYear()) * 12 + (targetEnd.getMonth() - join.getMonth());
   if (targetEnd.getDate() < join.getDate()) {
@@ -1211,6 +1211,8 @@ async function calculateSalary(userId, monthKey) {
   }
 
   // 3. APPLY TENURE BONUS (Only if live compute and month matches)
+  let newMonthsPaid = 0;
+  let tenureBonusMeta = null;
   try {
     const assignment = await StaffTenureBonusAssignment.findOne({
       where: {
@@ -1221,9 +1223,23 @@ async function calculateSalary(userId, monthKey) {
       order: [['effectiveFrom', 'DESC']]
     });
 
-    if (assignment && assignment.rule && assignment.rule.active && String(assignment.rule.paymentMonth) === String(monthKey)) {
+    if (assignment && assignment.rule && assignment.rule.active) {
       const bRule = assignment.rule;
-      const bConfig = Array.isArray(bRule.config) ? bRule.config : (typeof bRule.config === 'string' ? JSON.parse(bRule.config) : []);
+      const ruleMonthPart = (bRule.paymentMonth || '').split('-')[1];
+      const currentMonthPart = (monthKey || '').split('-')[1];
+
+      if (ruleMonthPart && currentMonthPart && ruleMonthPart === currentMonthPart) {
+        let bConfig = bRule.config;
+        while (typeof bConfig === 'string') {
+          try {
+            const parsed = JSON.parse(bConfig);
+            if (parsed === bConfig) break;
+            bConfig = parsed;
+          } catch (_) {
+            break;
+          }
+        }
+        if (!Array.isArray(bConfig)) bConfig = [];
 
       const p = u.profile ? (typeof u.profile.get === 'function' ? u.profile.get({ plain: true }) : u.profile) : {};
       const joiningDate = p.dateOfJoining || p.date_of_joining;
@@ -1231,23 +1247,113 @@ async function calculateSalary(userId, monthKey) {
       if (joiningDate) {
         const tenureMonths = calculateTenureMonths(joiningDate, monthKey);
 
-        // Find matching rule from config array
-        const matchedBracket = bConfig.find(r => tenureMonths >= Number(r.min || 0) && tenureMonths <= Number(r.max || 999));
-
-        if (matchedBracket && Number(matchedBracket.percent) > 0) {
-          const grossSalary_pre = sumObj(finalEarnings) + sumObj(finalIncentives);
-          const bonusAmt = Math.round(grossSalary_pre * (Number(matchedBracket.percent) / 100));
-          if (bonusAmt > 0) {
-            finalEarnings.TENURE_BONUS = bonusAmt;
+        // Find how many months were already paid
+        const currentCycleId = cycle ? cycle.id : null;
+        const pastLines = await PayrollLine.findAll({
+          where: {
+            userId: u.id,
+            status: 'INCLUDED',
+            ...(currentCycleId ? { cycleId: { [Op.ne]: currentCycleId } } : {})
+          }
+        });
+        let paidMonths = 0;
+        for (const pl of pastLines) {
+          let parsedTotals = pl.totals;
+          if (typeof parsedTotals === 'string') {
             try {
-              require('fs').appendFileSync('payroll_debug.log', `[Bonus] User ${u.id}: Rule=${bRule.name}, Tenure=${tenureMonths}mo, Bracket=${matchedBracket.percent}%, Bonus=${bonusAmt}\n`);
-            } catch (_) { }
+              parsedTotals = JSON.parse(parsedTotals);
+            } catch (_) {}
+          }
+          if (parsedTotals && parsedTotals.tenureBonusMonthsPaid) {
+            paidMonths += Number(parsedTotals.tenureBonusMonthsPaid || 0);
+          }
+        }
+
+        const unpaidMonths = tenureMonths - paidMonths;
+        if (unpaidMonths > 0) {
+          const sortedBrackets = [...bConfig].sort((a, b) => Number(a.min || 0) - Number(b.min || 0));
+          let totalBonusAmount = 0;
+          const grossSalary_pre = sumObj(finalEarnings) + sumObj(finalIncentives);
+
+          let matchedMin = '';
+          let matchedMax = '';
+          let matchedPercent = '';
+
+          for (let i = 0; i < sortedBrackets.length; i++) {
+            const bracket = sortedBrackets[i];
+            const min = Number(bracket.min || 0);
+            const max = Number(bracket.max || 999);
+            
+            if (tenureMonths >= min) {
+              const startIdx = i === 0 ? 1 : min;
+              const start = Math.max(paidMonths + 1, startIdx);
+              const end = Math.min(tenureMonths, max);
+              
+              if (end >= start) {
+                const monthsInBracket = end - start + 1;
+                const type = bracket.type || 'percent';
+                const val = Number(bracket.value !== undefined ? bracket.value : bracket.percent || 0);
+
+                matchedMin = bracket.min;
+                matchedMax = bracket.max ? bracket.max : '';
+                matchedPercent = val;
+
+                if (type === 'days') {
+                  const dailyRate = daysForRate > 0 ? (grossSalary_pre / daysForRate) : (grossSalary_pre / 30);
+                  const monthlyRate = (val * dailyRate) / 12;
+                  totalBonusAmount += monthlyRate * monthsInBracket;
+                } else {
+                  totalBonusAmount += grossSalary_pre * (val / 100) * monthsInBracket;
+                }
+              }
+            }
+          }
+
+          if (totalBonusAmount > 0) {
+            const bonusAmt = Number(totalBonusAmount.toFixed(2));
+            if (bonusAmt > 0) {
+              finalEarnings.TENURE_BONUS = bonusAmt;
+              newMonthsPaid = unpaidMonths;
+              tenureBonusMeta = {
+                ruleName: bRule.name,
+                totalTenureMonths: tenureMonths,
+                tenureMonths: tenureMonths,
+                paidMonthsBefore: paidMonths,
+                newMonthsPaid: unpaidMonths,
+                amount: bonusAmt,
+                bracketMin: matchedMin,
+                bracketMax: matchedMax,
+                bracketPercent: matchedPercent,
+                bracketDetails: sortedBrackets.map(b => ({
+                  min: b.min,
+                  max: b.max,
+                  percent: b.percent,
+                  type: b.type || 'percent',
+                  value: b.value !== undefined ? b.value : b.percent
+                }))
+              };
+              try {
+                require('fs').appendFileSync('payroll_debug.log', `[Bonus] User ${u.id}: Rule=${bRule.name}, Tenure=${tenureMonths}mo, PaidBefore=${paidMonths}mo, NewPaid=${unpaidMonths}mo, Bonus=${bonusAmt}\n`);
+              } catch (_) { }
+            }
           }
         }
       }
     }
+  }
   } catch (e) {
     console.error(`[Payroll-Bonus] Failed to calculate bonus: ${e.message}`);
+  }
+
+  // Round all components to 2 decimal places first to prevent summation mismatch
+  for (const k of Object.keys(finalEarnings)) {
+    finalEarnings[k] = Math.round(Number(finalEarnings[k] || 0) * 100) / 100;
+  }
+  for (const k of Object.keys(finalIncentives)) {
+    finalIncentives[k] = Math.round(Number(finalIncentives[k] || 0) * 100) / 100;
+  }
+  for (const k of Object.keys(finalDeductions)) {
+    finalDeductions[k] = Math.round(Number(finalDeductions[k] || 0) * 100) / 100;
   }
 
   const _totalEarnings = sumObj(finalEarnings);
@@ -1336,7 +1442,8 @@ async function calculateSalary(userId, monthKey) {
       totalDeductions: updatedTotalDeductions,
       grossSalary: updatedGrossSalary,
       netSalary: Math.max(0, netSalary),
-      ratio
+      ratio,
+      tenureBonusMonthsPaid: newMonthsPaid
     },
     attendanceSummary: {
       present: actualPresent, half, leave, paidLeave: paidLeaveCount, paidLeaveDates,
@@ -1362,6 +1469,7 @@ async function calculateSalary(userId, monthKey) {
       excessBreakMinutes: breakMeta.excessBreakMinutes,
       earlyOvertimeMinutes: earlyOvertime.earlyOvertimePay > 0 ? earlyOvertime.earlyOvertimeMinutes : 0,
       earlyOvertimePay: earlyOvertime.earlyOvertimePay > 0 ? earlyOvertime.earlyOvertimePay : 0,
+      tenureBonus: tenureBonusMeta,
     },
     earnings: finalEarnings,
     incentives: finalIncentives,
