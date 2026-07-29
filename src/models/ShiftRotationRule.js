@@ -22,6 +22,12 @@ module.exports = (sequelize) => {
         defaultValue: true,
         field: 'exclude_weekly_off'
       },
+      attachShiftToWeeklyOff: {
+        type: DataTypes.BOOLEAN,
+        allowNull: false,
+        defaultValue: false,
+        field: 'attach_shift_to_weekly_off'
+      },
       anchorDate: { type: DataTypes.DATEONLY, allowNull: true, field: 'anchor_date' },
       active: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: true },
     },

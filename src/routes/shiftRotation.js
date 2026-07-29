@@ -4,6 +4,7 @@ const { ShiftRotationGroup, ShiftRotationRule, User, StaffProfile, ShiftTemplate
 const { authRequired } = require('../middleware/auth');
 const { tenantEnforce } = require('../middleware/tenant');
 const rotationService = require('../services/rotationService');
+const { getFirstMondayOfMonth } = require('../services/rotationService');
 const dayjs = require('dayjs');
 
 const router = express.Router();
@@ -186,6 +187,7 @@ router.post('/rules', async (req, res) => {
       cycleDays,
       cycleStartType,
       excludeWeeklyOff,
+      attachShiftToWeeklyOff,
       anchorDate,
       active
     } = req.body;
@@ -221,24 +223,13 @@ router.post('/rules', async (req, res) => {
       where: { shiftRotationGroupId, orgAccountId }
     });
 
-    let finalAnchorDate = anchorDate || null;
+    let finalAnchorDate = anchorDate || (rule ? rule.anchorDate : null);
     if (!finalAnchorDate) {
-      if (rule && rule.anchorDate) {
-        finalAnchorDate = rule.anchorDate;
-      } else {
-        const type = cycleStartType || 'FIRST_MONDAY_OF_MONTH';
-        if (type === 'FIRST_MONDAY_OF_MONTH') {
-          let d = dayjs().date(1).startOf('day');
-          while (d.day() !== 1) {
-            d = d.add(1, 'day');
-          }
-          finalAnchorDate = d.format('YYYY-MM-DD');
-        } else if (type === 'FIRST_DAY_OF_MONTH') {
-          finalAnchorDate = dayjs().startOf('month').format('YYYY-MM-DD');
-        } else {
-          finalAnchorDate = dayjs().format('YYYY-MM-DD');
-        }
+      let d = dayjs().date(1).startOf('day');
+      while (d.day() !== 1) {
+        d = d.add(1, 'day');
       }
+      finalAnchorDate = d.format('YYYY-MM-DD');
     }
 
     const ruleData = {
@@ -249,6 +240,7 @@ router.post('/rules', async (req, res) => {
       cycleDays: Number(cycleDays || 14),
       cycleStartType: cycleStartType || 'FIRST_MONDAY_OF_MONTH',
       excludeWeeklyOff: excludeWeeklyOff !== undefined ? !!excludeWeeklyOff : true,
+      attachShiftToWeeklyOff: attachShiftToWeeklyOff !== undefined ? !!attachShiftToWeeklyOff : false,
       anchorDate: finalAnchorDate,
       active: active !== undefined ? !!active : true
     };
@@ -277,6 +269,19 @@ router.post('/generate', async (req, res) => {
 
     if (!startDate || !endDate) {
       return res.status(400).json({ success: false, message: 'startDate and endDate are required' });
+    }
+
+    // Fix: If startDate is before any rule's anchor, move anchor back to
+    // the first Monday of startDate's month so cycles are continuous and correct.
+    const startDay = dayjs(startDate);
+    const activeRules = await ShiftRotationRule.findAll({ where: { orgAccountId, active: true } });
+    for (const r of activeRules) {
+      const anchorDay = r.anchorDate ? dayjs(r.anchorDate) : null;
+      if (!anchorDay || !anchorDay.isValid() || startDay.isBefore(anchorDay, 'day')) {
+        const newAnchor = getFirstMondayOfMonth(startDay.year(), startDay.month());
+        await r.update({ anchorDate: newAnchor.format('YYYY-MM-DD') });
+        console.log(`[Rotation] Anchor updated for rule ${r.id}: ${newAnchor.format('YYYY-MM-DD')}`);
+      }
     }
 
     console.log(`Running manual rotation generation for org: ${orgAccountId} from ${startDate} to ${endDate}`);

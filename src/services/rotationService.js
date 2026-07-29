@@ -16,25 +16,29 @@ function getFirstMondayOfMonth(year, month) {
 }
 
 /**
- * Calculates the shift template ID for a given user on a specific date based on active rule and a fixed anchor
+ * Calculates the shift template ID for a given user on a specific date based on active rule and continuous anchor
  */
-function calculateShiftForDate(userId, dateStr, rule, anchor) {
+function calculateShiftForDate(userId, dateStr, rule) {
   if (!rule || !rule.active) return null;
 
   const targetDate = dayjs(dateStr).startOf('day');
-  const diffDays = targetDate.diff(anchor, 'day');
-  
-  // If target date is before the start of the rotation anchor, return start shift
-  if (diffDays < 0) {
-    return rule.startShiftTemplateId;
+  let anchor = rule.anchorDate ? dayjs(rule.anchorDate).startOf('day') : null;
+
+  if (!anchor || !anchor.isValid()) {
+    if (rule.createdAt) {
+      anchor = getFirstMondayOfMonth(dayjs(rule.createdAt).year(), dayjs(rule.createdAt).month());
+    } else {
+      anchor = getFirstMondayOfMonth(targetDate.year(), targetDate.month());
+    }
   }
 
-  const cycleDays = rule.cycleDays || 15;
+  const diffDays = targetDate.diff(anchor, 'day');
+  const cycleDays = rule.cycleDays || 14;
   const cycleIndex = Math.floor(diffDays / cycleDays);
 
-  // Even cycle indices (0, 2, 4...) get the start shift.
-  // Odd cycle indices (1, 3, 5...) get the alternate shift.
-  if (cycleIndex % 2 === 0) {
+  // Even cycle indices (0, 2, -2...) get the start shift.
+  // Odd cycle indices (1, 3, -1...) get the alternate shift.
+  if (Math.abs(cycleIndex) % 2 === 0) {
     return rule.startShiftTemplateId;
   } else {
     return rule.alternateShiftTemplateId;
@@ -77,26 +81,13 @@ async function generateRotatedRoster(orgAccountId, startDateStr, endDateStr) {
       include: [{ model: WeeklyOffTemplate, as: 'template' }]
     });
 
-    let anchor = dayjs(rule.anchorDate).startOf('day');
-    if (!anchor.isValid()) {
-      const earliestRoster = await StaffRoster.findOne({
-        where: { orgAccountId, status: 'SHIFT' },
-        order: [['date', 'ASC']]
-      });
-      const baseDate = earliestRoster ? dayjs(earliestRoster.date) : (rule.createdAt ? dayjs(rule.createdAt) : dayjs(startDateStr));
-      if (rule.cycleStartType === 'FIRST_MONDAY_OF_MONTH') {
-        anchor = getFirstMondayOfMonth(baseDate.year(), baseDate.month());
-      } else {
-        anchor = baseDate.startOf('month').startOf('day'); // Fallback
-      }
-    }
-    anchor = anchor.startOf('day');
-
     let current = start;
     while (current.isBefore(end) || current.isSame(end)) {
       const dateStr = current.format('YYYY-MM-DD');
 
       for (const staff of staffList) {
+        const calculatedShift = calculateShiftForDate(staff.id, dateStr, rule);
+
         if (rule.excludeWeeklyOff) {
           const targetJsDate = new Date(`${dateStr}T00:00:00`);
           let isWo = false;
@@ -119,24 +110,26 @@ async function generateRotatedRoster(orgAccountId, startDateStr, endDateStr) {
           }
 
           if (isWo) {
+            const cycleShiftId = rule.attachShiftToWeeklyOff
+              ? calculatedShift
+              : null;
+
             rosterEntries.push({
               userId: staff.id,
               date: dateStr,
-              shiftTemplateId: null,
+              shiftTemplateId: cycleShiftId,
               status: 'WEEKLY_OFF',
               orgAccountId
             });
             continue;
           }
         }
-
-        const shiftTemplateId = calculateShiftForDate(staff.id, dateStr, rule, anchor);
         
-        if (shiftTemplateId) {
+        if (calculatedShift) {
           rosterEntries.push({
             userId: staff.id,
             date: dateStr,
-            shiftTemplateId,
+            shiftTemplateId: calculatedShift,
             status: 'SHIFT',
             orgAccountId
           });

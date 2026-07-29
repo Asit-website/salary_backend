@@ -1,7 +1,7 @@
 const cron = require('node-cron');
 const dayjs = require('dayjs');
-const { OrgAccount } = require('../models');
-const { generateRotatedRoster } = require('../services/rotationService');
+const { OrgAccount, ShiftRotationRule } = require('../models');
+const { generateRotatedRoster, getFirstMondayOfMonth } = require('../services/rotationService');
 
 /**
  * Automates monthly shift rotation generation on the 25th of each month.
@@ -30,6 +30,18 @@ const scheduleShiftRotationCron = () => {
 
       for (const org of activeOrgs) {
         try {
+          // Align anchor: cron always generates a FUTURE month, so anchor should
+          // never need to move backward. Just ensure anchor is set if missing.
+          const startDay = dayjs(startDateStr);
+          const orgRules = await ShiftRotationRule.findAll({ where: { orgAccountId: org.id, active: true } });
+          for (const r of orgRules) {
+            if (!r.anchorDate) {
+              const newAnchor = getFirstMondayOfMonth(startDay.year(), startDay.month());
+              await r.update({ anchorDate: newAnchor.format('YYYY-MM-DD') });
+              console.log(`[Cron] Set missing anchor for rule ${r.id} (org ${org.id}): ${newAnchor.format('YYYY-MM-DD')}`);
+            }
+          }
+
           console.log(`[Cron] Generating shift rotation for Org ID: ${org.id} (${org.name})`);
           const result = await generateRotatedRoster(org.id, startDateStr, endDateStr);
           console.log(`[Cron] Success for Org ID: ${org.id}. Generated ${result.count} roster entries.`);

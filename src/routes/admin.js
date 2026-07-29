@@ -19828,7 +19828,7 @@ router.post("/attendance", async (req, res) => {
 
     const inTime = normalizeTime(checkIn);
     const outTime = normalizeTime(checkOut);
-    const isNightShift = inTime && outTime && outTime < inTime;
+    const isNightShift = inTime && outTime && outTime <= inTime;
 
     let payload = {
       userId: uid,
@@ -20324,7 +20324,7 @@ router.post("/attendance/bulk", async (req, res) => {
 
     const inTime = normalizeTime(checkIn);
     const outTime = normalizeTime(checkOut);
-    const isNightShift = inTime && outTime && outTime < inTime;
+    const isNightShift = inTime && outTime && outTime <= inTime;
 
     let basePayload = {
       punchedInAt: joinDateTime(checkIn),

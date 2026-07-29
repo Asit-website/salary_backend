@@ -90,7 +90,7 @@ async function checkIfDateIsWoOrHoliday(userId, orgAccountId, dateKey) {
  * Helper to find minutes exceeding the threshold based on Calculation Type
  */
 async function getOvertimeMinutes(attendance, rule, shiftTemplate) {
-  let totalWorkMinutes = Math.floor((attendance.totalWorkHours || 0) * 60);
+  let totalWorkMinutes = Math.round((attendance.totalWorkHours || 0) * 60);
 
   // If includeEarlyArrival is false, exclude minutes worked before shift start from total work minutes
   // to ensure they don't contribute to reaching thresholds.
@@ -201,15 +201,14 @@ async function calculateOvertime(params, orgAccountArg, daysInMonthArg = 30, now
   }
   attendance.totalWorkHours = totalWorkHours;
 
-  const totalWorkMinutes = Math.floor(totalWorkHours * 60);
+  const totalWorkMinutes = Math.round(totalWorkHours * 60);
   const now = nowArg || new Date();
 
   // Ensure we have numbers for IDs
   const userId = attendance.userId ? Number(attendance.userId) : null;
   const orgAccountId = attendance.orgAccountId ? Number(attendance.orgAccountId) : (params.orgId ? Number(params.orgId) : null);
   const dateKey = attendance.date || (new Date(now).toISOString().split('T')[0]);
-
-  if (!userId || !orgAccountId) {
+  if (!userId || !orgAccountId) {
     console.log(`[OvertimeService] Missing userId (${userId}) or orgAccountId (${orgAccountId})`);
     return { overtimeMinutes: 0, overtimeAmount: 0, overtimeRuleId: null, status: 'present' };
   }
@@ -221,7 +220,7 @@ async function calculateOvertime(params, orgAccountArg, daysInMonthArg = 30, now
   }
 
   // 1. Resolve effective Shift Template
-  const shiftTemplate = await shiftService.getEffectiveShiftTemplate(userId, dateKey);
+  const shiftTemplate = await shiftService.getEffectiveShiftTemplate(userId, dateKey, { forDuty: true });
 
   // 2. Resolve Automation Rule (Assignment > Org Default)
   const { Op } = require('sequelize');
@@ -238,6 +237,7 @@ async function calculateOvertime(params, orgAccountArg, daysInMonthArg = 30, now
   console.log(`[OvertimeService] User: ${userId}, Date: ${dateKey}. Assignment Found: ${!!assignment}, RuleID: ${ruleId}`);
 
   let finalRule = ruleId ? await OvertimeRule.findByPk(ruleId) : null;
+
   let thresholds = [];
 
   if (!finalRule) {
@@ -397,7 +397,7 @@ async function calculateOvertime(params, orgAccountArg, daysInMonthArg = 30, now
   }
 
   return {
-    overtimeMinutes: Math.floor(overtimeMinutes),
+    overtimeMinutes: Math.round(overtimeMinutes),
     overtimeAmount: assignment ? parseFloat(overtimeAmount.toFixed(2)) : 0,
     overtimeRuleId: finalRule.id || null,
     fullDayOvertimeApplied,

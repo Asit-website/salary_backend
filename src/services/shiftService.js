@@ -11,7 +11,7 @@ class ShiftService {
      * Get the effective shift template for a user on a specific date.
      * Priority: Roster > StaffShiftAssignment > User Default Shift
      */
-    async getEffectiveShiftTemplate(userId, date) {
+    async getEffectiveShiftTemplate(userId, date, options = {}) {
         try {
             if (!userId || !date) return null;
 
@@ -31,8 +31,17 @@ class ShiftService {
                         return roster.shiftTemplate;
                     }
                 }
-                // If roster says Weekly Off or Holiday, return null (no shift today)
-                if (roster.status === 'WEEKLY_OFF' || roster.status === 'HOLIDAY') {
+                // If roster says Weekly Off, return attached shift if requested for duty, else null
+                if (roster.status === 'WEEKLY_OFF') {
+                    if ((options.forDuty || options.allowWeeklyOffShift) && roster.shiftTemplate && roster.shiftTemplate.active !== false) {
+                        console.log(`[ShiftService] Roster WEEKLY_OFF with Duty Shift found for User: ${userId}, Date: ${dateStr}, Shift: ${roster.shiftTemplate.name}`);
+                        return roster.shiftTemplate;
+                    }
+                    console.log(`[ShiftService] Roster status: ${roster.status} for User: ${userId}, Date: ${dateStr}`);
+                    return null;
+                }
+                // If roster says Holiday, return null (no shift today)
+                if (roster.status === 'HOLIDAY') {
                     console.log(`[ShiftService] Roster status: ${roster.status} for User: ${userId}, Date: ${dateStr}`);
                     return null;
                 }
