@@ -550,6 +550,74 @@ router.get('/clients/:id/staff', async (req, res) => {
   }
 });
 
+// Delete all staff of a specific client
+router.delete('/clients/:id/staff', async (req, res) => {
+  try {
+    const clientId = req.params.id;
+
+    // Find all staff of the client
+    const staffRows = await User.findAll({
+      where: { orgAccountId: clientId, role: 'staff' },
+      attributes: ['id']
+    });
+
+    const staffIds = staffRows
+      .map((r) => Number(r.id))
+      .filter((v) => Number.isFinite(v));
+
+    if (staffIds.length === 0) {
+      return res.json({
+        success: true,
+        message: 'No staff to delete',
+        deletedCount: 0
+      });
+    }
+
+    // Delete staff profiles first
+    await StaffProfile.destroy({ where: { userId: staffIds } });
+
+    // Delete user records
+    const deletedCount = await User.destroy({
+      where: { id: staffIds, orgAccountId: clientId, role: 'staff' }
+    });
+
+    return res.json({
+      success: true,
+      message: 'All staff deleted successfully',
+      deletedCount
+    });
+  } catch (e) {
+    console.error('Superadmin delete all staff error:', e);
+    return res.status(500).json({ success: false, message: 'Failed to delete all staff' });
+  }
+});
+
+// Delete a single staff member of a specific client
+router.delete('/clients/:clientId/staff/:staffId', async (req, res) => {
+  try {
+    const { clientId, staffId } = req.params;
+
+    const staff = await User.findOne({
+      where: { id: Number(staffId), orgAccountId: clientId, role: 'staff' }
+    });
+
+    if (!staff) {
+      return res.status(404).json({ success: false, message: 'Staff member not found' });
+    }
+
+    // Delete staff profile
+    await StaffProfile.destroy({ where: { userId: staffId } });
+
+    // Delete user
+    await staff.destroy();
+
+    return res.json({ success: true, message: 'Staff deleted successfully' });
+  } catch (e) {
+    console.error('Superadmin delete staff member error:', e);
+    return res.status(500).json({ success: false, message: 'Failed to delete staff member' });
+  }
+});
+
 // Get client plan details
 router.get('/clients/:id/plan-details', async (req, res) => {
   try {

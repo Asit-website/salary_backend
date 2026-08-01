@@ -26597,9 +26597,21 @@ router.get("/reports/monthly-attendance", async (req, res) => {
       if (empIds.length > 0) staffWhereClause.id = { [Op.in]: empIds };
     }
 
+    let profileWhere = {};
+    if (req.query.department) {
+      profileWhere.department = req.query.department;
+    }
+
     const staffMembers = await User.findAll({
       where: staffWhereClause,
-      include: [{ model: StaffProfile, as: "profile" }],
+      include: [
+        { 
+          model: StaffProfile, 
+          as: "profile",
+          where: Object.keys(profileWhere).length > 0 ? profileWhere : undefined,
+          required: Object.keys(profileWhere).length > 0 ? true : false
+        }
+      ],
       order: [["id", "ASC"]],
     });
 
@@ -27726,10 +27738,20 @@ router.get("/reports/org-attendance-matrix", async (req, res) => {
       if (empIds.length > 0) staffWhereClause.id = { [Op.in]: empIds };
     }
 
+    let profileWhere = {};
+    if (req.query.department) {
+      profileWhere.department = req.query.department;
+    }
+
     const staffList = await User.findAll({
       where: staffWhereClause,
       include: [
-        { model: StaffProfile, as: "profile" },
+        { 
+          model: StaffProfile, 
+          as: "profile",
+          where: Object.keys(profileWhere).length > 0 ? profileWhere : undefined,
+          required: Object.keys(profileWhere).length > 0 ? true : false
+        },
         { model: ShiftTemplate, as: "shiftTemplate" },
       ],
       order: [["id", "ASC"]],
