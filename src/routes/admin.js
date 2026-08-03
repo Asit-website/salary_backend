@@ -10434,7 +10434,7 @@ router.get("/staff", requireRole(["admin", "staff"]), async (req, res) => {
         salaryTemplateId: u.salaryTemplateId,
         attendanceSettingTemplate: u.profile?.attendanceSettingTemplate || null,
         salaryValues: u.salaryValues,
-        shiftSelection: u.profile?.shiftSelection || null,
+        shiftSelection: u.profile?.shiftSelection || (u.shiftTemplateId ? String(u.shiftTemplateId) : null),
         openingBalance: u.profile?.openingBalance || 0,
         salaryDetailAccess: !!u.profile?.salaryDetailAccess,
         allowCurrentCycleSalaryAccess:
@@ -10559,9 +10559,21 @@ router.get("/staff/import-template", async (req, res) => {
       "Staff ID",
       "Phone Number",
       "Designation",
-      "Joining Date (YYYY-MM-DD)",
+      "Joining Date (DD-MM-YYYY)",
       "Email Address",
     ];
+
+    let shiftTemplate = null;
+    const shiftId = req.query.shiftTemplateId ? Number(req.query.shiftTemplateId) : null;
+    if (shiftId) {
+      shiftTemplate = await ShiftTemplate.findOne({
+        where: { id: shiftId, orgAccountId: orgId },
+      });
+    }
+
+    if (shiftTemplate) {
+      STAFF_IMPORT_HEADERS.push("Shift");
+    }
 
     let tpl = null;
     const tplId = Number(req.query.salaryTemplateId);
@@ -10582,7 +10594,7 @@ router.get("/staff/import-template", async (req, res) => {
         return !isEmployer;
       });
       
-      let currentCol = 7;
+      let currentCol = shiftTemplate ? 8 : 7;
       earnings.forEach(e => {
         STAFF_IMPORT_HEADERS.push(`Earning: ${e.label || e.key}`);
         currentCol++;
@@ -10616,6 +10628,10 @@ router.get("/staff/import-template", async (req, res) => {
       col_5: "john@example.com",
     };
 
+    if (shiftTemplate) {
+      sampleRow.col_6 = shiftTemplate.name;
+    }
+
     if (tpl) {
       const earnings = typeof tpl.earnings === "string" ? JSON.parse(tpl.earnings) : tpl.earnings || [];
       const allDeductions = typeof tpl.deductions === "string" ? JSON.parse(tpl.deductions) : tpl.deductions || [];
@@ -10625,7 +10641,7 @@ router.get("/staff/import-template", async (req, res) => {
         const isEmployer = keyUpper.includes("EMPLOYER") || labelLower.includes("employer");
         return !isEmployer;
       });
-      let colIdx = 6;
+      let colIdx = shiftTemplate ? 7 : 6;
       earnings.forEach(() => {
         sampleRow[`col_${colIdx++}`] = 10000;
       });
@@ -10712,6 +10728,14 @@ router.post("/staff/import", uploadMemory.single("file"), async (req, res) => {
       });
     }
 
+    let shiftTemplate = null;
+    const shiftId = req.query.shiftTemplateId ? Number(req.query.shiftTemplateId) : null;
+    if (shiftId) {
+      shiftTemplate = await ShiftTemplate.findOne({
+        where: { id: shiftId, orgAccountId: orgId },
+      });
+    }
+
     const headerRow = worksheet.getRow(1);
     const allUploadedHeaders = [];
     if (headerRow.values && headerRow.values.length) {
@@ -10720,6 +10744,8 @@ router.post("/staff/import", uploadMemory.single("file"), async (req, res) => {
         if (val) allUploadedHeaders.push(val);
       }
     }
+
+    const hasShiftHeader = allUploadedHeaders.some(h => String(h).trim().toUpperCase() === "SHIFT");
 
     // Auto-detect template if not explicitly specified via query param but the file has extra headers
     if (!tpl && allUploadedHeaders.length > 6) {
@@ -10741,9 +10767,12 @@ router.post("/staff/import", uploadMemory.single("file"), async (req, res) => {
           "Staff ID",
           "Phone Number",
           "Designation",
-          "Joining Date (YYYY-MM-DD)",
+          "Joining Date (DD-MM-YYYY)",
           "Email Address",
         ];
+        if (hasShiftHeader) {
+          tHeaders.push("Shift");
+        }
         tEarnings.forEach(e => tHeaders.push(`Earning: ${e.label || e.key}`));
         tDeductions.forEach(d => tHeaders.push(`Deduction: ${d.label || d.key}`));
 
@@ -10763,9 +10792,13 @@ router.post("/staff/import", uploadMemory.single("file"), async (req, res) => {
       "Staff ID",
       "Phone Number",
       "Designation",
-      "Joining Date (YYYY-MM-DD)",
+      "Joining Date (DD-MM-YYYY)",
       "Email Address",
     ];
+
+    if (hasShiftHeader || shiftTemplate) {
+      expectedHeaders.push("Shift");
+    }
 
     if (tpl) {
       const earnings = typeof tpl.earnings === "string" ? JSON.parse(tpl.earnings) : tpl.earnings || [];
@@ -10819,6 +10852,7 @@ router.post("/staff/import", uploadMemory.single("file"), async (req, res) => {
     const rows = [];
     worksheet.eachRow((row, rowNumber) => {
       if (rowNumber === 1) return; // Skip header
+      const shiftColIdx = headerToColIndex["SHIFT"];
       rows.push({
         name: getCellValue(row.getCell(1)),
         staffId: getCellValue(row.getCell(2)),
@@ -10826,6 +10860,7 @@ router.post("/staff/import", uploadMemory.single("file"), async (req, res) => {
         designation: getCellValue(row.getCell(4)),
         joiningDate: getCellValue(row.getCell(5)),
         email: getCellValue(row.getCell(6)),
+        shiftVal: shiftColIdx ? getCellValue(row.getCell(shiftColIdx)) : null,
         rowNumber,
       });
     });
@@ -11044,6 +11079,16 @@ router.post("/staff/import", uploadMemory.single("file"), async (req, res) => {
           userSalaryUpdate.netSalary = netSalary;
         }
 
+        let rowShiftTemplateId = shiftTemplate ? shiftTemplate.id : undefined;
+        if (data.shiftVal) {
+          const matchedShift = await ShiftTemplate.findOne({
+            where: { name: String(data.shiftVal).trim(), orgAccountId: orgId }
+          });
+          if (matchedShift) {
+            rowShiftTemplateId = matchedShift.id;
+          }
+        }
+
         const passwordHash = await bcrypt.hash(phone, 10);
         const user = await User.create({
           role: "staff",
@@ -11051,6 +11096,7 @@ router.post("/staff/import", uploadMemory.single("file"), async (req, res) => {
           passwordHash,
           orgAccountId: orgId,
           active: true,
+          shiftTemplateId: rowShiftTemplateId,
           ...userSalaryUpdate
         });
 
@@ -11068,6 +11114,7 @@ router.post("/staff/import", uploadMemory.single("file"), async (req, res) => {
             ? dayjs(data.joiningDate).format("YYYY-MM-DD")
             : null,
           staffType: "regular",
+          shiftSelection: rowShiftTemplateId ? String(rowShiftTemplateId) : null,
         });
 
         results.success++;
@@ -17001,26 +17048,18 @@ router.get("/settings/bonus-assignments", async (req, res) => {
   }
 });
 
-router.post("/settings/bonus-assign", async (req, res) => {
+  router.post("/settings/bonus-assign", async (req, res) => {
   try {
     const orgId = requireOrg(req, res);
     if (!orgId) return;
-    const { userId, tenureBonusRuleId, effectiveFrom, effectiveTo } = req.body;
+    const { userIds, tenureBonusRuleId, effectiveFrom, effectiveTo } = req.body;
 
-    if (!userId || !tenureBonusRuleId || !effectiveFrom) {
+    if (!userIds || !Array.isArray(userIds) || userIds.length === 0 || !tenureBonusRuleId || !effectiveFrom) {
       return res.status(400).json({
         success: false,
-        message: "userId, tenureBonusRuleId, and effectiveFrom are required",
+        message: "userIds (array), tenureBonusRuleId, and effectiveFrom are required",
       });
     }
-
-    const user = await User.findOne({
-      where: { id: userId, orgAccountId: orgId },
-    });
-    if (!user)
-      return res
-        .status(404)
-        .json({ success: false, message: "User not found" });
 
     const rule = await TenureBonusRule.findOne({
       where: { id: tenureBonusRuleId, orgAccountId: orgId },
@@ -17030,14 +17069,23 @@ router.post("/settings/bonus-assign", async (req, res) => {
         .status(404)
         .json({ success: false, message: "Bonus rule not found" });
 
-    const assignment = await StaffTenureBonusAssignment.create({
-      userId,
-      tenureBonusRuleId,
-      effectiveFrom: String(effectiveFrom).slice(0, 10),
-      effectiveTo: effectiveTo ? String(effectiveTo).slice(0, 10) : null,
-    });
+    const createdAssignments = [];
+    for (const userId of userIds) {
+      const user = await User.findOne({
+        where: { id: userId, orgAccountId: orgId },
+      });
+      if (!user) continue;
 
-    return res.json({ success: true, assignment });
+      const assignment = await StaffTenureBonusAssignment.create({
+        userId,
+        tenureBonusRuleId,
+        effectiveFrom: String(effectiveFrom).slice(0, 10),
+        effectiveTo: effectiveTo ? String(effectiveTo).slice(0, 10) : null,
+      });
+      createdAssignments.push(assignment);
+    }
+
+    return res.json({ success: true, assignments: createdAssignments });
   } catch (e) {
     return res
       .status(500)
