@@ -49,6 +49,7 @@ module.exports = (sequelize) => {
 
 
       includeEarlyArrival: { type: DataTypes.BOOLEAN, defaultValue: false },
+      ignoreLateInOT: { type: DataTypes.BOOLEAN, defaultValue: false, field: 'ignore_late_in_ot' },
       calculateOnGross: { type: DataTypes.BOOLEAN, defaultValue: false },
 
       active: { type: DataTypes.BOOLEAN, defaultValue: true },

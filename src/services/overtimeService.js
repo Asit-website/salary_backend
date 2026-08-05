@@ -83,6 +83,12 @@ async function checkIfDateIsWoOrHoliday(userId, orgAccountId, dateKey) {
  * 
  * @param {Object} attendance - The attendance record (must have userId, totalWorkHours, etc.)
  * @param {Object} orgAccount - The organization account object (to find activeOvertimeRule)
+
+/**
+ * Calculates overtime based on a specific Rule or fallback ShiftTemplate.
+ * 
+ * @param {Object} attendance - The attendance record (must have userId, totalWorkHours, etc.)
+ * @param {Object} orgAccount - The organization account object (to find activeOvertimeRule)
  * @param {Date} now - Current time for Shift End calculations
  */
 
@@ -92,13 +98,34 @@ async function checkIfDateIsWoOrHoliday(userId, orgAccountId, dateKey) {
 async function getOvertimeMinutes(attendance, rule, shiftTemplate) {
   let totalWorkMinutes = Math.round((attendance.totalWorkHours || 0) * 60);
 
+  // If ignoreLateInOT is enabled and staff punched in LATE,
+  // add the late minutes back to totalWorkMinutes so they don't reduce OT.
+  // e.g. Shift 11:00, punch-in 11:05 (5 min late), total work = 9h (540 min)
+  //      Without fix: overtimeByPeriod = 540 - 480 = 60, min(60,65) = 60
+  //      With fix:    totalWorkMinutes = 545, OT period = 65, min(65,65) = 65 ✓
+  if (rule.ignoreLateInOT && attendance.punchedInAt && shiftTemplate && shiftTemplate.startTime) {
+    const punchInLocal = dayjs(attendance.punchedInAt).second(0).millisecond(0);
+    const shiftDate = dayjs(attendance.date || attendance.punchedInAt);
+    const [sh, sm] = shiftTemplate.startTime.split(':').map(Number);
+    const shiftStartLocal = shiftDate.hour(sh).minute(sm).second(0).millisecond(0);
+
+    if (punchInLocal.isAfter(shiftStartLocal)) {
+      // Staff was LATE — compensate by adding lost minutes back
+      const lateMinutes = punchInLocal.diff(shiftStartLocal, 'minute');
+      if (lateMinutes > 0) {
+        totalWorkMinutes += lateMinutes;
+        console.log(`[OvertimeService] ignoreLateInOT: Adding back ${lateMinutes} late min(s) -> totalWorkMinutes now ${totalWorkMinutes}`);
+      }
+    }
+  }
+
   // If includeEarlyArrival is false, exclude minutes worked before shift start from total work minutes
   // to ensure they don't contribute to reaching thresholds.
   if (!rule.includeEarlyArrival && attendance.punchedInAt && shiftTemplate && shiftTemplate.startTime) {
     const punchInLocal = dayjs(attendance.punchedInAt).second(0).millisecond(0);
     const shiftDate = dayjs(attendance.date || attendance.punchedInAt);
     const [sh, sm] = shiftTemplate.startTime.split(':').map(Number);
-    let shiftStartLocal = shiftDate.hour(sh).minute(sm).second(0).millisecond(0);
+    const shiftStartLocal = shiftDate.hour(sh).minute(sm).second(0).millisecond(0);
 
     if (punchInLocal.isBefore(shiftStartLocal)) {
       const earlyMins = shiftStartLocal.diff(punchInLocal, 'minute');
@@ -112,7 +139,7 @@ async function getOvertimeMinutes(attendance, rule, shiftTemplate) {
   let baseThreshold = (rule.thresholds && rule.thresholds.length > 0) ? rule.thresholds[0].minMinutes : 0;
 
   // FALLBACK: If rule threshold is 0/missing, use Shift Template's required work minutes
-  // REINFORCEMENT: For calculation types that depend on shift boundaries, 
+  // REINFORCEMENT: For calculation types that depend on shift boundaries,
   // ensure the threshold is at least the shift duration to avoid "ghost" overtime.
   if (shiftTemplate) {
     let shiftWorkMins = 0;
@@ -127,7 +154,7 @@ async function getOvertimeMinutes(attendance, rule, shiftTemplate) {
       shiftWorkMins = endMin - startMin;
     }
 
-    // If the rule threshold is missing OR smaller than the shift duration, 
+    // If the rule threshold is missing OR smaller than the shift duration,
     // we use the shift duration as the baseline payability threshold.
     if (!baseThreshold || (shiftWorkMins > 0 && baseThreshold < shiftWorkMins)) {
       baseThreshold = shiftWorkMins;
@@ -142,7 +169,7 @@ async function getOvertimeMinutes(attendance, rule, shiftTemplate) {
   if (attendance.punchedOutAt && shiftTemplate && shiftTemplate.endTime) {
     const [sh, sm] = (shiftTemplate.startTime || '00:00').split(':').map(Number);
     const [eh, em, es] = shiftTemplate.endTime.split(':').map(Number);
-    
+
     const punchInLocal = dayjs(attendance.punchedInAt).second(0).millisecond(0);
     const punchOutLocal = dayjs(attendance.punchedOutAt).second(0).millisecond(0);
     const shiftDate = dayjs(attendance.date || attendance.punchedInAt || attendance.punchedOutAt);
@@ -152,7 +179,7 @@ async function getOvertimeMinutes(attendance, rule, shiftTemplate) {
 
     // Overnight logic
     if (shiftEndLocal.isBefore(shiftStartLocal)) {
-        shiftEndLocal = shiftEndLocal.add(1, 'day');
+      shiftEndLocal = shiftEndLocal.add(1, 'day');
     }
 
     // Late Stay Overtime
@@ -167,29 +194,22 @@ async function getOvertimeMinutes(attendance, rule, shiftTemplate) {
         overtimeByShift += earlyMins;
       }
     }
-
-    console.log(`[OvertimeService] Rule ID: ${rule.id}, EarlyIncl: ${rule.includeEarlyArrival}, OT_Shift: ${overtimeByShift}`);
   }
 
-  console.log(`[OvertimeService] Debug - Total min: ${totalWorkMinutes}, Threshold min: ${baseThreshold}, Shift OT: ${overtimeByShift}, Rule Type: ${rule.calculationType}`);
-
+  // Return based on calculation type
   switch (rule.calculationType) {
-    case 'POST_PAYABLE_HOURS':
-      return overtimeByPeriod;
     case 'SHIFT_END':
       return overtimeByShift;
     case 'POST_PAYABLE_HOURS_AND_SHIFT_END':
-      return (totalWorkMinutes > baseThreshold && overtimeByShift > 0) ? Math.min(overtimeByPeriod, overtimeByShift) : 0;
+      return Math.min(overtimeByPeriod, overtimeByShift);
     case 'POST_PAYABLE_HOURS_OR_SHIFT_END':
       return Math.max(overtimeByPeriod, overtimeByShift);
+    case 'POST_PAYABLE_HOURS':
     default:
       return overtimeByPeriod;
   }
 }
 
-/**
- * Calculates overtime based on a specific Rule or fallback ShiftTemplate.
- */
 async function calculateOvertime(params, orgAccountArg, daysInMonthArg = 30, nowArg = null) {
   const attendance = (params.toJSON ? params.toJSON() : params);
 
