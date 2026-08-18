@@ -31,19 +31,21 @@ class ShiftService {
                         return roster.shiftTemplate;
                     }
                 }
-                // If roster says Weekly Off, return attached shift if requested for duty, else null
+                // If roster says Weekly Off, return attached shift if active, else fall through to check assignments/defaults
                 if (roster.status === 'WEEKLY_OFF') {
-                    if ((options.forDuty || options.allowWeeklyOffShift) && roster.shiftTemplate && roster.shiftTemplate.active !== false) {
+                    if (roster.shiftTemplate && roster.shiftTemplate.active !== false) {
                         console.log(`[ShiftService] Roster WEEKLY_OFF with Duty Shift found for User: ${userId}, Date: ${dateStr}, Shift: ${roster.shiftTemplate.name}`);
                         return roster.shiftTemplate;
                     }
-                    console.log(`[ShiftService] Roster status: ${roster.status} for User: ${userId}, Date: ${dateStr}`);
-                    return null;
+                    console.log(`[ShiftService] Roster status: ${roster.status} (no template attached) for User: ${userId}, Date: ${dateStr}, falling through`);
                 }
-                // If roster says Holiday, return null (no shift today)
+                // If roster says Holiday, return attached shift if active, else fall through to check assignments/defaults
                 if (roster.status === 'HOLIDAY') {
-                    console.log(`[ShiftService] Roster status: ${roster.status} for User: ${userId}, Date: ${dateStr}`);
-                    return null;
+                    if (roster.shiftTemplate && roster.shiftTemplate.active !== false) {
+                        console.log(`[ShiftService] Roster HOLIDAY with Duty Shift found for User: ${userId}, Date: ${dateStr}, Shift: ${roster.shiftTemplate.name}`);
+                        return roster.shiftTemplate;
+                    }
+                    console.log(`[ShiftService] Roster status: ${roster.status} (no template attached) for User: ${userId}, Date: ${dateStr}, falling through`);
                 }
             }
 

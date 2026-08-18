@@ -282,7 +282,14 @@ async function calculateOvertime(params, orgAccountArg, daysInMonthArg = 30, now
     const profile = await StaffProfile.findOne({ where: { userId } });
     let extraObj = {};
     if (profile && profile.extra) {
-      extraObj = typeof profile.extra === 'string' ? JSON.parse(profile.extra) : profile.extra;
+      extraObj = profile.extra;
+      while (typeof extraObj === 'string') {
+        try {
+          const next = JSON.parse(extraObj);
+          if (next === extraObj) break;
+          extraObj = next;
+        } catch (e) { break; }
+      }
     }
     woHolidayAsOtEnabled = !!extraObj?.woHolidayAsOt;
     if (woHolidayAsOtEnabled) {
@@ -295,7 +302,47 @@ async function calculateOvertime(params, orgAccountArg, daysInMonthArg = 30, now
 
   let overtimeMinutes = 0;
   if (woHolidayAsOtEnabled && isWoOrHoliday) {
-    overtimeMinutes = totalWorkMinutes;
+    let rawOtMins = totalWorkMinutes;
+    
+    // Always fresh-load org config to get latest grace setting
+    let extraConfig = {};
+    try {
+      const freshOrg = await OrgAccount.findByPk(orgAccountId);
+      if (freshOrg && freshOrg.extra) {
+        extraConfig = freshOrg.extra;
+        while (typeof extraConfig === 'string') {
+          try {
+            const next = JSON.parse(extraConfig);
+            if (next === extraConfig) break;
+            extraConfig = next;
+          } catch (e) { break; }
+        }
+      }
+    } catch (e) {
+      console.error('[OvertimeService] Error reading org grace config:', e.message);
+    }
+
+    const graceMins = Number(extraConfig?.woHolidayAsOtGrace || 0);
+
+    if (graceMins > 0 && shiftTemplate) {
+      let shiftWorkMins = 0;
+      if (shiftTemplate.workMinutes) {
+        shiftWorkMins = shiftTemplate.workMinutes;
+      } else if (shiftTemplate.startTime && shiftTemplate.endTime) {
+        const [sh, sm] = shiftTemplate.startTime.split(':').map(Number);
+        const [eh, em] = shiftTemplate.endTime.split(':').map(Number);
+        let startMin = sh * 60 + sm;
+        let endMin = eh * 60 + em;
+        if (endMin <= startMin) endMin += 1440; // overnight shift
+        shiftWorkMins = endMin - startMin;
+      }
+
+      if (shiftWorkMins > 0 && rawOtMins < shiftWorkMins && (shiftWorkMins - rawOtMins) <= graceMins) {
+        rawOtMins = shiftWorkMins;
+        console.log(`[OvertimeService] woHolidayAsOtGrace: Adjusted OT from ${totalWorkMinutes} to ${shiftWorkMins} min (grace ${graceMins} min)`);
+      }
+    }
+    overtimeMinutes = rawOtMins;
   } else {
     overtimeMinutes = await getOvertimeMinutes(attendance, { ...(finalRule.toJSON ? finalRule.toJSON() : finalRule), thresholds }, shiftTemplate);
   }

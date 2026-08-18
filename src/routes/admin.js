@@ -1590,6 +1590,7 @@ router.get("/payroll/:cycleId/export", async (req, res) => {
       User,
       StaffProfile,
       AppSetting,
+      StaffAdvance,
     } = require("../models");
 
     const id = Number(req.params.cycleId);
@@ -1615,6 +1616,23 @@ router.get("/payroll/:cycleId/export", async (req, res) => {
     const salarySettings = salarySettingsRow?.value
       ? JSON.parse(salarySettingsRow.value)
       : getDefaultSalarySettings();
+    const startOfMonth = `${cycle.monthKey}-01`;
+    const endOfMonth = `${cycle.monthKey}-${String(daysInMonth).padStart(2, "0")}`;
+    const advancesInMonth = await StaffAdvance.findAll({
+      where: {
+        orgAccountId: orgId,
+        status: { [Op.ne]: "cancelled" },
+        advanceDate: {
+          [Op.between]: [startOfMonth, endOfMonth]
+        }
+      }
+    });
+    const advanceGivenMap = new Map();
+    for (const adv of advancesInMonth) {
+      const amt = Number(adv.amount || 0);
+      advanceGivenMap.set(adv.staffId, (advanceGivenMap.get(adv.staffId) || 0) + amt);
+    }
+
     const settingsPayableDays = computePayableDays(salarySettings, year, month);
     const dynamicWorkingDays = settingsPayableDays > 0 ? settingsPayableDays : daysInMonth;
 
@@ -1762,6 +1780,8 @@ router.get("/payroll/:cycleId/export", async (req, res) => {
       "Total Deductions",
       "Gross Salary",
       "Net Salary",
+      "Outstanding Adv.",
+      "Net Salary With Advance",
     ].map((h) => String(h || "").toUpperCase());
 
     const workbook = new exceljs.Workbook();
@@ -1895,6 +1915,35 @@ router.get("/payroll/:cycleId/export", async (req, res) => {
         Number(t.totalDeductions || 0),
         Number(t.grossSalary || 0),
         Number(t.netSalary || 0),
+        advancesInMonth.some(a => a.staffId === line.userId)
+          ? Number(t.outstandingAdvance || 0)
+          : "",
+        (() => {
+          const userAdvances = advancesInMonth.filter(a => a.staffId === line.userId);
+          if (userAdvances.length === 0) return "";
+          let totalGiven = 0;
+          let totalDeductionForThisMonth = 0;
+          for (const adv of userAdvances) {
+            totalGiven += Number(adv.amount || 0);
+            let deductionForThisMonth = 0;
+            let deductionsList = adv.deductions;
+            while (typeof deductionsList === "string") {
+              try { deductionsList = JSON.parse(deductionsList); } catch (e) { break; }
+            }
+            if (Array.isArray(deductionsList) && deductionsList.length > 0) {
+              const scheduled = deductionsList.find(x => x.month === cycle.monthKey);
+              if (scheduled) {
+                deductionForThisMonth = Number(scheduled.amount || 0);
+              }
+            } else {
+              if (adv.deductionMonth === cycle.monthKey) {
+                deductionForThisMonth = Number(adv.amount || 0);
+              }
+            }
+            totalDeductionForThisMonth += deductionForThisMonth;
+          }
+          return Number(t.netSalary || 0) + (totalGiven - totalDeductionForThisMonth);
+        })(),
       ];
 
       const row = worksheet.addRow(rowData);
@@ -1951,6 +2000,7 @@ router.get("/payroll/monthly-summary-excel", async (req, res) => {
       User,
       StaffProfile,
       OrgAccount,
+      StaffAdvance,
     } = require("../models");
 
     const { monthKey, employeeIds } = req.query;
@@ -1983,6 +2033,25 @@ router.get("/payroll/monthly-summary-excel", async (req, res) => {
       PayrollLine.findAll({ where: lineWhereClause, order: [["id", "ASC"]] }),
     ]);
 
+    const [year, month] = cycle.monthKey.split("-").map(Number);
+    const daysInMonth = new Date(year, month, 0).getDate();
+    const startOfMonth = `${cycle.monthKey}-01`;
+    const endOfMonth = `${cycle.monthKey}-${String(daysInMonth).padStart(2, "0")}`;
+    const advancesInMonth = await StaffAdvance.findAll({
+      where: {
+        orgAccountId: orgId,
+        status: { [Op.ne]: "cancelled" },
+        advanceDate: {
+          [Op.between]: [startOfMonth, endOfMonth]
+        }
+      }
+    });
+    const advanceGivenMap = new Map();
+    for (const adv of advancesInMonth) {
+      const amt = Number(adv.amount || 0);
+      advanceGivenMap.set(adv.staffId, (advanceGivenMap.get(adv.staffId) || 0) + amt);
+    }
+
     const userIds = [...new Set(lines.map((l) => l.userId))];
     const users = await User.findAll({
       where: { id: userIds },
@@ -1990,7 +2059,6 @@ router.get("/payroll/monthly-summary-excel", async (req, res) => {
     });
 
     const userMap = new Map(users.map((u) => [u.id, u]));
-    const [year, month] = cycle.monthKey.split("-").map(Number);
     const monthName = new Date(year, month - 1, 1).toLocaleString("en-IN", {
       month: "long",
       year: "numeric",
@@ -2090,6 +2158,8 @@ router.get("/payroll/monthly-summary-excel", async (req, res) => {
       ...dDeductions.map((d) => ({ header: d.label, width: 16 })),
       { header: "TOTAL DEDUCTION", width: 18 },
       { header: "NET PAY", width: 15 },
+      { header: "OUTSTANDING ADV.", width: 18 },
+      { header: "NET PAY WITH ADV.", width: 20 },
     ];
 
     const workbook = new exceljs.Workbook();
@@ -2205,6 +2275,8 @@ router.get("/payroll/monthly-summary-excel", async (req, res) => {
           grossPay: 0,
           totalDeduction: 0,
           netPay: 0,
+          outstandingAdv: 0,
+          netPayWithAdv: 0,
           e_sums: {},
           d_sums: {},
           i_sums: {},
@@ -2228,6 +2300,37 @@ router.get("/payroll/monthly-summary-excel", async (req, res) => {
       g.grossPay += Number(t.grossSalary || 0);
       g.totalDeduction += Number(t.totalDeductions || 0);
       g.netPay += Number(t.netSalary || 0);
+      // Only accumulate outstanding advance for staff who received advance this month
+      const userHasAdvanceThisMonth = advancesInMonth.some(a => a.staffId === line.userId);
+      if (userHasAdvanceThisMonth) {
+        g.outstandingAdv += Number(t.outstandingAdvance || 0);
+      }
+
+      const userAdvances = advancesInMonth.filter(a => a.staffId === line.userId);
+      if (userAdvances.length > 0) {
+        let totalGiven = 0;
+        let totalDeductionForThisMonth = 0;
+        for (const adv of userAdvances) {
+          totalGiven += Number(adv.amount || 0);
+          let deductionForThisMonth = 0;
+          let deductionsList = adv.deductions;
+          while (typeof deductionsList === "string") {
+            try { deductionsList = JSON.parse(deductionsList); } catch (e) { break; }
+          }
+          if (Array.isArray(deductionsList) && deductionsList.length > 0) {
+            const scheduled = deductionsList.find(x => x.month === cycle.monthKey);
+            if (scheduled) {
+              deductionForThisMonth = Number(scheduled.amount || 0);
+            }
+          } else {
+            if (adv.deductionMonth === cycle.monthKey) {
+              deductionForThisMonth = Number(adv.amount || 0);
+            }
+          }
+          totalDeductionForThisMonth += deductionForThisMonth;
+        }
+        g.netPayWithAdv += Number(t.netSalary || 0) + (totalGiven - totalDeductionForThisMonth);
+      }
     });
 
     let slNum = 1;
@@ -2238,7 +2341,12 @@ router.get("/payroll/monthly-summary-excel", async (req, res) => {
       dIncentives.forEach((dk) => vals.push(data.i_sums[dk.key]));
       vals.push(data.grossPay);
       dDeductions.forEach((dk) => vals.push(data.d_sums[dk.key]));
-      vals.push(data.totalDeduction, data.netPay);
+      vals.push(
+        data.totalDeduction,
+        data.netPay,
+        data.outstandingAdv > 0 ? data.outstandingAdv : "",
+        data.netPayWithAdv > 0 ? data.netPayWithAdv : ""
+      );
 
       const row = worksheet.addRow(vals);
       row.eachCell((cell, colNumber) => {
@@ -2261,7 +2369,19 @@ router.get("/payroll/monthly-summary-excel", async (req, res) => {
           };
         }
       });
-      vals.slice(2).forEach((v, idx) => (grandTotals[idx] += v));
+      vals.slice(2).forEach((v, idx) => {
+        if (typeof v === "number") {
+          grandTotals[idx] += v;
+        }
+      });
+    }
+
+    // If last two columns (outstanding adv and net pay with adv) are 0, show blank
+    if (grandTotals[grandTotals.length - 1] === 0) {
+      grandTotals[grandTotals.length - 1] = "";
+    }
+    if (grandTotals[grandTotals.length - 2] === 0) {
+      grandTotals[grandTotals.length - 2] = "";
     }
 
     const ftRowArr = [null, "GRAND TOTAL", ...grandTotals];
@@ -2419,6 +2539,7 @@ router.get("/payroll/:cycleId/salary-register-excel", async (req, res) => {
       User,
       StaffProfile,
       OrgAccount,
+      StaffAdvance,
     } = require("../models");
 
     const { groupBy, employeeIds } = req.query;
@@ -2458,6 +2579,23 @@ router.get("/payroll/:cycleId/salary-register-excel", async (req, res) => {
       year: "numeric",
     });
     const daysInMonth = new Date(year, month, 0).getDate();
+    const startOfMonth = `${cycle.monthKey}-01`;
+    const endOfMonth = `${cycle.monthKey}-${String(daysInMonth).padStart(2, "0")}`;
+    const advancesInMonth = await StaffAdvance.findAll({
+      where: {
+        orgAccountId: orgId,
+        status: { [Op.ne]: "cancelled" },
+        advanceDate: {
+          [Op.between]: [startOfMonth, endOfMonth]
+        }
+      }
+    });
+    const advanceGivenMap = new Map();
+    for (const adv of advancesInMonth) {
+      const amt = Number(adv.amount || 0);
+      advanceGivenMap.set(adv.staffId, (advanceGivenMap.get(adv.staffId) || 0) + amt);
+    }
+
     const salaryRegisterOtMeta = await buildSalaryRegisterOtMeta(
       userIds,
       cycle.monthKey,
@@ -2581,6 +2719,8 @@ router.get("/payroll/:cycleId/salary-register-excel", async (req, res) => {
       ...fdD.map((d) => ({ header: d.label, key: `d_${d.key}`, width: 16 })),
       { header: "TOTAL DEDUCTION", key: "totalDeduction", width: 18 },
       { header: "NET PAY", key: "netPay", width: 15 },
+      { header: "OUTSTANDING ADV.", key: "outstandingAdv", width: 18 },
+      { header: "NET PAY WITH ADV.", key: "netPayWithAdv", width: 20 },
       { header: "SIGNATURE/DATE", key: "signature", width: 20 },
     ];
 
@@ -2691,6 +2831,7 @@ router.get("/payroll/:cycleId/salary-register-excel", async (req, res) => {
       grossPay: 0,
       totalDeduction: 0,
       netPay: 0,
+      netPayWithAdv: 0,
       e: {},
       d: {},
       i: {},
@@ -2707,6 +2848,7 @@ router.get("/payroll/:cycleId/salary-register-excel", async (req, res) => {
         grossPay: 0,
         totalDeduction: 0,
         netPay: 0,
+        netPayWithAdv: 0,
         e: {},
         d: {},
         i: {},
@@ -2761,6 +2903,35 @@ router.get("/payroll/:cycleId/salary-register-excel", async (req, res) => {
           grossPay: Number(t.grossSalary || 0),
           totalDeduction: Number(t.totalDeductions || 0),
           netPay: Number(t.netSalary || 0),
+          outstandingAdv: advancesInMonth.some(a => a.staffId === line.userId)
+            ? Number(t.outstandingAdvance || 0)
+            : "",
+          netPayWithAdv: (() => {
+            const userAdvances = advancesInMonth.filter(a => a.staffId === line.userId);
+            if (userAdvances.length === 0) return "";
+            let totalGiven = 0;
+            let totalDeductionForThisMonth = 0;
+            for (const adv of userAdvances) {
+              totalGiven += Number(adv.amount || 0);
+              let deductionForThisMonth = 0;
+              let deductionsList = adv.deductions;
+              while (typeof deductionsList === "string") {
+                try { deductionsList = JSON.parse(deductionsList); } catch (e) { break; }
+              }
+              if (Array.isArray(deductionsList) && deductionsList.length > 0) {
+                const scheduled = deductionsList.find(x => x.month === cycle.monthKey);
+                if (scheduled) {
+                  deductionForThisMonth = Number(scheduled.amount || 0);
+                }
+              } else {
+                if (adv.deductionMonth === cycle.monthKey) {
+                  deductionForThisMonth = Number(adv.amount || 0);
+                }
+              }
+              totalDeductionForThisMonth += deductionForThisMonth;
+            }
+            return Number(t.netSalary || 0) + (totalGiven - totalDeductionForThisMonth);
+          })(),
           signature: line.paidAt
             ? new Date(line.paidAt).toLocaleDateString("en-IN", {
                 day: "2-digit",
@@ -2818,6 +2989,14 @@ router.get("/payroll/:cycleId/salary-register-excel", async (req, res) => {
         grandTotals.totalDeduction += rowData.totalDeduction;
         subTotals.netPay += rowData.netPay;
         grandTotals.netPay += rowData.netPay;
+        if (typeof rowData.netPayWithAdv === "number") {
+          subTotals.netPayWithAdv += rowData.netPayWithAdv;
+          grandTotals.netPayWithAdv += rowData.netPayWithAdv;
+        }
+        if (typeof rowData.outstandingAdv === "number") {
+          subTotals.outstandingAdv = (subTotals.outstandingAdv || 0) + rowData.outstandingAdv;
+          grandTotals.outstandingAdv = (grandTotals.outstandingAdv || 0) + rowData.outstandingAdv;
+        }
 
         const row = worksheet.addRow(rowData);
         row.eachCell((cell, colNumber) => {
@@ -2856,6 +3035,8 @@ router.get("/payroll/:cycleId/salary-register-excel", async (req, res) => {
         grossPay: subTotals.grossPay,
         totalDeduction: subTotals.totalDeduction,
         netPay: subTotals.netPay,
+        outstandingAdv: (subTotals.outstandingAdv || 0) > 0 ? subTotals.outstandingAdv : "",
+        netPayWithAdv: subTotals.netPayWithAdv > 0 ? subTotals.netPayWithAdv : "",
       };
       fdE.forEach((dk) => {
         subRowData[`e_${dk.key}`] = subTotals.e[dk.key];
@@ -2899,6 +3080,8 @@ router.get("/payroll/:cycleId/salary-register-excel", async (req, res) => {
       grossPay: grandTotals.grossPay,
       totalDeduction: grandTotals.totalDeduction,
       netPay: grandTotals.netPay,
+      outstandingAdv: (grandTotals.outstandingAdv || 0) > 0 ? grandTotals.outstandingAdv : "",
+      netPayWithAdv: grandTotals.netPayWithAdv > 0 ? grandTotals.netPayWithAdv : "",
     };
     fdE.forEach((dk) => {
       grandRowData[`e_${dk.key}`] = grandTotals.e[dk.key];
@@ -4076,7 +4259,7 @@ router.post("/payroll/:cycleId/lock", async (req, res) => {
 
     await cycle.update({ status: "LOCKED" });
 
-    // Mark associated advances as deducted
+    // Mark associated advances as deducted (handles both old single-month and new installment format)
     try {
       const { PayrollLine, StaffAdvance } = require("../models");
       const staffIds = (
@@ -4087,17 +4270,51 @@ router.post("/payroll/:cycleId/lock", async (req, res) => {
       ).map((l) => l.userId);
 
       if (staffIds.length > 0) {
-        await StaffAdvance.update(
-          { status: "deducted" },
-          {
-            where: {
-              orgAccountId: orgId,
-              deductionMonth: cycle.monthKey,
-              status: "pending",
-              staffId: { [Op.in]: staffIds },
-            },
+        const monthKey = cycle.monthKey;
+
+        // Get all pending advances for these staff members
+        const pendingAdvances = await StaffAdvance.findAll({
+          where: {
+            orgAccountId: orgId,
+            status: { [Op.ne]: "cancelled" },
+            staffId: { [Op.in]: staffIds },
           },
-        );
+        });
+
+        for (const adv of pendingAdvances) {
+          let deductionsList = null;
+          if (adv.deductions) {
+            let parsed = adv.deductions;
+            while (typeof parsed === 'string') {
+              try { parsed = JSON.parse(parsed); } catch (e) { break; }
+            }
+            if (Array.isArray(parsed)) deductionsList = parsed;
+          }
+
+          if (deductionsList && deductionsList.length > 0) {
+            // New installment format — mark the relevant installment as deducted
+            let changed = false;
+            const updated = deductionsList.map(d => {
+              if (d.month === monthKey && d.status === 'pending') {
+                changed = true;
+                return { ...d, status: 'deducted' };
+              }
+              return d;
+            });
+            if (changed) {
+              const allDone = updated.every(d => d.status === 'deducted');
+              await adv.update({
+                deductions: updated,
+                status: allDone ? 'deducted' : 'pending',
+              });
+            }
+          } else {
+            // Old single-month format fallback
+            if (adv.deductionMonth === monthKey && adv.status === 'pending') {
+              await adv.update({ status: 'deducted' });
+            }
+          }
+        }
       }
     } catch (advErr) {
       console.error("Error updating advance status on lock:", advErr);
@@ -4140,19 +4357,45 @@ router.post("/payroll/:cycleId/unlock", async (req, res) => {
 
     await cycle.update({ status: "DRAFT" });
 
-    // Mark associated advances back to pending
+    // Mark associated advances back to pending (handles both old single-month and new installment format)
     try {
       const { StaffAdvance } = require("../models");
-      await StaffAdvance.update(
-        { status: "pending" },
-        {
-          where: {
-            orgAccountId: orgId,
-            deductionMonth: cycle.monthKey,
-            status: "deducted",
-          },
-        },
-      );
+      const monthKey = cycle.monthKey;
+
+      const deductedAdvances = await StaffAdvance.findAll({
+        where: { orgAccountId: orgId },
+      });
+
+      for (const adv of deductedAdvances) {
+        let deductionsList = null;
+        if (adv.deductions) {
+          let parsed = adv.deductions;
+          while (typeof parsed === 'string') {
+            try { parsed = JSON.parse(parsed); } catch (e) { break; }
+          }
+          if (Array.isArray(parsed)) deductionsList = parsed;
+        }
+
+        if (deductionsList && deductionsList.length > 0) {
+          // New installment format — revert the relevant installment back to pending
+          let changed = false;
+          const reverted = deductionsList.map(d => {
+            if (d.month === monthKey && d.status === 'deducted') {
+              changed = true;
+              return { ...d, status: 'pending' };
+            }
+            return d;
+          });
+          if (changed) {
+            await adv.update({ deductions: reverted, status: 'pending' });
+          }
+        } else {
+          // Old single-month format fallback
+          if (adv.deductionMonth === monthKey && adv.status === 'deducted') {
+            await adv.update({ status: 'pending' });
+          }
+        }
+      }
     } catch (advErr) {
       console.error("Error reverting advance status on unlock:", advErr);
     }
@@ -4609,6 +4852,13 @@ router.post("/payroll/:cycleId/compute", async (req, res) => {
 
     const monthKey = cycle.monthKey;
 
+    // Fetch all existing payroll cycle monthKeys for this organization to know what months are generated
+    const existingCycles = await PayrollCycle.findAll({
+      where: { orgAccountId: orgId },
+      attributes: ["monthKey"]
+    });
+    const generatedMonths = new Set(existingCycles.map(c => c.monthKey));
+
     const [yy, mm] = monthKey.split("-").map(Number);
 
     const salarySettingsRow = await AppSetting.findOne({
@@ -4955,19 +5205,68 @@ router.post("/payroll/:cycleId/compute", async (req, res) => {
         );
       }
 
-      // Calculate staff advance deductions
+      // Calculate staff advance deductions and outstanding balance
       let advanceDeductions = 0;
+      let totalOutstandingAdvance = 0;
       try {
-        const pendingAdvances = await StaffAdvance.findAll({
+        const staffAdvances = await StaffAdvance.findAll({
           where: {
             staffId: u.id,
             orgAccountId: orgId,
-            deductionMonth: monthKey,
-            status: "pending",
-          },
+            status: { [Op.ne]: "cancelled" }
+          }
         });
-        for (const adv of pendingAdvances) {
-          advanceDeductions += parseFloat(adv.amount || 0);
+
+        for (const adv of staffAdvances) {
+          // Parse deductions robustly
+          let deductionsList = null;
+          if (adv.deductions) {
+            let parsed = adv.deductions;
+            while (typeof parsed === 'string') {
+              try { parsed = JSON.parse(parsed); } catch (e) { break; }
+            }
+            if (Array.isArray(parsed)) {
+              deductionsList = parsed;
+            }
+          }
+
+          const advAmount = Number(adv.amount || 0);
+
+          if (deductionsList && deductionsList.length > 0) {
+            // New format (Installments schedule)
+            // Consider an installment completed if it's explicitly deducted or if its month has a generated payroll and it's a past month
+            const completedDeductionsSum = deductionsList
+              .filter(d => d.status === 'deducted' || (d.month < monthKey && generatedMonths.has(d.month)))
+              .reduce((sum, d) => sum + Number(d.amount || 0), 0);
+
+            const outstandingBeforeThisMonth = Math.max(0, advAmount - completedDeductionsSum);
+            totalOutstandingAdvance += outstandingBeforeThisMonth;
+
+            // Find deduction scheduled for this month
+            // We treat it as pending for computation unless it's explicitly marked deducted
+            const scheduledForThisMonth = deductionsList.find(d => d.month === monthKey);
+            if (scheduledForThisMonth && scheduledForThisMonth.status !== 'deducted') {
+              advanceDeductions += Number(scheduledForThisMonth.amount || 0);
+            }
+          } else {
+            // Old format (Single deduction month fallback)
+            let isDeducted = adv.status === 'deducted';
+            if (adv.status === 'pending' && adv.deductionMonth && adv.deductionMonth < monthKey && generatedMonths.has(adv.deductionMonth)) {
+              isDeducted = true;
+            }
+
+            if (!isDeducted) {
+              totalOutstandingAdvance += advAmount;
+              if (adv.deductionMonth === monthKey) {
+                advanceDeductions += advAmount;
+              }
+            } else {
+              if (adv.deductionMonth === monthKey) {
+                totalOutstandingAdvance += advAmount;
+                advanceDeductions += advAmount;
+              }
+            }
+          }
         }
       } catch (err) {
         console.error("Error calculating advances for staff", u.id, ":", err);
@@ -6106,6 +6405,7 @@ router.post("/payroll/:cycleId/compute", async (req, res) => {
         grossSalary,
         netSalary,
         ratio,
+        outstandingAdvance: totalOutstandingAdvance,
         ...(tenureBonusMeta && tenureBonusMeta.newMonthsPaid ? { tenureBonusMonthsPaid: tenureBonusMeta.newMonthsPaid } : {})
       };
 
@@ -11403,9 +11703,48 @@ router.get("/advances", async (req, res) => {
       offset: (parseInt(page) - 1) * parseInt(limit),
     });
 
+    // Fetch all PayrollCycles for this org to determine which months have been generated
+    const { PayrollCycle } = require("../models");
+    const generatedCycles = await PayrollCycle.findAll({
+      where: { orgAccountId: orgId },
+      attributes: ["monthKey", "status"],
+    });
+    // Set of monthKeys where payroll has been generated (any status — DRAFT or LOCKED)
+    const generatedMonths = new Set(generatedCycles.map((c) => c.monthKey));
+
+    // Enrich each advance with dynamic status based on payroll generation
+    const enriched = rows.map((adv) => {
+      const plain = adv.toJSON();
+
+      // Parse deductions array
+      let deductionsList = plain.deductions;
+      while (typeof deductionsList === "string") {
+        try { deductionsList = JSON.parse(deductionsList); } catch (e) { break; }
+      }
+
+      if (Array.isArray(deductionsList) && deductionsList.length > 0) {
+        // Installment format — override each installment status dynamically
+        const updatedDeductions = deductionsList.map((d) => ({
+          ...d,
+          status: generatedMonths.has(d.month) ? "deducted" : "pending",
+        }));
+        const allDeducted = updatedDeductions.every((d) => d.status === "deducted");
+        plain.deductions = updatedDeductions;
+        plain.status = allDeducted ? "deducted" : "pending";
+      } else {
+        // Single deduction month format — override based on payroll existence
+        const monthKey = plain.deductionMonth;
+        if (monthKey) {
+          plain.status = generatedMonths.has(monthKey) ? "deducted" : "pending";
+        }
+      }
+
+      return plain;
+    });
+
     return res.json({
       success: true,
-      data: rows,
+      data: enriched,
       pagination: {
         total: count,
         current: parseInt(page),
@@ -11413,6 +11752,7 @@ router.get("/advances", async (req, res) => {
       },
     });
   } catch (e) {
+    console.error("GET /advances error:", e);
     return res
       .status(500)
       .json({ success: false, message: "Failed to load advances" });
@@ -11423,7 +11763,7 @@ router.post("/advances", async (req, res) => {
   try {
     const orgId = requireOrg(req, res);
     if (!orgId) return;
-    const { staffId, amount, advanceDate, notes, deductionMonth, status } =
+    const { staffId, amount, advanceDate, notes, deductionMonth, status, deductions } =
       req.body;
 
     if (!staffId || !amount || !advanceDate) {
@@ -11439,13 +11779,23 @@ router.post("/advances", async (req, res) => {
       finalDeductionMonth = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}`;
     }
 
+    let finalDeductions = null;
+    if (Array.isArray(deductions)) {
+      finalDeductions = deductions.map(d => ({
+        month: d.month,
+        amount: Number(d.amount),
+        status: d.status || 'pending'
+      }));
+    }
+
     const row = await StaffAdvance.create({
       staffId,
       orgAccountId: orgId,
       amount,
       advanceDate,
       deductionMonth: finalDeductionMonth,
-      // status: status || 'pending', // Status is no longer managed manually
+      status: status || 'pending',
+      deductions: finalDeductions,
       notes,
       createdBy: req.user.id,
       updatedBy: req.user.id,
@@ -11453,6 +11803,7 @@ router.post("/advances", async (req, res) => {
 
     return res.json({ success: true, data: row });
   } catch (e) {
+    console.error("Failed to create advance:", e);
     return res
       .status(500)
       .json({ success: false, message: "Failed to create advance" });
@@ -11464,7 +11815,7 @@ router.put("/advances/:id", async (req, res) => {
     const orgId = requireOrg(req, res);
     if (!orgId) return;
     const { id } = req.params;
-    const { staffId, amount, advanceDate, notes, deductionMonth, status } =
+    const { staffId, amount, advanceDate, notes, deductionMonth, status, deductions } =
       req.body;
 
     const row = await StaffAdvance.findOne({
@@ -11480,9 +11831,24 @@ router.put("/advances/:id", async (req, res) => {
       amount: amount ?? row.amount,
       advanceDate: advanceDate ?? row.advanceDate,
       notes: notes ?? row.notes,
-      // status: status ?? row.status, // Status is no longer managed manually
+      status: status ?? row.status,
       updatedBy: req.user.id,
     };
+
+    if (deductions !== undefined) {
+      if (Array.isArray(deductions)) {
+        patch.deductions = deductions.map(d => ({
+          month: d.month,
+          amount: Number(d.amount),
+          status: d.status || 'pending'
+        }));
+        // Recalculate status based on deductions
+        const allDeducted = patch.deductions.length > 0 && patch.deductions.every(d => d.status === 'deducted');
+        patch.status = allDeducted ? 'deducted' : 'pending';
+      } else {
+        patch.deductions = null;
+      }
+    }
 
     if (deductionMonth) {
       patch.deductionMonth = deductionMonth;
@@ -11494,6 +11860,7 @@ router.put("/advances/:id", async (req, res) => {
     await row.update(patch);
     return res.json({ success: true, data: row });
   } catch (e) {
+    console.error("Failed to update advance:", e);
     return res
       .status(500)
       .json({ success: false, message: "Failed to update advance" });
@@ -16384,7 +16751,19 @@ router.get("/salary/wo-holiday-as-ot", async (req, res) => {
         woHolidayAsOt: !!extraObj?.woHolidayAsOt,
       };
     });
-    return res.json({ success: true, items: rows });
+
+    const { OrgAccount } = require("../models");
+    const org = await OrgAccount.findByPk(orgId);
+    let graceMinutes = 0;
+    if (org && org.extra) {
+      let extra = org.extra;
+      if (typeof extra === "string") {
+        try { extra = JSON.parse(extra); } catch (e) { extra = {}; }
+      }
+      graceMinutes = Number(extra?.woHolidayAsOtGrace || 0);
+    }
+
+    return res.json({ success: true, items: rows, graceMinutes });
   } catch (e) {
     return res
       .status(500)
@@ -16396,6 +16775,19 @@ router.put("/salary/wo-holiday-as-ot-bulk", async (req, res) => {
   try {
     const orgId = requireOrg(req, res);
     if (!orgId) return;
+    
+    // Save graceMinutes to OrgAccount
+    const { OrgAccount } = require("../models");
+    const org = await OrgAccount.findByPk(orgId);
+    if (org && req.body?.graceMinutes !== undefined) {
+      let extra = org.extra || {};
+      if (typeof extra === "string") {
+        try { extra = JSON.parse(extra); } catch (e) { extra = {}; }
+      }
+      extra.woHolidayAsOtGrace = Number(req.body.graceMinutes || 0);
+      await org.update({ extra });
+    }
+
     const userIds = Array.isArray(req.body?.userIds)
       ? req.body.userIds
           .map((x) => Number(x))
@@ -16422,6 +16814,33 @@ router.put("/salary/wo-holiday-as-ot-bulk", async (req, res) => {
       await p.update({ extra });
       updated.push({ userId: p.userId, woHolidayAsOt });
     }
+
+    // Trigger recalculation if recalculateFrom is provided
+    const recalculateFrom = req.body?.recalculateFrom;
+    if (recalculateFrom) {
+      const today = require("dayjs")().format("YYYY-MM-DD");
+      const activeUserIds = updated.filter(u => u.woHolidayAsOt).map(u => u.userId);
+      if (activeUserIds.length > 0) {
+        const automationRecalculationService = require("../services/automationRecalculationService");
+        Promise.all(
+          activeUserIds.map(userId =>
+            automationRecalculationService.recalculateAttendance(
+              userId,
+              orgId,
+              recalculateFrom,
+              today
+            ).catch(err => {
+              console.error(`[WoHolidayRecalc] Error recalculating for user ${userId}:`, err.message);
+            })
+          )
+        ).then(() => {
+          console.log(`[WoHolidayRecalc] Completed background recalculation for ${activeUserIds.length} users starting from ${recalculateFrom}`);
+        }).catch(err => {
+          console.error(`[WoHolidayRecalc] Background recalculation failed:`, err.message);
+        });
+      }
+    }
+
     return res.json({ success: true, updated });
   } catch (e) {
     return res
