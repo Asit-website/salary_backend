@@ -6268,14 +6268,57 @@ router.post("/payroll/:cycleId/compute", async (req, res) => {
           // ESI Rule: 0.75% only if gross <= dynamic salaryLimit (default 21000)
           if (rule.key === "ESI_EMPLOYEE" || rule.type === "ESI") {
             const limit = rule.meta?.salaryLimit !== undefined && rule.meta?.salaryLimit !== null ? Number(rule.meta.salaryLimit) : 21000;
-            if (grossSalary > limit) {
+            
+            let esiBaseSalary = grossSalary;
+            let isEsiSettingsEffective = false;
+            if (salarySettings?.esiEffectiveDate) {
+              const cycleDateStr = `${monthKey}-01`;
+              const effDateStr = salarySettings.esiEffectiveDate;
+              if (cycleDateStr >= effDateStr) {
+                isEsiSettingsEffective = true;
+              }
+            } else if (salarySettings?.esiCalculationBase) {
+              isEsiSettingsEffective = true;
+            }
+
+            if (isEsiSettingsEffective) {
+              let earningsBase = totalEarnings + totalIncentives;
+              
+              if (salarySettings.esiExcludeOt) {
+                earningsBase -= Number(finalE.overtime_pay || 0);
+                earningsBase -= Number(finalE.early_overtime_pay || 0);
+              }
+              if (salarySettings.esiExcludeNoAbsentPay) {
+                earningsBase -= Number(finalE.no_absent_pay || 0);
+              }
+              
+              if (salarySettings.esiCalculationBase === "net_pay") {
+                const totalDeductionsBeforeEsi = Object.keys(finalD).reduce((sum, k) => {
+                  if (k === 'esi' || k === 'ESI') return sum;
+                  if (salarySettings.esiExcludePf && (k === 'provident_fund' || k === 'pf' || k === 'PROVIDENT_FUND')) return sum;
+                  if (salarySettings.esiExcludePt && (k === 'professional_tax' || k === 'pt' || k === 'ptax' || k === 'PROFESSIONAL_TAX' || k === 'PT')) return sum;
+                  if (salarySettings.esiExcludeTds && (k === 'income_tax' || k === 'tds' || k === 'TDS' || k === 'INCOME TAX')) return sum;
+                  if (salarySettings.esiExcludeAdvance && (k === 'advance_deduction' || k === 'advance')) return sum;
+                  if (salarySettings.esiExcludeLoan && (k === 'loan_emi' || k === 'loan')) return sum;
+                  return sum + Number(finalD[k] || 0);
+                }, 0);
+                
+                esiBaseSalary = Math.max(0, earningsBase - totalDeductionsBeforeEsi);
+              } else {
+                esiBaseSalary = earningsBase;
+              }
+              
+              esiBaseSalary = Math.round(esiBaseSalary * 100) / 100;
+            }
+
+            if (esiBaseSalary > limit) {
               finalD.esi = 0;
               if (finalD.ESI) finalD.ESI = 0;
             } else {
-              // Recalculate 0.75% on the actual gross salary with 2 decimal precision
+              // Recalculate 0.75% on the actual ESI base salary with 2 decimal precision
               const esiPercent = Number(rule.valueNumber || 0.75);
               const calculatedEsi = Number(
-                (grossSalary * (esiPercent / 100)).toFixed(2),
+                (esiBaseSalary * (esiPercent / 100)).toFixed(2),
               );
               finalD.esi = calculatedEsi;
               if (finalD.ESI) finalD.ESI = calculatedEsi;
@@ -13644,6 +13687,15 @@ function getDefaultSalarySettings() {
     pfCalculationMode: "basic_only",
     excludeWoOnAbsentsLimit: 0,
     excludeWoOnAbsentsEffectiveDate: null,
+    esiCalculationBase: "gross", // "gross" or "net_pay"
+    esiExcludeOt: false,
+    esiExcludeNoAbsentPay: false,
+    esiExcludeAdvance: false,
+    esiExcludeLoan: false,
+    esiExcludePf: false,
+    esiExcludePt: false,
+    esiExcludeTds: false,
+    esiEffectiveDate: null,
   };
 }
 
@@ -13676,7 +13728,34 @@ function coerceSalarySettings(input) {
   const excludeWoOnAbsentsEffectiveDate = input?.excludeWoOnAbsentsEffectiveDate && typeof input.excludeWoOnAbsentsEffectiveDate === 'string'
     ? input.excludeWoOnAbsentsEffectiveDate
     : null;
-  return { payableDaysMode: mode, weeklyOffs, hoursPerDay: hp, pfCalculationMode, excludeWoOnAbsentsLimit, excludeWoOnAbsentsEffectiveDate };
+  const esiCalculationBase = input?.esiCalculationBase === 'net_pay' ? 'net_pay' : 'gross';
+  const esiExcludeOt = input?.esiExcludeOt === true;
+  const esiExcludeNoAbsentPay = input?.esiExcludeNoAbsentPay === true;
+  const esiExcludeAdvance = input?.esiExcludeAdvance === true;
+  const esiExcludeLoan = input?.esiExcludeLoan === true;
+  const esiExcludePf = input?.esiExcludePf === true;
+  const esiExcludePt = input?.esiExcludePt === true;
+  const esiExcludeTds = input?.esiExcludeTds === true;
+  const esiEffectiveDate = input?.esiEffectiveDate && typeof input.esiEffectiveDate === 'string'
+    ? input.esiEffectiveDate
+    : null;
+  return { 
+    payableDaysMode: mode, 
+    weeklyOffs, 
+    hoursPerDay: hp, 
+    pfCalculationMode, 
+    excludeWoOnAbsentsLimit, 
+    excludeWoOnAbsentsEffectiveDate,
+    esiCalculationBase,
+    esiExcludeOt,
+    esiExcludeNoAbsentPay,
+    esiExcludeAdvance,
+    esiExcludeLoan,
+    esiExcludePf,
+    esiExcludePt,
+    esiExcludeTds,
+    esiEffectiveDate
+  };
 }
 
 async function computeWeekExclusions({ userId, yy, mm, daysInMonth, excludeWoLimit, woConfig, hasWeeklyOffAssignment, holidaySet, orgAccountId, excludeWoEffectiveDate }) {

@@ -1374,13 +1374,56 @@ async function calculateSalary(userId, monthKey) {
       // ESI Rule: 0.75% only if gross <= dynamic salaryLimit (default 21000)
       if (rule.key === 'ESI_EMPLOYEE' || rule.type === 'ESI') {
         const limit = rule.meta?.salaryLimit !== undefined && rule.meta?.salaryLimit !== null ? Number(rule.meta.salaryLimit) : 21000;
-        if (grossSalary > limit) {
+        
+        let esiBaseSalary = grossSalary;
+        let isEsiSettingsEffective = false;
+        if (salarySettings?.esiEffectiveDate) {
+          const cycleDateStr = `${monthKey}-01`;
+          const effDateStr = salarySettings.esiEffectiveDate;
+          if (cycleDateStr >= effDateStr) {
+            isEsiSettingsEffective = true;
+          }
+        } else if (salarySettings?.esiCalculationBase) {
+          isEsiSettingsEffective = true;
+        }
+
+        if (isEsiSettingsEffective) {
+          let earningsBase = _totalEarnings + _totalIncentives;
+          
+          if (salarySettings.esiExcludeOt) {
+            earningsBase -= Number(finalEarnings.overtime_pay || 0);
+            earningsBase -= Number(finalEarnings.early_overtime_pay || 0);
+          }
+          if (salarySettings.esiExcludeNoAbsentPay) {
+            earningsBase -= Number(finalEarnings.no_absent_pay || 0);
+          }
+          
+          if (salarySettings.esiCalculationBase === "net_pay") {
+            const totalDeductionsBeforeEsi = Object.keys(finalDeductions).reduce((sum, k) => {
+              if (k === 'esi' || k === 'ESI') return sum;
+              if (salarySettings.esiExcludePf && (k === 'provident_fund' || k === 'pf' || k === 'PROVIDENT_FUND')) return sum;
+              if (salarySettings.esiExcludePt && (k === 'professional_tax' || k === 'pt' || k === 'ptax' || k === 'PROFESSIONAL_TAX' || k === 'PT')) return sum;
+              if (salarySettings.esiExcludeTds && (k === 'income_tax' || k === 'tds' || k === 'TDS' || k === 'INCOME TAX')) return sum;
+              if (salarySettings.esiExcludeAdvance && (k === 'advance_deduction' || k === 'advance')) return sum;
+              if (salarySettings.esiExcludeLoan && (k === 'loan_emi' || k === 'loan')) return sum;
+              return sum + Number(finalDeductions[k] || 0);
+            }, 0);
+            
+            esiBaseSalary = Math.max(0, earningsBase - totalDeductionsBeforeEsi);
+          } else {
+            esiBaseSalary = earningsBase;
+          }
+          
+          esiBaseSalary = Math.round(esiBaseSalary * 100) / 100;
+        }
+
+        if (esiBaseSalary > limit) {
           finalDeductions.esi = 0;
           if (finalDeductions.ESI) finalDeductions.ESI = 0;
         } else {
-          // Recalculate 0.75% on the actual gross salary with 2 decimal precision
+          // Recalculate 0.75% on the custom ESI base salary with 2 decimal precision
           const esiPercent = Number(rule.valueNumber || 0.75);
-          const calculatedEsi = Number((grossSalary * (esiPercent / 100)).toFixed(2));
+          const calculatedEsi = Number((esiBaseSalary * (esiPercent / 100)).toFixed(2));
           finalDeductions.esi = calculatedEsi;
           if (finalDeductions.ESI) finalDeductions.ESI = calculatedEsi;
         }

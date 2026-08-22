@@ -7,6 +7,15 @@ function coerceSalarySettings(input) {
     hoursPerDay: 8,
     pfCalculationMode: "basic",
     excludeWoOnAbsentsLimit: 0,
+    esiCalculationBase: "gross", // "gross" or "net_pay"
+    esiExcludeOt: false,
+    esiExcludeNoAbsentPay: false,
+    esiExcludeAdvance: false,
+    esiExcludeLoan: false,
+    esiExcludePf: false,
+    esiExcludePt: false,
+    esiExcludeTds: false,
+    esiEffectiveDate: null,
   };
   const modes = [
     "calendar_month",
@@ -39,7 +48,34 @@ function coerceSalarySettings(input) {
   const excludeWoOnAbsentsEffectiveDate = input?.excludeWoOnAbsentsEffectiveDate && typeof input.excludeWoOnAbsentsEffectiveDate === 'string'
     ? input.excludeWoOnAbsentsEffectiveDate
     : null;
-  return { payableDaysMode: mode, weeklyOffs, hoursPerDay: hp, pfCalculationMode, excludeWoOnAbsentsLimit, excludeWoOnAbsentsEffectiveDate };
+  const esiCalculationBase = input?.esiCalculationBase === 'net_pay' ? 'net_pay' : 'gross';
+  const esiExcludeOt = input?.esiExcludeOt === true;
+  const esiExcludeNoAbsentPay = input?.esiExcludeNoAbsentPay === true;
+  const esiExcludeAdvance = input?.esiExcludeAdvance === true;
+  const esiExcludeLoan = input?.esiExcludeLoan === true;
+  const esiExcludePf = input?.esiExcludePf === true;
+  const esiExcludePt = input?.esiExcludePt === true;
+  const esiExcludeTds = input?.esiExcludeTds === true;
+  const esiEffectiveDate = input?.esiEffectiveDate && typeof input.esiEffectiveDate === 'string'
+    ? input.esiEffectiveDate
+    : null;
+  return { 
+    payableDaysMode: mode, 
+    weeklyOffs, 
+    hoursPerDay: hp, 
+    pfCalculationMode, 
+    excludeWoOnAbsentsLimit, 
+    excludeWoOnAbsentsEffectiveDate,
+    esiCalculationBase,
+    esiExcludeOt,
+    esiExcludeNoAbsentPay,
+    esiExcludeAdvance,
+    esiExcludeLoan,
+    esiExcludePf,
+    esiExcludePt,
+    esiExcludeTds,
+    esiEffectiveDate
+  };
 }
 
 function computePayableDays(settings, year, month /* 1-12 */) {
