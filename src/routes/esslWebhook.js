@@ -62,7 +62,7 @@ async function recalculateUserAttendance(userId, orgId, targetDateStr) {
 
   // Filter punches for shift
   const shift = await shiftService.getEffectiveShiftTemplate(userId, targetDateStr);
-  const punchesForShift = zktecoService.filterPunchesForShift(filteredPunches, targetDateStr, shift);
+  const punchesForShift = await zktecoService.filterPunchesForShift(filteredPunches, targetDateStr, shift, userId);
 
   // Night Shift Duplicate Punch Fix
   let finalPunchesForShift = punchesForShift;

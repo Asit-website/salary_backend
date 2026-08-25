@@ -55,25 +55,60 @@ class ZktecoService {
         return sh > eh || (sh === eh && shift.startTime > shift.endTime);
     }
 
-    filterPunchesForShift(punches, dateStr, shift) {
+    async filterPunchesForShift(punches, dateStr, shift, userId) {
         const [sh, sm] = (shift?.startTime || '09:00').split(':').map(Number);
         const [eh, em] = (shift?.endTime || '18:00').split(':').map(Number);
         
         let startTs = dayjs(dateStr).hour(sh).minute(sm).subtract(4, 'hour');
         let endTs = dayjs(dateStr).hour(eh).minute(em).add(10, 'hour');
         
-        if (this.isNightShift(shift)) {
+        const isOvernight = this.isNightShift(shift);
+        if (isOvernight) {
             endTs = endTs.add(1, 'day');
         }
         
-        const parseTime = (str) => {
-            const d = dayjs(str);
-            return d.isValid() ? d.toDate() : new Date(str);
-        };
+        // Fetch next day's shift to check for shift rotation conflicts (e.g. Day 1 Night -> Day 2 Morning)
+        let nextDayShiftStartTs = null;
+        let hasDay1Punches = false;
+        
+        if (userId && isOvernight) {
+            try {
+                const nextDayStr = dayjs(dateStr).add(1, 'day').format('YYYY-MM-DD');
+                const shiftService = require('./shiftService');
+                const nextShift = await shiftService.getEffectiveShiftTemplate(userId, nextDayStr);
+                
+                if (nextShift && !this.isNightShift(nextShift)) {
+                    // Next day is a Morning/Day shift
+                    const [nsh, nsm] = (nextShift.startTime || '09:00').split(':').map(Number);
+                    // The start window for next day's shift (e.g. next day shift start - 4 hours)
+                    nextDayShiftStartTs = dayjs(nextDayStr).hour(nsh).minute(nsm).subtract(4, 'hour');
+                    
+                    // Check if there are any punches during Day 1's active evening/night hours (Day 1 start - 4h to Day 2 04:00 AM)
+                    const day1ActiveEnd = dayjs(nextDayStr).hour(4).minute(0);
+                    hasDay1Punches = punches.some(p => {
+                        const pt = dayjs(p.punch_time);
+                        return pt.isAfter(startTs) && pt.isBefore(day1ActiveEnd);
+                    });
+                }
+            } catch (err) {
+                console.error('[filterPunchesForShift] Error checking rotation:', err.message);
+            }
+        }
 
         return punches.filter(p => {
             const pt = dayjs(p.punch_time);
-            return pt.isAfter(startTs) && pt.isBefore(endTs);
+            const inRange = pt.isAfter(startTs) && pt.isBefore(endTs);
+            if (!inRange) return false;
+            
+            // If the punch is on Day 2, and falls into Day 2's shift start window,
+            // and the employee did not check in during Day 1's active hours:
+            // exclude it from Day 1 to let Day 2's sync catch it as Check In!
+            if (nextDayShiftStartTs && pt.isAfter(nextDayShiftStartTs) && !hasDay1Punches) {
+                console.log(`[filterPunchesForShift] Excluding punch at ${p.punch_time} from ${dateStr} (Day 1) because it belongs to next day's Morning shift check-in`);
+                return false;
+            }
+            
+            return true;
         });
     }
 
@@ -456,7 +491,7 @@ class ZktecoService {
 
                     // Merging logic removed as requested. Using filtered biometric punches only.
                     const shift = await shiftService.getEffectiveShiftTemplate(userId, dateStr);
-                    const punchesForShift = this.filterPunchesForShift(filteredPunches, dateStr, shift);
+                    const punchesForShift = await this.filterPunchesForShift(filteredPunches, dateStr, shift, userId);
                     
                     // Night Shift Duplicate Punch Fix:
                     // Fetch the previous day's attendance record.
