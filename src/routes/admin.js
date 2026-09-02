@@ -4852,12 +4852,26 @@ router.post("/payroll/:cycleId/compute", async (req, res) => {
 
     const monthKey = cycle.monthKey;
 
-    // Fetch all existing payroll cycle monthKeys for this organization to know what months are generated
+    // Fetch all existing payroll cycle monthKeys for this organization that are either LOCKED/PAID or have generated lines
     const existingCycles = await PayrollCycle.findAll({
-      where: { orgAccountId: orgId },
-      attributes: ["monthKey"]
+      where: {
+        orgAccountId: orgId,
+        [Op.or]: [
+          { status: { [Op.in]: ["LOCKED", "PAID"] } },
+          { "$lines.id$": { [Op.ne]: null } },
+        ],
+      },
+      include: [
+        {
+          model: PayrollLine,
+          as: "lines",
+          attributes: ["id"],
+          required: false,
+        },
+      ],
+      attributes: ["monthKey"],
     });
-    const generatedMonths = new Set(existingCycles.map(c => c.monthKey));
+    const generatedMonths = new Set(existingCycles.map((c) => c.monthKey));
 
     const [yy, mm] = monthKey.split("-").map(Number);
 
@@ -7781,6 +7795,77 @@ router.delete("/settings/business-info/logo", async (req, res) => {
   }
 });
 
+// Upload or Save Employer Signature (org-scoped)
+router.post(
+  "/settings/business-info/signature",
+  upload.single("file"),
+  async (req, res) => {
+    try {
+      const orgId = requireOrg(req, res);
+      if (!orgId) return;
+
+      let fileUrl = null;
+
+      if (req.file) {
+        fileUrl = `/uploads/claims/${req.file.filename}`;
+      } else if (req.body?.signatureBase64) {
+        const base64Data = req.body.signatureBase64.replace(/^data:image\/\w+;base64,/, "");
+        const buffer = Buffer.from(base64Data, "base64");
+        const filename = `signature_${orgId}_${Date.now()}.png`;
+        const uploadDir = path.join(__dirname, "../../uploads/claims");
+        if (!fs.existsSync(uploadDir)) {
+          fs.mkdirSync(uploadDir, { recursive: true });
+        }
+        const filePath = path.join(uploadDir, filename);
+        fs.writeFileSync(filePath, buffer);
+        fileUrl = `/uploads/claims/${filename}`;
+      }
+
+      if (!fileUrl) {
+        return res.status(400).json({ success: false, message: "Signature file or drawing data required" });
+      }
+
+      let row = await sequelize.models.OrgBusinessInfo.findOne({
+        where: { active: true, orgAccountId: orgId },
+      });
+
+      if (!row) {
+        row = await sequelize.models.OrgBusinessInfo.create({
+          active: true,
+          orgAccountId: orgId,
+        });
+      }
+
+      await row.update({ signatureUrl: fileUrl });
+
+      return res.json({ success: true, url: fileUrl });
+    } catch (e) {
+      console.error("[business-info signature POST]", e);
+      return res.status(500).json({ success: false, message: "Failed to save employer signature" });
+    }
+  }
+);
+
+// Clear Employer Signature (org-scoped)
+router.delete("/settings/business-info/signature", async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res);
+    if (!orgId) return;
+
+    const row = await sequelize.models.OrgBusinessInfo.findOne({
+      where: { active: true, orgAccountId: orgId },
+    });
+
+    if (!row) return res.json({ success: true });
+
+    await row.update({ signatureUrl: null });
+
+    return res.json({ success: true });
+  } catch (e) {
+    return res.status(500).json({ success: false, message: "Failed to clear employer signature" });
+  }
+});
+
 // Organization Business Info (state & city) (org-scoped)
 
 router.get("/settings/business-info", async (req, res) => {
@@ -7809,6 +7894,7 @@ router.get("/settings/business-info", async (req, res) => {
         pincode: row.pincode || null,
 
         logoUrl: row.logoUrl || null,
+        signatureUrl: row.signatureUrl || null,
         sidebarHeaderType: row.sidebarHeaderType || "name",
       },
     });
@@ -11746,13 +11832,27 @@ router.get("/advances", async (req, res) => {
       offset: (parseInt(page) - 1) * parseInt(limit),
     });
 
-    // Fetch all PayrollCycles for this org to determine which months have been generated
-    const { PayrollCycle } = require("../models");
+    // Fetch all PayrollCycles for this org that are either LOCKED/PAID or have generated payroll lines
+    const { PayrollCycle, PayrollLine } = require("../models");
     const generatedCycles = await PayrollCycle.findAll({
-      where: { orgAccountId: orgId },
+      where: {
+        orgAccountId: orgId,
+        [Op.or]: [
+          { status: { [Op.in]: ["LOCKED", "PAID"] } },
+          { "$lines.id$": { [Op.ne]: null } },
+        ],
+      },
+      include: [
+        {
+          model: PayrollLine,
+          as: "lines",
+          attributes: ["id"],
+          required: false,
+        },
+      ],
       attributes: ["monthKey", "status"],
     });
-    // Set of monthKeys where payroll has been generated (any status — DRAFT or LOCKED)
+    // Set of monthKeys where payroll has actually been generated or locked
     const generatedMonths = new Set(generatedCycles.map((c) => c.monthKey));
 
     // Enrich each advance with dynamic status based on payroll generation
@@ -27110,6 +27210,511 @@ router.get("/reports/org-leave-balance", async (req, res) => {
       success: false,
       message: "Failed to generate leave balance report",
     });
+  }
+});
+
+// Monthly Absent Report (JSON preview & Excel export)
+router.get("/reports/absent-report", async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res);
+    if (!orgId) return;
+
+    let { month, year, monthKey, format, employeeIds, department } = req.query;
+
+    if (monthKey && /^\d{4}-\d{2}$/.test(monthKey)) {
+      const [y, m] = monthKey.split("-").map(Number);
+      year = y;
+      month = m;
+    }
+
+    const mNum = month ? parseInt(month) : dayjs().month() + 1;
+    const yNum = year ? parseInt(year) : dayjs().year();
+
+    const startDate = dayjs(`${yNum}-${String(mNum).padStart(2, "0")}-01`).startOf("month");
+    const endDate = startDate.endOf("month");
+    const daysInMonth = startDate.daysInMonth();
+    const salaryMonthName = startDate.format("MMMM YYYY");
+
+    const org = await OrgAccount.findByPk(orgId);
+    const orgName = org?.name || "Thinktech Organization";
+
+    // Staff filter
+    let staffWhereClause = { orgAccountId: orgId, role: "staff" };
+    if (employeeIds) {
+      const empIds = String(employeeIds)
+        .split(",")
+        .map((id) => parseInt(id.trim()))
+        .filter((id) => !isNaN(id));
+      if (empIds.length > 0) staffWhereClause.id = { [Op.in]: empIds };
+    }
+
+    let profileWhere = {};
+    if (department) {
+      profileWhere.department = department;
+    }
+
+    const staffList = await User.findAll({
+      where: staffWhereClause,
+      include: [
+        {
+          model: StaffProfile,
+          as: "profile",
+          where: Object.keys(profileWhere).length > 0 ? profileWhere : undefined,
+          required: Object.keys(profileWhere).length > 0 ? true : false,
+        },
+      ],
+      order: [
+        [{ model: StaffProfile, as: "profile" }, "department", "ASC"],
+        [{ model: StaffProfile, as: "profile" }, "name", "ASC"]
+      ],
+    });
+
+    if (!staffList || staffList.length === 0) {
+      if (format === "excel") {
+        const workbook = new exceljs.Workbook();
+        const sheet = workbook.addWorksheet("Absent Report");
+        sheet.addRow(["No data available for selected criteria"]);
+        res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+        res.setHeader("Content-Disposition", `attachment; filename="Absent_Report_${yNum}_${mNum}.xlsx"`);
+        return workbook.xlsx.write(res).then(() => res.end());
+      }
+      return res.json({ success: true, data: [], summary: { totalEmployees: 0, totalWorkingDays: 0, totalPresentDays: 0, totalAbsentDays: 0 } });
+    }
+
+    const staffIds = staffList.map((s) => s.id);
+    const startDateStr = startDate.format("YYYY-MM-DD");
+    const endDateStr = endDate.format("YYYY-MM-DD");
+
+    // Fetch Attendance records
+    const attendanceRecords = await Attendance.findAll({
+      where: {
+        userId: { [Op.in]: staffIds },
+        date: { [Op.gte]: startDateStr, [Op.lte]: endDateStr },
+      },
+    });
+
+    // Map attendance by userId and dateStr
+    const attendanceMap = {};
+    attendanceRecords.forEach((att) => {
+      if (!attendanceMap[att.userId]) attendanceMap[att.userId] = {};
+      attendanceMap[att.userId][att.date] = att;
+    });
+
+    // Fetch Weekly Off Assignments
+    const woAssignments = await StaffWeeklyOffAssignment.findAll({
+      where: {
+        userId: { [Op.in]: staffIds },
+        [Op.or]: [
+          { effectiveTo: null },
+          { effectiveTo: { [Op.gte]: startDateStr } },
+        ],
+        effectiveFrom: { [Op.lte]: endDateStr },
+      },
+      include: [{ model: WeeklyOffTemplate, as: "template" }],
+    });
+
+    // Fetch Holiday Assignments
+    const holidayAssignments = await StaffHolidayAssignment.findAll({
+      where: {
+        userId: { [Op.in]: staffIds },
+        [Op.or]: [
+          { effectiveTo: null },
+          { effectiveTo: { [Op.gte]: startDateStr } },
+        ],
+        effectiveFrom: { [Op.lte]: endDateStr },
+      },
+      include: [
+        {
+          model: HolidayTemplate,
+          as: "template",
+          include: [
+            {
+              model: HolidayDate,
+              as: "holidays",
+              where: {
+                date: { [Op.gte]: startDateStr, [Op.lte]: endDateStr },
+              },
+              required: false,
+            },
+          ],
+        },
+      ],
+    });
+
+    // Fetch Approved Leave Requests
+    const approvedLeaves = await LeaveRequest.findAll({
+      where: {
+        userId: { [Op.in]: staffIds },
+        status: "approved",
+        [Op.or]: [
+          { startDate: { [Op.lte]: endDateStr }, endDate: { [Op.gte]: startDateStr } },
+        ],
+      },
+    });
+
+    const currentDateStr = dayjs().format("YYYY-MM-DD");
+
+    const isWeeklyOffForDate = (configArray, jsDate) => {
+      if (!configArray) return false;
+      let config = configArray;
+      while (typeof config === 'string' && config.trim().startsWith('[')) {
+        try {
+          const p = JSON.parse(config);
+          if (p === config) break;
+          config = p;
+        } catch (e) { break; }
+      }
+      if (!Array.isArray(config) || config.length === 0) return false;
+
+      const dow = jsDate.getDay();
+      const wk = Math.floor((jsDate.getDate() - 1) / 7) + 1;
+      for (const cfg of config) {
+        if (typeof cfg === 'number' && cfg === dow) return true;
+        if (cfg && (Number(cfg.day) === dow || Number(cfg.dayOfWeek) === dow)) {
+          if (!cfg.weeks || cfg.weeks === 'all') return true;
+          if (Array.isArray(cfg.weeks) && cfg.weeks.includes(wk)) return true;
+          if (Array.isArray(cfg.weekNumbers) && cfg.weekNumbers.includes(wk)) return true;
+        }
+      }
+      return false;
+    };
+
+    const reportRows = staffList.map((staff, index) => {
+      const uId = staff.id;
+      const empName = staff.profile?.name || staff.name || `Employee ${uId}`;
+      const staffCode = staff.profile?.staffId || staff.phone || `EMP${uId}`;
+      const deptName = staff.profile?.department || "General";
+      const uAttendance = attendanceMap[uId] || {};
+
+      const userWoAsg = woAssignments.filter((a) => a.userId === uId);
+      const userHolAsg = holidayAssignments.filter((a) => a.userId === uId);
+      const userLeaves = approvedLeaves.filter((l) => l.userId === uId);
+
+      let presentDays = 0;
+      let absentDays = 0;
+      let leaveDays = 0;
+      let weeklyOffDays = 0;
+      let holidayDays = 0;
+      let workingDays = 0;
+      let absentDatesList = [];
+
+      for (let d = 1; d <= daysInMonth; d++) {
+        const dateObj = new Date(yNum, mNum - 1, d);
+        const dateStr = `${yNum}-${String(mNum).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
+        const att = uAttendance[dateStr];
+
+        // 1. Check if employee actually worked / punched in on this date
+        if (att && (["PRESENT", "LATE", "OVERTIME"].includes(att.status) || att.punchedInAt)) {
+          presentDays += 1;
+          workingDays += 1;
+          continue;
+        }
+
+        if (att && att.status === "HALF_DAY") {
+          presentDays += 0.5;
+          absentDays += 0.5;
+          workingDays += 1;
+          absentDatesList.push({
+            date: dateStr,
+            dateFormatted: dayjs(dateStr).format("DD MMM YYYY"),
+            dayName: dayjs(dateStr).format("dddd"),
+            status: "HALF_DAY",
+            statusText: "Half Day (0.5)",
+            remark: "Half Day Punch / Marked"
+          });
+          continue;
+        }
+
+        // 2. Check Approved Leaves
+        let isLeave = false;
+        if (att && att.status === "LEAVE") {
+          isLeave = true;
+        } else {
+          for (const l of userLeaves) {
+            const lStart = l.startDate ? dayjs(l.startDate).format("YYYY-MM-DD") : null;
+            const lEnd = l.endDate ? dayjs(l.endDate).format("YYYY-MM-DD") : null;
+            if (lStart && lEnd && dateStr >= lStart && dateStr <= lEnd) {
+              isLeave = true;
+              break;
+            }
+          }
+        }
+        if (isLeave) {
+          leaveDays += 1;
+          continue;
+        }
+
+        // 3. Check Company Holidays
+        let isHoliday = false;
+        for (const asg of userHolAsg) {
+          const effFrom = asg.effectiveFrom ? dayjs(asg.effectiveFrom).format("YYYY-MM-DD") : null;
+          const effTo = asg.effectiveTo ? dayjs(asg.effectiveTo).format("YYYY-MM-DD") : null;
+          if (effFrom && dateStr >= effFrom && (!effTo || dateStr <= effTo)) {
+            if (asg.template?.holidays?.some((hd) => hd.date === dateStr)) {
+              isHoliday = true;
+              break;
+            }
+          }
+        }
+        if (isHoliday) {
+          holidayDays += 1;
+          continue;
+        }
+
+        // 4. Check Weekly Off (Only if staff has a Weekly Off Template assigned)
+        let isWO = false;
+        if (userWoAsg.length > 0) {
+          for (const asg of userWoAsg) {
+            const effFrom = asg.effectiveFrom ? dayjs(asg.effectiveFrom).format("YYYY-MM-DD") : null;
+            const effTo = asg.effectiveTo ? dayjs(asg.effectiveTo).format("YYYY-MM-DD") : null;
+            if (effFrom && dateStr >= effFrom && (!effTo || dateStr <= effTo)) {
+              const cfg = asg.template?.config;
+              if (isWeeklyOffForDate(cfg, dateObj)) {
+                isWO = true;
+                break;
+              }
+            }
+          }
+        }
+
+        if (isWO) {
+          weeklyOffDays += 1;
+          continue;
+        }
+
+        // 5. Unpunched Working Day (on or before current date or explicit ABSENT status) -> Absent
+        if ((att && att.status === "ABSENT") || dateStr <= currentDateStr) {
+          absentDays += 1;
+          workingDays += 1;
+          absentDatesList.push({
+            date: dateStr,
+            dateFormatted: dayjs(dateStr).format("DD MMM YYYY"),
+            dayName: dayjs(dateStr).format("dddd"),
+            status: "ABSENT",
+            statusText: "Full Day Absent",
+            remark: att && att.status === "ABSENT" ? "Marked Absent" : "Unexcused Absence (No Punch)"
+          });
+        }
+      }
+
+      return {
+        sn: index + 1,
+        userId: uId,
+        staffName: empName,
+        staffId: staffCode,
+        department: deptName,
+        salaryMonth: salaryMonthName,
+        totalWorkingDays: workingDays,
+        totalPresentDays: presentDays,
+        totalAbsentDays: absentDays,
+        totalLeaves: leaveDays,
+        totalWeeklyOff: weeklyOffDays,
+        totalHolidays: holidayDays,
+        absentDates: absentDatesList,
+        absentDatesSummaryStr: absentDatesList.map((d) => dayjs(d.date).format("DD MMM")).join(", "),
+      };
+    });
+
+    // Summary totals
+    const summary = {
+      totalEmployees: reportRows.length,
+      totalWorkingDays: reportRows.reduce((s, r) => s + r.totalWorkingDays, 0),
+      totalPresentDays: reportRows.reduce((s, r) => s + r.totalPresentDays, 0),
+      totalAbsentDays: reportRows.reduce((s, r) => s + r.totalAbsentDays, 0),
+      totalLeaves: reportRows.reduce((s, r) => s + r.totalLeaves, 0),
+    };
+
+    if (format === "excel") {
+      const workbook = new exceljs.Workbook();
+      
+      // SHEET 1: Absent Report Summary
+      const sheet1 = workbook.addWorksheet("Absent Report Summary");
+
+      sheet1.mergeCells("A1:F1");
+      const titleCell = sheet1.getCell("A1");
+      titleCell.value = `${orgName.toUpperCase()} - MONTHLY ABSENT REPORT`;
+      titleCell.font = { name: "Calibri", size: 14, bold: true, color: { argb: "FFFFFFFF" } };
+      titleCell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF1F4E78" } };
+      titleCell.alignment = { horizontal: "center", vertical: "middle" };
+      sheet1.getRow(1).height = 30;
+
+      sheet1.mergeCells("A2:F2");
+      const subTitleCell = sheet1.getCell("A2");
+      subTitleCell.value = `Salary Month: ${salaryMonthName} | Generated on: ${dayjs().format("DD-MMM-YYYY HH:mm")}`;
+      subTitleCell.font = { name: "Calibri", size: 11, italic: true, color: { argb: "FF555555" } };
+      subTitleCell.alignment = { horizontal: "center", vertical: "middle" };
+      sheet1.getRow(2).height = 20;
+
+      sheet1.getRow(3).height = 10;
+
+      const headers1 = ["S.N.", "Employee Name", "Staff ID", "Department", "Salary Month", "Total Absent Days"];
+      const headerRow1 = sheet1.getRow(4);
+      headers1.forEach((h, idx) => {
+        const cell = headerRow1.getCell(idx + 1);
+        cell.value = h;
+        cell.font = { name: "Calibri", size: 11, bold: true, color: { argb: "FFFFFFFF" } };
+        cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF2F5597" } };
+        cell.alignment = { horizontal: idx === 5 ? "right" : "left", vertical: "middle" };
+        cell.border = {
+          top: { style: "thin", color: { argb: "FF000000" } },
+          bottom: { style: "medium", color: { argb: "FF000000" } },
+          left: { style: "thin", color: { argb: "FFCCCCCC" } },
+          right: { style: "thin", color: { argb: "FFCCCCCC" } },
+        };
+      });
+      headerRow1.height = 25;
+
+      let currentRowIdx1 = 5;
+      reportRows.forEach((row, idx) => {
+        const r = sheet1.getRow(currentRowIdx1);
+        r.getCell(1).value = idx + 1;
+        r.getCell(2).value = row.staffName;
+        r.getCell(3).value = row.staffId;
+        r.getCell(4).value = row.department;
+        r.getCell(5).value = row.salaryMonth;
+        r.getCell(6).value = row.totalAbsentDays;
+
+        for (let col = 1; col <= 6; col++) {
+          const cell = r.getCell(col);
+          cell.font = { name: "Calibri", size: 11 };
+          cell.alignment = { horizontal: col === 6 || col === 1 ? (col === 1 ? "center" : "right") : "left", vertical: "middle" };
+          cell.border = {
+            top: { style: "thin", color: { argb: "FFE0E0E0" } },
+            bottom: { style: "thin", color: { argb: "FFE0E0E0" } },
+            left: { style: "thin", color: { argb: "FFE0E0E0" } },
+            right: { style: "thin", color: { argb: "FFE0E0E0" } },
+          };
+        }
+
+        if (row.totalAbsentDays > 0) {
+          const absentCell = r.getCell(6);
+          absentCell.font = { name: "Calibri", size: 11, bold: true, color: { argb: "FFC00000" } };
+          absentCell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFFCE4D6" } };
+        }
+
+        currentRowIdx1++;
+      });
+
+      const totalRow1 = sheet1.getRow(currentRowIdx1);
+      totalRow1.getCell(1).value = "";
+      totalRow1.getCell(2).value = `TOTAL (${summary.totalEmployees} Employees)`;
+      totalRow1.getCell(3).value = "";
+      totalRow1.getCell(4).value = "";
+      totalRow1.getCell(5).value = "";
+      totalRow1.getCell(6).value = summary.totalAbsentDays;
+
+      for (let col = 1; col <= 6; col++) {
+        const cell = totalRow1.getCell(col);
+        cell.font = { name: "Calibri", size: 11, bold: true, color: { argb: "FF000000" } };
+        cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FDF2F2F2" } };
+        cell.alignment = { horizontal: col === 6 ? "right" : "left", vertical: "middle" };
+        cell.border = {
+          top: { style: "medium", color: { argb: "FF1F4E78" } },
+          bottom: { style: "double", color: { argb: "FF1F4E78" } },
+          left: { style: "thin", color: { argb: "FFCCCCCC" } },
+          right: { style: "thin", color: { argb: "FFCCCCCC" } },
+        };
+      }
+      totalRow1.getCell(6).font = { name: "Calibri", size: 11, bold: true, color: { argb: "FFC00000" } };
+      totalRow1.height = 24;
+
+      sheet1.columns = [
+        { width: 8 },
+        { width: 24 },
+        { width: 16 },
+        { width: 20 },
+        { width: 18 },
+        { width: 20 },
+      ];
+
+      // SHEET 2: Detailed Date-wise Absent Log
+      const sheet2 = workbook.addWorksheet("Detailed Absent Log");
+
+      sheet2.mergeCells("A1:G1");
+      const titleCell2 = sheet2.getCell("A1");
+      titleCell2.value = `${orgName.toUpperCase()} - DETAILED ABSENT LOG`;
+      titleCell2.font = { name: "Calibri", size: 14, bold: true, color: { argb: "FFFFFFFF" } };
+      titleCell2.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFC00000" } };
+      titleCell2.alignment = { horizontal: "center", vertical: "middle" };
+      sheet2.getRow(1).height = 30;
+
+      sheet2.mergeCells("A2:G2");
+      const subTitleCell2 = sheet2.getCell("A2");
+      subTitleCell2.value = `Salary Month: ${salaryMonthName} | Total Absent Records: ${reportRows.reduce((sum, r) => sum + r.absentDates.length, 0)}`;
+      subTitleCell2.font = { name: "Calibri", size: 11, italic: true, color: { argb: "FF555555" } };
+      subTitleCell2.alignment = { horizontal: "center", vertical: "middle" };
+      sheet2.getRow(2).height = 20;
+
+      sheet2.getRow(3).height = 10;
+
+      const headers2 = ["S.N.", "Employee Name", "Staff ID", "Department", "Absent Date", "Day of Week", "Status"];
+      const headerRow2 = sheet2.getRow(4);
+      headers2.forEach((h, idx) => {
+        const cell = headerRow2.getCell(idx + 1);
+        cell.value = h;
+        cell.font = { name: "Calibri", size: 11, bold: true, color: { argb: "FFFFFFFF" } };
+        cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFC00000" } };
+        cell.alignment = { horizontal: "left", vertical: "middle" };
+        cell.border = {
+          top: { style: "thin", color: { argb: "FF000000" } },
+          bottom: { style: "medium", color: { argb: "FF000000" } },
+          left: { style: "thin", color: { argb: "FFCCCCCC" } },
+          right: { style: "thin", color: { argb: "FFCCCCCC" } },
+        };
+      });
+      headerRow2.height = 25;
+
+      let logRowIdx = 5;
+      let logSn = 1;
+      reportRows.forEach((emp) => {
+        (emp.absentDates || []).forEach((abEntry) => {
+          const r = sheet2.getRow(logRowIdx);
+          r.getCell(1).value = logSn++;
+          r.getCell(2).value = emp.staffName;
+          r.getCell(3).value = emp.staffId;
+          r.getCell(4).value = emp.department;
+          r.getCell(5).value = abEntry.dateFormatted;
+          r.getCell(6).value = abEntry.dayName;
+          r.getCell(7).value = abEntry.statusText;
+
+          for (let col = 1; col <= 7; col++) {
+            const cell = r.getCell(col);
+            cell.font = { name: "Calibri", size: 11 };
+            cell.alignment = { horizontal: col === 1 ? "center" : "left", vertical: "middle" };
+            cell.border = {
+              top: { style: "thin", color: { argb: "FFE0E0E0" } },
+              bottom: { style: "thin", color: { argb: "FFE0E0E0" } },
+              left: { style: "thin", color: { argb: "FFE0E0E0" } },
+              right: { style: "thin", color: { argb: "FFE0E0E0" } },
+            };
+          }
+          logRowIdx++;
+        });
+      });
+
+      sheet2.columns = [
+        { width: 8 },
+        { width: 24 },
+        { width: 16 },
+        { width: 20 },
+        { width: 18 },
+        { width: 18 },
+        { width: 30 },
+      ];
+
+      res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+      res.setHeader("Content-Disposition", `attachment; filename="Absent_Report_${yNum}_${mNum}.xlsx"`);
+      return workbook.xlsx.write(res).then(() => res.end());
+    }
+
+    return res.json({
+      success: true,
+      data: reportRows,
+      summary,
+    });
+  } catch (e) {
+    console.error("[GET /reports/absent-report]", e);
+    return res.status(500).json({ success: false, message: "Failed to generate absent report" });
   }
 });
 

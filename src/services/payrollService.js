@@ -1545,29 +1545,44 @@ async function generatePayslipPDF(data, savePath = null) {
 
   let businessName = 'Thinktech Software';
   let logoHtml = '';
+  let employerSignatureHtml = '';
 
   if (user.orgAccount) {
     businessName = user.orgAccount.name;
-    // Fetch Business Info for Logo
+    // Fetch Business Info for Logo and Signature
     try {
       const bizInfo = await OrgBusinessInfo.findOne({ where: { orgAccountId: user.orgAccount.id } });
-      if (bizInfo && bizInfo.logoUrl) {
-        // Construct absolute path. logoUrl is likely like '/uploads/logos/...'
-        // Remove leading slash if present to join with process.cwd()
-        const cleanPath = bizInfo.logoUrl.startsWith('/') ? bizInfo.logoUrl.slice(1) : bizInfo.logoUrl;
-        const logoPath = path.join(process.cwd(), cleanPath);
+      if (bizInfo) {
+        if (bizInfo.logoUrl) {
+          // Construct absolute path. logoUrl is likely like '/uploads/logos/...'
+          // Remove leading slash if present to join with process.cwd()
+          const cleanPath = bizInfo.logoUrl.startsWith('/') ? bizInfo.logoUrl.slice(1) : bizInfo.logoUrl;
+          const logoPath = path.join(process.cwd(), cleanPath);
 
-        if (fs.existsSync(logoPath)) {
-          const bitmap = fs.readFileSync(logoPath);
-          const base64 = Buffer.from(bitmap).toString('base64');
-          // Guess mime type based on extension
-          const ext = path.extname(logoPath).toLowerCase();
-          const mime = ext === '.png' ? 'image/png' : (ext === '.jpg' || ext === '.jpeg' ? 'image/jpeg' : 'image/png');
-          logoHtml = `<img src="data:${mime};base64,${base64}" alt="Logo" style="max-height: 60px; margin-bottom: 10px;" />`;
+          if (fs.existsSync(logoPath)) {
+            const bitmap = fs.readFileSync(logoPath);
+            const base64 = Buffer.from(bitmap).toString('base64');
+            // Guess mime type based on extension
+            const ext = path.extname(logoPath).toLowerCase();
+            const mime = ext === '.png' ? 'image/png' : (ext === '.jpg' || ext === '.jpeg' ? 'image/jpeg' : 'image/png');
+            logoHtml = `<img src="data:${mime};base64,${base64}" alt="Logo" style="max-height: 60px; margin-bottom: 10px;" />`;
+          }
+        }
+        if (bizInfo.signatureUrl) {
+          const cleanSigPath = bizInfo.signatureUrl.startsWith('/') ? bizInfo.signatureUrl.slice(1) : bizInfo.signatureUrl;
+          const sigPath = path.join(process.cwd(), cleanSigPath);
+
+          if (fs.existsSync(sigPath)) {
+            const bitmap = fs.readFileSync(sigPath);
+            const base64 = Buffer.from(bitmap).toString('base64');
+            const ext = path.extname(sigPath).toLowerCase();
+            const mime = ext === '.png' ? 'image/png' : (ext === '.jpg' || ext === '.jpeg' ? 'image/jpeg' : 'image/png');
+            employerSignatureHtml = `<img src="data:${mime};base64,${base64}" alt="Employer Signature" style="max-height: 45px; max-width: 140px; margin-bottom: 2px;" />`;
+          }
         }
       }
     } catch (e) {
-      console.error('Error fetching logo:', e);
+      console.error('Error fetching logo/signature:', e);
     }
   }
 
@@ -1718,8 +1733,11 @@ async function generatePayslipPDF(data, savePath = null) {
           <div class="sig-line"></div>
         </div>
         <div class="sig-box">
+          <div style="min-height: 48px; display: flex; align-items: flex-end; justify-content: center;">
+            ${employerSignatureHtml}
+          </div>
           <div>Employer Signature</div>
-          <div class="sig-line"></div>
+          <div class="sig-line" style="margin-top: 5px;"></div>
         </div>
       </div>
 
