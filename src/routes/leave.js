@@ -752,8 +752,13 @@ router.post('/encash/review', requireRole(['admin', 'superadmin']), async (req, 
       return res.json({ success: true, claim });
     }
 
-    // Process Approval: Deduct from LeaveBalance
-    const balanceInfo = await getEffectiveLeaveBalance(claim.userId, claim.categoryKey, new Date().toISOString().slice(0, 10));
+    // Process Approval: Deduct from LeaveBalance for target month
+    let evalDate = new Date().toISOString().slice(0, 10);
+    if (claim.monthKey && /^\d{4}-\d{2}$/.test(claim.monthKey)) {
+      evalDate = `${claim.monthKey}-28`;
+    }
+
+    const balanceInfo = await getEffectiveLeaveBalance(claim.userId, claim.categoryKey, evalDate);
     if (!balanceInfo || balanceInfo.remaining < Number(claim.days)) {
       return res.status(400).json({ success: false, message: 'Insufficient leave balance at time of approval' });
     }
@@ -798,13 +803,18 @@ router.post('/encash/review', requireRole(['admin', 'superadmin']), async (req, 
 // ADMIN/STAFF: Check live remaining leave balance for encashment
 router.get('/encash/balance-check', async (req, res) => {
   try {
-    const { userId, categoryKey } = req.query || {};
+    const { userId, categoryKey, monthKey } = req.query || {};
     const targetUserId = userId || req.user?.id;
     if (!targetUserId || !categoryKey) {
       return res.status(400).json({ success: false, message: 'userId and categoryKey are required' });
     }
 
-    const balanceInfo = await getEffectiveLeaveBalance(targetUserId, categoryKey, new Date().toISOString().slice(0, 10));
+    let evalDate = new Date().toISOString().slice(0, 10);
+    if (monthKey && /^\d{4}-\d{2}$/.test(monthKey)) {
+      evalDate = `${monthKey}-28`;
+    }
+
+    const balanceInfo = await getEffectiveLeaveBalance(targetUserId, categoryKey, evalDate);
     return res.json({
       success: true,
       balanceInfo,
@@ -829,8 +839,13 @@ router.post('/encash/admin-create', requireRole(['admin', 'superadmin']), async 
       return res.status(400).json({ success: false, message: 'Invalid days value' });
     }
 
+    let evalDate = new Date().toISOString().slice(0, 10);
+    if (monthKey && /^\d{4}-\d{2}$/.test(monthKey)) {
+      evalDate = `${monthKey}-28`;
+    }
+
     // Check balance
-    const balanceInfo = await getEffectiveLeaveBalance(userId, categoryKey, new Date().toISOString().slice(0, 10));
+    const balanceInfo = await getEffectiveLeaveBalance(userId, categoryKey, evalDate);
     if (!balanceInfo || balanceInfo.remaining < encashDays) {
       const avail = balanceInfo ? Number(balanceInfo.remaining || 0) : 0;
       return res.status(400).json({
