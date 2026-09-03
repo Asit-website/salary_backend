@@ -795,4 +795,90 @@ router.post('/encash/review', requireRole(['admin', 'superadmin']), async (req, 
   }
 });
 
+// ADMIN/STAFF: Check live remaining leave balance for encashment
+router.get('/encash/balance-check', async (req, res) => {
+  try {
+    const { userId, categoryKey } = req.query || {};
+    const targetUserId = userId || req.user?.id;
+    if (!targetUserId || !categoryKey) {
+      return res.status(400).json({ success: false, message: 'userId and categoryKey are required' });
+    }
+
+    const balanceInfo = await getEffectiveLeaveBalance(targetUserId, categoryKey, new Date().toISOString().slice(0, 10));
+    return res.json({
+      success: true,
+      balanceInfo,
+      remaining: balanceInfo ? Number(balanceInfo.remaining || 0) : 0
+    });
+  } catch (e) {
+    console.error("Balance check error:", e);
+    return res.status(500).json({ success: false, message: 'Failed to check leave balance' });
+  }
+});
+
+// ADMIN: Directly create & process Leave Encashment claim for any staff
+router.post('/encash/admin-create', requireRole(['admin', 'superadmin']), async (req, res) => {
+  try {
+    const { userId, categoryKey, days, monthKey, status = 'APPROVED', reviewNote } = req.body || {};
+    if (!userId || !categoryKey || !days || !monthKey) {
+      return res.status(400).json({ success: false, message: 'userId, categoryKey, days, and monthKey (YYYY-MM) are required' });
+    }
+
+    const encashDays = Number(days);
+    if (isNaN(encashDays) || encashDays <= 0) {
+      return res.status(400).json({ success: false, message: 'Invalid days value' });
+    }
+
+    // Check balance
+    const balanceInfo = await getEffectiveLeaveBalance(userId, categoryKey, new Date().toISOString().slice(0, 10));
+    if (!balanceInfo || balanceInfo.remaining < encashDays) {
+      const avail = balanceInfo ? Number(balanceInfo.remaining || 0) : 0;
+      return res.status(400).json({
+        success: false,
+        message: `Insufficient leave balance. Available: ${avail} day(s), requested: ${encashDays} day(s)`
+      });
+    }
+
+    const claimStatus = status === 'PENDING' ? 'PENDING' : 'APPROVED';
+
+    const claim = await LeaveEncashment.create({
+      userId,
+      orgAccountId: req.tenantOrgAccountId,
+      categoryKey: categoryKey.toLowerCase(),
+      days: encashDays,
+      monthKey,
+      status: claimStatus,
+      reviewedBy: claimStatus === 'APPROVED' ? req.user.id : null,
+      reviewedAt: claimStatus === 'APPROVED' ? new Date() : null,
+      reviewNote: reviewNote || 'Created by Admin'
+    });
+
+    if (claimStatus === 'APPROVED') {
+      let lb = balanceInfo.lb;
+      if (lb) {
+        const encashed = Number(lb.encashed || 0) + encashDays;
+        const remaining = Number(lb.remaining || 0) - encashDays;
+        await lb.update({ encashed, remaining });
+      } else {
+        await LeaveBalance.create({
+          userId,
+          categoryKey: categoryKey.toLowerCase(),
+          cycleStart: balanceInfo.start,
+          cycleEnd: balanceInfo.end,
+          allocated: balanceInfo.total,
+          used: balanceInfo.used,
+          encashed: encashDays,
+          remaining: balanceInfo.remaining - encashDays,
+          orgAccountId: req.tenantOrgAccountId
+        });
+      }
+    }
+
+    return res.json({ success: true, claim });
+  } catch (e) {
+    console.error("Admin create encashment error:", e);
+    return res.status(500).json({ success: false, message: 'Failed to create encashment claim' });
+  }
+});
+
 module.exports = router;

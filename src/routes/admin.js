@@ -5103,6 +5103,8 @@ router.post("/payroll/:cycleId/compute", async (req, res) => {
       // Rule-based fallback if template exists
       let pfRule = null;
       let esiRule = null;
+      let hasPfEnabled = false;
+
       if (u.salaryTemplate) {
         const tD = u.salaryTemplate.deductions
           ? typeof u.salaryTemplate.deductions === "string"
@@ -5113,9 +5115,11 @@ router.post("/payroll/:cycleId/compute", async (req, res) => {
           (Array.isArray(tD) ? tD : []).find((it) => it.key === key);
         pfRule = getRule("PROVIDENT_FUND_EMPLOYEE") || getRule("PROVIDENT_FUND");
         esiRule = getRule("ESI_EMPLOYEE");
+        hasPfEnabled = !!pfRule;
+      } else {
+        hasPfEnabled = Number(d.provident_fund || 0) > 0 || Number(u.pfDeduction || 0) > 0;
       }
 
-      const hasPfEnabled = pfRule || Number(d.provident_fund || 0) > 0 || Number(u.pfDeduction || 0) > 0;
       if (hasPfEnabled) {
         let pfRate = 12; // Statutory default rate (12%)
         if (pfRule && Number(pfRule.valueNumber || 0) > 0) {
@@ -5129,14 +5133,15 @@ router.post("/payroll/:cycleId/compute", async (req, res) => {
           pfBase = Math.max(0, pfBase - earlyExitPenalty - latePenalty);
         }
         d.provident_fund = Number((pfBase * (pfRate / 100)).toFixed(2));
-      }
 
-      // Always apply PF Capping Limit if enabled
-      if (salarySettings?.pfCapEnabled && Number(salarySettings?.pfCapAmount) > 0) {
-        const capLimit = Number(salarySettings.pfCapAmount);
-        if (Number(d.provident_fund || 0) > capLimit) {
-          d.provident_fund = capLimit;
+        if (salarySettings?.pfCapEnabled && Number(salarySettings?.pfCapAmount) > 0) {
+          const capLimit = Number(salarySettings.pfCapAmount);
+          if (Number(d.provident_fund || 0) > capLimit) {
+            d.provident_fund = capLimit;
+          }
         }
+      } else {
+        d.provident_fund = 0;
       }
 
       if (Number(d.esi || 0) === 0 && esiRule) {
@@ -6531,7 +6536,7 @@ router.post("/payroll/:cycleId/compute", async (req, res) => {
       const daVal = Number(eans.da || 0);
       const pfBase = basicVal + daVal;
 
-      if (pfBase > 0 && (currentPf > 0 || capEnabled)) {
+      if (pfBase > 0 && currentPf > 0) {
         let calcPf = Number((pfBase * 0.12).toFixed(2));
         if (capEnabled && capAmount > 0) {
           calcPf = Math.min(calcPf, capAmount);
@@ -18647,6 +18652,8 @@ router.get("/staff-salary-list", async (req, res) => {
         // Rule-based fallback if template exists
         let pfRule = null;
         let esiRule = null;
+        let hasPfEnabled = false;
+
         if (u.salaryTemplate) {
           const tE = u.salaryTemplate.earnings
             ? typeof u.salaryTemplate.earnings === "string"
@@ -18664,9 +18671,11 @@ router.get("/staff-salary-list", async (req, res) => {
 
           pfRule = getRule("PROVIDENT_FUND_EMPLOYEE") || getRule("PROVIDENT_FUND");
           esiRule = getRule("ESI_EMPLOYEE");
+          hasPfEnabled = !!pfRule;
+        } else {
+          hasPfEnabled = Number(finalDeductions.provident_fund || 0) > 0 || Number(u.pfDeduction || 0) > 0;
         }
 
-        const hasPfEnabled = pfRule || Number(finalDeductions.provident_fund || 0) > 0 || Number(u.pfDeduction || 0) > 0;
         if (hasPfEnabled) {
           let pfRate = 12; // Statutory default rate (12%)
           if (pfRule && Number(pfRule.valueNumber || 0) > 0) {
@@ -18680,14 +18689,15 @@ router.get("/staff-salary-list", async (req, res) => {
             pfBase = Math.max(0, pfBase - earlyExitPenalty - latePenalty);
           }
           finalDeductions.provident_fund = Number((pfBase * (pfRate / 100)).toFixed(2));
-        }
 
-        // Always apply PF Capping Limit if enabled
-        if (salarySettings?.pfCapEnabled && Number(salarySettings?.pfCapAmount) > 0) {
-          const capLimit = Number(salarySettings.pfCapAmount);
-          if (Number(finalDeductions.provident_fund || 0) > capLimit) {
-            finalDeductions.provident_fund = capLimit;
+          if (salarySettings?.pfCapEnabled && Number(salarySettings?.pfCapAmount) > 0) {
+            const capLimit = Number(salarySettings.pfCapAmount);
+            if (Number(finalDeductions.provident_fund || 0) > capLimit) {
+              finalDeductions.provident_fund = capLimit;
+            }
           }
+        } else {
+          finalDeductions.provident_fund = 0;
         }
 
         if (finalDeductions.esi === 0 && esiRule) {

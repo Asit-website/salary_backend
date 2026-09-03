@@ -1209,15 +1209,18 @@ async function calculateSalary(userId, monthKey) {
     finalDeductions.break_penalty = (finalDeductions.break_penalty || 0) + breakMeta.breakPenalty;
   }
 
-  // Always recalculate PF on Basic + DA (and subtract penalties if basic_minus_penalties mode)
+  // Recalculate PF on Basic + DA (and subtract penalties if basic_minus_penalties mode)
   let pfRule = null;
+  let hasPfEnabled = false;
   if (u.salaryTemplate) {
     const tD = u.salaryTemplate.deductions ? (typeof u.salaryTemplate.deductions === 'string' ? JSON.parse(u.salaryTemplate.deductions) : u.salaryTemplate.deductions) : [];
     const getRule = (key) => (Array.isArray(tD) ? tD : []).find(d => d.key === key);
     pfRule = getRule('PROVIDENT_FUND_EMPLOYEE') || getRule('PROVIDENT_FUND');
+    hasPfEnabled = !!pfRule;
+  } else {
+    hasPfEnabled = Number(finalDeductions.provident_fund || 0) > 0 || Number(sd.pfDeduction || 0) > 0;
   }
 
-  const hasPfEnabled = pfRule || Number(finalDeductions.provident_fund || 0) > 0 || Number(sd.pfDeduction || 0) > 0;
   if (hasPfEnabled) {
     let pfRate = 12; // Statutory default rate (12%)
     if (pfRule && Number(pfRule.valueNumber || 0) > 0) {
@@ -1231,14 +1234,16 @@ async function calculateSalary(userId, monthKey) {
       pfBase = Math.max(0, pfBase - earlyExitPenalty - latePenalty);
     }
     finalDeductions.provident_fund = Number((pfBase * (pfRate / 100)).toFixed(2));
-  }
 
-  // Always apply PF Capping Limit if enabled
-  if (coercedSettings.pfCapEnabled && Number(coercedSettings.pfCapAmount) > 0) {
-    const capLimit = Number(coercedSettings.pfCapAmount);
-    if (Number(finalDeductions.provident_fund || 0) > capLimit) {
-      finalDeductions.provident_fund = capLimit;
+    // Apply PF Capping Limit if enabled
+    if (coercedSettings.pfCapEnabled && Number(coercedSettings.pfCapAmount) > 0) {
+      const capLimit = Number(coercedSettings.pfCapAmount);
+      if (Number(finalDeductions.provident_fund || 0) > capLimit) {
+        finalDeductions.provident_fund = capLimit;
+      }
     }
+  } else {
+    finalDeductions.provident_fund = 0;
   }
 
   // 3. APPLY TENURE BONUS (Only if live compute and month matches)
