@@ -5100,7 +5100,9 @@ router.post("/payroll/:cycleId/compute", async (req, res) => {
           ? monthStore.deductions
           : baseD;
 
-      // Rule-based fallback if template exists and values are 0
+      // Rule-based fallback if template exists
+      let pfRule = null;
+      let esiRule = null;
       if (u.salaryTemplate) {
         const tD = u.salaryTemplate.deductions
           ? typeof u.salaryTemplate.deductions === "string"
@@ -5109,38 +5111,47 @@ router.post("/payroll/:cycleId/compute", async (req, res) => {
           : [];
         const getRule = (key) =>
           (Array.isArray(tD) ? tD : []).find((it) => it.key === key);
+        pfRule = getRule("PROVIDENT_FUND_EMPLOYEE") || getRule("PROVIDENT_FUND");
+        esiRule = getRule("ESI_EMPLOYEE");
+      }
 
-        if (Number(d.provident_fund || 0) === 0) {
-          const pfRule = getRule("PROVIDENT_FUND_EMPLOYEE") || getRule("PROVIDENT_FUND");
-          if (
-            pfRule &&
-            pfRule.type === "percent" &&
-            (pfRule.meta?.basedOn === "BASIC SALARY" ||
-              pfRule.meta?.basedOn === "BASIC_SAVARY" ||
-              pfRule.meta?.basedOn === "BASIC_SALARY")
-          ) {
-            let pfBase = Number(e.basic_salary || 0);
-            d.provident_fund = Number(
-              (pfBase * (Number(pfRule.valueNumber || 0) / 100)).toFixed(2),
-            );
-          }
+      const hasPfEnabled = pfRule || Number(d.provident_fund || 0) > 0 || Number(u.pfDeduction || 0) > 0;
+      if (hasPfEnabled) {
+        let pfRate = 12; // Statutory default rate (12%)
+        if (pfRule && Number(pfRule.valueNumber || 0) > 0) {
+          pfRate = Number(pfRule.valueNumber);
         }
-        if (Number(d.esi || 0) === 0) {
-          const esiRule = getRule("ESI_EMPLOYEE");
-          if (
-            esiRule &&
-            esiRule.type === "percent" &&
-            (esiRule.meta?.basedOn === "TOTAL EARNINGS" ||
-              esiRule.meta?.basedOn === "TOTAL_EARNINGS")
-          ) {
-            const currentGross = Object.values(e).reduce(
-              (s, v) => s + (Number(v) || 0),
-              0,
-            );
-            d.esi = Math.round(
-              currentGross * (Number(esiRule.valueNumber || 0) / 100),
-            );
-          }
+
+        let pfBase = Number(e.basic_salary || 0) + Number(e.da || 0);
+        if (salarySettings?.pfCalculationMode === "basic_minus_penalties") {
+          const earlyExitPenalty = Number(d.early_exit_penalty || 0);
+          const latePenalty = Number(d.late_punchin_penalty || 0);
+          pfBase = Math.max(0, pfBase - earlyExitPenalty - latePenalty);
+        }
+        d.provident_fund = Number((pfBase * (pfRate / 100)).toFixed(2));
+      }
+
+      // Always apply PF Capping Limit if enabled
+      if (salarySettings?.pfCapEnabled && Number(salarySettings?.pfCapAmount) > 0) {
+        const capLimit = Number(salarySettings.pfCapAmount);
+        if (Number(d.provident_fund || 0) > capLimit) {
+          d.provident_fund = capLimit;
+        }
+      }
+
+      if (Number(d.esi || 0) === 0 && esiRule) {
+        if (
+          esiRule.type === "percent" &&
+          (esiRule.meta?.basedOn === "TOTAL EARNINGS" ||
+            esiRule.meta?.basedOn === "TOTAL_EARNINGS")
+        ) {
+          const currentGross = Object.values(e).reduce(
+            (s, v) => s + (Number(v) || 0),
+            0,
+          );
+          d.esi = Math.round(
+            currentGross * (Number(esiRule.valueNumber || 0) / 100),
+          );
         }
       }
 
@@ -5791,10 +5802,12 @@ router.post("/payroll/:cycleId/compute", async (req, res) => {
       // Proration by settingsPayableDays if active, else standard calendar month
       const payableUnitsGross =
         present + half * 0.5 + weeklyOff + holidays + paidLeave;
-      const computedPayableUnits = Math.max(
-        0,
-        payableUnitsGross - (daysInMonth - daysForRate),
-      );
+      const coercedSettings = coerceSalarySettings(salarySettings);
+      const isFixedDaysMode = ['every_30', 'every_28', 'every_26'].includes(coercedSettings.payableDaysMode);
+      const useActualEarned = isFixedDaysMode && (coercedSettings.fixedDaysCalcRule === 'actual_earned_days' || coercedSettings.thirtyDaysCalcRule === 'actual_earned_days');
+      const computedPayableUnits = useActualEarned
+        ? payableUnitsGross
+        : Math.max(0, payableUnitsGross - (daysInMonth - daysForRate));
       const ratio =
         daysForRate > 0
           ? Math.max(0, computedPayableUnits / daysForRate)
@@ -6500,7 +6513,42 @@ router.post("/payroll/:cycleId/compute", async (req, res) => {
       }
     }
 
-    const lines =
+    let lines =
+      await require("../models").sequelize.models.PayrollLine.findAll({
+        where: { cycleId: cycle.id },
+      });
+
+    // Enforce PF recalculation & capping limit on all database lines in the cycle
+    const capEnabled = salarySettings?.pfCapEnabled === true;
+    const capAmount = Number(salarySettings?.pfCapAmount || 1800);
+    for (const line of lines) {
+      let deds = typeof line.deductions === 'string' ? JSON.parse(line.deductions) : (line.deductions || {});
+      let eans = typeof line.earnings === 'string' ? JSON.parse(line.earnings) : (line.earnings || {});
+      let tots = typeof line.totals === 'string' ? JSON.parse(line.totals) : (line.totals || {});
+      
+      const currentPf = Number(deds.provident_fund || 0);
+      const basicVal = Number(eans.basic_salary || 0);
+      const daVal = Number(eans.da || 0);
+      const pfBase = basicVal + daVal;
+
+      if (pfBase > 0 && (currentPf > 0 || capEnabled)) {
+        let calcPf = Number((pfBase * 0.12).toFixed(2));
+        if (capEnabled && capAmount > 0) {
+          calcPf = Math.min(calcPf, capAmount);
+        }
+        if (calcPf !== currentPf && calcPf > 0) {
+          deds.provident_fund = calcPf;
+          const diff = calcPf - currentPf;
+          const oldTotDed = Number(tots.totalDeductions || 0);
+          tots.totalDeductions = Math.max(0, Number((oldTotDed + diff).toFixed(2)));
+          const gross = Number(tots.grossSalary || (Number(tots.totalEarnings || 0) + Number(tots.totalIncentives || 0)));
+          tots.netSalary = Math.max(0, Number((gross - tots.totalDeductions).toFixed(2)));
+          await line.update({ deductions: deds, totals: tots });
+        }
+      }
+    }
+
+    lines =
       await require("../models").sequelize.models.PayrollLine.findAll({
         where: { cycleId: cycle.id },
       });
@@ -13839,6 +13887,15 @@ function coerceSalarySettings(input) {
   const esiEffectiveDate = input?.esiEffectiveDate && typeof input.esiEffectiveDate === 'string'
     ? input.esiEffectiveDate
     : null;
+  const fixedDaysCalcRuleInput = input?.fixedDaysCalcRule || input?.thirtyDaysCalcRule;
+  const fixedDaysCalcRule = ["deduct_extra_days", "actual_earned_days"].includes(String(fixedDaysCalcRuleInput))
+    ? String(fixedDaysCalcRuleInput)
+    : "deduct_extra_days";
+  const pfCapEnabled = input?.pfCapEnabled === true;
+  const pfCapAmount = Number.isFinite(Number(input?.pfCapAmount)) && Number(input?.pfCapAmount) > 0
+    ? Number(input.pfCapAmount)
+    : 1800;
+
   return { 
     payableDaysMode: mode, 
     weeklyOffs, 
@@ -13854,7 +13911,11 @@ function coerceSalarySettings(input) {
     esiExcludePf,
     esiExcludePt,
     esiExcludeTds,
-    esiEffectiveDate
+    esiEffectiveDate,
+    fixedDaysCalcRule,
+    thirtyDaysCalcRule: fixedDaysCalcRule,
+    pfCapEnabled,
+    pfCapAmount
   };
 }
 
@@ -17151,13 +17212,22 @@ router.put("/settings/salary", async (req, res) => {
   try {
     const orgId = requireOrg(req, res);
     if (!orgId) return;
-    const settings = coerceSalarySettings(req.body || {});
-    const payload = JSON.stringify(settings);
 
-    // Check if record exists first
     let row = await AppSetting.findOne({
       where: { key: "salary_settings", orgAccountId: orgId },
     });
+
+    let existingSettings = {};
+    if (row && row.value) {
+      try {
+        existingSettings = JSON.parse(row.value);
+      } catch (_) {}
+    }
+
+    const mergedInput = { ...existingSettings, ...(req.body || {}) };
+    const settings = coerceSalarySettings(mergedInput);
+    const payload = JSON.stringify(settings);
+
     if (row) {
       await row.update({ value: payload });
     } else {
@@ -18574,7 +18644,9 @@ router.get("/staff-salary-list", async (req, res) => {
 
         const finalDeductions = normalizedD;
 
-        // Rule-based fallback if template exists and values are 0
+        // Rule-based fallback if template exists
+        let pfRule = null;
+        let esiRule = null;
         if (u.salaryTemplate) {
           const tE = u.salaryTemplate.earnings
             ? typeof u.salaryTemplate.earnings === "string"
@@ -18590,41 +18662,47 @@ router.get("/staff-salary-list", async (req, res) => {
           const getRule = (key) =>
             (Array.isArray(tD) ? tD : []).find((d) => d.key === key);
 
-          if (finalDeductions.provident_fund === 0 || salarySettings?.pfCalculationMode === "basic_minus_penalties") {
-            const pfRule = getRule("PROVIDENT_FUND_EMPLOYEE") || getRule("PROVIDENT_FUND");
-            if (
-              pfRule &&
-              pfRule.type === "percent" &&
-              (pfRule.meta?.basedOn === "BASIC SALARY" ||
-                pfRule.meta?.basedOn === "BASIC_SALARY")
-            ) {
-              let pfBase = Number(finalEarnings.basic_salary || 0);
-              if (salarySettings?.pfCalculationMode === "basic_minus_penalties") {
-                const earlyExitPenalty = Number(finalDeductions.early_exit_penalty || 0);
-                const latePenalty = Number(finalDeductions.late_punchin_penalty || 0);
-                pfBase = Math.max(0, pfBase - earlyExitPenalty - latePenalty);
-              }
-              finalDeductions.provident_fund = Number(
-                (pfBase * (Number(pfRule.valueNumber || 0) / 100)).toFixed(2),
-              );
-            }
+          pfRule = getRule("PROVIDENT_FUND_EMPLOYEE") || getRule("PROVIDENT_FUND");
+          esiRule = getRule("ESI_EMPLOYEE");
+        }
+
+        const hasPfEnabled = pfRule || Number(finalDeductions.provident_fund || 0) > 0 || Number(u.pfDeduction || 0) > 0;
+        if (hasPfEnabled) {
+          let pfRate = 12; // Statutory default rate (12%)
+          if (pfRule && Number(pfRule.valueNumber || 0) > 0) {
+            pfRate = Number(pfRule.valueNumber);
           }
-          if (finalDeductions.esi === 0) {
-            const esiRule = getRule("ESI_EMPLOYEE");
-            if (
-              esiRule &&
-              esiRule.type === "percent" &&
-              (esiRule.meta?.basedOn === "TOTAL EARNINGS" ||
-                esiRule.meta?.basedOn === "TOTAL_EARNINGS")
-            ) {
-              const currentGross = Object.values(finalEarnings).reduce(
-                (s, v) => s + (Number(v) || 0),
-                0,
-              );
-              finalDeductions.esi = Number(
-                (currentGross * (Number(esiRule.valueNumber || 0) / 100)).toFixed(2)
-              );
-            }
+
+          let pfBase = Number(finalEarnings.basic_salary || 0) + Number(finalEarnings.da || 0);
+          if (salarySettings?.pfCalculationMode === "basic_minus_penalties") {
+            const earlyExitPenalty = Number(finalDeductions.early_exit_penalty || 0);
+            const latePenalty = Number(finalDeductions.late_punchin_penalty || 0);
+            pfBase = Math.max(0, pfBase - earlyExitPenalty - latePenalty);
+          }
+          finalDeductions.provident_fund = Number((pfBase * (pfRate / 100)).toFixed(2));
+        }
+
+        // Always apply PF Capping Limit if enabled
+        if (salarySettings?.pfCapEnabled && Number(salarySettings?.pfCapAmount) > 0) {
+          const capLimit = Number(salarySettings.pfCapAmount);
+          if (Number(finalDeductions.provident_fund || 0) > capLimit) {
+            finalDeductions.provident_fund = capLimit;
+          }
+        }
+
+        if (finalDeductions.esi === 0 && esiRule) {
+          if (
+            esiRule.type === "percent" &&
+            (esiRule.meta?.basedOn === "TOTAL EARNINGS" ||
+              esiRule.meta?.basedOn === "TOTAL_EARNINGS")
+          ) {
+            const currentGross = Object.values(finalEarnings).reduce(
+              (s, v) => s + (Number(v) || 0),
+              0,
+            );
+            finalDeductions.esi = Math.round(
+              currentGross * (Number(esiRule.valueNumber || 0) / 100),
+            );
           }
         }
 

@@ -564,17 +564,23 @@ async function calculateSalary(userId, monthKey) {
     const tD = u.salaryTemplate.deductions ? (typeof u.salaryTemplate.deductions === 'string' ? JSON.parse(u.salaryTemplate.deductions) : u.salaryTemplate.deductions) : [];
     const getRule = (key) => (Array.isArray(tD) ? tD : []).find(d => d.key === key);
 
-    if (Number(deductions.provident_fund || 0) === 0) {
-      const pfRule = getRule('PROVIDENT_FUND_EMPLOYEE') || getRule('PROVIDENT_FUND');
-      if (
-        pfRule &&
-        pfRule.type === 'percent' &&
-        (pfRule.meta?.basedOn === 'BASIC SALARY' ||
-          pfRule.meta?.basedOn === 'BASIC_SAVARY' ||
-          pfRule.meta?.basedOn === 'BASIC_SALARY')
-      ) {
-        deductions.provident_fund = Number((Number(earnings.basic_salary || 0) * (Number(pfRule.valueNumber || 0) / 100)).toFixed(2));
-        pfCalculatedFromRule = true;
+    const pfRule = getRule('PROVIDENT_FUND_EMPLOYEE') || getRule('PROVIDENT_FUND');
+    if (
+      pfRule &&
+      pfRule.type === 'percent'
+    ) {
+      const pfBaseAmount = Number(earnings.basic_salary || 0) + Number(earnings.da || 0);
+      deductions.provident_fund = Number((pfBaseAmount * (Number(pfRule.valueNumber || 0) / 100)).toFixed(2));
+      pfCalculatedFromRule = true;
+    } else if (Number(deductions.provident_fund || 0) > 0 || Number(sd.pfDeduction || 0) > 0) {
+      const bVal = Number(earnings.basic_salary || 0);
+      const daVal = Number(earnings.da || 0);
+      const storedPf = Number(deductions.provident_fund || sd.pfDeduction || 0);
+      if (bVal > 0 && daVal > 0 && storedPf > 0) {
+        const ratio = storedPf / bVal;
+        if (ratio > 0 && ratio <= 0.25) {
+          deductions.provident_fund = Number(((bVal + daVal) * ratio).toFixed(2));
+        }
       }
     }
     if (Number(deductions.esi || 0) === 0) {
@@ -586,9 +592,10 @@ async function calculateSalary(userId, monthKey) {
     }
   }
 
-  // Calculate excludeWoLimit from settings
+  // Calculate excludeWoLimit and fixedDaysCalcRule from settings
   let excludeWoLimit = 0;
   let excludeWoEffectiveDate = null;
+  let salarySettingsObj = null;
   try {
     const orgAccountId = u.orgAccountId || u.org_account_id;
     if (orgAccountId) {
@@ -596,9 +603,9 @@ async function calculateSalary(userId, monthKey) {
         where: { key: 'salary_settings', orgAccountId }
       });
       if (salarySettingsRow?.value) {
-        const salarySettings = JSON.parse(salarySettingsRow.value);
-        excludeWoLimit = Number(salarySettings?.excludeWoOnAbsentsLimit || 0);
-        excludeWoEffectiveDate = salarySettings?.excludeWoOnAbsentsEffectiveDate || null;
+        salarySettingsObj = JSON.parse(salarySettingsRow.value);
+        excludeWoLimit = Number(salarySettingsObj?.excludeWoOnAbsentsLimit || 0);
+        excludeWoEffectiveDate = salarySettingsObj?.excludeWoOnAbsentsEffectiveDate || null;
       }
     }
   } catch (err) {
@@ -981,7 +988,13 @@ async function calculateSalary(userId, monthKey) {
   }
 
   let payableUnits = present + paidLeaveCount + weeklyOffCount + holidaysCount;
-  const computedPayableUnits = Math.max(0, payableUnits - (daysInMonth - daysForRate));
+  const coercedSettings = coerceSalarySettings(salarySettingsObj);
+  const isFixedDaysMode = ['every_30', 'every_28', 'every_26'].includes(coercedSettings.payableDaysMode);
+  const useActualEarned = isFixedDaysMode && (coercedSettings.fixedDaysCalcRule === 'actual_earned_days' || coercedSettings.thirtyDaysCalcRule === 'actual_earned_days');
+
+  const computedPayableUnits = useActualEarned
+    ? payableUnits
+    : Math.max(0, payableUnits - (daysInMonth - daysForRate));
   let ratio = daysForRate > 0 ? Math.max(0, computedPayableUnits / daysForRate) : 0;
 
 
@@ -1196,17 +1209,35 @@ async function calculateSalary(userId, monthKey) {
     finalDeductions.break_penalty = (finalDeductions.break_penalty || 0) + breakMeta.breakPenalty;
   }
 
-  // Recalculate PF if mode is basic_minus_penalties
-  if (salarySettings?.pfCalculationMode === 'basic_minus_penalties' && u.salaryTemplate) {
+  // Always recalculate PF on Basic + DA (and subtract penalties if basic_minus_penalties mode)
+  let pfRule = null;
+  if (u.salaryTemplate) {
     const tD = u.salaryTemplate.deductions ? (typeof u.salaryTemplate.deductions === 'string' ? JSON.parse(u.salaryTemplate.deductions) : u.salaryTemplate.deductions) : [];
     const getRule = (key) => (Array.isArray(tD) ? tD : []).find(d => d.key === key);
-    const pfRule = getRule('PROVIDENT_FUND_EMPLOYEE') || getRule('PROVIDENT_FUND');
-    if (pfRule) {
-      const basicVal = Number(finalEarnings.basic_salary || 0);
+    pfRule = getRule('PROVIDENT_FUND_EMPLOYEE') || getRule('PROVIDENT_FUND');
+  }
+
+  const hasPfEnabled = pfRule || Number(finalDeductions.provident_fund || 0) > 0 || Number(sd.pfDeduction || 0) > 0;
+  if (hasPfEnabled) {
+    let pfRate = 12; // Statutory default rate (12%)
+    if (pfRule && Number(pfRule.valueNumber || 0) > 0) {
+      pfRate = Number(pfRule.valueNumber);
+    }
+
+    let pfBase = Number(finalEarnings.basic_salary || 0) + Number(finalEarnings.da || 0);
+    if (salarySettings?.pfCalculationMode === 'basic_minus_penalties') {
       const earlyExitPenalty = Number(finalDeductions.early_exit_penalty || 0);
       const latePenalty = Number(finalDeductions.late_punchin_penalty || 0);
-      const pfBase = Math.max(0, basicVal - earlyExitPenalty - latePenalty);
-      finalDeductions.provident_fund = Number((pfBase * (Number(pfRule.valueNumber || 0) / 100)).toFixed(2));
+      pfBase = Math.max(0, pfBase - earlyExitPenalty - latePenalty);
+    }
+    finalDeductions.provident_fund = Number((pfBase * (pfRate / 100)).toFixed(2));
+  }
+
+  // Always apply PF Capping Limit if enabled
+  if (coercedSettings.pfCapEnabled && Number(coercedSettings.pfCapAmount) > 0) {
+    const capLimit = Number(coercedSettings.pfCapAmount);
+    if (Number(finalDeductions.provident_fund || 0) > capLimit) {
+      finalDeductions.provident_fund = capLimit;
     }
   }
 

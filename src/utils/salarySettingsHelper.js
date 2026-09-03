@@ -59,6 +59,15 @@ function coerceSalarySettings(input) {
   const esiEffectiveDate = input?.esiEffectiveDate && typeof input.esiEffectiveDate === 'string'
     ? input.esiEffectiveDate
     : null;
+  const fixedDaysCalcRuleInput = input?.fixedDaysCalcRule || input?.thirtyDaysCalcRule;
+  const fixedDaysCalcRule = ["deduct_extra_days", "actual_earned_days"].includes(String(fixedDaysCalcRuleInput))
+    ? String(fixedDaysCalcRuleInput)
+    : "deduct_extra_days";
+  const pfCapEnabled = input?.pfCapEnabled === true;
+  const pfCapAmount = Number.isFinite(Number(input?.pfCapAmount)) && Number(input?.pfCapAmount) > 0
+    ? Number(input.pfCapAmount)
+    : 1800;
+
   return { 
     payableDaysMode: mode, 
     weeklyOffs, 
@@ -74,7 +83,11 @@ function coerceSalarySettings(input) {
     esiExcludePf,
     esiExcludePt,
     esiExcludeTds,
-    esiEffectiveDate
+    esiEffectiveDate,
+    fixedDaysCalcRule,
+    thirtyDaysCalcRule: fixedDaysCalcRule,
+    pfCapEnabled,
+    pfCapAmount
   };
 }
 
