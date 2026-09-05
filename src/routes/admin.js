@@ -17836,6 +17836,37 @@ router.get("/shifts/templates", async (req, res) => {
       order: [["createdAt", "DESC"]],
       include: [{ model: ShiftBreak, as: "breaks" }],
     });
+
+    // Compute assigned staff count for each template
+    const staffUsers = await User.findAll({
+      where: { orgAccountId: orgId, role: "staff" },
+      include: [{ model: StaffProfile, as: "profile" }],
+    });
+
+    const todayStr = toIsoDateOnly(new Date());
+    const allAsg = await StaffShiftAssignment.findAll({
+      where: {
+        effectiveFrom: { [Op.lte]: todayStr },
+        [Op.or]: [{ effectiveTo: null }, { effectiveTo: { [Op.gte]: todayStr } }]
+      },
+      order: [['effectiveFrom', 'DESC'], ['id', 'DESC']]
+    });
+
+    const staffShiftMap = new Map();
+    for (const asg of allAsg) {
+      if (!staffShiftMap.has(asg.userId)) {
+        staffShiftMap.set(asg.userId, asg.shiftTemplateId);
+      }
+    }
+
+    const countMap = {};
+    for (const u of staffUsers) {
+      const shiftId = staffShiftMap.get(u.id) || u.profile?.shiftSelection || u.shiftTemplateId;
+      if (shiftId) {
+        countMap[shiftId] = (countMap[shiftId] || 0) + 1;
+      }
+    }
+
     return res.json({
       success: true,
       templates: rows.map((t) => ({
@@ -17855,6 +17886,7 @@ router.get("/shifts/templates", async (req, res) => {
         overtimeStartMinutes: t.overtimeStartMinutes,
         autoPunchoutAfterShiftEnd: t.autoPunchoutAfterShiftEnd,
         active: t.active !== false,
+        assignedCount: countMap[t.id] || 0,
         breaks: (t.breaks || []).map((b) => ({
           id: b.id,
           category: b.category,
@@ -17872,6 +17904,51 @@ router.get("/shifts/templates", async (req, res) => {
     return res
       .status(500)
       .json({ success: false, message: "Failed to load shift templates" });
+  }
+});
+
+router.get("/shifts/templates/:id/assignments", async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res);
+    if (!orgId) return;
+    const tid = Number(req.params.id);
+
+    const staffUsers = await User.findAll({
+      where: { orgAccountId: orgId, role: "staff" },
+      include: [{ model: StaffProfile, as: "profile" }],
+    });
+
+    const todayStr = toIsoDateOnly(new Date());
+    const allAsg = await StaffShiftAssignment.findAll({
+      where: {
+        effectiveFrom: { [Op.lte]: todayStr },
+        [Op.or]: [{ effectiveTo: null }, { effectiveTo: { [Op.gte]: todayStr } }]
+      },
+      order: [['effectiveFrom', 'DESC'], ['id', 'DESC']]
+    });
+
+    const staffShiftMap = new Map();
+    for (const asg of allAsg) {
+      if (!staffShiftMap.has(asg.userId)) {
+        staffShiftMap.set(asg.userId, asg.shiftTemplateId);
+      }
+    }
+
+    const assignedStaff = staffUsers.filter(u => {
+      const shiftId = staffShiftMap.get(u.id) || u.profile?.shiftSelection || u.shiftTemplateId;
+      return Number(shiftId) === tid;
+    }).map(u => ({
+      id: u.id,
+      name: u.profile?.name || u.phone || `Staff #${u.id}`,
+      staffId: u.profile?.staffId || '-',
+      phone: u.phone || '-',
+      department: u.profile?.department || '-',
+      designation: u.profile?.designation || '-'
+    }));
+
+    return res.json({ success: true, count: assignedStaff.length, staff: assignedStaff });
+  } catch (e) {
+    return res.status(500).json({ success: false, message: e.message });
   }
 });
 
@@ -18341,6 +18418,15 @@ router.post("/shifts/assign", async (req, res) => {
       });
     }
 
+    // Also sync User.shiftTemplateId & StaffProfile.shiftSelection if effectiveFrom is today or in the past
+    const todayStr = toIsoDateOnly(new Date());
+    if (ef <= todayStr) {
+      await user.update({ shiftTemplateId: tid });
+      if (user.profile) {
+        await user.profile.update({ shiftSelection: tid });
+      }
+    }
+
     logAudit({
       req,
       action: "SHIFT_ASSIGN",
@@ -18774,13 +18860,31 @@ router.get("/staff/:id", async (req, res) => {
         .json({ success: false, message: "Staff not found" });
     }
 
-    // Fetch shift template separately if profile has shiftSelection
+    // Resolve active shift assignment for today, falling back to profile.shiftSelection / user.shiftTemplateId
+    const todayStr = toIsoDateOnly(new Date());
+    const activeAsg = await StaffShiftAssignment.findOne({
+      where: {
+        userId: user.id,
+        effectiveFrom: { [Op.lte]: todayStr },
+        [Op.or]: [
+          { effectiveTo: null },
+          { effectiveTo: { [Op.gte]: todayStr } }
+        ]
+      },
+      order: [['effectiveFrom', 'DESC'], ['id', 'DESC']]
+    });
+
+    const activeShiftId = activeAsg ? activeAsg.shiftTemplateId : (user?.profile?.shiftSelection || user?.shiftTemplateId);
+
     let shiftTemplate = null;
-    if (user?.profile?.shiftSelection) {
+    if (activeShiftId) {
       shiftTemplate = await ShiftTemplate.findOne({
-        where: { id: Number(user.profile.shiftSelection) },
+        where: { id: Number(activeShiftId) },
         attributes: ["id", "name", "startTime", "endTime"],
       });
+      if (user.profile) {
+        user.profile.shiftSelection = Number(activeShiftId);
+      }
     }
 
     // Fetch attendance template separately if profile has attendanceSettingTemplate
@@ -20787,12 +20891,15 @@ router.post("/attendance", async (req, res) => {
             }
           }
 
-          // Sync status if OT occurred and user didn't mark as something else (leave/absent/half_day)
+          // Sync status if half_day threshold met or OT occurred and user didn't mark as something explicit (leave/absent/half_day)
           if (
-            otResult.overtimeMinutes > 0 &&
-            !["half_day", "leave", "absent"].includes(status)
+            !["half_day", "leave", "absent"].includes(String(status).toLowerCase())
           ) {
-            payload.status = otResult.status || "overtime";
+            if (otResult.status === "half_day" || otResult.status === "HALF_DAY") {
+              payload.status = "half_day";
+            } else if (otResult.overtimeMinutes > 0) {
+              payload.status = otResult.status || "overtime";
+            }
           }
         } else {
           // Fallback for manual overtime minutes entry if no rule or times
