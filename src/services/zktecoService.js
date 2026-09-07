@@ -397,7 +397,7 @@ class ZktecoService {
         const {
             url = 'http://15.206.144.225:8081/',
             username = 'admin',
-            password = 'Admin@1234',
+            password = 'Admin@12345',
             companyId // Optional: for multi-tenant ZKTeco setups
         } = config || {};
 

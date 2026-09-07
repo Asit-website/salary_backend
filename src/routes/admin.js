@@ -17928,9 +17928,11 @@ router.get("/shifts/templates/:id/assignments", async (req, res) => {
     });
 
     const staffShiftMap = new Map();
+    const staffEffectiveFromMap = new Map();
     for (const asg of allAsg) {
       if (!staffShiftMap.has(asg.userId)) {
         staffShiftMap.set(asg.userId, asg.shiftTemplateId);
+        staffEffectiveFromMap.set(asg.userId, asg.effectiveFrom);
       }
     }
 
@@ -17943,7 +17945,8 @@ router.get("/shifts/templates/:id/assignments", async (req, res) => {
       staffId: u.profile?.staffId || '-',
       phone: u.phone || '-',
       department: u.profile?.department || '-',
-      designation: u.profile?.designation || '-'
+      designation: u.profile?.designation || '-',
+      effectiveFrom: staffEffectiveFromMap.get(u.id) || null
     }));
 
     return res.json({ success: true, count: assignedStaff.length, staff: assignedStaff });
@@ -18420,10 +18423,25 @@ router.post("/shifts/assign", async (req, res) => {
 
     // Also sync User.shiftTemplateId & StaffProfile.shiftSelection if effectiveFrom is today or in the past
     const todayStr = toIsoDateOnly(new Date());
+    let recalculationResult = null;
     if (ef <= todayStr) {
       await user.update({ shiftTemplateId: tid });
       if (user.profile) {
         await user.profile.update({ shiftSelection: tid });
+      }
+
+      // Recalculate attendance from effectiveFrom date up to today
+      try {
+        const automationRecalculationService = require("../services/automationRecalculationService");
+        recalculationResult = await automationRecalculationService.recalculateAttendance(
+          uid,
+          orgId,
+          ef,
+          todayStr
+        );
+        console.log(`[ShiftAssign] Attendance recalculated for User ${uid} from ${ef} to ${todayStr}:`, recalculationResult);
+      } catch (recalcErr) {
+        console.error(`[ShiftAssign] Failed to recalculate attendance for User ${uid} from ${ef} to ${todayStr}:`, recalcErr);
       }
     }
 
@@ -18438,10 +18456,16 @@ router.post("/shifts/assign", async (req, res) => {
         shiftTemplateName: template.name,
         effectiveFrom: ef,
         effectiveTo: et,
+        recalculated: !!recalculationResult,
       },
     });
 
-    return res.json({ success: true, assignment: result });
+    return res.json({ 
+      success: true, 
+      assignment: result,
+      recalculated: !!recalculationResult,
+      recalculationSummary: recalculationResult
+    });
   } catch (e) {
     const msg = String(e?.original?.sqlMessage || e?.message || e);
     const dup = /duplicate/i.test(msg);
@@ -18454,6 +18478,52 @@ router.post("/shifts/assign", async (req, res) => {
     return res
       .status(500)
       .json({ success: false, message: "Failed to assign shift" });
+  }
+});
+
+router.post("/shifts/unassign", async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res);
+    if (!orgId) return;
+    const { userId, shiftTemplateId } = req.body || {};
+    const uid = Number(userId);
+    const tid = Number(shiftTemplateId);
+
+    if (!Number.isFinite(uid) || uid <= 0) {
+      return res.status(400).json({ success: false, message: "userId required" });
+    }
+
+    const user = await User.findOne({
+      where: { id: uid, orgAccountId: orgId, role: "staff" },
+      include: [{ model: StaffProfile, as: "profile" }],
+    });
+
+    if (!user) {
+      return res.status(404).json({ success: false, message: "Staff not found" });
+    }
+
+    // Destroy all StaffShiftAssignment records for this user
+    await StaffShiftAssignment.destroy({
+      where: { userId: uid }
+    });
+
+    // Reset User.shiftTemplateId & StaffProfile.shiftSelection
+    await user.update({ shiftTemplateId: null });
+    if (user.profile) {
+      await user.profile.update({ shiftSelection: null });
+    }
+
+    logAudit({
+      req,
+      action: "SHIFT_UNASSIGN",
+      remarks: `Unassigned Shift Template from Staff: ${user.profile?.name || user.name || uid}`,
+      details: { userId: uid, shiftTemplateId: tid },
+    });
+
+    return res.json({ success: true, message: "Staff unassigned from shift successfully" });
+  } catch (e) {
+    console.error("Failed to unassign shift:", e);
+    return res.status(500).json({ success: false, message: "Failed to unassign shift" });
   }
 });
 

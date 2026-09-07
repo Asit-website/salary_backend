@@ -98,6 +98,55 @@ async function checkIfDateIsWoOrHoliday(userId, orgAccountId, dateKey) {
 async function getOvertimeMinutes(attendance, rule, shiftTemplate) {
   let totalWorkMinutes = Math.round((attendance.totalWorkHours || 0) * 60);
 
+  // Check if shift is an Open Shift (no fixed start/end time, or shiftType === 'open')
+  const isOpenShift = shiftTemplate && (shiftTemplate.shiftType === 'open' || (!shiftTemplate.startTime && !shiftTemplate.endTime && shiftTemplate.workMinutes > 0));
+
+  if (isOpenShift) {
+    const shiftWorkMins = Number(shiftTemplate.workMinutes) || 510;
+    const ruleMinMins = (rule.thresholds && rule.thresholds.length > 0) ? Number(rule.thresholds[0].minMinutes) || 0 : 0;
+
+    let overtimeByPeriod = 0;
+    if (ruleMinMins >= shiftWorkMins) {
+      overtimeByPeriod = Math.max(0, totalWorkMinutes - ruleMinMins);
+    } else {
+      const extraMins = Math.max(0, totalWorkMinutes - shiftWorkMins);
+      if (extraMins >= ruleMinMins) {
+        overtimeByPeriod = extraMins;
+      }
+    }
+
+    let overtimeByShift = 0;
+    if (attendance.punchedInAt && attendance.punchedOutAt) {
+      const punchInLocal = dayjs(attendance.punchedInAt).second(0).millisecond(0);
+      const punchOutLocal = dayjs(attendance.punchedOutAt).second(0).millisecond(0);
+
+      // Dynamic shift end for open shift = punchedInAt + shiftWorkMins
+      const dynamicShiftEnd = punchInLocal.add(shiftWorkMins, 'minute');
+      if (punchOutLocal.isAfter(dynamicShiftEnd)) {
+        const diffMins = punchOutLocal.diff(dynamicShiftEnd, 'minute');
+        if (ruleMinMins >= shiftWorkMins) {
+          overtimeByShift = Math.max(0, totalWorkMinutes - ruleMinMins);
+        } else if (diffMins >= ruleMinMins) {
+          overtimeByShift = diffMins;
+        }
+      }
+    }
+
+    console.log(`[OvertimeService] Open Shift OT Calculation - totalWorkMinutes: ${totalWorkMinutes}, shiftWorkMins: ${shiftWorkMins}, ruleMinMins: ${ruleMinMins}, OTPeriod: ${overtimeByPeriod}, OTShift: ${overtimeByShift}, calcType: ${rule.calculationType}`);
+
+    switch (rule.calculationType) {
+      case 'SHIFT_END':
+        return overtimeByShift;
+      case 'POST_PAYABLE_HOURS_AND_SHIFT_END':
+        return Math.min(overtimeByPeriod, overtimeByShift);
+      case 'POST_PAYABLE_HOURS_OR_SHIFT_END':
+        return Math.max(overtimeByPeriod, overtimeByShift);
+      case 'POST_PAYABLE_HOURS':
+      default:
+        return overtimeByPeriod;
+    }
+  }
+
   // If ignoreLateInOT is enabled and staff punched in LATE,
   // add the late minutes back to totalWorkMinutes so they don't reduce OT.
   // e.g. Shift 11:00, punch-in 11:05 (5 min late), total work = 9h (540 min)
@@ -228,7 +277,7 @@ async function calculateOvertime(params, orgAccountArg, daysInMonthArg = 30, now
   const userId = attendance.userId ? Number(attendance.userId) : null;
   const orgAccountId = attendance.orgAccountId ? Number(attendance.orgAccountId) : (params.orgId ? Number(params.orgId) : null);
   const dateKey = attendance.date || (new Date(now).toISOString().split('T')[0]);
-  if (!userId || !orgAccountId) {
+  if (!userId || !orgAccountId) {
     console.log(`[OvertimeService] Missing userId (${userId}) or orgAccountId (${orgAccountId})`);
     return { overtimeMinutes: 0, overtimeAmount: 0, overtimeRuleId: null, status: 'present' };
   }
