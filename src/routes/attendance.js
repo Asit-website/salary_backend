@@ -1364,19 +1364,15 @@ router.post('/punch-out', upload.single('photo'), async (req, res) => {
     }
     let record = await Attendance.findOne({ where: { userId: req.user.id, date: key } });
 
-    // Night Shift Look-back: If no open record today, look back at yesterday
-    if (!record || record.punchedOutAt) {
+    // Cross-Day / Night Shift Look-back: If no open record today, look back at yesterday (within 24 hours)
+    if (!record || !record.punchedInAt) {
       const yesterday = isoDate(addDays(new Date(), -1));
       const prevRecord = await Attendance.findOne({ where: { userId: req.user.id, date: yesterday, punchedOutAt: null } });
-      if (prevRecord) {
-        const prevShift = await shiftService.getEffectiveShiftTemplate(req.user.id, yesterday);
-        if (prevShift && prevShift.startTime && prevShift.endTime) {
-          const [sh] = prevShift.startTime.split(':').map(Number);
-          const [eh] = prevShift.endTime.split(':').map(Number);
-          if (sh > eh || (sh === eh && prevShift.startTime > prevShift.endTime)) {
-            record = prevRecord;
-            key = yesterday;
-          }
+      if (prevRecord && prevRecord.punchedInAt) {
+        const diffMs = new Date().getTime() - new Date(prevRecord.punchedInAt).getTime();
+        if (diffMs > 0 && diffMs <= 24 * 60 * 60 * 1000) {
+          record = prevRecord;
+          key = yesterday;
         }
       }
     }
@@ -2384,15 +2380,11 @@ router.post('/qr-punch', upload.single('photo'), async (req, res) => {
     } else if (!record) {
       const yesterday = isoDate(addDays(new Date(), -1));
       const prevRecord = await Attendance.findOne({ where: { userId: req.user.id, date: yesterday, punchedOutAt: null } });
-      if (prevRecord) {
-        const prevShift = await shiftService.getEffectiveShiftTemplate(req.user.id, yesterday);
-        if (prevShift && prevShift.startTime && prevShift.endTime) {
-          const [sh] = prevShift.startTime.split(':').map(Number);
-          const [eh] = prevShift.endTime.split(':').map(Number);
-          if (sh > eh || (sh === eh && prevShift.startTime > prevShift.endTime)) {
-            record = prevRecord;
-            action = 'PUNCH_OUT';
-          }
+      if (prevRecord && prevRecord.punchedInAt) {
+        const diffMs = new Date().getTime() - new Date(prevRecord.punchedInAt).getTime();
+        if (diffMs > 0 && diffMs <= 24 * 60 * 60 * 1000) {
+          record = prevRecord;
+          action = 'PUNCH_OUT';
         }
       }
     }
