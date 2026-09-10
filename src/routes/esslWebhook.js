@@ -93,40 +93,74 @@ async function recalculateUserAttendance(userId, orgId, targetDateStr) {
   }
 
   const existing = await Attendance.findOne({ where: { userId, date: targetDateStr } });
-  if (existing && existing.source !== 'biometric') {
-    // Protect manual edits
-    return;
+
+  let mergedIn = res.punchedInAt;
+  let mergedOut = res.punchedOutAt;
+  let mergedSource = 'biometric';
+
+  if (existing) {
+    if (existing.punchedInAt && res.punchedInAt) {
+      mergedIn = new Date(Math.min(new Date(existing.punchedInAt).getTime(), new Date(res.punchedInAt).getTime()));
+    } else {
+      mergedIn = existing.punchedInAt || res.punchedInAt;
+    }
+
+    if (existing.punchedOutAt && res.punchedOutAt) {
+      mergedOut = new Date(Math.max(new Date(existing.punchedOutAt).getTime(), new Date(res.punchedOutAt).getTime()));
+    } else {
+      mergedOut = existing.punchedOutAt || res.punchedOutAt;
+    }
+
+    if (existing.source && existing.source !== 'biometric') {
+      mergedSource = 'hybrid';
+    }
+  }
+
+  let finalRes = res;
+  const inChanged = existing && existing.punchedInAt && new Date(existing.punchedInAt).getTime() !== new Date(mergedIn).getTime();
+  const outChanged = existing && existing.punchedOutAt && new Date(existing.punchedOutAt).getTime() !== new Date(mergedOut).getTime();
+
+  if (inChanged || outChanged) {
+    const dummyPunches = [];
+    if (mergedIn) dummyPunches.push({ punch_time: mergedIn });
+    if (mergedOut && new Date(mergedOut).getTime() !== new Date(mergedIn).getTime()) {
+      dummyPunches.push({ punch_time: mergedOut });
+    }
+    if (dummyPunches.length > 0) {
+      const recalc = await zktecoService.calculateDetails(userId, dummyPunches, targetDateStr);
+      if (recalc) finalRes = recalc;
+    }
   }
 
   await Attendance.upsert({
     userId,
     date: targetDateStr,
     orgAccountId: orgId,
-    punchedInAt: res.punchedInAt,
-    punchedOutAt: res.punchedOutAt,
-    totalWorkHours: res.totalWorkHours,
-    breakTotalSeconds: res.breakTotalSeconds,
-    overtimeMinutes: res.overtimeMinutes,
-    overtimeAmount: res.overtimeAmount,
-    overtimeRuleId: res.overtimeRuleId,
-    earlyExitMinutes: res.earlyExitMinutes,
-    earlyExitAmount: res.earlyExitAmount,
-    earlyExitRuleId: res.earlyExitRuleId,
-    latePunchInMinutes: res.latePunchInMinutes,
-    latePunchInAmount: res.latePunchInAmount,
-    latePunchInRuleId: res.latePunchInRuleId,
-    isLate: res.isLate || false,
-    breakDeductionAmount: res.breakDeductionAmount,
-    breakRuleId: res.breakRuleId,
-    excessBreakMinutes: res.excessBreakMinutes,
-    status: res.status,
-    source: 'biometric',
-    latitude: res.latitude,
-    longitude: res.longitude,
-    address: res.address,
-    punchOutLatitude: res.punchOutLatitude,
-    punchOutLongitude: res.punchOutLongitude,
-    punchOutAddress: res.punchOutAddress,
+    punchedInAt: mergedIn,
+    punchedOutAt: mergedOut,
+    totalWorkHours: finalRes.totalWorkHours,
+    breakTotalSeconds: finalRes.breakTotalSeconds,
+    overtimeMinutes: finalRes.overtimeMinutes,
+    overtimeAmount: finalRes.overtimeAmount,
+    overtimeRuleId: finalRes.overtimeRuleId,
+    earlyExitMinutes: finalRes.earlyExitMinutes,
+    earlyExitAmount: finalRes.earlyExitAmount,
+    earlyExitRuleId: finalRes.earlyExitRuleId,
+    latePunchInMinutes: finalRes.latePunchInMinutes,
+    latePunchInAmount: finalRes.latePunchInAmount,
+    latePunchInRuleId: finalRes.latePunchInRuleId,
+    isLate: finalRes.isLate || false,
+    breakDeductionAmount: finalRes.breakDeductionAmount,
+    breakRuleId: finalRes.breakRuleId,
+    excessBreakMinutes: finalRes.excessBreakMinutes,
+    status: finalRes.status,
+    source: mergedSource,
+    latitude: existing?.latitude || finalRes.latitude,
+    longitude: existing?.longitude || finalRes.longitude,
+    address: existing?.address || finalRes.address,
+    punchOutLatitude: finalRes.punchOutLatitude || existing?.punchOutLatitude,
+    punchOutLongitude: finalRes.punchOutLongitude || existing?.punchOutLongitude,
+    punchOutAddress: finalRes.punchOutAddress || existing?.punchOutAddress,
   });
 }
 

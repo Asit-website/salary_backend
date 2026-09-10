@@ -540,46 +540,77 @@ class ZktecoService {
                     try {
                         const existing = await Attendance.findOne({ where: { userId, date: dateStr } });
                         
-                        // PROTECT MANUAL EDITS: 
-                        // If a record already exists and its source is NOT 'biometric', 
-                        // it means it was manually edited or marked via mobile. 
-                        // In this case, we SKIP the ZKTeco overwrite.
-                        if (existing && existing.source !== 'biometric') {
-                            console.log(`[ZktecoSync] SKIP: Manual/Mobile record found for ${empCode} on ${dateStr}. Protecting edits.`);
-                            continue;
+                        let mergedIn = res.punchedInAt;
+                        let mergedOut = res.punchedOutAt;
+                        let mergedSource = 'biometric';
+
+                        if (existing) {
+                            // Earliest Punch-In (MIN)
+                            if (existing.punchedInAt && res.punchedInAt) {
+                                mergedIn = new Date(Math.min(new Date(existing.punchedInAt).getTime(), new Date(res.punchedInAt).getTime()));
+                            } else {
+                                mergedIn = existing.punchedInAt || res.punchedInAt;
+                            }
+
+                            // Latest Punch-Out (MAX)
+                            if (existing.punchedOutAt && res.punchedOutAt) {
+                                mergedOut = new Date(Math.max(new Date(existing.punchedOutAt).getTime(), new Date(res.punchedOutAt).getTime()));
+                            } else {
+                                mergedOut = existing.punchedOutAt || res.punchedOutAt;
+                            }
+
+                            if (existing.source && existing.source !== 'biometric') {
+                                mergedSource = 'hybrid';
+                            }
+                        }
+
+                        let finalRes = res;
+                        const inChanged = existing && existing.punchedInAt && new Date(existing.punchedInAt).getTime() !== new Date(mergedIn).getTime();
+                        const outChanged = existing && existing.punchedOutAt && new Date(existing.punchedOutAt).getTime() !== new Date(mergedOut).getTime();
+
+                        if (inChanged || outChanged) {
+                            const dummyPunches = [];
+                            if (mergedIn) dummyPunches.push({ punch_time: mergedIn, latitude: res.latitude, longitude: res.longitude, gps_location: res.address });
+                            if (mergedOut && new Date(mergedOut).getTime() !== new Date(mergedIn).getTime()) {
+                                dummyPunches.push({ punch_time: mergedOut, latitude: res.punchOutLatitude, longitude: res.punchOutLongitude, gps_location: res.punchOutAddress });
+                            }
+                            if (dummyPunches.length > 0) {
+                                const recalc = await this.calculateDetails(userId, dummyPunches, dateStr);
+                                if (recalc) finalRes = recalc;
+                            }
                         }
 
                         await Attendance.upsert({
                             userId,
                             date: dateStr,
                             orgAccountId: orgId,
-                            punchedInAt: res.punchedInAt,
-                            punchedOutAt: res.punchedOutAt,
-                            totalWorkHours: res.totalWorkHours,
-                            breakTotalSeconds: res.breakTotalSeconds,
-                            overtimeMinutes: res.overtimeMinutes,
-                            overtimeAmount: res.overtimeAmount,
-                            overtimeRuleId: res.overtimeRuleId,
-                            earlyExitMinutes: res.earlyExitMinutes,
-                            earlyExitAmount: res.earlyExitAmount,
-                            earlyExitRuleId: res.earlyExitRuleId,
-                            latePunchInMinutes: res.latePunchInMinutes,
-                            latePunchInAmount: res.latePunchInAmount,
-                            latePunchInRuleId: res.latePunchInRuleId,
-                            isLate: res.isLate || false,
-                            breakDeductionAmount: res.breakDeductionAmount,
-                            breakRuleId: res.breakRuleId,
-                            excessBreakMinutes: res.excessBreakMinutes,
-                            status: res.status,
-                            source: 'biometric',
-                            latitude: res.latitude,
-                            longitude: res.longitude,
-                            address: res.address,
-                            punchOutLatitude: res.punchOutLatitude,
-                            punchOutLongitude: res.punchOutLongitude,
-                            punchOutAddress: res.punchOutAddress,
+                            punchedInAt: mergedIn,
+                            punchedOutAt: mergedOut,
+                            totalWorkHours: finalRes.totalWorkHours,
+                            breakTotalSeconds: finalRes.breakTotalSeconds,
+                            overtimeMinutes: finalRes.overtimeMinutes,
+                            overtimeAmount: finalRes.overtimeAmount,
+                            overtimeRuleId: finalRes.overtimeRuleId,
+                            earlyExitMinutes: finalRes.earlyExitMinutes,
+                            earlyExitAmount: finalRes.earlyExitAmount,
+                            earlyExitRuleId: finalRes.earlyExitRuleId,
+                            latePunchInMinutes: finalRes.latePunchInMinutes,
+                            latePunchInAmount: finalRes.latePunchInAmount,
+                            latePunchInRuleId: finalRes.latePunchInRuleId,
+                            isLate: finalRes.isLate || false,
+                            breakDeductionAmount: finalRes.breakDeductionAmount,
+                            breakRuleId: finalRes.breakRuleId,
+                            excessBreakMinutes: finalRes.excessBreakMinutes,
+                            status: finalRes.status,
+                            source: mergedSource,
+                            latitude: existing?.latitude || finalRes.latitude,
+                            longitude: existing?.longitude || finalRes.longitude,
+                            address: existing?.address || finalRes.address,
+                            punchOutLatitude: finalRes.punchOutLatitude || existing?.punchOutLatitude,
+                            punchOutLongitude: finalRes.punchOutLongitude || existing?.punchOutLongitude,
+                            punchOutAddress: finalRes.punchOutAddress || existing?.punchOutAddress,
                         });
-                        console.log(`[ZktecoSync] SUCCESS: ${empCode} on ${dateStr}`);
+                        console.log(`[ZktecoSync] SUCCESS (Merged): ${empCode} on ${dateStr} (In: ${mergedIn}, Out: ${mergedOut}, Source: ${mergedSource})`);
                     } catch (e) {
                         console.error(`[ZktecoSync] DB Error: ${e.message}`);
                     }

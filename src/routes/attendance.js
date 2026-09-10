@@ -1,6 +1,7 @@
 const express = require('express');
 const { Op } = require('sequelize');
 const puppeteer = require('puppeteer');
+const dayjs = require('dayjs');
 
 const { User, StaffProfile, Attendance, LeaveRequest, AppSetting, AttendanceTemplate, StaffAttendanceAssignment, StaffShiftAssignment, ShiftTemplate, StaffHolidayAssignment, HolidayTemplate, HolidayDate, StaffGeofenceAssignment, GeofenceTemplate, GeofenceSite, LocationPing, DeviceInfo, WeeklyOffTemplate, StaffWeeklyOffAssignment, AttendanceAutomationRule, OrgAccount, StaffRoster, StaffLatePunchInAssignment, LatePunchInRule } = require('../models');
 const { authRequired } = require('../middleware/auth');
@@ -1016,10 +1017,6 @@ router.post('/start-break', async (req, res) => {
 
     if (!await enforceMobilePunchAllowed(req, res)) return;
 
-    if (record?.source === 'biometric') {
-      return res.status(409).json({ success: false, message: 'You have already punched in using biometric device. Mobile punch is disabled for today.' });
-    }
-
     if (!record?.punchedInAt) {
       return res.status(409).json({ success: false, message: 'Please punch-in first' });
     }
@@ -1052,10 +1049,6 @@ router.post('/end-break', async (req, res) => {
     const record = await Attendance.findOne({ where: { userId: req.user.id, date: key } });
 
     if (!await enforceMobilePunchAllowed(req, res)) return;
-
-    if (record?.source === 'biometric') {
-      return res.status(409).json({ success: false, message: 'You have already punched in using biometric device. Mobile punch is disabled for today.' });
-    }
 
     if (!record?.punchedInAt) {
       return res.status(409).json({ success: false, message: 'Please punch-in first' });
@@ -1137,11 +1130,9 @@ router.post('/punch-in', upload.single('photo'), async (req, res) => {
     const key = todayKey();
 
     const existing = await Attendance.findOne({ where: { userId: req.user.id, date: key } });
-    if (existing?.source === 'biometric') {
-      return res.status(409).json({ success: false, message: 'You have already punched in using biometric device. Mobile punch is disabled for today.' });
-    }
     if (existing?.punchedInAt) {
-      return res.status(409).json({ success: false, message: 'Already punched in today' });
+      const inTime = dayjs(existing.punchedInAt).format('hh:mm A');
+      return res.status(409).json({ success: false, message: `Already punched in today at ${inTime}` });
     }
 
     const now = new Date();
@@ -1377,10 +1368,6 @@ router.post('/punch-out', upload.single('photo'), async (req, res) => {
       }
     }
 
-    if (record?.source === 'biometric') {
-      return res.status(409).json({ success: false, message: 'You have already punched in using biometric device. Mobile punch is disabled for today.' });
-    }
-
     if (!record?.punchedInAt) {
       return res.status(409).json({ success: false, message: 'Please punch-in first' });
     }
@@ -1470,6 +1457,7 @@ router.post('/punch-out', upload.single('photo'), async (req, res) => {
     }
 
     const address = req.body?.address ? String(req.body.address) : null;
+    const newSource = (record.source && record.source !== 'mobile') ? 'hybrid' : (record.source || 'mobile');
 
     await record.update({
       punchedOutAt: now,
@@ -1490,7 +1478,8 @@ router.post('/punch-out', upload.single('photo'), async (req, res) => {
       excessBreakMinutes: breakResult.excessBreakMinutes || 0,
       punchOutLatitude: lat,
       punchOutLongitude: lng,
-      punchOutAddress: address
+      punchOutAddress: address,
+      source: newSource
     });
 
     logAudit({

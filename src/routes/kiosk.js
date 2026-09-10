@@ -348,7 +348,7 @@ router.post('/face-recognition', kioskAuth, upload.single('photo'), async (req, 
         breakDeductionAmount: breakResult.breakDeductionAmount || 0,
         breakRuleId: breakResult.breakRuleId || null,
         excessBreakMinutes: breakResult.excessBreakMinutes || 0,
-        source: 'kiosk'
+        source: (record.source && record.source !== 'kiosk') ? 'hybrid' : 'kiosk'
       });
       action = 'OUT';
       responseData = {
