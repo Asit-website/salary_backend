@@ -5364,10 +5364,44 @@ router.post("/payroll/:cycleId/compute", async (req, res) => {
       // Build paid/unpaid leave per-day sets from approved leave requests
 
       let paidLeaveSet = new Set();
-
       let unpaidLeaveSet = new Set();
+      let paidLeaveWeightMap = {};
 
       try {
+        const { LeaveTemplateCategory, StaffLeaveAssignment, LeaveTemplate } = sequelize.models;
+        let categoryMap = new Map();
+        try {
+          const allCats = await LeaveTemplateCategory.findAll();
+          for (const cat of (allCats || [])) {
+            const c = cat.toJSON ? cat.toJSON() : cat;
+            if (c.key) {
+              categoryMap.set(String(c.key).trim().toLowerCase(), c);
+              categoryMap.set(String(c.key).trim().toLowerCase().replace(/[\s_]/g, ''), c);
+            }
+            if (c.name) {
+              categoryMap.set(String(c.name).trim().toLowerCase(), c);
+              categoryMap.set(String(c.name).trim().toLowerCase().replace(/[\s_]/g, ''), c);
+            }
+          }
+          const leaveAsg = await StaffLeaveAssignment.findOne({
+            where: { userId: u.id },
+            order: [['effectiveFrom', 'DESC'], ['id', 'DESC']],
+            include: [{ model: LeaveTemplate, as: 'template', include: [{ model: LeaveTemplateCategory, as: 'categories' }] }]
+          });
+          let categories = leaveAsg?.template?.categories || [];
+          for (const cat of categories) {
+            const c = cat.toJSON ? cat.toJSON() : cat;
+            if (c.key) {
+              categoryMap.set(String(c.key).trim().toLowerCase(), c);
+              categoryMap.set(String(c.key).trim().toLowerCase().replace(/[\s_]/g, ''), c);
+            }
+            if (c.name) {
+              categoryMap.set(String(c.name).trim().toLowerCase(), c);
+              categoryMap.set(String(c.name).trim().toLowerCase().replace(/[\s_]/g, ''), c);
+            }
+          }
+        } catch (_) {}
+
         const lrs = await LeaveRequest.findAll({
           where: {
             userId: u.id,
@@ -5386,9 +5420,17 @@ router.post("/payroll/:cycleId/compute", async (req, res) => {
             Math.min(new Date(String(lr.endDate)), new Date(endKey)),
           );
 
-          let paidRem = Number(lr.paidDays || 0);
+          const catKey1 = String(lr.categoryKey || '').trim().toLowerCase();
+          const catKey2 = String(lr.leaveType || '').trim().toLowerCase();
+          const matchedCat = categoryMap.get(catKey1) || categoryMap.get(catKey2) || categoryMap.get(catKey1.replace(/[\s_]/g, '')) || categoryMap.get(catKey2.replace(/[\s_]/g, ''));
+          const isHalfDayPay = !!(matchedCat?.payAsHalfDay === true || matchedCat?.payAsHalfDay === 1 || matchedCat?.pay_as_half_day === true || matchedCat?.pay_as_half_day === 1);
+          const dayWeight = isHalfDayPay ? 0.5 : 1.0;
 
+          let paidRem = Number(lr.paidDays || 0);
           let unpaidRem = Number(lr.unpaidDays || 0);
+          if (isHalfDayPay && paidRem === Number(lr.days || 0)) {
+            paidRem = Number(lr.days || 0);
+          }
 
           for (
             let d = new Date(lrStart);
@@ -5399,14 +5441,14 @@ router.post("/payroll/:cycleId/compute", async (req, res) => {
 
             if (paidRem > 0) {
               paidLeaveSet.add(k);
+              paidLeaveWeightMap[k] = dayWeight;
               paidRem -= 1;
             } else if (unpaidRem > 0) {
               unpaidLeaveSet.add(k);
               unpaidRem -= 1;
             } else {
-              // If totals not provided, fall back to treating leaveType/categoryKey: default paid
-
               paidLeaveSet.add(k);
+              paidLeaveWeightMap[k] = dayWeight;
             }
           }
         }
@@ -5733,7 +5775,8 @@ router.post("/payroll/:cycleId/compute", async (req, res) => {
         if (s === "leave") {
           leave += 1;
           if (paidLeaveSet.has(key)) {
-            paidLeave += 1;
+            const w = paidLeaveWeightMap[key] !== undefined ? paidLeaveWeightMap[key] : 1.0;
+            paidLeave += w;
             paidLeaveDates.push(key);
           } else if (unpaidLeaveSet.has(key)) unpaidLeave += 1;
           continue;
@@ -5743,7 +5786,8 @@ router.post("/payroll/:cycleId/compute", async (req, res) => {
         if (isCurrentMonth && dt > todayStart) {
           if (paidLeaveSet.has(key)) {
             leave += 1;
-            paidLeave += 1;
+            const w = paidLeaveWeightMap[key] !== undefined ? paidLeaveWeightMap[key] : 1.0;
+            paidLeave += w;
             paidLeaveDates.push(key);
           } else if (unpaidLeaveSet.has(key)) {
             leave += 1;
@@ -5760,7 +5804,8 @@ router.post("/payroll/:cycleId/compute", async (req, res) => {
 
         if (paidLeaveSet.has(key)) {
           leave += 1;
-          paidLeave += 1;
+          const w = paidLeaveWeightMap[key] !== undefined ? paidLeaveWeightMap[key] : 1.0;
+          paidLeave += w;
           paidLeaveDates.push(key);
         } else if (unpaidLeaveSet.has(key)) {
           leave += 1;
@@ -9568,6 +9613,10 @@ router.get("/leave/templates", async (req, res) => {
 
         cycle: t.cycle,
 
+        cycleStartDate: t.cycleStartDate,
+
+        cycleStartDay: t.cycleStartDay,
+
         countSandwich: t.countSandwich,
 
         approvalLevel: t.approvalLevel,
@@ -9584,6 +9633,7 @@ router.get("/leave/templates", async (req, res) => {
           encashLimitDays: c.encashLimitDays,
           carryForward: !!c.carryForward,
           maxLeavePerMonth: c.maxLeavePerMonth,
+          payAsHalfDay: !!c.payAsHalfDay,
         })),
 
         assignedCount: (t.assignments || []).length,
@@ -9661,6 +9711,7 @@ router.post("/leave/templates", async (req, res) => {
 
           carryForward: !!(c.carryForward ?? c.carry_forward),
           maxLeavePerMonth: c.maxLeavePerMonth == null || c.maxLeavePerMonth === "" ? null : Number(c.maxLeavePerMonth),
+          payAsHalfDay: !!(c.payAsHalfDay ?? c.pay_as_half_day),
         }));
 
       if (payload.length) await LeaveTemplateCategory.bulkCreate(payload);
@@ -9767,6 +9818,7 @@ router.put("/leave/templates/:id", async (req, res) => {
 
           carryForward: !!(c.carryForward ?? c.carry_forward),
           maxLeavePerMonth: c.maxLeavePerMonth == null || c.maxLeavePerMonth === "" ? null : Number(c.maxLeavePerMonth),
+          payAsHalfDay: !!(c.payAsHalfDay ?? c.pay_as_half_day),
         }));
 
       if (payload.length) await LeaveTemplateCategory.bulkCreate(payload);
@@ -15256,6 +15308,13 @@ router.post("/leave/templates", async (req, res) => {
               ? null
               : Number(c.encashLimitDays),
           carryForward: !!(c.carryForward ?? c.carry_forward),
+          maxLeavePerMonth:
+            c.maxLeavePerMonth === undefined ||
+            c.maxLeavePerMonth === null ||
+            c.maxLeavePerMonth === ""
+              ? null
+              : Number(c.maxLeavePerMonth),
+          payAsHalfDay: !!(c.payAsHalfDay ?? c.pay_as_half_day),
         });
       }
     }
@@ -15353,13 +15412,14 @@ router.post("/leave/templates/:id/categories-bulk", async (req, res) => {
             ? null
             : Number(c.encashLimitDays),
         carryForward: !!(c.carryForward ?? c.carry_forward),
-        maxLeavePerMonth:
-          c.maxLeavePerMonth === undefined ||
-          c.maxLeavePerMonth === null ||
-          c.maxLeavePerMonth === ""
-            ? null
-            : Number(c.maxLeavePerMonth),
-      });
+          maxLeavePerMonth:
+            c.maxLeavePerMonth === undefined ||
+            c.maxLeavePerMonth === null ||
+            c.maxLeavePerMonth === ""
+              ? null
+              : Number(c.maxLeavePerMonth),
+          payAsHalfDay: !!(c.payAsHalfDay ?? c.pay_as_half_day),
+        });
     }
     const out = await LeaveTemplate.findByPk(id, {
       include: [{ model: LeaveTemplateCategory, as: "categories" }],

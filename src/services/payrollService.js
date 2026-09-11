@@ -640,20 +640,65 @@ async function calculateSalary(userId, monthKey) {
   // Build paid/unpaid leave sets from approved leave requests
   let paidLeaveSet = new Set();
   let unpaidLeaveSet = new Set();
+  let paidLeaveWeightMap = {};
   try {
+    const { LeaveTemplateCategory, StaffLeaveAssignment, LeaveTemplate } = require('../models');
+    let categoryMap = new Map();
+    try {
+      const allCats = await LeaveTemplateCategory.findAll();
+      for (const cat of (allCats || [])) {
+        const c = cat.toJSON ? cat.toJSON() : cat;
+        if (c.key) {
+          categoryMap.set(String(c.key).trim().toLowerCase(), c);
+          categoryMap.set(String(c.key).trim().toLowerCase().replace(/[\s_]/g, ''), c);
+        }
+        if (c.name) {
+          categoryMap.set(String(c.name).trim().toLowerCase(), c);
+          categoryMap.set(String(c.name).trim().toLowerCase().replace(/[\s_]/g, ''), c);
+        }
+      }
+      const leaveAsg = await StaffLeaveAssignment.findOne({
+        where: { userId: u.id },
+        order: [['effectiveFrom', 'DESC'], ['id', 'DESC']],
+        include: [{ model: LeaveTemplate, as: 'template', include: [{ model: LeaveTemplateCategory, as: 'categories' }] }]
+      });
+      let categories = leaveAsg?.template?.categories || [];
+      for (const cat of categories) {
+        const c = cat.toJSON ? cat.toJSON() : cat;
+        if (c.key) {
+          categoryMap.set(String(c.key).trim().toLowerCase(), c);
+          categoryMap.set(String(c.key).trim().toLowerCase().replace(/[\s_]/g, ''), c);
+        }
+        if (c.name) {
+          categoryMap.set(String(c.name).trim().toLowerCase(), c);
+          categoryMap.set(String(c.name).trim().toLowerCase().replace(/[\s_]/g, ''), c);
+        }
+      }
+    } catch (_) {}
+
     const lrs = await LeaveRequest.findAll({
       where: { userId: u.id, status: 'APPROVED', startDate: { [Op.lte]: queryEnd }, endDate: { [Op.gte]: queryStart } }
     });
     for (const lr of (lrs || [])) {
       const lrStart = new Date(Math.max(new Date(String(lr.startDate)), new Date(queryStart)));
       const lrEnd = new Date(Math.min(new Date(String(lr.endDate)), new Date(queryEnd)));
+      const catKey1 = String(lr.categoryKey || '').trim().toLowerCase();
+      const catKey2 = String(lr.leaveType || '').trim().toLowerCase();
+      const matchedCat = categoryMap.get(catKey1) || categoryMap.get(catKey2) || categoryMap.get(catKey1.replace(/[\s_]/g, '')) || categoryMap.get(catKey2.replace(/[\s_]/g, ''));
+      const isHalfDayPay = !!(matchedCat?.payAsHalfDay === true || matchedCat?.payAsHalfDay === 1 || matchedCat?.pay_as_half_day === true || matchedCat?.pay_as_half_day === 1);
+      const dayWeight = isHalfDayPay ? 0.5 : 1.0;
+
       let paidRem = Number(lr.paidDays || 0);
       let unpaidRem = Number(lr.unpaidDays || 0);
+      if (isHalfDayPay && paidRem === Number(lr.days || 0)) {
+        paidRem = Number(lr.days || 0);
+      }
+
       for (let dte = new Date(lrStart); dte <= lrEnd; dte.setDate(dte.getDate() + 1)) {
         const k = `${dte.getFullYear()}-${String(dte.getMonth() + 1).padStart(2, '0')}-${String(dte.getDate()).padStart(2, '0')}`;
-        if (paidRem > 0) { paidLeaveSet.add(k); paidRem -= 1; }
+        if (paidRem > 0) { paidLeaveSet.add(k); paidLeaveWeightMap[k] = dayWeight; paidRem -= 1; }
         else if (unpaidRem > 0) { unpaidLeaveSet.add(k); unpaidRem -= 1; }
-        else { paidLeaveSet.add(k); }
+        else { paidLeaveSet.add(k); paidLeaveWeightMap[k] = dayWeight; }
       }
     }
   } catch (_) { }
@@ -883,7 +928,7 @@ async function calculateSalary(userId, monthKey) {
           weeklyOffCount += 1; 
         }
       }
-      else if (isPaidL || s === 'leave') { leave += 1; paidLeaveCount += 1; paidLeaveDates.push(key); }
+      else if (isPaidL || s === 'leave') { leave += 1; const w = paidLeaveWeightMap[key] !== undefined ? paidLeaveWeightMap[key] : 1.0; paidLeaveCount += w; paidLeaveDates.push(key); }
       else if (isUnpaidL) { leave += 1; unpaidLeave += 1; }
       continue;
     }
@@ -954,7 +999,7 @@ async function calculateSalary(userId, monthKey) {
       }
       continue;
     }
-    if (s === 'leave') { leave += 1; if (paidLeaveSet.has(key)) { paidLeaveCount += 1; paidLeaveDates.push(key); } else if (unpaidLeaveSet.has(key)) unpaidLeave += 1; continue; }
+    if (s === 'leave') { leave += 1; if (paidLeaveSet.has(key)) { const w = paidLeaveWeightMap[key] !== undefined ? paidLeaveWeightMap[key] : 1.0; paidLeaveCount += w; paidLeaveDates.push(key); } else if (unpaidLeaveSet.has(key)) unpaidLeave += 1; continue; }
     if (s === 'weekly_off') { 
       if (!weekExclusions.has(key)) {
         weeklyOffCount += 1; 
@@ -978,7 +1023,7 @@ async function calculateSalary(userId, monthKey) {
     if (s === 'absent') { absent += 1; continue; }
 
     // For past days with no record at all
-    if (paidLeaveSet.has(key)) { leave += 1; paidLeaveCount += 1; paidLeaveDates.push(key); }
+    if (paidLeaveSet.has(key)) { leave += 1; const w = paidLeaveWeightMap[key] !== undefined ? paidLeaveWeightMap[key] : 1.0; paidLeaveCount += w; paidLeaveDates.push(key); }
     else if (unpaidLeaveSet.has(key)) { leave += 1; unpaidLeave += 1; }
     else {
       // Only count as absent if the date is in the past (today or before)

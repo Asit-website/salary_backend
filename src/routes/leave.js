@@ -112,15 +112,31 @@ async function getEffectiveLeaveBalance(userId, categoryKey, onDate) {
   // Fallback: derive used from approved requests within cycle when balance row is missing
   // ALSO: check carry forward from previous cycle
   let carry = 0;
-  const prev = getPrevCycleRange(cyc, onDate, tpl);
-  const prevBal = await LeaveBalance.findOne({ where: { userId, categoryKey: key, cycleStart: prev.start, cycleEnd: prev.end } });
-  
-  if (prevBal) {
-    const rem = Number(prevBal.remaining || 0);
-    const isCarryForward = !!catCfg.carryForward;
-    const rule = String(catCfg.unusedRule || 'lapse');
-    if (isCarryForward || rule === 'carry_forward') {
+  const isCarryForward = !!catCfg.carryForward;
+  const rule = String(catCfg.unusedRule || 'lapse');
+
+  if (isCarryForward || rule === 'carry_forward') {
+    const prev = getPrevCycleRange(cyc, onDate, tpl);
+    const prevBal = await LeaveBalance.findOne({ where: { userId, categoryKey: key, cycleStart: prev.start, cycleEnd: prev.end } });
+    
+    if (prevBal) {
+      const rem = Number(prevBal.remaining || 0);
       const cap = catCfg.carryLimitDays == null ? rem : Math.min(rem, Number(catCfg.carryLimitDays));
+      carry = cap;
+    } else {
+      // Calculate previous cycle remaining leaves if no DB balance row exists yet (e.g. 0 leaves taken)
+      const prevReqs = await LeaveRequest.findAll({
+        where: {
+          userId,
+          status: 'APPROVED',
+          categoryKey: key,
+          startDate: { [Op.gte]: prev.start },
+          endDate: { [Op.lte]: prev.end },
+        }
+      }).catch(() => []);
+      const prevUsed = Array.isArray(prevReqs) ? prevReqs.reduce((s, r) => s + (Number(r.days || 0) || 0), 0) : 0;
+      const prevRem = Math.max(0, total - prevUsed);
+      const cap = catCfg.carryLimitDays == null ? prevRem : Math.min(prevRem, Number(catCfg.carryLimitDays));
       carry = cap;
     }
   }
@@ -491,18 +507,45 @@ router.get('/me', requireRole(['staff']), async (req, res) => {
     if (status && ['PENDING', 'APPROVED', 'REJECTED'].includes(status)) where.status = status;
 
     const rows = await LeaveRequest.findAll({ where, order: [['createdAt', 'DESC']] });
-    const leaves = rows.map((r) => {
+    const leaves = await Promise.all(rows.map(async (r) => {
       const it = r.toJSON ? r.toJSON() : r;
       let paid = it.paidDays;
       let unpaid = it.unpaidDays;
-      if (it.status === 'APPROVED' && (paid == null && unpaid == null)) {
-        const isUnpaid = String(it.categoryKey || 'unpaid').toLowerCase() === 'unpaid';
-        const days = Number(it.days || 0) || 0;
-        paid = isUnpaid ? 0 : days;
-        unpaid = isUnpaid ? days : 0;
+      const catSearchKey = String(it.categoryKey || it.leaveType || '').toLowerCase().trim();
+      const normCatSearchKey = catSearchKey.replace(/[\s_]/g, '');
+      const tpl = await getActiveLeaveTemplateForUser(it.userId, String(it.startDate));
+      let matchedCategory = null;
+      if (tpl && catSearchKey) {
+        matchedCategory = (tpl?.categories || []).find(c => {
+          const ck = String(c.key || '').toLowerCase().trim();
+          const cn = String(c.name || '').toLowerCase().trim();
+          return ck === catSearchKey || cn === catSearchKey || ck.replace(/[\s_]/g, '') === normCatSearchKey || cn.replace(/[\s_]/g, '') === normCatSearchKey;
+        });
       }
-      return { ...it, paidDays: Number(paid || 0), unpaidDays: Number(unpaid || 0) };
-    });
+      if (!matchedCategory && catSearchKey) {
+        const allCats = await LeaveTemplateCategory.findAll();
+        matchedCategory = (allCats || []).find(c => {
+          const ck = String(c.key || '').toLowerCase().trim();
+          const cn = String(c.name || '').toLowerCase().trim();
+          return ck === catSearchKey || cn === catSearchKey || ck.replace(/[\s_]/g, '') === normCatSearchKey || cn.replace(/[\s_]/g, '') === normCatSearchKey;
+        });
+      }
+
+      if (matchedCategory && (matchedCategory.payAsHalfDay === true || matchedCategory.payAsHalfDay === 1 || matchedCategory.pay_as_half_day === true || matchedCategory.pay_as_half_day === 1)) {
+        isHalfDayPay = true;
+      }
+
+      const totalDays = Number(it.days || 0) || 0;
+      const isUnpaid = catSearchKey === 'unpaid';
+      if (isHalfDayPay) {
+        paid = isUnpaid ? 0 : totalDays * 0.5;
+        unpaid = isUnpaid ? totalDays : 0;
+      } else if (paid == null && unpaid == null) {
+        paid = isUnpaid ? 0 : totalDays;
+        unpaid = isUnpaid ? totalDays : 0;
+      }
+      return { ...it, payAsHalfDay: isHalfDayPay, paidDays: Number(paid || 0), unpaidDays: Number(unpaid || 0) };
+    }));
     return res.json({ success: true, leaves });
   } catch (e) {
     return res.status(500).json({ success: false, message: 'Failed to load leaves' });
@@ -535,18 +578,44 @@ router.get('/', requireRole(['admin', 'superadmin']), async (req, res) => {
       let paid = it.paidDays;
       let unpaid = it.unpaidDays;
       let categoryName = null;
-      if (it.status === 'APPROVED' && (paid == null && unpaid == null)) {
-        const isUnpaid = String(it.categoryKey || 'unpaid').toLowerCase() === 'unpaid';
-        const days = Number(it.days || 0) || 0;
-        paid = isUnpaid ? 0 : days;
-        unpaid = isUnpaid ? days : 0;
+      let isHalfDayPay = false;
+      const catSearchKey = String(it.categoryKey || it.leaveType || '').toLowerCase().trim();
+      const normCatSearchKey = catSearchKey.replace(/[\s_]/g, '');
+      const tpl = await getActiveLeaveTemplateForUser(it.userId, String(it.startDate));
+      let matchedCategory = null;
+      if (tpl && catSearchKey) {
+        matchedCategory = (tpl?.categories || []).find(c => {
+          const ck = String(c.key || '').toLowerCase().trim();
+          const cn = String(c.name || '').toLowerCase().trim();
+          return ck === catSearchKey || cn === catSearchKey || ck.replace(/[\s_]/g, '') === normCatSearchKey || cn.replace(/[\s_]/g, '') === normCatSearchKey;
+        });
       }
-      if (it.categoryKey) {
-        const tpl = await getActiveLeaveTemplateForUser(it.userId, String(it.startDate));
-        const category = (tpl?.categories || []).find(c => String(c.key).toLowerCase() === String(it.categoryKey).toLowerCase());
-        categoryName = category?.name || null;
+      if (!matchedCategory && catSearchKey) {
+        const allCats = await LeaveTemplateCategory.findAll();
+        matchedCategory = (allCats || []).find(c => {
+          const ck = String(c.key || '').toLowerCase().trim();
+          const cn = String(c.name || '').toLowerCase().trim();
+          return ck === catSearchKey || cn === catSearchKey || ck.replace(/[\s_]/g, '') === normCatSearchKey || cn.replace(/[\s_]/g, '') === normCatSearchKey;
+        });
       }
-      return { ...it, categoryName, paidDays: Number(paid || 0), unpaidDays: Number(unpaid || 0) };
+
+      if (matchedCategory) {
+        categoryName = matchedCategory.name || null;
+        if (matchedCategory.payAsHalfDay === true || matchedCategory.payAsHalfDay === 1 || matchedCategory.pay_as_half_day === true || matchedCategory.pay_as_half_day === 1) {
+          isHalfDayPay = true;
+        }
+      }
+
+      const totalDays = Number(it.days || 0) || 0;
+      const isUnpaid = catSearchKey === 'unpaid';
+      if (isHalfDayPay) {
+        paid = isUnpaid ? 0 : totalDays * 0.5;
+        unpaid = isUnpaid ? totalDays : 0;
+      } else if (paid == null && unpaid == null) {
+        paid = isUnpaid ? 0 : totalDays;
+        unpaid = isUnpaid ? totalDays : 0;
+      }
+      return { ...it, categoryName, payAsHalfDay: isHalfDayPay, paidDays: Number(paid || 0), unpaidDays: Number(unpaid || 0) };
     }));
     return res.json({ success: true, leaves });
   } catch (e) {
