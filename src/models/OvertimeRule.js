@@ -52,6 +52,15 @@ module.exports = (sequelize) => {
       ignoreLateInOT: { type: DataTypes.BOOLEAN, defaultValue: false, field: 'ignore_late_in_ot' },
       calculateOnGross: { type: DataTypes.BOOLEAN, defaultValue: false },
 
+      // Custom Overrides for Weekly Off and Holiday Overtime
+      overrideWeeklyOffMultiplier: { type: DataTypes.BOOLEAN, defaultValue: false, field: 'override_weekly_off_multiplier' },
+      weeklyOffMultiplier: { type: DataTypes.DECIMAL(5, 2), allowNull: true, field: 'weekly_off_multiplier' },
+      weeklyOffRewardType: { type: DataTypes.STRING(50), defaultValue: 'SALARY_MULTIPLIER', field: 'weekly_off_reward_type' },
+
+      overrideHolidayMultiplier: { type: DataTypes.BOOLEAN, defaultValue: false, field: 'override_holiday_multiplier' },
+      holidayMultiplier: { type: DataTypes.DECIMAL(5, 2), allowNull: true, field: 'holiday_multiplier' },
+      holidayRewardType: { type: DataTypes.STRING(50), defaultValue: 'SALARY_MULTIPLIER', field: 'holiday_reward_type' },
+
       active: { type: DataTypes.BOOLEAN, defaultValue: true },
       orgAccountId: { type: DataTypes.BIGINT.UNSIGNED, allowNull: false, field: 'org_account_id' }
     },

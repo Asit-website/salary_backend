@@ -34337,6 +34337,12 @@ router.post("/settings/overtime-rules", async (req, res) => {
       calculateOnGross,
       giveExtraFullDayBonus,
       extraFullDayBonusAmount,
+      overrideWeeklyOffMultiplier,
+      weeklyOffMultiplier,
+      weeklyOffRewardType,
+      overrideHolidayMultiplier,
+      holidayMultiplier,
+      holidayRewardType,
     } = req.body;
 
     const rule = await OvertimeRule.create({
@@ -34354,6 +34360,12 @@ router.post("/settings/overtime-rules", async (req, res) => {
       calculateOnGross,
       giveExtraFullDayBonus,
       extraFullDayBonusAmount,
+      overrideWeeklyOffMultiplier,
+      weeklyOffMultiplier,
+      weeklyOffRewardType,
+      overrideHolidayMultiplier,
+      holidayMultiplier,
+      holidayRewardType,
     });
 
     // Automatically set as active rule for the organization

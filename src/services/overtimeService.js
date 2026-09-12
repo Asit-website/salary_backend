@@ -405,13 +405,24 @@ async function calculateOvertime(params, orgAccountArg, daysInMonthArg = 30, now
     };
   }
 
-  // 3. Calculate Reward (Amount) based on Tiers
+  // 3. Calculate Reward (Amount) based on Tiers or Rule Overrides
+  const { isWO, isH } = await checkIfDateIsWoOrHoliday(userId, orgAccountId, dateKey);
+
   const sortedTiers = [...(thresholds || [])].sort((a, b) => b.minMinutes - a.minMinutes);
   const tier = sortedTiers.find(t => overtimeMinutes >= t.minMinutes);
 
   let overtimeAmount = 0;
-  const rewardType = tier?.rewardType || (finalRule && finalRule.rewardType);
-  const rewardValue = tier?.rewardValue || tier?.value || 0;
+  let activeRewardType = tier?.rewardType || (finalRule && finalRule.rewardType);
+  let activeRewardValue = tier?.rewardValue || tier?.value || 0;
+
+  // Check if Weekly Off or Holiday override is enabled on the active rule
+  if (isWO && finalRule?.overrideWeeklyOffMultiplier && finalRule?.weeklyOffMultiplier != null) {
+    activeRewardType = finalRule.weeklyOffRewardType || 'SALARY_MULTIPLIER';
+    activeRewardValue = Number(finalRule.weeklyOffMultiplier);
+  } else if (isH && finalRule?.overrideHolidayMultiplier && finalRule?.holidayMultiplier != null) {
+    activeRewardType = finalRule.holidayRewardType || 'SALARY_MULTIPLIER';
+    activeRewardValue = Number(finalRule.holidayMultiplier);
+  }
 
   const user = await User.findByPk(userId);
   let sv = {};
@@ -445,11 +456,11 @@ async function calculateOvertime(params, orgAccountArg, daysInMonthArg = 30, now
   const daysInMonth = daysForRate;
 
 
-  if (rewardType === 'FIXED_AMOUNT') {
-    overtimeAmount = rewardValue;
-  } else if (rewardType === 'FIXED_AMOUNT_PER_HOUR') {
-    overtimeAmount = (overtimeMinutes / 60) * rewardValue;
-  } else if (rewardType === 'SALARY_MULTIPLIER' || rewardType === 'MULTIPLIER') {
+  if (activeRewardType === 'FIXED_AMOUNT') {
+    overtimeAmount = activeRewardValue;
+  } else if (activeRewardType === 'FIXED_AMOUNT_PER_HOUR') {
+    overtimeAmount = (overtimeMinutes / 60) * activeRewardValue;
+  } else if (activeRewardType === 'SALARY_MULTIPLIER' || activeRewardType === 'MULTIPLIER') {
     let shiftWorkMins = shiftTemplate?.workMinutes || 0;
     if (!shiftWorkMins && shiftTemplate?.startTime && shiftTemplate?.endTime) {
       const [sh, sm] = shiftTemplate.startTime.split(':').map(Number);
@@ -475,7 +486,7 @@ async function calculateOvertime(params, orgAccountArg, daysInMonthArg = 30, now
       console.log(`[OvertimeService] Warning: Salary Multiplier rule used for user ${userId} but no base salary found.`);
       overtimeAmount = 0;
     } else {
-      const multiplier = Number(rewardValue) || Number(finalRule.multiplier) || 1;
+      const multiplier = Number(activeRewardValue) || Number(finalRule.multiplier) || 1;
       overtimeAmount = (hourlySalary * multiplier) * (overtimeMinutes / 60);
     }
   }
