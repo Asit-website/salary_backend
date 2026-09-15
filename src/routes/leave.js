@@ -124,20 +124,23 @@ async function getEffectiveLeaveBalance(userId, categoryKey, onDate) {
       const cap = catCfg.carryLimitDays == null ? rem : Math.min(rem, Number(catCfg.carryLimitDays));
       carry = cap;
     } else {
-      // Calculate previous cycle remaining leaves if no DB balance row exists yet (e.g. 0 leaves taken)
-      const prevReqs = await LeaveRequest.findAll({
-        where: {
-          userId,
-          status: 'APPROVED',
-          categoryKey: key,
-          startDate: { [Op.gte]: prev.start },
-          endDate: { [Op.lte]: prev.end },
-        }
-      }).catch(() => []);
-      const prevUsed = Array.isArray(prevReqs) ? prevReqs.reduce((s, r) => s + (Number(r.days || 0) || 0), 0) : 0;
-      const prevRem = Math.max(0, total - prevUsed);
-      const cap = catCfg.carryLimitDays == null ? prevRem : Math.min(prevRem, Number(catCfg.carryLimitDays));
-      carry = cap;
+      // Check if user was assigned to the template in the previous cycle
+      const prevTpl = await getActiveLeaveTemplateForUser(userId, prev.end);
+      if (prevTpl && prevTpl.id === tpl.id) {
+        const prevReqs = await LeaveRequest.findAll({
+          where: {
+            userId,
+            status: 'APPROVED',
+            categoryKey: key,
+            startDate: { [Op.gte]: prev.start },
+            endDate: { [Op.lte]: prev.end },
+          }
+        }).catch(() => []);
+        const prevUsed = Array.isArray(prevReqs) ? prevReqs.reduce((s, r) => s + (Number(r.days || 0) || 0), 0) : 0;
+        const prevRem = Math.max(0, total - prevUsed);
+        const cap = catCfg.carryLimitDays == null ? prevRem : Math.min(prevRem, Number(catCfg.carryLimitDays));
+        carry = cap;
+      }
     }
   }
 

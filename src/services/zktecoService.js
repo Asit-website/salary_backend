@@ -56,6 +56,46 @@ class ZktecoService {
     }
 
     async filterPunchesForShift(punches, dateStr, shift, userId) {
+        if (shift && shift.shiftType === 'open') {
+            const maxDutyHours = shift.maxDutyWindowHours || 24;
+            const startTs = dayjs(dateStr).startOf('day');
+            const endTs = dayjs(dateStr).add(maxDutyHours + 4, 'hour');
+            
+            const inRange = punches.filter(p => {
+                const pt = dayjs(p.punch_time);
+                return (pt.isSame(startTs) || pt.isAfter(startTs)) && pt.isBefore(endTs);
+            });
+
+            if (inRange.length <= 1) return inRange;
+
+            const sorted = inRange.slice().sort((a, b) => dayjs(a.punch_time).valueOf() - dayjs(b.punch_time).valueOf());
+            const nextDayStr = dayjs(dateStr).add(1, 'day').format('YYYY-MM-DD');
+
+            // Find first Check-IN (state == 0) on dateStr
+            let firstInIndex = sorted.findIndex(p => dayjs(p.punch_time).format('YYYY-MM-DD') === dateStr && parseInt(p.punch_state) === 0);
+            if (firstInIndex === -1) {
+                firstInIndex = sorted.findIndex(p => dayjs(p.punch_time).format('YYYY-MM-DD') === dateStr);
+            }
+            if (firstInIndex === -1) return sorted;
+
+            const result = [sorted[firstInIndex]];
+            for (let i = firstInIndex + 1; i < sorted.length; i++) {
+                const cur = sorted[i];
+                const prev = sorted[i - 1];
+                const gapHours = dayjs(cur.punch_time).diff(dayjs(prev.punch_time), 'hour', true);
+                const isCurNextDay = dayjs(cur.punch_time).format('YYYY-MM-DD') === nextDayStr;
+                const curState = parseInt(cur.punch_state);
+
+                // Stop open shift session if gap is >= 5 hours and current punch is on next day or is state 0
+                if (gapHours >= 5 && (isCurNextDay || curState === 0)) {
+                    console.log(`[ZktecoSync OpenShift] Session complete for ${dateStr}. Excluding punch at ${cur.punch_time} (gap: ${gapHours.toFixed(1)}h)`);
+                    break;
+                }
+                result.push(cur);
+            }
+            return result;
+        }
+
         const [sh, sm] = (shift?.startTime || '09:00').split(':').map(Number);
         const [eh, em] = (shift?.endTime || '18:00').split(':').map(Number);
         
@@ -133,15 +173,24 @@ class ZktecoService {
             };
         }).sort((a, b) => a.punch_time - b.punch_time);
 
-        // Identify boundaries: Absolute First and Absolute Last
-        const startIdx = 0;
-        const endIdx = sorted.length - 1;
+        const shift = await shiftService.getEffectiveShiftTemplate(userId, date);
 
-        const dayPunches = sorted.slice(startIdx, endIdx + 1);
+        // Identify boundaries: First 0 and Last 1 for Open Shifts, or absolute boundaries for Fixed Shifts
+        let firstIn = sorted[0].punch_time;
+        let lastOut = sorted.length > 1 ? sorted[sorted.length - 1].punch_time : null;
+
+        if (shift && shift.shiftType === 'open') {
+            const first0 = sorted.find(p => p.state === 0);
+            if (first0) firstIn = first0.punch_time;
+
+            const state1Punches = sorted.filter(p => p.state === 1);
+            if (state1Punches.length > 0) {
+                lastOut = state1Punches[state1Punches.length - 1].punch_time;
+            }
+        }
+
+        const dayPunches = sorted;
         if (dayPunches.length === 0) return null;
-
-        const firstIn = dayPunches[0].punch_time;
-        const lastOut = dayPunches.length > 1 ? dayPunches[dayPunches.length - 1].punch_time : null;
 
         let totalWorkSeconds = 0;
         let totalBreakSeconds = 0;
@@ -164,7 +213,6 @@ class ZktecoService {
         }
 
         const workMinutes = totalWorkSeconds / 60;
-        const shift = await shiftService.getEffectiveShiftTemplate(userId, date);
 
         // Declare local variables for results
         let overtimeMinutes = 0;
