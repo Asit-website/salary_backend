@@ -74,9 +74,10 @@ class ZktecoService {
             // Find first Check-IN (state == 0) on dateStr
             let firstInIndex = sorted.findIndex(p => dayjs(p.punch_time).format('YYYY-MM-DD') === dateStr && parseInt(p.punch_state) === 0);
             if (firstInIndex === -1) {
-                firstInIndex = sorted.findIndex(p => dayjs(p.punch_time).format('YYYY-MM-DD') === dateStr);
+                // If no state 0, look for non-state-1 punch (state 255 or default), but do NOT treat state 1 (Check Out) as Check In
+                firstInIndex = sorted.findIndex(p => dayjs(p.punch_time).format('YYYY-MM-DD') === dateStr && parseInt(p.punch_state) !== 1);
             }
-            if (firstInIndex === -1) return sorted;
+            if (firstInIndex === -1) return [];
 
             const firstInTs = dayjs(sorted[firstInIndex].punch_time);
             const maxDutyEndTs = firstInTs.add(maxDutyHours, 'hour');
@@ -204,12 +205,17 @@ class ZktecoService {
         const shift = await shiftService.getEffectiveShiftTemplate(userId, date);
 
         // Identify boundaries: First 0 and Last 1 for Open Shifts, or absolute boundaries for Fixed Shifts
-        let firstIn = sorted[0].punch_time;
+        let firstIn = sorted.find(p => p.state !== 1)?.punch_time || sorted[0].punch_time;
         let lastOut = sorted.length > 1 ? sorted[sorted.length - 1].punch_time : null;
 
         if (shift && shift.shiftType === 'open') {
             const first0 = sorted.find(p => p.state === 0);
-            if (first0) firstIn = first0.punch_time;
+            if (first0) {
+                firstIn = first0.punch_time;
+            } else {
+                const firstNonState1 = sorted.find(p => p.state !== 1);
+                if (firstNonState1) firstIn = firstNonState1.punch_time;
+            }
 
             const state1Punches = sorted.filter(p => p.state === 1);
             if (state1Punches.length > 0) {
@@ -621,22 +627,25 @@ class ZktecoService {
                         let mergedSource = 'biometric';
 
                         if (existing) {
-                            // Earliest Punch-In (MIN)
-                            if (existing.punchedInAt && res.punchedInAt) {
-                                mergedIn = new Date(Math.min(new Date(existing.punchedInAt).getTime(), new Date(res.punchedInAt).getTime()));
-                            } else {
-                                mergedIn = existing.punchedInAt || res.punchedInAt;
-                            }
-
-                            // Latest Punch-Out (MAX)
-                            if (existing.punchedOutAt && res.punchedOutAt) {
-                                mergedOut = new Date(Math.max(new Date(existing.punchedOutAt).getTime(), new Date(res.punchedOutAt).getTime()));
-                            } else {
-                                mergedOut = existing.punchedOutAt || res.punchedOutAt;
-                            }
-
                             if (existing.source && existing.source !== 'biometric') {
+                                // For manual/hybrid existing records, merge
+                                if (existing.punchedInAt && res.punchedInAt) {
+                                    mergedIn = new Date(Math.min(new Date(existing.punchedInAt).getTime(), new Date(res.punchedInAt).getTime()));
+                                } else {
+                                    mergedIn = existing.punchedInAt || res.punchedInAt;
+                                }
+
+                                if (existing.punchedOutAt && res.punchedOutAt) {
+                                    mergedOut = new Date(Math.max(new Date(existing.punchedOutAt).getTime(), new Date(res.punchedOutAt).getTime()));
+                                } else {
+                                    mergedOut = existing.punchedOutAt || res.punchedOutAt;
+                                }
                                 mergedSource = 'hybrid';
+                            } else {
+                                // For pure biometric records, use freshly recalculated res.punchedInAt and res.punchedOutAt
+                                mergedIn = res.punchedInAt;
+                                mergedOut = res.punchedOutAt;
+                                mergedSource = 'biometric';
                             }
                         }
 

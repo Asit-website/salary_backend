@@ -99,20 +99,23 @@ async function recalculateUserAttendance(userId, orgId, targetDateStr) {
   let mergedSource = 'biometric';
 
   if (existing) {
-    if (existing.punchedInAt && res.punchedInAt) {
-      mergedIn = new Date(Math.min(new Date(existing.punchedInAt).getTime(), new Date(res.punchedInAt).getTime()));
-    } else {
-      mergedIn = existing.punchedInAt || res.punchedInAt;
-    }
-
-    if (existing.punchedOutAt && res.punchedOutAt) {
-      mergedOut = new Date(Math.max(new Date(existing.punchedOutAt).getTime(), new Date(res.punchedOutAt).getTime()));
-    } else {
-      mergedOut = existing.punchedOutAt || res.punchedOutAt;
-    }
-
     if (existing.source && existing.source !== 'biometric') {
+      if (existing.punchedInAt && res.punchedInAt) {
+        mergedIn = new Date(Math.min(new Date(existing.punchedInAt).getTime(), new Date(res.punchedInAt).getTime()));
+      } else {
+        mergedIn = existing.punchedInAt || res.punchedInAt;
+      }
+
+      if (existing.punchedOutAt && res.punchedOutAt) {
+        mergedOut = new Date(Math.max(new Date(existing.punchedOutAt).getTime(), new Date(res.punchedOutAt).getTime()));
+      } else {
+        mergedOut = existing.punchedOutAt || res.punchedOutAt;
+      }
       mergedSource = 'hybrid';
+    } else {
+      mergedIn = res.punchedInAt;
+      mergedOut = res.punchedOutAt;
+      mergedSource = 'biometric';
     }
   }
 
