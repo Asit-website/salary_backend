@@ -11426,6 +11426,18 @@ router.post("/staff/import", uploadMemory.single("file"), async (req, res) => {
         const normalizedBulkPhone = String(phone)
           .replace(/[^0-9]/g, "")
           .slice(-10);
+
+        const existingAdmin = await User.findOne({
+          where: { phone: normalizedBulkPhone, active: true, role: ["admin", "superadmin"] },
+        });
+        if (existingAdmin) {
+          results.skipped++;
+          results.errors.push(
+            `Row ${data.rowNumber}: This phone number belongs to an Admin/Owner account and cannot be used for a staff profile.`,
+          );
+          continue;
+        }
+
         // Global check: block only if an ACTIVE staff with this phone exists in a DIFFERENT org
         const existing = await User.findOne({
           where: { phone: normalizedBulkPhone, active: true, role: "staff" },
@@ -21949,7 +21961,17 @@ router.post("/staff", requireRole(["admin", "staff"]), async (req, res) => {
         .replace(/[^0-9]/g, "")
         .slice(-10) || String(phoneInput);
 
-    // Global check: block if ANY active staff with this phone exists (same or different org)
+    // Global check: block if ANY active staff or admin/owner with this phone exists
+    const existingAdminUser = await User.findOne({
+      where: { phone: normalizedPhone, active: true, role: ["admin", "superadmin"] },
+    });
+    if (existingAdminUser) {
+      return res.status(409).json({
+        success: false,
+        message: "This phone number belongs to an Admin/Owner account and cannot be used to create a staff profile.",
+      });
+    }
+
     const existingUser = await User.findOne({
       where: { phone: normalizedPhone, active: true, role: "staff" },
     });
@@ -22758,6 +22780,17 @@ router.put("/staff/:id", requireRole(["admin", "staff"]), async (req, res) => {
           .slice(-10) || String(staff.phone)
       : null;
     if (normalizedEditPhone && normalizedEditPhone !== normalizedCurrentPhone) {
+      const existingAdminUser = await User.findOne({
+        where: { phone: normalizedEditPhone, active: true, role: ["admin", "superadmin"] },
+      });
+      if (existingAdminUser) {
+        return res.status(409).json({
+          success: false,
+          message:
+            "This phone number belongs to an Admin/Owner account and cannot be used for a staff profile.",
+        });
+      }
+
       // Global active-staff uniqueness check, excluding this staff's own record
       const existingUser = await User.findOne({
         where: { phone: normalizedEditPhone, active: true, role: "staff" },

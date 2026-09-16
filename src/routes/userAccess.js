@@ -32,9 +32,34 @@ const SIDEBAR_PERMISSION_OPTIONS = [
 
 const permissionMap = new Map(SIDEBAR_PERMISSION_OPTIONS.map((x) => [x.key, x.label]));
 
-function requireAdmin(req, res, next) {
-  if (req.user?.role === 'admin' || req.user?.role === 'superadmin') return next();
-  return res.status(403).json({ success: false, message: 'Admin access required' });
+async function requireAdmin(req, res, next) {
+  try {
+    if (req.user?.role === 'admin' || req.user?.role === 'superadmin') return next();
+    if (req.user?.role === 'staff') {
+      const orgAccountId = req.tenantOrgAccountId;
+      const user = await User.findOne({
+        where: { id: req.user?.id, orgAccountId },
+        include: [
+          {
+            model: Badge,
+            as: 'badges',
+            where: { isActive: true },
+            required: false,
+            through: { where: { isActive: true }, attributes: [] },
+            include: [{ model: BadgePermission, as: 'permissions' }],
+          },
+        ],
+      });
+      const badges = user?.badges || [];
+      const hasSettings = badges.some((b) =>
+        (b.permissions || []).some((p) => p.permissionKey === 'settings_tab')
+      );
+      if (hasSettings) return next();
+    }
+    return res.status(403).json({ success: false, message: 'Admin access required' });
+  } catch (error) {
+    return res.status(500).json({ success: false, message: 'Authorization error' });
+  }
 }
 
 router.get('/permission-options', authRequired, tenantEnforce, async (_req, res) => {
