@@ -59,7 +59,7 @@ class ZktecoService {
         if (shift && shift.shiftType === 'open') {
             const maxDutyHours = shift.maxDutyWindowHours || 24;
             const startTs = dayjs(dateStr).startOf('day');
-            const endTs = dayjs(dateStr).add(maxDutyHours + 4, 'hour');
+            const endTs = dayjs(dateStr).add(1, 'day').endOf('day');
             
             const inRange = punches.filter(p => {
                 const pt = dayjs(p.punch_time);
@@ -78,20 +78,48 @@ class ZktecoService {
             }
             if (firstInIndex === -1) return sorted;
 
+            const firstInTs = dayjs(sorted[firstInIndex].punch_time);
+            const maxDutyEndTs = firstInTs.add(maxDutyHours, 'hour');
+
             const result = [sorted[firstInIndex]];
+            let hasCheckOut = false;
             for (let i = firstInIndex + 1; i < sorted.length; i++) {
                 const cur = sorted[i];
+                const pt = dayjs(cur.punch_time);
                 const prev = sorted[i - 1];
-                const gapHours = dayjs(cur.punch_time).diff(dayjs(prev.punch_time), 'hour', true);
-                const isCurNextDay = dayjs(cur.punch_time).format('YYYY-MM-DD') === nextDayStr;
+                const gapHours = pt.diff(dayjs(prev.punch_time), 'hour', true);
+                const isCurNextDay = pt.format('YYYY-MM-DD') === nextDayStr;
                 const curState = parseInt(cur.punch_state);
 
-                // Stop open shift session if gap is >= 5 hours and current punch is on next day or is state 0
-                if (gapHours >= 5 && (isCurNextDay || curState === 0)) {
-                    console.log(`[ZktecoSync OpenShift] Session complete for ${dateStr}. Excluding punch at ${cur.punch_time} (gap: ${gapHours.toFixed(1)}h)`);
+                // Stop if punch exceeds maxDutyHours from firstIn
+                if (pt.isAfter(maxDutyEndTs)) {
+                    console.log(`[ZktecoSync OpenShift] Punch at ${cur.punch_time} exceeds max duty window of ${maxDutyHours}h for ${dateStr}`);
                     break;
                 }
+
+                // Stop open shift session if we already have a check-out and current punch is a new check-in (state 0)
+                if (hasCheckOut && curState === 0) {
+                    console.log(`[ZktecoSync OpenShift] Session complete for ${dateStr}. Excluding punch at ${cur.punch_time}`);
+                    break;
+                }
+
+                // Stop if current punch is on next day AND is a new check-in (state 0) after a gap >= 5 hours
+                if (isCurNextDay && curState === 0 && gapHours >= 5) {
+                    console.log(`[ZktecoSync OpenShift] Next day Check-In detected for ${dateStr}. Stopping at ${cur.punch_time}`);
+                    break;
+                }
+
+                // Stop if gap is >= 14 hours AND current punch is a check-in (state 0)
+                if (gapHours >= 14 && curState === 0) {
+                    console.log(`[ZktecoSync OpenShift] Gap ${gapHours.toFixed(1)}h >= 14h with Check-In state. Stopping at ${cur.punch_time}`);
+                    break;
+                }
+
                 result.push(cur);
+
+                if (curState === 1) {
+                    hasCheckOut = true;
+                }
             }
             return result;
         }
