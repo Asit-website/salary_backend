@@ -82,6 +82,28 @@ async function sendAuthResponse(user, req, res, extraJson = {}) {
 
   const isSuperadminPanel = !!req.body.isSuperadminPanel || user.role === 'superadmin';
   const orgAccountId = isSuperadminPanel ? null : user.orgAccountId;
+  const isMobile = req.headers['x-app-platform'] === 'mobile-apk' || req.headers['x-app-platform'] === 'admin-apk';
+
+  // WEB ACCESS CHECK FOR STAFF ROLE:
+  // Restrict web portal entry for staff (user role) if staff has NO assigned badges in that organization
+  if (!isMobile && !isSuperadminPanel && user.role === 'staff' && user.orgAccountId) {
+    try {
+      const { StaffBadge, Badge } = require('../models');
+      const badgeCount = await StaffBadge.count({
+        where: { userId: user.id, orgAccountId: user.orgAccountId, isActive: true },
+        include: [{ model: Badge, as: 'badge', where: { isActive: true }, required: true }]
+      });
+
+      if (badgeCount === 0) {
+        return res.status(403).json({
+          success: false,
+          message: "You don't have access to login"
+        });
+      }
+    } catch (badgeErr) {
+      console.error('[sendAuthResponse] Error checking staff web access badge:', badgeErr.message);
+    }
+  }
 
   // 1. Generate short-lived Access Token (15 minutes)
   const accessToken = jwt.sign(
@@ -99,8 +121,6 @@ async function sendAuthResponse(user, req, res, extraJson = {}) {
     secret,
     { expiresIn: '15m' }
   );
-
-  const isMobile = req.headers['x-app-platform'] === 'mobile-apk' || req.headers['x-app-platform'] === 'admin-apk';
 
   // 2. Generate Refresh Token (Perpetual - 100 years for both Web and Mobile)
   const refreshToken = crypto.randomBytes(40).toString('hex');
@@ -451,21 +471,19 @@ router.post('/verify-otp', authLimiter, async (req, res) => {
     const hasCreateOrgAccess = createOrgAssignments.length > 0;
     console.log(`Verify-OTP: hasCreateOrgAccess determined as ${hasCreateOrgAccess} (found ${createOrgAssignments.length} assignments)`);
 
-    // If exactly one user and it's NOT an admin (who might want to create new orgs), direct login.
+    // If exactly one user:
     if (allUsers.length === 1) {
       const singleUser = allUsers[0];
       const isGlobalSuper = singleUser.role === 'superadmin';
       const isPartner = singleUser.role === 'channel_partner';
 
-      // If it's a regular user (not admin, not super, not partner), login directly.
-      // If it's a specialized user but we are on MOBILE, also login directly.
-      // NEW: If it's a GLOBAL superadmin, also login directly on web if it's their only account.
-      if ((!isGlobalSuper && !isPartner && singleUser.role !== 'admin' && !hasSuperAccess && !hasCreateOrgAccess) ||
-        (allUsers.length === 1 && (isMobileApk || isGlobalSuper))) {
+      // For Mobile APK or Global Superadmin, allow direct login.
+      // For Web users, force selection screen so OTP verification succeeds on login page, and access is checked when selecting company card.
+      if (isMobileApk || (isGlobalSuper && !hasSuperAccess)) {
         console.log('Verify-OTP: Single user found, direct login allowed');
         user = singleUser;
       } else {
-        console.log(`Verify-OTP: Single user found but direct login REJECTED. role=${singleUser.role}, hasSuperAccess=${hasSuperAccess}, isMobile=${isMobileApk}`);
+        console.log(`Verify-OTP: Forcing selection screen on web for role=${singleUser.role}`);
       }
     }
 
