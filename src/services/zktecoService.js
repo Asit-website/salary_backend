@@ -66,7 +66,9 @@ class ZktecoService {
                 return (pt.isSame(startTs) || pt.isAfter(startTs)) && pt.isBefore(endTs);
             });
 
-            if (inRange.length <= 1) return inRange;
+            // Require at least one punch on dateStr itself for an open shift to start on dateStr
+            const punchesOnDate = inRange.filter(p => dayjs(p.punch_time).format('YYYY-MM-DD') === dateStr);
+            if (punchesOnDate.length === 0) return [];
 
             const sorted = inRange.slice().sort((a, b) => dayjs(a.punch_time).valueOf() - dayjs(b.punch_time).valueOf());
             const nextDayStr = dayjs(dateStr).add(1, 'day').format('YYYY-MM-DD');
@@ -204,23 +206,17 @@ class ZktecoService {
 
         const shift = await shiftService.getEffectiveShiftTemplate(userId, date);
 
-        // Identify boundaries: First 0 and Last 1 for Open Shifts, or absolute boundaries for Fixed Shifts
-        let firstIn = sorted.find(p => p.state !== 1)?.punch_time || sorted[0].punch_time;
+        let firstIn = sorted[0].punch_time;
         let lastOut = sorted.length > 1 ? sorted[sorted.length - 1].punch_time : null;
 
         if (shift && shift.shiftType === 'open') {
+            // Open Shift: First state 0 for Check In, Last state 1 for Check Out
             const first0 = sorted.find(p => p.state === 0);
-            if (first0) {
-                firstIn = first0.punch_time;
-            } else {
-                const firstNonState1 = sorted.find(p => p.state !== 1);
-                if (firstNonState1) firstIn = firstNonState1.punch_time;
-            }
+            firstIn = first0 ? first0.punch_time : (sorted.find(p => p.state !== 1)?.punch_time || sorted[0].punch_time);
 
+            // Open Shift Check-Out STRICTLY requires Punch State === 1 (Check Out)
             const state1Punches = sorted.filter(p => p.state === 1);
-            if (state1Punches.length > 0) {
-                lastOut = state1Punches[state1Punches.length - 1].punch_time;
-            }
+            lastOut = state1Punches.length > 0 ? state1Punches[state1Punches.length - 1].punch_time : null;
         }
 
         const dayPunches = sorted;
