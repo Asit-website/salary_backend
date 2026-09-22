@@ -225,20 +225,20 @@ class ZktecoService {
         let totalWorkSeconds = 0;
         let totalBreakSeconds = 0;
 
-        // Iterate through segments within the day's boundaries
-        for (let i = 0; i < dayPunches.length - 1; i++) {
-            const p1 = dayPunches[i];
-            const p2 = dayPunches[i + 1];
-            const duration = Math.max(0, Math.round((p2.punch_time - p1.punch_time) / 1000));
+        // Iterate through segments within the day's boundaries only if lastOut exists
+        if (lastOut) {
+            for (let i = 0; i < dayPunches.length - 1; i++) {
+                const p1 = dayPunches[i];
+                const p2 = dayPunches[i + 1];
+                if (p2.punch_time > lastOut) break;
 
-            // Logic: 
-            // - Gap is BREAK ONLY if it starts with Break In (2) AND ends with Break Out (3).
-            // - Every other gap (including 1-0, 0-0, etc.) is treated as WORK.
+                const duration = Math.max(0, Math.round((p2.punch_time - p1.punch_time) / 1000));
 
-            if (p1.state === 2 && p2.state === 3) {
-                totalBreakSeconds += duration;
-            } else {
-                totalWorkSeconds += duration;
+                if (p1.state === 2 && p2.state === 3) {
+                    totalBreakSeconds += duration;
+                } else {
+                    totalWorkSeconds += duration;
+                }
             }
         }
 
@@ -419,7 +419,7 @@ class ZktecoService {
         return {
             punchedInAt: firstIn,
             punchedOutAt: lastOut,
-            totalWorkHours: (totalWorkSeconds / 3600).toFixed(2),
+            totalWorkHours: lastOut ? (totalWorkSeconds / 3600).toFixed(2) : '0.00',
             breakTotalSeconds: totalBreakSeconds,
             overtimeMinutes,
             overtimeAmount,
