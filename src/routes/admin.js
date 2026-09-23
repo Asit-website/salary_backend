@@ -20798,11 +20798,13 @@ router.post("/attendance", async (req, res) => {
     */
 
     // Prepare fields for model (punchedInAt/punchedOutAt), and encode leave as sentinel
-    const joinDateTime = (t, addDay = false) => {
+    const { checkInDate, checkOutDate } = body || {};
+    const joinDateTime = (t, addDay = false, targetDateStr = null) => {
       if (!t) return null;
       const normalized = normalizeTime(t);
-      const d = new Date(`${dateIso}T${normalized}+05:30`);
-      if (addDay) d.setDate(d.getDate() + 1);
+      const useDateStr = targetDateStr || dateIso;
+      const d = new Date(`${useDateStr}T${normalized}+05:30`);
+      if (addDay && !targetDateStr) d.setDate(d.getDate() + 1);
       return d;
     };
 
@@ -20814,8 +20816,8 @@ router.post("/attendance", async (req, res) => {
       userId: uid,
       orgAccountId: orgId,
       date: dateIso,
-      punchedInAt: joinDateTime(checkIn),
-      punchedOutAt: joinDateTime(checkOut, isNightShift),
+      punchedInAt: body.punchedInAt ? new Date(body.punchedInAt) : joinDateTime(checkIn, false, checkInDate),
+      punchedOutAt: body.punchedOutAt ? new Date(body.punchedOutAt) : joinDateTime(checkOut, isNightShift, checkOutDate),
       status,
       source: "manual",
     };
@@ -21297,11 +21299,13 @@ router.post("/attendance/bulk", async (req, res) => {
         .json({ success: false, message: "Valid date required" });
     }
 
-    const joinDateTime = (t, addDay = false) => {
+    const { checkInDate, checkOutDate } = body || {};
+    const joinDateTime = (t, addDay = false, targetDateStr = null) => {
       if (!t) return null;
       const normalized = normalizeTime(t);
-      const d = new Date(`${dateIso}T${normalized}+05:30`);
-      if (addDay) d.setDate(d.getDate() + 1);
+      const useDateStr = targetDateStr || dateIso;
+      const d = new Date(`${useDateStr}T${normalized}+05:30`);
+      if (addDay && !targetDateStr) d.setDate(d.getDate() + 1);
       return d;
     };
 
@@ -21310,8 +21314,8 @@ router.post("/attendance/bulk", async (req, res) => {
     const isNightShift = inTime && outTime && outTime <= inTime;
 
     let basePayload = {
-      punchedInAt: joinDateTime(checkIn),
-      punchedOutAt: joinDateTime(checkOut, isNightShift),
+      punchedInAt: body.punchedInAt ? new Date(body.punchedInAt) : joinDateTime(checkIn, false, checkInDate),
+      punchedOutAt: body.punchedOutAt ? new Date(body.punchedOutAt) : joinDateTime(checkOut, isNightShift, checkOutDate),
       status,
       source: "manual",
     };
