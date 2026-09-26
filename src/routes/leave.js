@@ -1,7 +1,7 @@
 const express = require('express');
 const { Op } = require('sequelize');
 
-const { LeaveRequest, User, StaffProfile, StaffLeaveAssignment, LeaveTemplate, LeaveTemplateCategory, LeaveBalance, LeaveEncashment, OrgAccount, StaffWeeklyOffAssignment, WeeklyOffTemplate, StaffHolidayAssignment, HolidayTemplate, HolidayDate, Notification } = require('../models');
+const { LeaveRequest, User, StaffProfile, StaffLeaveAssignment, LeaveTemplate, LeaveTemplateCategory, LeaveBalance, LeaveEncashment, OrgAccount, StaffWeeklyOffAssignment, WeeklyOffTemplate, StaffHolidayAssignment, HolidayTemplate, HolidayDate, Notification, Badge, BadgePermission } = require('../models');
 const { authRequired } = require('../middleware/auth');
 const { requireRole } = require('../middleware/roles');
 const { tenantEnforce } = require('../middleware/tenant');
@@ -12,6 +12,54 @@ const { formatDate } = require('../utils/dateUtils');
 
 router.use(authRequired);
 router.use(tenantEnforce);
+
+async function hasLeavePermission(userId, orgAccountId, requiredPerms = ['leave_tab', 'leave_requests_tab', 'leave_encashment_tab']) {
+  if (!userId || !orgAccountId) return false;
+  const user = await User.findOne({
+    where: { id: userId, orgAccountId },
+    include: [
+      {
+        model: Badge,
+        as: 'badges',
+        where: { isActive: true },
+        required: false,
+        through: { where: { isActive: true }, attributes: [] },
+        include: [{ model: BadgePermission, as: 'permissions' }],
+      },
+    ],
+  });
+
+  const badges = user?.badges || [];
+  return badges.some((badge) =>
+    (badge.permissions || []).some((p) => requiredPerms.includes(p.permissionKey))
+  );
+}
+
+function requireLeaveAccess(requiredPerms = ['leave_tab', 'leave_requests_tab', 'leave_encashment_tab']) {
+  return async (req, res, next) => {
+    try {
+      if (!req.user) {
+        return res.status(401).json({ success: false, message: 'Unauthenticated' });
+      }
+
+      if (['admin', 'superadmin'].includes(req.user.role)) {
+        return next();
+      }
+
+      if (req.user.role === 'staff') {
+        const allowed = await hasLeavePermission(req.user.id, req.tenantOrgAccountId, requiredPerms);
+        if (allowed) {
+          return next();
+        }
+      }
+
+      return res.status(403).json({ success: false, message: 'Forbidden: Insufficient leave management permission' });
+    } catch (error) {
+      console.error('requireLeaveAccess error:', error);
+      return res.status(500).json({ success: false, message: 'Authorization check failed' });
+    }
+  };
+}
 
 function getCycleRange(cycle, forDate /* YYYY-MM-DD */, tpl = null) {
   const d = new Date(`${forDate}T00:00:00`);
@@ -283,7 +331,7 @@ router.post('/', requireRole(['staff', 'admin', 'superadmin']), async (req, res)
     }
 
     // Determine target user
-    const isAdmin = ['admin', 'superadmin'].includes(req.user.role);
+    const isAdmin = ['admin', 'superadmin'].includes(req.user.role) || await hasLeavePermission(req.user.id, req.tenantOrgAccountId, ['leave_tab', 'leave_requests_tab']);
     const userId = (isAdmin && targetUserId) ? Number(targetUserId) : req.user.id;
 
     const sd = new Date(`${startDate}T00:00:00`);
@@ -482,23 +530,52 @@ router.get('/check-range', requireRole(['staff', 'admin', 'superadmin']), async 
   }
 });
 
-// STAFF: cancel pending request
-router.delete('/:id', requireRole(['staff']), async (req, res) => {
+// STAFF/ADMIN: delete leave request (Staff can cancel pending; Admin can delete any and restore balance if approved)
+router.delete('/:id', requireRole(['staff', 'admin', 'superadmin']), async (req, res) => {
   try {
     const id = String(req.params.id);
-    const record = await LeaveRequest.findByPk(id);
-    if (!record || String(record.userId) !== String(req.user.id)) {
+    const isAdmin = ['admin', 'superadmin'].includes(req.user.role) || await hasLeavePermission(req.user.id, req.tenantOrgAccountId, ['leave_tab', 'leave_requests_tab']);
+
+    const where = { id };
+    if (!isAdmin) {
+      where.userId = req.user.id;
+    } else if (req.tenantOrgAccountId) {
+      where.orgAccountId = req.tenantOrgAccountId;
+    }
+
+    const record = await LeaveRequest.findOne({ where });
+    if (!record) {
       return res.status(404).json({ success: false, message: 'Leave request not found' });
     }
 
-    if (record.status !== 'PENDING') {
+    if (!isAdmin && record.status !== 'PENDING') {
       return res.status(409).json({ success: false, message: 'Only pending requests can be cancelled' });
     }
 
+    // If leave was APPROVED, restore deducted balance back to user's LeaveBalance
+    if (record.status === 'APPROVED') {
+      const catKey = String(record.categoryKey || record.leaveType || '').toLowerCase().trim();
+      const startDate = record.startDate;
+      const daysToRestore = Number((record.paidDays !== undefined && record.paidDays !== null) ? record.paidDays : (record.days || 0));
+
+      if (daysToRestore > 0 && catKey && catKey !== 'unpaid') {
+        const eff = await getEffectiveLeaveBalance(record.userId, catKey, startDate);
+        if (eff && eff.lb) {
+          const lb = eff.lb;
+          const currentUsed = Number(lb.used || 0);
+          const currentRemaining = Number(lb.remaining || 0);
+          const newUsed = Math.max(0, currentUsed - daysToRestore);
+          const newRemaining = currentRemaining + daysToRestore;
+          await lb.update({ used: newUsed, remaining: newRemaining });
+        }
+      }
+    }
+
     await record.destroy();
-    return res.json({ success: true });
+    return res.json({ success: true, message: 'Leave request deleted successfully and balance restored.' });
   } catch (e) {
-    return res.status(500).json({ success: false, message: 'Failed to cancel leave request' });
+    console.error('Failed to delete leave request:', e);
+    return res.status(500).json({ success: false, message: 'Failed to delete leave request' });
   }
 });
 
@@ -556,7 +633,7 @@ router.get('/me', requireRole(['staff']), async (req, res) => {
 });
 
 // ADMIN/SUPERADMIN: list all leaves (filterable)
-router.get('/', requireRole(['admin', 'superadmin']), async (req, res) => {
+router.get('/', requireLeaveAccess(['leave_tab', 'leave_requests_tab']), async (req, res) => {
   try {
     const status = typeof req.query.status === 'string' && req.query.status.trim() ? req.query.status.trim().toUpperCase() : null;
     const userId = req.query.userId;
@@ -627,7 +704,7 @@ router.get('/', requireRole(['admin', 'superadmin']), async (req, res) => {
 });
 
 // ADMIN/SUPERADMIN: approve/reject
-router.patch('/:id/status', requireRole(['admin', 'superadmin']), async (req, res) => {
+router.patch('/:id/status', requireLeaveAccess(['leave_tab', 'leave_requests_tab']), async (req, res) => {
   try {
     const id = String(req.params.id);
     const { status, note } = req.body || {};
@@ -789,8 +866,8 @@ router.get('/encash/claims/me', requireRole(['staff']), async (req, res) => {
   }
 });
 
-// ADMIN: list encashment claims
-router.get('/encash/claims', requireRole(['admin', 'superadmin']), async (req, res) => {
+// ADMIN/STAFF BADGE: list encashment claims
+router.get('/encash/claims', requireLeaveAccess(['leave_tab', 'leave_encashment_tab']), async (req, res) => {
   try {
     const where = { orgAccountId: req.tenantOrgAccountId };
 
@@ -806,8 +883,8 @@ router.get('/encash/claims', requireRole(['admin', 'superadmin']), async (req, r
   }
 });
 
-// ADMIN: Review encashment claim
-router.post('/encash/review', requireRole(['admin', 'superadmin']), async (req, res) => {
+// ADMIN/STAFF BADGE: Review encashment claim
+router.post('/encash/review', requireLeaveAccess(['leave_tab', 'leave_encashment_tab']), async (req, res) => {
   try {
     const { id, status, reviewNote } = req.body || {};
     if (!id || !['APPROVED', 'REJECTED'].includes(status)) {
@@ -898,8 +975,8 @@ router.get('/encash/balance-check', async (req, res) => {
   }
 });
 
-// ADMIN: Directly create & process Leave Encashment claim for any staff
-router.post('/encash/admin-create', requireRole(['admin', 'superadmin']), async (req, res) => {
+// ADMIN/STAFF BADGE: Directly create & process Leave Encashment claim for any staff
+router.post('/encash/admin-create', requireLeaveAccess(['leave_tab', 'leave_encashment_tab']), async (req, res) => {
   try {
     const { userId, categoryKey, days, monthKey, status = 'APPROVED', reviewNote } = req.body || {};
     if (!userId || !categoryKey || !days || !monthKey) {
@@ -965,6 +1042,39 @@ router.post('/encash/admin-create', requireRole(['admin', 'superadmin']), async 
   } catch (e) {
     console.error("Admin create encashment error:", e);
     return res.status(500).json({ success: false, message: 'Failed to create encashment claim' });
+  }
+});
+
+// ADMIN/STAFF BADGE: Delete leave encashment claim and restore balance if approved
+router.delete('/encash/claims/:id', requireLeaveAccess(['leave_tab', 'leave_encashment_tab']), async (req, res) => {
+  try {
+    const id = String(req.params.id);
+    const claim = await LeaveEncashment.findOne({ where: { id, orgAccountId: req.tenantOrgAccountId } });
+    if (!claim) {
+      return res.status(404).json({ success: false, message: 'Encashment claim not found' });
+    }
+
+    if (claim.status === 'APPROVED') {
+      let evalDate = new Date().toISOString().slice(0, 10);
+      if (claim.monthKey && /^\d{4}-\d{2}$/.test(claim.monthKey)) {
+        evalDate = `${claim.monthKey}-28`;
+      }
+
+      const balanceInfo = await getEffectiveLeaveBalance(claim.userId, claim.categoryKey, evalDate);
+      if (balanceInfo && balanceInfo.lb) {
+        const lb = balanceInfo.lb;
+        const daysToRestore = Number(claim.days || 0);
+        const newEncashed = Math.max(0, Number(lb.encashed || 0) - daysToRestore);
+        const newRemaining = Number(lb.remaining || 0) + daysToRestore;
+        await lb.update({ encashed: newEncashed, remaining: newRemaining });
+      }
+    }
+
+    await claim.destroy();
+    return res.json({ success: true, message: 'Leave encashment claim deleted and balance restored' });
+  } catch (e) {
+    console.error('Failed to delete encashment claim:', e);
+    return res.status(500).json({ success: false, message: 'Failed to delete encashment claim' });
   }
 });
 
