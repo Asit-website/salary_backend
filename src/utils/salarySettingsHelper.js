@@ -67,6 +67,9 @@ function coerceSalarySettings(input) {
   const pfCapAmount = Number.isFinite(Number(input?.pfCapAmount)) && Number(input?.pfCapAmount) > 0
     ? Number(input.pfCapAmount)
     : 1800;
+  const pfCapEffectiveDate = input?.pfCapEffectiveDate && typeof input.pfCapEffectiveDate === 'string'
+    ? input.pfCapEffectiveDate
+    : null;
 
   return { 
     payableDaysMode: mode, 
@@ -87,7 +90,8 @@ function coerceSalarySettings(input) {
     fixedDaysCalcRule,
     thirtyDaysCalcRule: fixedDaysCalcRule,
     pfCapEnabled,
-    pfCapAmount
+    pfCapAmount,
+    pfCapEffectiveDate
   };
 }
 

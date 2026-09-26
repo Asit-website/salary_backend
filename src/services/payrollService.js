@@ -1282,9 +1282,12 @@ async function calculateSalary(userId, monthKey) {
 
     // Apply PF Capping Limit if enabled
     if (coercedSettings.pfCapEnabled && Number(coercedSettings.pfCapAmount) > 0) {
-      const capLimit = Number(coercedSettings.pfCapAmount);
-      if (Number(finalDeductions.provident_fund || 0) > capLimit) {
-        finalDeductions.provident_fund = capLimit;
+      const isEffective = !coercedSettings.pfCapEffectiveDate || (endKey && endKey >= coercedSettings.pfCapEffectiveDate);
+      if (isEffective) {
+        const capLimit = Number(coercedSettings.pfCapAmount);
+        if (Number(finalDeductions.provident_fund || 0) > capLimit) {
+          finalDeductions.provident_fund = capLimit;
+        }
       }
     }
   } else {

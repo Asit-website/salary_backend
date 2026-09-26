@@ -5134,7 +5134,9 @@ router.post("/payroll/:cycleId/compute", async (req, res) => {
         }
         d.provident_fund = Number((pfBase * (pfRate / 100)).toFixed(2));
 
-        if (salarySettings?.pfCapEnabled && Number(salarySettings?.pfCapAmount) > 0) {
+        const pfCapEff = salarySettings?.pfCapEffectiveDate || null;
+        const pfCapEffOk = !pfCapEff || (typeof monthKey === 'string' && monthKey >= pfCapEff.slice(0, 7));
+        if (salarySettings?.pfCapEnabled && pfCapEffOk && Number(salarySettings?.pfCapAmount) > 0) {
           const capLimit = Number(salarySettings.pfCapAmount);
           if (Number(d.provident_fund || 0) > capLimit) {
             d.provident_fund = capLimit;
@@ -6569,7 +6571,10 @@ router.post("/payroll/:cycleId/compute", async (req, res) => {
       });
 
     // Enforce PF recalculation & capping limit on all database lines in the cycle
-    const capEnabled = salarySettings?.pfCapEnabled === true;
+    const cycleMonthStr = cycle ? `${cycle.year}-${String(cycle.month).padStart(2, "0")}` : null;
+    const pfCapEff = salarySettings?.pfCapEffectiveDate || null;
+    const pfCapEffOk = !pfCapEff || (cycleMonthStr && cycleMonthStr >= pfCapEff.slice(0, 7));
+    const capEnabled = salarySettings?.pfCapEnabled === true && pfCapEffOk;
     const capAmount = Number(salarySettings?.pfCapAmount || 1800);
     for (const line of lines) {
       let deds = typeof line.deductions === 'string' ? JSON.parse(line.deductions) : (line.deductions || {});
@@ -13964,6 +13969,9 @@ function coerceSalarySettings(input) {
   const pfCapAmount = Number.isFinite(Number(input?.pfCapAmount)) && Number(input?.pfCapAmount) > 0
     ? Number(input.pfCapAmount)
     : 1800;
+  const pfCapEffectiveDate = input?.pfCapEffectiveDate && typeof input.pfCapEffectiveDate === 'string'
+    ? input.pfCapEffectiveDate
+    : null;
 
   return { 
     payableDaysMode: mode, 
@@ -13984,7 +13992,8 @@ function coerceSalarySettings(input) {
     fixedDaysCalcRule,
     thirtyDaysCalcRule: fixedDaysCalcRule,
     pfCapEnabled,
-    pfCapAmount
+    pfCapAmount,
+    pfCapEffectiveDate
   };
 }
 
@@ -18918,7 +18927,10 @@ router.get("/staff-salary-list", async (req, res) => {
           }
           finalDeductions.provident_fund = Number((pfBase * (pfRate / 100)).toFixed(2));
 
-          if (salarySettings?.pfCapEnabled && Number(salarySettings?.pfCapAmount) > 0) {
+          const curMonthStr = new Date().toISOString().slice(0, 7);
+          const pfCapEff = salarySettings?.pfCapEffectiveDate || null;
+          const pfCapEffOk = !pfCapEff || (curMonthStr >= pfCapEff.slice(0, 7));
+          if (salarySettings?.pfCapEnabled && pfCapEffOk && Number(salarySettings?.pfCapAmount) > 0) {
             const capLimit = Number(salarySettings.pfCapAmount);
             if (Number(finalDeductions.provident_fund || 0) > capLimit) {
               finalDeductions.provident_fund = capLimit;
@@ -20653,6 +20665,94 @@ router.get("/attendance/check-leave", async (req, res) => {
 
     return res.json({ success: true, onLeave: !!approvedLeave });
   } catch (e) {
+    return res.status(500).json({ success: false, message: e.message });
+  }
+});
+
+function isWeeklyOffForDate(config, dateObj) {
+  if (!Array.isArray(config) || config.length === 0) return false;
+  const day = dateObj.getDay();
+  const dateNum = dateObj.getDate();
+  const weekNum = Math.ceil(dateNum / 7);
+
+  for (const item of config) {
+    if (Number(item.dayOfWeek) === day) {
+      const w = item.weeks;
+      if (
+        w === 'all' ||
+        w === 0 ||
+        (Array.isArray(w) && (w.includes('all') || w.includes(weekNum) || w.includes(String(weekNum)))) ||
+        String(w) === String(weekNum)
+      ) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+router.post("/attendance/check-special-days-batch", async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res);
+    if (!orgId) return;
+
+    const { userIds, dates } = req.body || {};
+    if (!Array.isArray(userIds) || userIds.length === 0 || !Array.isArray(dates) || dates.length === 0) {
+      return res.json({ success: true, results: {} });
+    }
+
+    const uIds = userIds.map(Number).filter(n => Number.isFinite(n) && n > 0);
+    const dateStrs = dates.map(d => String(d).trim()).filter(Boolean);
+    if (uIds.length === 0 || dateStrs.length === 0) {
+      return res.json({ success: true, results: {} });
+    }
+
+    const overtimeService = require('../services/overtimeService');
+
+    const minDate = dateStrs.slice().sort()[0];
+    const maxDate = dateStrs.slice().sort().reverse()[0];
+
+    const approvedLeaves = await LeaveRequest.findAll({
+      where: {
+        userId: uIds,
+        status: 'APPROVED',
+        startDate: { [Op.lte]: maxDate },
+        endDate: { [Op.gte]: minDate },
+      },
+    });
+
+    const results = {};
+
+    for (const uid of uIds) {
+      const userLeaves = approvedLeaves.filter(l => Number(l.userId) === uid);
+
+      for (const dStr of dateStrs) {
+        const key = `${uid}_${dStr}`;
+        const dObj = new Date(`${dStr}T00:00:00`);
+
+        const isLeave = userLeaves.some(
+          l => String(l.startDate) <= dStr && String(l.endDate) >= dStr
+        );
+
+        let { isWO, isH, holidayName } = await overtimeService.checkIfDateIsWoOrHoliday(uid, orgId, dStr);
+
+        // Fallback: If no weekly off assignment exists, Sunday (day 0) is Weekly Off by default
+        if (!isWO && dObj.getDay() === 0) {
+          isWO = true;
+        }
+
+        results[key] = {
+          isWeeklyOff: !!isWO,
+          isHoliday: !!isH,
+          holidayName: holidayName || null,
+          isLeave: !!isLeave,
+        };
+      }
+    }
+
+    return res.json({ success: true, results });
+  } catch (e) {
+    console.error("check-special-days-batch error:", e);
     return res.status(500).json({ success: false, message: e.message });
   }
 });
