@@ -3,7 +3,7 @@ const { Op } = require('sequelize');
 const puppeteer = require('puppeteer');
 const dayjs = require('dayjs');
 
-const { User, StaffProfile, Attendance, LeaveRequest, AppSetting, AttendanceTemplate, StaffAttendanceAssignment, StaffShiftAssignment, ShiftTemplate, StaffHolidayAssignment, HolidayTemplate, HolidayDate, StaffGeofenceAssignment, GeofenceTemplate, GeofenceSite, LocationPing, DeviceInfo, WeeklyOffTemplate, StaffWeeklyOffAssignment, AttendanceAutomationRule, OrgAccount, StaffRoster, StaffLatePunchInAssignment, LatePunchInRule } = require('../models');
+const { User, StaffProfile, Attendance, LeaveRequest, AppSetting, AttendanceTemplate, StaffAttendanceAssignment, StaffShiftAssignment, ShiftTemplate, StaffHolidayAssignment, HolidayTemplate, HolidayDate, StaffGeofenceAssignment, GeofenceTemplate, GeofenceSite, LocationPing, DeviceInfo, WeeklyOffTemplate, StaffWeeklyOffAssignment, AttendanceAutomationRule, OrgAccount, StaffRoster, StaffLatePunchInAssignment, LatePunchInRule, OrgAddonSetting, AttendancePunch } = require('../models');
 const { authRequired } = require('../middleware/auth');
 const { requireRole } = require('../middleware/roles');
 const { tenantEnforce } = require('../middleware/tenant');
@@ -20,6 +20,16 @@ const router = express.Router();
 router.use(authRequired);
 router.use(tenantEnforce);
 router.use(requireRole(['staff']));
+
+async function isMultiPunchEnabled(orgAccountId) {
+  try {
+    if (!orgAccountId) return false;
+    const addon = await OrgAddonSetting.findOne({ where: { orgAccountId } });
+    return !!addon?.enableMultiplePunches;
+  } catch (_) {
+    return false;
+  }
+}
 
 
 
@@ -443,6 +453,14 @@ router.get('/status', async (req, res) => {
   const qrPunchAccess = await getQrPunchRestriction(userId, req.user.orgAccountId);
   const qrPunchRestricted = qrPunchAccess.restricted;
 
+  const multiPunchActive = await isMultiPunchEnabled(req.user.orgAccountId);
+  let activePunch = null;
+  let todayPunches = [];
+  if (multiPunchActive) {
+    activePunch = await AttendancePunch.findOne({ where: { userId, date: effectiveKey, status: 'ACTIVE' } });
+    todayPunches = await AttendancePunch.findAll({ where: { userId, date: effectiveKey }, order: [['punchNumber', 'ASC']] });
+  }
+
   // Verify staff QR zone assignment
   let isQrZoneAssigned = true;
   try {
@@ -658,6 +676,21 @@ router.get('/status', async (req, res) => {
       mobilePunchRestricted,
       qrPunchRestricted,
       isQrZoneAssigned,
+      multiPunchActive,
+      activePunch: activePunch ? {
+        id: activePunch.id,
+        punchNumber: activePunch.punchNumber,
+        punchedInAt: activePunch.punchedInAt,
+        status: activePunch.status,
+      } : null,
+      todayPunches: todayPunches.map(p => ({
+        id: p.id,
+        punchNumber: p.punchNumber,
+        punchedInAt: p.punchedInAt,
+        punchedOutAt: p.punchedOutAt,
+        workMinutes: p.workMinutes,
+        status: p.status,
+      })),
     },
   });
 });
@@ -1128,14 +1161,84 @@ router.post('/punch-in', upload.single('photo'), async (req, res) => {
 
 
     const key = todayKey();
+    const now = new Date();
+    const photoUrl = req.file ? `/uploads/${req.file.filename}` : null;
+    const address = req.body?.address ? String(req.body.address) : null;
+
+    const multiPunchActive = await isMultiPunchEnabled(req.user.orgAccountId);
+    if (multiPunchActive) {
+      let master = await Attendance.findOne({ where: { userId: req.user.id, date: key } });
+      if (!master) {
+        master = await Attendance.create({
+          userId: req.user.id,
+          date: key,
+          orgAccountId: req.user.orgAccountId,
+          punchedInAt: now,
+          punchInPhotoUrl: photoUrl,
+          latitude: lat,
+          longitude: lng,
+          address,
+          status: 'PRESENT'
+        });
+      }
+
+      const activePunch = await AttendancePunch.findOne({
+        where: { userId: req.user.id, date: key, status: 'ACTIVE' }
+      });
+      if (activePunch) {
+        const inTime = dayjs(activePunch.punchedInAt).format('hh:mm A');
+        return res.status(409).json({ success: false, message: `You are already punched in at ${inTime}. Please punch out before punching in again.` });
+      }
+
+      const punches = await AttendancePunch.findAll({ where: { userId: req.user.id, date: key } });
+      const rawSlots = Array.isArray(shiftTpl?.timeSlots) ? shiftTpl.timeSlots : (Array.isArray(shiftTpl?.time_slots) ? shiftTpl.time_slots : []);
+      const maxSlots = rawSlots.length > 0 ? rawSlots.length : 99;
+
+      if (punches.length >= maxSlots) {
+        return res.status(409).json({ success: false, message: `All ${maxSlots} scheduled shift slot(s) for today have been completed.` });
+      }
+
+      const punchNumber = punches.length + 1;
+      const punchRecord = await AttendancePunch.create({
+        orgAccountId: req.user.orgAccountId,
+        userId: req.user.id,
+        attendanceId: master.id,
+        date: key,
+        punchNumber,
+        punchedInAt: now,
+        punchInPhotoUrl: photoUrl,
+        latitude: lat,
+        longitude: lng,
+        address,
+        status: 'ACTIVE'
+      });
+
+      await master.update({
+        punchedInAt: master.punchedInAt || now,
+        punchInPhotoUrl: master.punchInPhotoUrl || photoUrl,
+        punchedOutAt: null,
+        status: 'PRESENT',
+        latitude: lat,
+        longitude: lng,
+        address
+      });
+
+      logAudit({
+        req,
+        action: 'ATTENDANCE_PUNCH_IN_SLOT',
+        remarks: `Staff punched in for Slot #${punchNumber} at ${now.toISOString()} on ${key}.`,
+        details: { attendanceId: master.id, punchId: punchRecord.id, slot: punchNumber, date: key }
+      });
+
+      return res.json({ success: true, attendance: master, punch: punchRecord, multiPunch: true });
+    }
 
     const existing = await Attendance.findOne({ where: { userId: req.user.id, date: key } });
-    if (existing?.punchedInAt) {
+    if (existing?.punchedInAt && !existing?.punchedOutAt) {
       const inTime = dayjs(existing.punchedInAt).format('hh:mm A');
       return res.status(409).json({ success: false, message: `Already punched in today at ${inTime}` });
     }
 
-    const now = new Date();
     // Enforce latest punch-out if a fixed shift is assigned
     if (shiftTpl && (shiftTpl.shiftType === 'fixed' || shiftTpl.shiftType === 'rotational') && shiftTpl.latestPunchOutTime) {
       const nowStr = toHhMmSs(now);
@@ -1143,10 +1246,6 @@ router.post('/punch-in', upload.single('photo'), async (req, res) => {
         return res.status(409).json({ success: false, message: 'Punch-out after latest allowed time' });
       }
     }
-    const photoUrl = req.file ? `/uploads/${req.file.filename}` : null;
-
-
-    const address = req.body?.address ? String(req.body.address) : null;
     const record = existing
       ? await existing.update({
         punchedInAt: now,
@@ -1353,6 +1452,52 @@ router.post('/punch-out', upload.single('photo'), async (req, res) => {
         geofence: geoCheck.nearest || null,
       });
     }
+    const multiPunchActive = await isMultiPunchEnabled(req.user.orgAccountId);
+    if (multiPunchActive) {
+      const now = new Date();
+      const photoUrl = req.file ? `/uploads/${req.file.filename}` : null;
+      const activePunch = await AttendancePunch.findOne({
+        where: { userId: req.user.id, date: key, status: 'ACTIVE' }
+      });
+
+      if (!activePunch) {
+        return res.status(409).json({ success: false, message: 'No active punch-in session found to punch out from.' });
+      }
+
+      const sessionMins = Math.max(0, Math.floor((now.getTime() - new Date(activePunch.punchedInAt).getTime()) / 60000));
+      await activePunch.update({
+        punchedOutAt: now,
+        punchOutPhotoUrl: photoUrl,
+        workMinutes: sessionMins,
+        status: 'COMPLETED'
+      });
+
+      const completedPunches = await AttendancePunch.findAll({
+        where: { userId: req.user.id, date: key, status: 'COMPLETED' }
+      });
+      const totalMinutes = completedPunches.reduce((sum, p) => sum + (Number(p.workMinutes) || 0), 0);
+      const totalHours = Number((totalMinutes / 60).toFixed(2));
+
+      let master = await Attendance.findOne({ where: { userId: req.user.id, date: key } });
+      if (master) {
+        await master.update({
+          punchedOutAt: now,
+          punchOutPhotoUrl: photoUrl || master.punchOutPhotoUrl,
+          totalWorkHours: totalHours,
+          status: 'PRESENT'
+        });
+      }
+
+      logAudit({
+        req,
+        action: 'ATTENDANCE_PUNCH_OUT_SLOT',
+        remarks: `Staff punched out from Slot #${activePunch.punchNumber} on ${key}. Slot duration: ${sessionMins} mins, Total day work: ${totalHours} hrs.`,
+        details: { attendanceId: master?.id, punchId: activePunch.id, slot: activePunch.punchNumber, sessionMins, totalHours }
+      });
+
+      return res.json({ success: true, attendance: master, punch: activePunch, multiPunch: true });
+    }
+
     let record = await Attendance.findOne({ where: { userId: req.user.id, date: key } });
 
     // Cross-Day / Night Shift Look-back: If no open record today, look back at yesterday (within 24 hours)

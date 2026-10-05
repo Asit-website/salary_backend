@@ -130,6 +130,8 @@ const defineRefreshToken = require('./RefreshToken');
 const defineShiftRotationGroup = require('./ShiftRotationGroup');
 const defineShiftRotationRule = require('./ShiftRotationRule');
 const defineBiometricPunch = require('./BiometricPunch');
+const defineOrgAddonSetting = require('./OrgAddonSetting');
+const defineAttendancePunch = require('./AttendancePunch');
 
 
 
@@ -266,6 +268,17 @@ const RefreshToken = defineRefreshToken(sequelize);
 const ShiftRotationGroup = defineShiftRotationGroup(sequelize);
 const ShiftRotationRule = defineShiftRotationRule(sequelize);
 const BiometricPunch = defineBiometricPunch(sequelize);
+const OrgAddonSetting = defineOrgAddonSetting(sequelize);
+const AttendancePunch = defineAttendancePunch(sequelize);
+
+OrgAccount.hasOne(OrgAddonSetting, { foreignKey: 'orgAccountId', as: 'addonSetting' });
+OrgAddonSetting.belongsTo(OrgAccount, { foreignKey: 'orgAccountId', as: 'orgAccount' });
+
+Attendance.hasMany(AttendancePunch, { foreignKey: 'attendanceId', as: 'punches' });
+AttendancePunch.belongsTo(Attendance, { foreignKey: 'attendanceId', as: 'attendance' });
+
+User.hasMany(AttendancePunch, { foreignKey: 'userId', as: 'punches' });
+AttendancePunch.belongsTo(User, { foreignKey: 'userId', as: 'user' });
 
 User.hasMany(BiometricPunch, { foreignKey: 'userId', as: 'biometricPunches' });
 BiometricPunch.belongsTo(User, { foreignKey: 'userId', as: 'user' });
@@ -1086,4 +1099,6 @@ module.exports = {
   ShiftRotationGroup,
   ShiftRotationRule,
   BiometricPunch,
+  OrgAddonSetting,
+  AttendancePunch,
 };

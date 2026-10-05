@@ -101,6 +101,8 @@ const {
   StaffHolidayWorkPayAssignment,
   StaffRoster,
   ClientAssignment,
+  OrgAddonSetting,
+  AttendancePunch,
 } = require("../models");
 
 const multer = require("multer");
@@ -200,6 +202,54 @@ async function requireSettingsAccess(req, res, next) {
     });
   }
 }
+
+// --- ORG ADD-ON SETTINGS (Multiple Punches / Feature Flags) ---
+router.get("/addon-settings", authRequired, tenantEnforce, async (req, res) => {
+  try {
+    const orgAccountId = req.tenantOrgAccountId;
+    let [setting] = await OrgAddonSetting.findOrCreate({
+      where: { orgAccountId },
+      defaults: {
+        orgAccountId,
+        enableMultiplePunches: false,
+        allowSplitShifts: false,
+        maxDailyPunches: 4,
+      },
+    });
+    return res.json({ success: true, addonSetting: setting });
+  } catch (error) {
+    console.error("Failed to load addon settings:", error);
+    return res.status(500).json({ success: false, message: "Failed to load addon settings" });
+  }
+});
+
+router.post("/addon-settings", authRequired, tenantEnforce, async (req, res) => {
+  try {
+    const orgAccountId = req.tenantOrgAccountId;
+    const { enableMultiplePunches, allowSplitShifts, maxDailyPunches } = req.body || {};
+
+    let [setting] = await OrgAddonSetting.findOrCreate({
+      where: { orgAccountId },
+      defaults: {
+        orgAccountId,
+        enableMultiplePunches: false,
+        allowSplitShifts: false,
+        maxDailyPunches: 4,
+      },
+    });
+
+    await setting.update({
+      enableMultiplePunches: enableMultiplePunches !== undefined ? !!enableMultiplePunches : setting.enableMultiplePunches,
+      allowSplitShifts: allowSplitShifts !== undefined ? !!allowSplitShifts : setting.allowSplitShifts,
+      maxDailyPunches: maxDailyPunches !== undefined ? Number(maxDailyPunches) || 4 : setting.maxDailyPunches,
+    });
+
+    return res.json({ success: true, message: "Addon settings updated successfully", addonSetting: setting });
+  } catch (error) {
+    console.error("Failed to update addon settings:", error);
+    return res.status(500).json({ success: false, message: "Failed to update addon settings" });
+  }
+});
 
 // GET mock sandbox payment page (supports both hyphen and underscore, bypasses authRequired)
 const handleMockPgCheckout = (req, res) => {
@@ -5484,7 +5534,7 @@ router.post("/payroll/:cycleId/compute", async (req, res) => {
           sequelize.models;
 
         if (WeeklyOffTemplate && StaffWeeklyOffAssignment) {
-          const asg = await StaffWeeklyOffAssignment.findOne({
+          let asgList = await StaffWeeklyOffAssignment.findAll({
             where: {
               userId: u.id,
               effectiveFrom: { [Op.lte]: endKey },
@@ -5498,6 +5548,16 @@ router.post("/payroll/:cycleId/compute", async (req, res) => {
               ["id", "DESC"],
             ],
           });
+          if (!asgList || !asgList.length) {
+            asgList = await StaffWeeklyOffAssignment.findAll({
+              where: { userId: u.id },
+              order: [
+                ["effectiveFrom", "DESC"],
+                ["id", "DESC"],
+              ],
+            });
+          }
+          const asg = (asgList || [])[0];
 
           if (asg) {
             hasWeeklyOffAssignment = true;
@@ -8600,7 +8660,7 @@ function getMonthWeekNumber(d) {
 }
 
 function normalizeWeeklyOffWeeks(input) {
-  if (input === "all") return "all";
+  if (input === "all" || input === 0 || input === "0") return "all";
   if (Array.isArray(input)) {
     const lowered = input.map((v) => String(v).toLowerCase());
     if (lowered.includes("all") || lowered.includes("0")) return "all";
@@ -8642,7 +8702,7 @@ function isWeeklyOffForDate(configArray, jsDate) {
       if (cfg && Number(cfg.day) === dow) {
         const weeks = normalizeWeeklyOffWeeks(cfg.weeks);
         if (weeks === "all") return true;
-        if (Array.isArray(weeks) && weeks.includes(wk)) return true;
+        if (Array.isArray(weeks) && (weeks.includes(wk) || weeks.map(Number).includes(wk))) return true;
       }
     }
     return false;
@@ -14084,8 +14144,9 @@ async function computeWeekExclusions({ userId, yy, mm, daysInMonth, excludeWoLim
       const wk = Math.floor((jsDate.getDate() - 1) / 7) + 1;
       for (const cfg of config) {
         if (cfg && Number(cfg.day) === dow) {
-          if (cfg.weeks === 'all') return true;
-          if (Array.isArray(cfg.weeks) && cfg.weeks.includes(wk)) return true;
+          const weeks = normalizeWeeklyOffWeeks(cfg.weeks);
+          if (weeks === 'all') return true;
+          if (Array.isArray(weeks) && (weeks.includes(wk) || weeks.map(Number).includes(wk))) return true;
         }
       }
       return false;
@@ -20676,7 +20737,8 @@ function isWeeklyOffForDate(config, dateObj) {
   const weekNum = Math.ceil(dateNum / 7);
 
   for (const item of config) {
-    if (Number(item.dayOfWeek) === day) {
+    const dVal = item.dayOfWeek !== undefined ? item.dayOfWeek : item.day;
+    if (Number(dVal) === day) {
       const w = item.weeks;
       if (
         w === 'all' ||
@@ -23316,6 +23378,144 @@ router.get("/dashboard", async (req, res) => {
     return res
       .status(500)
       .json({ success: false, message: "Failed to fetch dashboard stats" });
+  }
+});
+
+router.get("/dashboard/card-details", async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res);
+    if (!orgId) return;
+
+    const dayjs = require("dayjs");
+    const { type, date } = req.query; // 'total' | 'present' | 'absent' | 'leave'
+    const today = (date && /^\d{4}-\d{2}-\d{2}$/.test(date)) ? date : todayKey();
+
+    const staffList = await User.findAll({
+      where: { role: "staff", orgAccountId: orgId },
+      include: [
+        { model: StaffProfile, as: "profile" }
+      ],
+      order: [["id", "DESC"]]
+    });
+
+    const orgStaffIds = staffList.map((u) => u.id);
+
+    const todayAttendance = await Attendance.findAll({
+      where: { date: today, orgAccountId: orgId }
+    });
+
+    const attMap = {};
+    for (const att of todayAttendance) {
+      attMap[att.userId] = att;
+    }
+
+    const leaveRequests = await LeaveRequest.findAll({
+      where: {
+        userId: { [Op.in]: orgStaffIds },
+        status: "APPROVED",
+        startDate: { [Op.lte]: today },
+        endDate: { [Op.gte]: today }
+      }
+    });
+
+    const leaveMap = {};
+    for (const lr of leaveRequests) {
+      leaveMap[lr.userId] = lr;
+    }
+
+    let result = [];
+
+    if (type === "total") {
+      result = staffList.map((u) => {
+        const att = attMap[u.id];
+        const lr = leaveMap[u.id];
+        let status = u.active ? "Active" : "Inactive";
+        let todayStatus = "Absent";
+        if (att && (att.punchedInAt || ["present", "overtime", "half_day", "late", "early"].includes(att.status))) {
+          todayStatus = "Present";
+        } else if (lr || (att && ["leave", "on_leave"].includes(att.status))) {
+          todayStatus = "Leave";
+        }
+        return {
+          id: u.id,
+          name: u.profile?.name || u.name || `Staff ${u.id}`,
+          phone: u.phone,
+          staffId: u.profile?.staffId || u.phone,
+          department: u.profile?.department || "General",
+          designation: u.profile?.designation || "Staff",
+          status,
+          todayStatus,
+          punchedInAt: att?.punchedInAt ? dayjs(att.punchedInAt).format("hh:mm A") : (att?.status === "present" ? "Present" : "-"),
+          punchedOutAt: att?.punchedOutAt ? dayjs(att.punchedOutAt).format("hh:mm A") : "-"
+        };
+      });
+    } else if (type === "present") {
+      result = staffList
+        .filter((u) => {
+          const att = attMap[u.id];
+          return att && (att.punchedInAt || ["present", "overtime", "half_day", "late", "early"].includes(att.status));
+        })
+        .map((u) => {
+          const att = attMap[u.id];
+          return {
+            id: u.id,
+            name: u.profile?.name || u.name || `Staff ${u.id}`,
+            phone: u.phone,
+            staffId: u.profile?.staffId || u.phone,
+            department: u.profile?.department || "General",
+            designation: u.profile?.designation || "Staff",
+            punchedInAt: att?.punchedInAt ? dayjs(att.punchedInAt).format("hh:mm A") : "Present",
+            punchedOutAt: att?.punchedOutAt ? dayjs(att.punchedOutAt).format("hh:mm A") : "-",
+            status: att?.status || "present"
+          };
+        });
+    } else if (type === "leave") {
+      result = staffList
+        .filter((u) => {
+          const att = attMap[u.id];
+          const lr = leaveMap[u.id];
+          return lr || (att && ["leave", "on_leave"].includes(att.status));
+        })
+        .map((u) => {
+          const lr = leaveMap[u.id];
+          return {
+            id: u.id,
+            name: u.profile?.name || u.name || `Staff ${u.id}`,
+            phone: u.phone,
+            staffId: u.profile?.staffId || u.phone,
+            department: u.profile?.department || "General",
+            designation: u.profile?.designation || "Staff",
+            leaveType: lr?.leaveType || lr?.categoryKey || "Leave",
+            reason: lr?.reason || "Approved Leave"
+          };
+        });
+    } else if (type === "absent") {
+      result = staffList
+        .filter((u) => {
+          if (u.active === false || u.active === 0 || u.active === "0") return false;
+          const att = attMap[u.id];
+          const lr = leaveMap[u.id];
+          const isPresent = att && (att.punchedInAt || ["present", "overtime", "half_day", "late", "early"].includes(att.status));
+          const isLeave = lr || (att && ["leave", "on_leave"].includes(att.status));
+          return !isPresent && !isLeave;
+        })
+        .map((u) => {
+          return {
+            id: u.id,
+            name: u.profile?.name || u.name || `Staff ${u.id}`,
+            phone: u.phone,
+            staffId: u.profile?.staffId || u.phone,
+            department: u.profile?.department || "General",
+            designation: u.profile?.designation || "Staff",
+            status: "Absent"
+          };
+        });
+    }
+
+    return res.json({ success: true, count: result.length, data: result });
+  } catch (error) {
+    console.error("Card details endpoint error:", error);
+    return res.status(500).json({ success: false, message: "Failed to fetch card details" });
   }
 });
 

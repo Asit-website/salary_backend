@@ -2,7 +2,22 @@ const { sequelize, OvertimeRule, ShiftTemplate, StaffShiftAssignment, User, Staf
 const dayjs = require('dayjs');
 const shiftService = require('./shiftService');
 const { getSettingsPayableDays } = require('../utils/salarySettingsHelper');
-const isWeeklyOffForDate = (configArray, jsDate) => {
+const normalizeWeeklyOffWeeks = (input) => {
+  if (input === 'all' || input === 0 || input === '0') return 'all';
+  if (Array.isArray(input)) {
+    const lowered = input.map(v => String(v).toLowerCase());
+    if (lowered.includes('all') || lowered.includes('0')) return 'all';
+    const nums = Array.from(new Set(input.map(v => Number(v)).filter(n => Number.isFinite(n) && n >= 1 && n <= 5)));
+    return nums.length > 0 ? nums : 'all';
+  }
+  const single = String(input ?? '').toLowerCase();
+  if (single === 'all' || single === '0') return 'all';
+  const n = Number(input);
+  if (Number.isFinite(n) && n >= 1 && n <= 5) return [n];
+  return 'all';
+};
+
+const isWeeklyOffForDate = (configArray, jsDate) => {
   try {
     let config = configArray;
     while (typeof config === 'string' && config.trim().startsWith('[')) {
@@ -18,8 +33,9 @@ const { getSettingsPayableDays } = require('../utils/salarySettingsHelper');
     const wk = Math.floor((jsDate.getDate() - 1) / 7) + 1; // 1..5
     for (const cfg of config) {
       if (cfg && Number(cfg.day) === dow) {
-        if (cfg.weeks === 'all') return true;
-        if (Array.isArray(cfg.weeks) && cfg.weeks.includes(wk)) return true;
+        const weeks = normalizeWeeklyOffWeeks(cfg.weeks);
+        if (weeks === 'all') return true;
+        if (Array.isArray(weeks) && (weeks.includes(wk) || weeks.map(Number).includes(wk))) return true;
       }
     }
     return false;

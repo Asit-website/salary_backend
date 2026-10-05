@@ -23,6 +23,7 @@ module.exports = (sequelize) => {
       // Auto-punchout rule
       autoPunchoutAfterShiftEnd: { type: DataTypes.DECIMAL(4, 1), allowNull: true, comment: 'Hours after shift end when auto-punchout should occur' },
       enableMultipleShifts: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: false },
+      timeSlots: { type: DataTypes.JSON, allowNull: true, field: 'time_slots' },
       active: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: true },
       orgAccountId: { type: DataTypes.BIGINT.UNSIGNED, allowNull: true, field: 'org_account_id' },
     },

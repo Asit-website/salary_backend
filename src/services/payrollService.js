@@ -291,14 +291,15 @@ async function calculateSalary(userId, monthKey) {
 
   const settingsPayableDays = await getSettingsPayableDays(u.orgAccount, monthKey);
 
-  // Check if payroll line exists for this month across ALL cycles for this monthKey
-  const cycles = await PayrollCycle.findAll({ where: { monthKey }, order: [['id', 'DESC']] });
+  // Check if payroll line exists for this month across cycles for this user's org
+  const cycles = await PayrollCycle.findAll({ where: { monthKey, orgAccountId: u.orgAccountId }, order: [['id', 'DESC']] });
   let line = null;
   let cycle = null;
   for (const c of cycles) {
     const l = await PayrollLine.findOne({ where: { cycleId: c.id, userId: u.id } });
     if (l) { line = l; cycle = c; break; }
   }
+  console.log(`[CalculateSalary] User ${u.id}, Month ${monthKey}, Line found: ${line ? line.id : 'NONE'}, Cycle status: ${cycle ? cycle.status : 'NONE'}`);
 
   // Prepare to return data. Even if locked, we might need to refresh user details for PDF? 
   // But if locked, values are fixed.
@@ -342,8 +343,8 @@ async function calculateSalary(userId, monthKey) {
     return advances.reduce((sum, adv) => sum + parseFloat(adv.amount || 0), 0);
   };
 
-  // 1. If PayrollLine exists, use it (recomputing totals to be safe)
-  if (cycle && line) {
+  // 1. If PayrollLine exists and cycle is LOCKED or PAID, use immutable stored snapshot
+  if (cycle && line && (cycle.status === 'LOCKED' || cycle.status === 'PAID')) {
     // ... parse existing ...
     // We do NOT recalculate loans here if it's already generated/locked, 
     // UNLESS the user explicitly requested "regeneration" via the API which calls this.
@@ -708,7 +709,7 @@ async function calculateSalary(userId, monthKey) {
   let hasWeeklyOffAssignment = false;
   try {
     if (WeeklyOffTemplate && StaffWeeklyOffAssignment) {
-      const asg = await StaffWeeklyOffAssignment.findOne({
+      let asgList = await StaffWeeklyOffAssignment.findAll({
         where: {
           userId: u.id,
           effectiveFrom: { [Op.lte]: queryEnd },
@@ -716,9 +717,17 @@ async function calculateSalary(userId, monthKey) {
         },
         order: [['effectiveFrom', 'DESC'], ['id', 'DESC']]
       });
+      if (!asgList || !asgList.length) {
+        asgList = await StaffWeeklyOffAssignment.findAll({
+          where: { userId: u.id },
+          order: [['effectiveFrom', 'DESC'], ['id', 'DESC']]
+        });
+      }
+      const asg = (asgList || [])[0];
       if (asg) {
         hasWeeklyOffAssignment = true;
-        const tpl = await WeeklyOffTemplate.findByPk(asg.weeklyOffTemplateId || asg.weekly_off_template_id);
+        const tplId = asg.weeklyOffTemplateId || asg.weekly_off_template_id || (asg.getDataValue ? asg.getDataValue('weekly_off_template_id') : null);
+        const tpl = tplId ? await WeeklyOffTemplate.findByPk(tplId) : null;
         let rawCfg = tpl?.config;
         while (typeof rawCfg === 'string' && rawCfg.trim().startsWith('[')) {
           try {
@@ -800,6 +809,22 @@ async function calculateSalary(userId, monthKey) {
     }
   } catch (_) { }
 
+  // Helper to normalize weekly off weeks config
+  const normalizeWeeklyOffWeeks = (input) => {
+    if (input === 'all' || input === 0 || input === '0') return 'all';
+    if (Array.isArray(input)) {
+      const lowered = input.map(v => String(v).toLowerCase());
+      if (lowered.includes('all') || lowered.includes('0')) return 'all';
+      const nums = Array.from(new Set(input.map(v => Number(v)).filter(n => Number.isFinite(n) && n >= 1 && n <= 5)));
+      return nums.length > 0 ? nums : 'all';
+    }
+    const single = String(input ?? '').toLowerCase();
+    if (single === 'all' || single === '0') return 'all';
+    const n = Number(input);
+    if (Number.isFinite(n) && n >= 1 && n <= 5) return [n];
+    return 'all';
+  };
+
   // Helper to check weekly off
   const isWeeklyOffForDate = (configArray, jsDate) => {
     try {
@@ -817,8 +842,9 @@ async function calculateSalary(userId, monthKey) {
       const wk = Math.floor((jsDate.getDate() - 1) / 7) + 1;
       for (const cfg of config) {
         if (cfg && Number(cfg.day) === dow) {
-          if (cfg.weeks === 'all') return true;
-          if (Array.isArray(cfg.weeks) && cfg.weeks.includes(wk)) return true;
+          const weeks = normalizeWeeklyOffWeeks(cfg.weeks);
+          if (weeks === 'all') return true;
+          if (Array.isArray(weeks) && (weeks.includes(wk) || weeks.map(Number).includes(wk))) return true;
         }
       }
       return false;
@@ -1601,13 +1627,35 @@ async function calculateSalary(userId, monthKey) {
     earnings: finalEarnings,
     incentives: finalIncentives,
     deductions: finalDeductions,
-    isProjected: true,
-    isGenerated: false,
-    payslipPath: null,
+    isProjected: !line,
+    isGenerated: !!line,
+    payslipPath: line ? line.payslipPath : null,
     user: u,
-    paymentStatus: (Number(yy) < now.getFullYear() || (Number(yy) === now.getFullYear() && Number(mm) < (now.getMonth() + 1))) ? 'DUE' : 'ESTIMATED',
-    generatedAt: new Date()
+    paymentStatus: line && line.paidAt ? 'PAID' : ((Number(yy) < now.getFullYear() || (Number(yy) === now.getFullYear() && Number(mm) < (now.getMonth() + 1))) ? 'DUE' : 'ESTIMATED'),
+    generatedAt: line ? line.createdAt : new Date()
   };
+
+  if (line && cycle && cycle.status === 'DRAFT') {
+    try {
+      console.log(`[PayrollService] Updating draft line ${line.id} for user ${u.id} month ${monthKey}...`);
+      line.set('attendanceSummary', resultData.attendanceSummary);
+      line.changed('attendanceSummary', true);
+      line.set('totals', resultData.totals);
+      line.changed('totals', true);
+      line.set('earnings', resultData.earnings);
+      line.changed('earnings', true);
+      line.set('incentives', resultData.incentives);
+      line.changed('incentives', true);
+      line.set('deductions', resultData.deductions);
+      line.changed('deductions', true);
+      await line.save();
+      console.log(`[PayrollService] Successfully saved draft line ${line.id}!`);
+    } catch (e) {
+      console.error(`[PayrollService] Failed to update draft line ${line.id}:`, e);
+    }
+  }
+
+  return resultData;
 }
 
 async function generatePayslipPDF(data, savePath = null) {
