@@ -5371,6 +5371,8 @@ router.post("/payroll/:cycleId/compute", async (req, res) => {
 
       console.log(`Final deductions for staff ${u.id}:`, finalDeductions);
 
+      const orgAccountRecord = await OrgAccount.findByPk(orgId);
+
       // Attendance summary and proration for the month
       const atts = await Attendance.findAll({
         where: { userId: u.id, date: { [Op.gte]: start, [Op.lte]: endKey } },
@@ -5693,6 +5695,9 @@ router.post("/payroll/:cycleId/compute", async (req, res) => {
         absent = 0,
         paidLeave = 0,
         unpaidLeave = 0;
+      weeklyOff = 0;
+      holidays = 0;
+      let woHolidayExtraDays = 0;
       let multiplierBreakdown = [];
       let paidLeaveDates = [];
       const daysInMonth = end.getDate();
@@ -5746,7 +5751,25 @@ router.post("/payroll/:cycleId/compute", async (req, res) => {
             : rule?.weeklyOffMultiplier || 1;
 
           if (isH || isWO) {
-            if (extraObj.woHolidayAsOt) {
+            let orgExtra = {};
+            if (orgAccountRecord?.extra) {
+              try { orgExtra = typeof orgAccountRecord.extra === 'string' ? JSON.parse(orgAccountRecord.extra) : orgAccountRecord.extra; } catch (e) {}
+            }
+            const minWorkHours = Number(extraObj.woHolidayMinWorkHours !== undefined ? extraObj.woHolidayMinWorkHours : (orgExtra.woHolidayMinWorkHours || 0));
+            const attRec = (atts || []).find(a => toDateKey(a.date) === key);
+            let workedHours = Number(attRec?.totalWorkHours || 0);
+            if (!workedHours && attRec?.punchedInAt && attRec?.punchedOutAt) {
+              workedHours = (new Date(attRec.punchedOutAt) - new Date(attRec.punchedInAt)) / 3600000;
+            }
+            const meetsMinHours = minWorkHours <= 0 ? true : (workedHours >= minWorkHours || (attRec?.punchedInAt && !attRec?.punchedOutAt));
+
+            if (extraObj.woHolidayAsExtraDay && meetsMinHours) {
+              if (isH) holidays += 1;
+              else weeklyOff += 1;
+              present += 1;
+              actualPresent += 1;
+              woHolidayExtraDays += 1;
+            } else if (extraObj.woHolidayAsOt) {
               if (isH) holidays += 1;
               else weeklyOff += 1;
             } else {
@@ -5787,7 +5810,25 @@ router.post("/payroll/:cycleId/compute", async (req, res) => {
             : rule?.weeklyOffMultiplier || 1;
 
           if (isH || isWO) {
-            if (extraObj.woHolidayAsOt) {
+            let orgExtra = {};
+            if (orgAccountRecord?.extra) {
+              try { orgExtra = typeof orgAccountRecord.extra === 'string' ? JSON.parse(orgAccountRecord.extra) : orgAccountRecord.extra; } catch (e) {}
+            }
+            const minWorkHours = Number(extraObj.woHolidayMinWorkHours !== undefined ? extraObj.woHolidayMinWorkHours : (orgExtra.woHolidayMinWorkHours || 0));
+            const attRec = (atts || []).find(a => toDateKey(a.date) === key);
+            let workedHours = Number(attRec?.totalWorkHours || 0);
+            if (!workedHours && attRec?.punchedInAt && attRec?.punchedOutAt) {
+              workedHours = (new Date(attRec.punchedOutAt) - new Date(attRec.punchedInAt)) / 3600000;
+            }
+            const meetsMinHours = minWorkHours <= 0 ? true : (workedHours >= minWorkHours || (attRec?.punchedInAt && !attRec?.punchedOutAt));
+
+            if (extraObj.woHolidayAsExtraDay && meetsMinHours) {
+              if (isH) holidays += 1;
+              else weeklyOff += 1;
+              present += 0.5;
+              actualPresent += 0.5;
+              woHolidayExtraDays += 0.5;
+            } else if (extraObj.woHolidayAsOt) {
               if (isH) holidays += 1;
               else weeklyOff += 1;
             } else {
@@ -6038,18 +6079,7 @@ router.post("/payroll/:cycleId/compute", async (req, res) => {
       let totalOvertimeAmount = 0;
       let totalOvertimeMinutes = 0;
 
-      const otAssignment = await StaffOvertimeAssignment.findOne({
-        where: { userId: u.id, orgAccountId: orgId },
-      });
-      const orgAccountRecord = await OrgAccount.findByPk(orgId);
-
       try {
-        // Fetch all assignments and global rules
-        const otAssignment = await StaffOvertimeAssignment.findOne({
-          where: { userId: u.id, orgAccountId: orgId },
-        });
-        const orgAccountRecord = await OrgAccount.findByPk(orgId);
-
         for (const a of atts) {
           // Check if this specific record has a rule, OR if there's a global/assigned rule to use
           const effectiveRuleId =
@@ -6558,6 +6588,7 @@ router.post("/payroll/:cycleId/compute", async (req, res) => {
         absent: totalAbsent,
         weeklyOff,
         holidays,
+        woHolidayExtraDays,
         ratio,
         excludedWeeklyOffDates: Array.from(weekExclusions),
         payableDays: computedPayableUnits,
@@ -17136,21 +17167,24 @@ router.get("/salary/wo-holiday-as-ot", async (req, res) => {
         department: u.profile?.department || null,
         designation: u.profile?.designation || null,
         woHolidayAsOt: !!extraObj?.woHolidayAsOt,
+        woHolidayAsExtraDay: !!extraObj?.woHolidayAsExtraDay,
       };
     });
 
     const { OrgAccount } = require("../models");
     const org = await OrgAccount.findByPk(orgId);
     let graceMinutes = 0;
+    let minWorkHours = 0;
     if (org && org.extra) {
       let extra = org.extra;
       if (typeof extra === "string") {
         try { extra = JSON.parse(extra); } catch (e) { extra = {}; }
       }
       graceMinutes = Number(extra?.woHolidayAsOtGrace || 0);
+      minWorkHours = Number(extra?.woHolidayMinWorkHours || 0);
     }
 
-    return res.json({ success: true, items: rows, graceMinutes });
+    return res.json({ success: true, items: rows, graceMinutes, minWorkHours });
   } catch (e) {
     return res
       .status(500)
@@ -17163,50 +17197,77 @@ router.put("/salary/wo-holiday-as-ot-bulk", async (req, res) => {
     const orgId = requireOrg(req, res);
     if (!orgId) return;
     
-    // Save graceMinutes to OrgAccount
+    // Save graceMinutes and minWorkHours to OrgAccount
     const { OrgAccount } = require("../models");
     const org = await OrgAccount.findByPk(orgId);
-    if (org && req.body?.graceMinutes !== undefined) {
+    if (org) {
       let extra = org.extra || {};
       if (typeof extra === "string") {
         try { extra = JSON.parse(extra); } catch (e) { extra = {}; }
       }
-      extra.woHolidayAsOtGrace = Number(req.body.graceMinutes || 0);
+      if (req.body?.graceMinutes !== undefined) {
+        extra.woHolidayAsOtGrace = Number(req.body.graceMinutes || 0);
+      }
+      if (req.body?.minWorkHours !== undefined) {
+        extra.woHolidayMinWorkHours = Number(req.body.minWorkHours || 0);
+      }
       await org.update({ extra });
     }
 
-    const userIds = Array.isArray(req.body?.userIds)
-      ? req.body.userIds
-          .map((x) => Number(x))
-          .filter((n) => Number.isFinite(n) && n > 0)
-      : [];
-    const woHolidayAsOt = !!req.body?.woHolidayAsOt;
-    if (userIds.length === 0)
-      return res
-        .status(400)
-        .json({ success: false, message: "userIds required" });
-
-    const profiles = await StaffProfile.findAll({
-      where: { userId: userIds, orgAccountId: orgId },
-    });
     const updated = [];
-    for (const p of profiles) {
-      let extra = {};
-      if (p.extra) {
-        try {
-          extra = typeof p.extra === 'string' ? JSON.parse(p.extra) : p.extra;
-        } catch (e) {}
+
+    if (Array.isArray(req.body?.updates)) {
+      for (const u of req.body.updates) {
+        const p = await StaffProfile.findOne({ where: { userId: Number(u.userId), orgAccountId: orgId } });
+        if (p) {
+          let extra = {};
+          if (p.extra) {
+            try {
+              extra = typeof p.extra === 'string' ? JSON.parse(p.extra) : p.extra;
+            } catch (e) {}
+          }
+          if (u.woHolidayAsOt !== undefined) extra.woHolidayAsOt = !!u.woHolidayAsOt;
+          if (u.woHolidayAsExtraDay !== undefined) extra.woHolidayAsExtraDay = !!u.woHolidayAsExtraDay;
+          await p.update({ extra });
+          updated.push({ userId: p.userId, woHolidayAsOt: extra.woHolidayAsOt, woHolidayAsExtraDay: extra.woHolidayAsExtraDay });
+        }
       }
-      extra.woHolidayAsOt = woHolidayAsOt;
-      await p.update({ extra });
-      updated.push({ userId: p.userId, woHolidayAsOt });
+    } else {
+      const userIds = Array.isArray(req.body?.userIds)
+        ? req.body.userIds
+            .map((x) => Number(x))
+            .filter((n) => Number.isFinite(n) && n > 0)
+        : [];
+      if (userIds.length === 0)
+        return res
+          .status(400)
+          .json({ success: false, message: "userIds required" });
+
+      const profiles = await StaffProfile.findAll({
+        where: { userId: userIds, orgAccountId: orgId },
+      });
+      const woHolidayAsOt = req.body?.woHolidayAsOt;
+      const woHolidayAsExtraDay = req.body?.woHolidayAsExtraDay;
+
+      for (const p of profiles) {
+        let extra = {};
+        if (p.extra) {
+          try {
+            extra = typeof p.extra === 'string' ? JSON.parse(p.extra) : p.extra;
+          } catch (e) {}
+        }
+        if (woHolidayAsOt !== undefined) extra.woHolidayAsOt = !!woHolidayAsOt;
+        if (woHolidayAsExtraDay !== undefined) extra.woHolidayAsExtraDay = !!woHolidayAsExtraDay;
+        await p.update({ extra });
+        updated.push({ userId: p.userId, woHolidayAsOt: extra.woHolidayAsOt, woHolidayAsExtraDay: extra.woHolidayAsExtraDay });
+      }
     }
 
     // Trigger recalculation if recalculateFrom is provided
     const recalculateFrom = req.body?.recalculateFrom;
     if (recalculateFrom) {
       const today = require("dayjs")().format("YYYY-MM-DD");
-      const activeUserIds = updated.filter(u => u.woHolidayAsOt).map(u => u.userId);
+      const activeUserIds = updated.map(u => u.userId);
       if (activeUserIds.length > 0) {
         const automationRecalculationService = require("../services/automationRecalculationService");
         Promise.all(

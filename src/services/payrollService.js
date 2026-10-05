@@ -634,8 +634,11 @@ async function calculateSalary(userId, monthKey) {
     attributes: ['status', 'date', 'totalWorkHours', 'punchedInAt', 'punchedOutAt']
   });
   const attMap = {};
+  const attObjMap = {};
   for (const a of atts) {
-    attMap[String(a.date || '').slice(0, 10)] = String(a.status || '').toLowerCase();
+    const k = String(a.date || '').slice(0, 10);
+    attMap[k] = String(a.status || '').toLowerCase();
+    attObjMap[k] = a;
   }
 
   // Build paid/unpaid leave sets from approved leave requests
@@ -928,7 +931,8 @@ async function calculateSalary(userId, monthKey) {
   }
 
   // Classify calendar days (for current month, only count till today)
-  let present = 0, actualPresent = 0, half = 0, leave = 0, paidLeaveCount = 0, unpaidLeave = 0, weeklyOffCount = 0, holidaysCount = 0, absent = 0;
+  // Classify calendar days (for current month, only count till today)
+  let present = 0, actualPresent = 0, half = 0, leave = 0, paidLeaveCount = 0, unpaidLeave = 0, weeklyOffCount = 0, holidaysCount = 0, absent = 0, woHolidayExtraDays = 0;
   let paidLeaveDates = [];
   const daysInMonth = end.getDate();
   const daysForRate = settingsPayableDays > 0 ? settingsPayableDays : daysInMonth;
@@ -967,8 +971,25 @@ async function calculateSalary(userId, monthKey) {
       const isH = holidaySet.has(key) || rosterHSet.has(key);
       const isPL = paidLeaveSet.has(key);
 
+      let orgExtra = {};
+      if (u.orgAccount?.extra) {
+        try { orgExtra = typeof u.orgAccount.extra === 'string' ? JSON.parse(u.orgAccount.extra) : u.orgAccount.extra; } catch (e) {}
+      }
+      const minWorkHours = Number(extraObj.woHolidayMinWorkHours !== undefined ? extraObj.woHolidayMinWorkHours : (orgExtra.woHolidayMinWorkHours || 0));
+      const attRec = attObjMap[key];
+      let workedHours = Number(attRec?.totalWorkHours || 0);
+      if (!workedHours && attRec?.punchedInAt && attRec?.punchedOutAt) {
+        workedHours = (new Date(attRec.punchedOutAt) - new Date(attRec.punchedInAt)) / 3600000;
+      }
+      const meetsMinHours = minWorkHours <= 0 ? true : (workedHours >= minWorkHours || (attRec?.punchedInAt && !attRec?.punchedOutAt));
+
       if (isH) {
-        if (extraObj.woHolidayAsOt) {
+        if (extraObj.woHolidayAsExtraDay && meetsMinHours) {
+          holidaysCount += 1;
+          present += 1;
+          actualPresent += 1;
+          woHolidayExtraDays += 1;
+        } else if (extraObj.woHolidayAsOt) {
           holidaysCount += 1;
         } else {
           const mult = (rule?.holidayMultiplier || 1);
@@ -978,7 +999,12 @@ async function calculateSalary(userId, monthKey) {
         }
       }
       else if (isWO) {
-        if (extraObj.woHolidayAsOt) {
+        if (extraObj.woHolidayAsExtraDay && meetsMinHours) {
+          weeklyOffCount += 1;
+          present += 1;
+          actualPresent += 1;
+          woHolidayExtraDays += 1;
+        } else if (extraObj.woHolidayAsOt) {
           weeklyOffCount += 1;
         } else {
           const mult = (rule?.weeklyOffMultiplier || 1);
@@ -1001,8 +1027,25 @@ async function calculateSalary(userId, monthKey) {
       const isWO = rosterWOSet.has(key) || (hasWeeklyOffAssignment ? isWeeklyOffForDate(woConfig, dt) : false);
       const isH = holidaySet.has(key) || rosterHSet.has(key);
 
+      let orgExtra = {};
+      if (u.orgAccount?.extra) {
+        try { orgExtra = typeof u.orgAccount.extra === 'string' ? JSON.parse(u.orgAccount.extra) : u.orgAccount.extra; } catch (e) {}
+      }
+      const minWorkHours = Number(extraObj.woHolidayMinWorkHours !== undefined ? extraObj.woHolidayMinWorkHours : (orgExtra.woHolidayMinWorkHours || 0));
+      const attRec = attObjMap[key];
+      let workedHours = Number(attRec?.totalWorkHours || 0);
+      if (!workedHours && attRec?.punchedInAt && attRec?.punchedOutAt) {
+        workedHours = (new Date(attRec.punchedOutAt) - new Date(attRec.punchedInAt)) / 3600000;
+      }
+      const meetsMinHours = minWorkHours <= 0 ? true : (workedHours >= minWorkHours || (attRec?.punchedInAt && !attRec?.punchedOutAt));
+
       if (isH) {
-        if (extraObj.woHolidayAsOt) {
+        if (extraObj.woHolidayAsExtraDay && meetsMinHours) {
+          holidaysCount += 1;
+          present += 0.5;
+          actualPresent += 0.5;
+          woHolidayExtraDays += 0.5;
+        } else if (extraObj.woHolidayAsOt) {
           holidaysCount += 1;
         } else {
           let val = 0.5 * (rule?.holidayMultiplier || 1);
@@ -1011,7 +1054,12 @@ async function calculateSalary(userId, monthKey) {
         }
       }
       else if (isWO) {
-        if (extraObj.woHolidayAsOt) {
+        if (extraObj.woHolidayAsExtraDay && meetsMinHours) {
+          weeklyOffCount += 1;
+          present += 0.5;
+          actualPresent += 0.5;
+          woHolidayExtraDays += 0.5;
+        } else if (extraObj.woHolidayAsOt) {
           weeklyOffCount += 1;
         } else {
           let val = 0.5 * (rule?.weeklyOffMultiplier || 1);
@@ -1600,7 +1648,7 @@ async function calculateSalary(userId, monthKey) {
     },
     attendanceSummary: {
       present: actualPresent, half, leave, paidLeave: paidLeaveCount, paidLeaveDates,
-      absent, weeklyOff: weeklyOffCount, holidays: holidaysCount, ratio,
+      absent, weeklyOff: weeklyOffCount, holidays: holidaysCount, ratio, woHolidayExtraDays,
       excludedWeeklyOffDates: Array.from(weekExclusions),
       payableDays: computedPayableUnits, // This is the gross payable days (e.g. 28)
       isRmo,
