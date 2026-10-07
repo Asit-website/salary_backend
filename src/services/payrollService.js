@@ -278,11 +278,14 @@ async function calculateSalary(userId, monthKey) {
 
   let salarySettings = null;
   try {
-    const salarySettingsRow = await AppSetting.findOne({
-      where: { key: 'salary_settings', orgAccountId: u.orgAccountId }
-    });
-    if (salarySettingsRow?.value) {
-      salarySettings = JSON.parse(salarySettingsRow.value);
+    const orgAccountId = u.orgAccountId || u.org_account_id || u.orgAccount?.id;
+    if (orgAccountId) {
+      const salarySettingsRow = await AppSetting.findOne({
+        where: { key: 'salary_settings', orgAccountId }
+      });
+      if (salarySettingsRow?.value) {
+        salarySettings = JSON.parse(salarySettingsRow.value);
+      }
     }
   } catch (e) {}
   if (!salarySettings) {
@@ -440,6 +443,23 @@ async function calculateSalary(userId, monthKey) {
         overtimeMinutes: Number(ot.overtimeMinutes || 0),
         overtimePay: Number(ot.overtimePay || 0),
       };
+
+      if (salarySettings?.pfCalculationMode === 'basic_minus_penalties' && Number(deductions?.provident_fund || 0) > 0) {
+        const getB = (obj) => Number(obj?.basic_salary ?? obj?.BASIC_SALARY ?? obj?.['BASIC SALARY'] ?? obj?.basicSalary ?? obj?.basic ?? 0);
+        const getD = (obj) => Number(obj?.da ?? obj?.DA ?? obj?.['DA SALARY'] ?? obj?.da_salary ?? obj?.daSalary ?? 0);
+        const bVal = getB(earnings);
+        const dVal = getD(earnings);
+        const eePen = Number(deductions?.early_exit_penalty || 0);
+        const lpPen = Number(deductions?.late_punchin_penalty || 0);
+        let pfRate = 12;
+        if (u.salaryTemplate) {
+          const tD = u.salaryTemplate.deductions ? (typeof u.salaryTemplate.deductions === 'string' ? JSON.parse(u.salaryTemplate.deductions) : u.salaryTemplate.deductions) : [];
+          const pfRule = (Array.isArray(tD) ? tD : []).find(d => d.key === 'PROVIDENT_FUND_EMPLOYEE' || d.key === 'PROVIDENT_FUND');
+          if (pfRule && Number(pfRule.valueNumber || 0) > 0) pfRate = Number(pfRule.valueNumber);
+        }
+        const pfBase = Math.max(0, bVal + dVal - eePen - lpPen);
+        deductions.provident_fund = Number((pfBase * (pfRate / 100)).toFixed(2));
+      }
 
       // Preserve manual totals if they exist and earnings/deductions are missing or zeroed out (prevents zeroing out historical entries)
       const hasDetailedData = Object.values(earnings || {}).some(v => Number(v) > 0) || Object.values(deductions || {}).some(v => Number(v) > 0);
@@ -1346,8 +1366,12 @@ async function calculateSalary(userId, monthKey) {
       pfRate = Number(pfRule.valueNumber);
     }
 
-    let pfBase = Number(finalEarnings.basic_salary || 0) + Number(finalEarnings.da || 0);
-    if (salarySettings?.pfCalculationMode === 'basic_minus_penalties') {
+    const getBasicVal = (obj) => Number(obj?.basic_salary ?? obj?.BASIC_SALARY ?? obj?.['BASIC SALARY'] ?? obj?.basicSalary ?? obj?.basic ?? sd.basicSalary ?? 0);
+    const getDaVal = (obj) => Number(obj?.da ?? obj?.DA ?? obj?.['DA SALARY'] ?? obj?.da_salary ?? obj?.daSalary ?? sd.da ?? 0);
+    let pfBase = getBasicVal(finalEarnings) + getDaVal(finalEarnings);
+
+    const activePfMode = salarySettings?.pfCalculationMode || coercedSettings?.pfCalculationMode || salarySettingsObj?.pfCalculationMode;
+    if (activePfMode === 'basic_minus_penalties') {
       const earlyExitPenalty = Number(finalDeductions.early_exit_penalty || 0);
       const latePenalty = Number(finalDeductions.late_punchin_penalty || 0);
       pfBase = Math.max(0, pfBase - earlyExitPenalty - latePenalty);

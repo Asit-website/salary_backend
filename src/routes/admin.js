@@ -5176,7 +5176,9 @@ router.post("/payroll/:cycleId/compute", async (req, res) => {
           pfRate = Number(pfRule.valueNumber);
         }
 
-        let pfBase = Number(e.basic_salary || 0) + Number(e.da || 0);
+        const getB = (obj) => Number(obj?.basic_salary ?? obj?.BASIC_SALARY ?? obj?.['BASIC SALARY'] ?? obj?.basicSalary ?? obj?.basic ?? 0);
+        const getD = (obj) => Number(obj?.da ?? obj?.DA ?? obj?.['DA SALARY'] ?? obj?.da_salary ?? obj?.daSalary ?? 0);
+        let pfBase = getB(e) + getD(e);
         if (salarySettings?.pfCalculationMode === "basic_minus_penalties") {
           const earlyExitPenalty = Number(d.early_exit_penalty || 0);
           const latePenalty = Number(d.late_punchin_penalty || 0);
@@ -6540,33 +6542,36 @@ router.post("/payroll/:cycleId/compute", async (req, res) => {
       }
 
       // Recalculate PF if mode is basic_minus_penalties
-      if (salarySettings?.pfCalculationMode === "basic_minus_penalties" && u.salaryTemplate) {
-        const template = u.salaryTemplate;
-        let templateDeductions = [];
-        try {
-          templateDeductions =
-            typeof template.deductions === "string"
-              ? JSON.parse(template.deductions)
-              : template.deductions || [];
-        } catch (e) {}
+      if (salarySettings?.pfCalculationMode === "basic_minus_penalties") {
+        const getB = (obj) => Number(obj?.basic_salary ?? obj?.BASIC_SALARY ?? obj?.['BASIC SALARY'] ?? obj?.basicSalary ?? obj?.basic ?? 0);
+        const getD = (obj) => Number(obj?.da ?? obj?.DA ?? obj?.['DA SALARY'] ?? obj?.da_salary ?? obj?.daSalary ?? 0);
+        const basicVal = getB(finalE) || getB(e);
+        const daVal = getD(finalE) || getD(e);
 
-        const pfRule = (Array.isArray(templateDeductions) ? templateDeductions : []).find(
-          (rule) =>
-            (rule.key === "PROVIDENT_FUND_EMPLOYEE" || rule.key === "PROVIDENT_FUND") &&
-            rule.type === "percent" &&
-            (rule.meta?.basedOn === "BASIC SALARY" ||
-              rule.meta?.basedOn === "BASIC_SAVARY" ||
-              rule.meta?.basedOn === "BASIC_SALARY"),
-        );
-        if (pfRule) {
-          const basicVal = Number(finalE.basic_salary || e.basic_salary || 0);
-          const earlyExitPenalty = Number(finalD.early_exit_penalty || 0);
-          const latePenalty = Number(finalD.late_punchin_penalty || 0);
-          const pfBase = Math.max(0, basicVal - earlyExitPenalty - latePenalty);
-          finalD.provident_fund = Number(
-            (pfBase * (Number(pfRule.valueNumber || 0) / 100)).toFixed(2),
+        const earlyExitPenalty = Number(finalD.early_exit_penalty || 0);
+        const latePenalty = Number(finalD.late_punchin_penalty || 0);
+        let pfRate = 12;
+
+        if (u.salaryTemplate) {
+          const template = u.salaryTemplate;
+          let templateDeductions = [];
+          try {
+            templateDeductions =
+              typeof template.deductions === "string"
+                ? JSON.parse(template.deductions)
+                : template.deductions || [];
+          } catch (e) {}
+
+          const pfRule = (Array.isArray(templateDeductions) ? templateDeductions : []).find(
+            (rule) => rule.key === "PROVIDENT_FUND_EMPLOYEE" || rule.key === "PROVIDENT_FUND"
           );
+          if (pfRule && Number(pfRule.valueNumber || 0) > 0) {
+            pfRate = Number(pfRule.valueNumber);
+          }
         }
+
+        const pfBase = Math.max(0, basicVal + daVal - earlyExitPenalty - latePenalty);
+        finalD.provident_fund = Number((pfBase * (pfRate / 100)).toFixed(2));
       }
 
       // Recalculate total deductions and net salary after overrides
@@ -6673,16 +6678,24 @@ router.post("/payroll/:cycleId/compute", async (req, res) => {
       let tots = typeof line.totals === 'string' ? JSON.parse(line.totals) : (line.totals || {});
       
       const currentPf = Number(deds.provident_fund || 0);
-      const basicVal = Number(eans.basic_salary || 0);
-      const daVal = Number(eans.da || 0);
-      const pfBase = basicVal + daVal;
+      const getB = (obj) => Number(obj?.basic_salary ?? obj?.BASIC_SALARY ?? obj?.['BASIC SALARY'] ?? obj?.basicSalary ?? obj?.basic ?? 0);
+      const getD = (obj) => Number(obj?.da ?? obj?.DA ?? obj?.['DA SALARY'] ?? obj?.da_salary ?? obj?.daSalary ?? 0);
+      const basicVal = getB(eans);
+      const daVal = getD(eans);
+      
+      let pfBase = basicVal + daVal;
+      if (salarySettings?.pfCalculationMode === "basic_minus_penalties") {
+        const earlyExitPenalty = Number(deds.early_exit_penalty || 0);
+        const latePenalty = Number(deds.late_punchin_penalty || 0);
+        pfBase = Math.max(0, pfBase - earlyExitPenalty - latePenalty);
+      }
 
-      if (pfBase > 0 && currentPf > 0) {
+      if (pfBase >= 0 && currentPf > 0) {
         let calcPf = Number((pfBase * 0.12).toFixed(2));
         if (capEnabled && capAmount > 0) {
           calcPf = Math.min(calcPf, capAmount);
         }
-        if (calcPf !== currentPf && calcPf > 0) {
+        if (calcPf !== currentPf) {
           deds.provident_fund = calcPf;
           const diff = calcPf - currentPf;
           const oldTotDed = Number(tots.totalDeductions || 0);
@@ -17445,6 +17458,54 @@ router.put("/settings/salary", async (req, res) => {
         orgAccountId: orgId,
       });
     }
+
+    // Immediately recalculate open/draft payroll cycle lines for this org so new PF mode reflects everywhere
+    try {
+      const { PayrollCycle, PayrollLine } = require("../models");
+      const openCycles = await PayrollCycle.findAll({
+        where: { orgAccountId: orgId, status: { [Op.ne]: "PAID" } }
+      });
+      for (const cyc of openCycles) {
+        const lines = await PayrollLine.findAll({ where: { cycleId: cyc.id } });
+        for (const line of lines) {
+          let deds = typeof line.deductions === 'string' ? JSON.parse(line.deductions) : (line.deductions || {});
+          let eans = typeof line.earnings === 'string' ? JSON.parse(line.earnings) : (line.earnings || {});
+          let tots = typeof line.totals === 'string' ? JSON.parse(line.totals) : (line.totals || {});
+
+          const currentPf = Number(deds.provident_fund || 0);
+          const getB = (obj) => Number(obj?.basic_salary ?? obj?.BASIC_SALARY ?? obj?.['BASIC SALARY'] ?? obj?.basicSalary ?? obj?.basic ?? 0);
+          const getD = (obj) => Number(obj?.da ?? obj?.DA ?? obj?.['DA SALARY'] ?? obj?.da_salary ?? obj?.daSalary ?? 0);
+          const basicVal = getB(eans);
+          const daVal = getD(eans);
+
+          let pfBase = basicVal + daVal;
+          if (settings?.pfCalculationMode === "basic_minus_penalties") {
+            const earlyExitPenalty = Number(deds.early_exit_penalty || 0);
+            const latePenalty = Number(deds.late_punchin_penalty || 0);
+            pfBase = Math.max(0, pfBase - earlyExitPenalty - latePenalty);
+          }
+
+          if (pfBase >= 0 && currentPf > 0) {
+            let calcPf = Number((pfBase * 0.12).toFixed(2));
+            if (settings?.pfCapEnabled && Number(settings?.pfCapAmount || 0) > 0) {
+              calcPf = Math.min(calcPf, Number(settings.pfCapAmount));
+            }
+            if (calcPf !== currentPf) {
+              deds.provident_fund = calcPf;
+              const diff = calcPf - currentPf;
+              const oldTotDed = Number(tots.totalDeductions || 0);
+              tots.totalDeductions = Math.max(0, Number((oldTotDed + diff).toFixed(2)));
+              const gross = Number(tots.grossSalary || (Number(tots.totalEarnings || 0) + Number(tots.totalIncentives || 0)));
+              tots.netSalary = Math.max(0, Number((gross - tots.totalDeductions).toFixed(2)));
+              await line.update({ deductions: deds, totals: tots });
+            }
+          }
+        }
+      }
+    } catch (recalcErr) {
+      console.error("Failed to auto-update open payroll cycle lines:", recalcErr);
+    }
+
     return res.json({ success: true, settings });
   } catch (e) {
     console.error("Save salary settings error:", e);
@@ -19041,7 +19102,10 @@ router.get("/staff-salary-list", async (req, res) => {
             pfRate = Number(pfRule.valueNumber);
           }
 
-          let pfBase = Number(finalEarnings.basic_salary || 0) + Number(finalEarnings.da || 0);
+          const getB = (obj) => Number(obj?.basic_salary ?? obj?.BASIC_SALARY ?? obj?.['BASIC SALARY'] ?? obj?.basicSalary ?? obj?.basic ?? 0);
+          const getD = (obj) => Number(obj?.da ?? obj?.DA ?? obj?.['DA SALARY'] ?? obj?.da_salary ?? obj?.daSalary ?? 0);
+          let pfBase = getB(finalEarnings) + getD(finalEarnings);
+
           if (salarySettings?.pfCalculationMode === "basic_minus_penalties") {
             const earlyExitPenalty = Number(finalDeductions.early_exit_penalty || 0);
             const latePenalty = Number(finalDeductions.late_punchin_penalty || 0);
@@ -26972,23 +27036,15 @@ router.get("/reports/org-leave", async (req, res) => {
 
       // Headers
 
-      worksheet.columns = [
+      const columns = [
         { header: "Employee Name", key: "employeeName", width: 20 },
-
         { header: "Employee ID", key: "employeeId", width: 15 },
-
         { header: "Department", key: "department", width: 15 },
-
         { header: "Leave Type", key: "leaveType", width: 15 },
-
         { header: "Start Date", key: "startDate", width: 15 },
-
         { header: "End Date", key: "endDate", width: 15 },
-
         { header: "Days", key: "days", width: 10 },
-
         { header: "Status", key: "status", width: 10 },
-
         { header: "Reason", key: "reason", width: 25 },
       ];
 
@@ -27619,25 +27675,16 @@ router.get("/reports/org-applied-leave", async (req, res) => {
 
       const worksheet = workbook.addWorksheet("Applied Leave Report");
 
-      worksheet.columns = [
+      const columns = [
         { header: "Employee Name", key: "employeeName", width: 20 },
-
         { header: "Employee ID", key: "employeeId", width: 15 },
-
         { header: "Department", key: "department", width: 15 },
-
         { header: "Leave Type", key: "leaveType", width: 15 },
-
         { header: "Start Date", key: "startDate", width: 15 },
-
         { header: "End Date", key: "endDate", width: 15 },
-
         { header: "Days", key: "days", width: 10 },
-
         { header: "Status", key: "status", width: 10 },
-
         { header: "Reason", key: "reason", width: 25 },
-
         { header: "Applied On", key: "appliedOn", width: 15 },
       ];
 
@@ -27760,104 +27807,182 @@ router.get("/reports/org-leave-balance", async (req, res) => {
       if (empIds.length > 0) staffWhereClause.id = { [Op.in]: empIds };
     }
 
-    const staffList = await User.findAll({ where: staffWhereClause });
+    const staffList = await User.findAll({
+      where: staffWhereClause,
+      include: [{ model: StaffProfile, as: "profile" }]
+    });
 
     if (!staffList.length) return res.json({ success: true, data: [] });
 
     const balanceData = await LeaveBalance.findAll({
       where: {
         userId: staffList.map((s) => s.id),
-
         orgAccountId: orgId,
       },
-
       include: [
         {
           model: User,
-
           as: "user",
-
           include: [{ model: StaffProfile, as: "profile" }],
         },
       ],
     });
 
+    const defaultCategoryNames = {
+      cl: 'Casual Leave',
+      sl: 'Sick Leave',
+      el: 'Earned Leave',
+      pl: 'Paid Leave',
+      ml: 'Maternity Leave',
+      pt: 'Paternity Leave',
+      comp: 'Compensatory Off',
+      co: 'Compensatory Off',
+      lop: 'Loss of Pay'
+    };
+
+    const categoryNameMap = new Map();
+    try {
+      const { LeaveTemplate, LeaveTemplateCategory, StaffLeaveAssignment } = require('../models');
+      const allTemplates = await LeaveTemplate.findAll({
+        where: { orgAccountId: orgId },
+        include: [{ model: LeaveTemplateCategory, as: 'categories' }]
+      });
+      for (const tpl of (allTemplates || [])) {
+        for (const cat of (tpl.categories || [])) {
+          if (cat.key && cat.name) {
+            categoryNameMap.set(String(cat.key).toLowerCase(), cat.name);
+          }
+        }
+      }
+    } catch (_) {}
+
+    const reportRows = [];
+    const { LeaveTemplate, LeaveTemplateCategory, StaffLeaveAssignment } = require('../models');
+
+    for (const staff of staffList) {
+      const profile = staff.profile || await StaffProfile.findOne({ where: { userId: staff.id } });
+      const empName = profile?.name || staff.phone || "N/A";
+      const empPhone = staff.phone || "N/A";
+      const empDept = profile?.department || "N/A";
+
+      const processedKeys = new Set();
+
+      let templateCats = [];
+      try {
+        const asg = await StaffLeaveAssignment.findOne({
+          where: { userId: staff.id },
+          order: [['effectiveFrom', 'DESC'], ['id', 'DESC']],
+          include: [{ model: LeaveTemplate, as: 'template', include: [{ model: LeaveTemplateCategory, as: 'categories' }] }]
+        });
+        templateCats = asg?.template?.categories || [];
+      } catch (_) {}
+
+      if (templateCats.length > 0) {
+        for (const cat of templateCats) {
+          const keyLower = String(cat.key || '').toLowerCase();
+          if (!keyLower || processedKeys.has(keyLower)) continue;
+          processedKeys.add(keyLower);
+
+          const bal = balanceData.find(b => b.userId === staff.id && String(b.categoryKey || '').toLowerCase() === keyLower);
+          
+          let allocated = Number(bal?.allocated !== undefined ? bal.allocated : (cat.leaveCount || 0));
+          let used = Number(bal?.used || 0);
+          let encashed = Number(bal?.encashed || 0);
+          let remaining = Number(bal?.remaining !== undefined ? bal.remaining : Math.max(0, allocated - used - encashed));
+
+          const catDisplayName = cat.name || categoryNameMap.get(keyLower) || defaultCategoryNames[keyLower] || keyLower.toUpperCase();
+
+          reportRows.push({
+            id: bal?.id || `${staff.id}_${keyLower}`,
+            userId: staff.id,
+            employeeName: empName,
+            employeeId: empPhone,
+            department: empDept,
+            categoryKey: keyLower,
+            categoryName: catDisplayName,
+            category: catDisplayName,
+            allocated,
+            used,
+            encashed,
+            remaining,
+            user: staff
+          });
+        }
+      }
+
+      // Include any extra LeaveBalance records for staff
+      const staffBals = balanceData.filter(b => b.userId === staff.id);
+      for (const bal of staffBals) {
+        const keyLower = String(bal.categoryKey || '').toLowerCase();
+        if (!keyLower || processedKeys.has(keyLower)) continue;
+        processedKeys.add(keyLower);
+
+        const catDisplayName = categoryNameMap.get(keyLower) || defaultCategoryNames[keyLower] || keyLower.toUpperCase();
+        reportRows.push({
+          id: bal.id,
+          userId: staff.id,
+          employeeName: empName,
+          employeeId: empPhone,
+          department: empDept,
+          categoryKey: keyLower,
+          categoryName: catDisplayName,
+          category: catDisplayName,
+          allocated: bal.allocated || 0,
+          used: bal.used || 0,
+          encashed: bal.encashed || 0,
+          remaining: bal.remaining || 0,
+          user: staff
+        });
+      }
+    }
+
     if (format === "excel") {
       const workbook = new exceljs.Workbook();
-
       const worksheet = workbook.addWorksheet("Leave Balance Report");
 
       const columns = [
         { header: "Employee Name", key: "employeeName", width: 20 },
-
         { header: "Employee ID", key: "employeeId", width: 15 },
-
         { header: "Department", key: "department", width: 15 },
-
-        { header: "Category", key: "category", width: 15 },
-
+        { header: "Category", key: "category", width: 20 },
         { header: "Allocated", key: "allocated", width: 10 },
-
         { header: "Used", key: "used", width: 10 },
-
         { header: "Remaining", key: "remaining", width: 10 },
       ];
 
       worksheet.columns = columns;
 
-      // Header Section
-
       const org = await OrgAccount.findByPk(orgId);
-
       const companyRow = worksheet.getRow(1);
-
       worksheet.mergeCells(1, 1, 1, columns.length);
-
       companyRow.getCell(1).value = (org?.name || "Organization").toUpperCase();
-
       companyRow.getCell(1).font = { size: 18, bold: true };
-
       companyRow.getCell(1).alignment = { horizontal: "center" };
 
       const titleRow = worksheet.getRow(3);
-
       worksheet.mergeCells(3, 1, 3, columns.length);
-
       titleRow.getCell(1).value = "ORGANIZATION LEAVE BALANCE REPORT";
-
       titleRow.getCell(1).font = { size: 14, bold: true };
-
       titleRow.getCell(1).alignment = { horizontal: "center" };
 
       const infoRow = worksheet.getRow(4);
-
       worksheet.mergeCells(4, 1, 4, columns.length);
-
       infoRow.getCell(1).value = `Printed On: ${new Date().toLocaleString()}`;
-
       infoRow.getCell(1).alignment = { horizontal: "center" };
-
       infoRow.getCell(1).font = { bold: true };
 
       const headerRow = worksheet.getRow(6);
-
       columns.forEach((col, i) => {
         const cell = headerRow.getCell(i + 1);
-
         cell.value = col.header;
-
         cell.width = col.width;
-
         cell.font = { bold: true };
-
         cell.fill = {
           type: "pattern",
           pattern: "solid",
           fgColor: { argb: "FFE0E0E0" },
         };
-
         cell.alignment = { horizontal: "center" };
-
         cell.border = {
           top: { style: "thin" },
           left: { style: "thin" },
@@ -27866,21 +27991,15 @@ router.get("/reports/org-leave-balance", async (req, res) => {
         };
       });
 
-      balanceData.forEach((bal) => {
+      reportRows.forEach((row) => {
         worksheet.addRow({
-          employeeName: bal.user?.profile?.name || "N/A",
-
-          employeeId: bal.user?.phone || "N/A",
-
-          department: bal.user?.profile?.department || "N/A",
-
-          category: bal.categoryKey || "N/A",
-
-          allocated: bal.allocated || 0,
-
-          used: bal.used || 0,
-
-          remaining: bal.remaining || 0,
+          employeeName: row.employeeName,
+          employeeId: row.employeeId,
+          department: row.department,
+          category: row.categoryName,
+          allocated: row.allocated,
+          used: row.used,
+          remaining: row.remaining,
         });
       });
 
@@ -27888,47 +28007,18 @@ router.get("/reports/org-leave-balance", async (req, res) => {
         "Content-Type",
         "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
       );
-
       res.setHeader(
         "Content-Disposition",
         `attachment; filename=org-leave-balance-report.xlsx`,
       );
 
       await workbook.xlsx.write(res);
-
       return;
     }
 
-    console.log(
-      `[Report] Found ${balanceData.length} balances for ${staffList.length} staff members in Org ${orgId}`,
-    );
-
-    const formatted = balanceData.map((bal) => {
-      const name =
-        bal.user?.profile?.name ||
-        bal.user?.staffProfile?.name ||
-        bal.user?.phone ||
-        "N/A";
-      console.log(`[Report] Mapping bal ID ${bal.id} to Employee: ${name}`);
-      return {
-        id: bal.id,
-        userId: bal.userId,
-        employeeName: name,
-        employeeId: bal.user?.phone || "N/A",
-        department: bal.user?.profile?.department || "N/A",
-        categoryKey: bal.categoryKey,
-        allocated: bal.allocated,
-        used: bal.used,
-        encashed: bal.encashed,
-        remaining: bal.remaining,
-        user: bal.user,
-      };
-    });
-
-    res.json({ success: true, data: formatted });
+    res.json({ success: true, data: reportRows });
   } catch (error) {
     console.error("Org leave balance report error:", error);
-
     res.status(500).json({
       success: false,
       message: "Failed to generate leave balance report",
