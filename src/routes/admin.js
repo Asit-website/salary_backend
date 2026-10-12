@@ -83,6 +83,15 @@ const {
   DeviceInfo,
   Appraisal,
   Rating,
+  PmsAppraisalCycle,
+  PmsKraTemplate,
+  PmsKpiTemplate,
+  PmsGoal,
+  PmsRatingScale,
+  PmsSelfAppraisal,
+  PmsCompetency,
+  PmsCompetencyAssessment,
+  PmsSalaryRevision,
   OrgAccount,
   OvertimeRule,
   StaffOvertimeAssignment,
@@ -1528,6 +1537,2334 @@ router.put("/performance/ratings/:id", async (req, res) => {
     return res
       .status(500)
       .json({ success: false, message: "Failed to update rating" });
+  }
+});
+
+// --- PMS Appraisal Cycle Management Routes ---
+
+router.get(["/pms/cycles", "/pms/appraisal-cycles"], async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res);
+    if (!orgId) return;
+
+    const cycles = await PmsAppraisalCycle.findAll({
+      where: { orgAccountId: orgId },
+      order: [["createdAt", "DESC"]],
+    });
+
+    return res.json({ success: true, cycles });
+  } catch (e) {
+    console.error("Failed to load appraisal cycles:", e);
+    return res.status(500).json({ success: false, message: "Failed to load appraisal cycles" });
+  }
+});
+
+router.post("/pms/cycles", async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res);
+    if (!orgId) return;
+
+    const body = req.body || {};
+    const cycleName = String(body.cycleName || "").trim();
+    const financialYear = String(body.financialYear || "").trim();
+    const startDate = String(body.startDate || "").trim();
+    const endDate = String(body.endDate || "").trim();
+
+    if (!cycleName || !financialYear || !startDate || !endDate) {
+      return res.status(400).json({
+        success: false,
+        message: "Cycle Name, Financial Year, Start Date, and End Date are required",
+      });
+    }
+
+    const cycle = await PmsAppraisalCycle.create({
+      orgAccountId: orgId,
+      cycleName,
+      financialYear,
+      startDate,
+      endDate,
+      appraisalStartDate: body.appraisalStartDate || null,
+      selfAppraisalDeadline: body.selfAppraisalDeadline || null,
+      managerReviewDeadline: body.managerReviewDeadline || null,
+      hrReviewDeadline: body.hrReviewDeadline || null,
+      finalApprovalDeadline: body.finalApprovalDeadline || null,
+      frequency: body.frequency || "Annual",
+      frequencyPeriod: body.frequencyPeriod ? String(body.frequencyPeriod).trim() : null,
+      allowHrExtension: body.allowHrExtension !== undefined ? !!body.allowHrExtension : false,
+      status: body.status || "Draft",
+      description: body.description ? String(body.description) : null,
+      active: body.active !== undefined ? !!body.active : true,
+    });
+
+    return res.json({ success: true, cycle, message: "Appraisal Cycle created successfully" });
+  } catch (e) {
+    console.error("Failed to create appraisal cycle:", e);
+    return res.status(500).json({ success: false, message: "Failed to create appraisal cycle" });
+  }
+});
+
+router.put("/pms/cycles/:id", async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res);
+    if (!orgId) return;
+    const id = Number(req.params.id);
+
+    const cycle = await PmsAppraisalCycle.findOne({
+      where: { id, orgAccountId: orgId },
+    });
+
+    if (!cycle) {
+      return res.status(404).json({ success: false, message: "Appraisal cycle not found" });
+    }
+
+    const body = req.body || {};
+    const payload = {};
+
+    if (body.cycleName !== undefined) payload.cycleName = String(body.cycleName).trim();
+    if (body.financialYear !== undefined) payload.financialYear = String(body.financialYear).trim();
+    if (body.startDate !== undefined) payload.startDate = String(body.startDate).trim();
+    if (body.endDate !== undefined) payload.endDate = String(body.endDate).trim();
+    if (body.appraisalStartDate !== undefined) payload.appraisalStartDate = body.appraisalStartDate || null;
+    if (body.selfAppraisalDeadline !== undefined) payload.selfAppraisalDeadline = body.selfAppraisalDeadline || null;
+    if (body.managerReviewDeadline !== undefined) payload.managerReviewDeadline = body.managerReviewDeadline || null;
+    if (body.hrReviewDeadline !== undefined) payload.hrReviewDeadline = body.hrReviewDeadline || null;
+    if (body.finalApprovalDeadline !== undefined) payload.finalApprovalDeadline = body.finalApprovalDeadline || null;
+    if (body.frequency !== undefined) payload.frequency = String(body.frequency).trim();
+    if (body.frequencyPeriod !== undefined) payload.frequencyPeriod = body.frequencyPeriod ? String(body.frequencyPeriod).trim() : null;
+    if (body.allowHrExtension !== undefined) payload.allowHrExtension = !!body.allowHrExtension;
+    if (body.status !== undefined) payload.status = String(body.status).trim();
+    if (body.description !== undefined) payload.description = body.description ? String(body.description) : null;
+    if (body.active !== undefined) payload.active = !!body.active;
+
+    await cycle.update(payload);
+    return res.json({ success: true, cycle, message: "Appraisal Cycle updated successfully" });
+  } catch (e) {
+    console.error("Failed to update appraisal cycle:", e);
+    return res.status(500).json({ success: false, message: "Failed to update appraisal cycle" });
+  }
+});
+
+router.delete("/pms/cycles/:id", async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res);
+    if (!orgId) return;
+    const id = Number(req.params.id);
+
+    const cycle = await PmsAppraisalCycle.findOne({
+      where: { id, orgAccountId: orgId },
+    });
+
+    if (!cycle) {
+      return res.status(404).json({ success: false, message: "Appraisal cycle not found" });
+    }
+
+    await cycle.destroy();
+    return res.json({ success: true, message: "Appraisal cycle deleted successfully" });
+  } catch (e) {
+    console.error("Failed to delete appraisal cycle:", e);
+    return res.status(500).json({ success: false, message: "Failed to delete appraisal cycle" });
+  }
+});
+
+// --- PMS KRA Management Routes ---
+
+router.get("/pms/kras", async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res);
+    if (!orgId) return;
+
+    const { department, designation, category } = req.query;
+    const where = { orgAccountId: orgId };
+    if (department) where.department = department;
+    if (designation) where.designation = designation;
+    if (category) where.category = category;
+
+    const kras = await PmsKraTemplate.findAll({
+      where,
+      include: [{ model: PmsKpiTemplate, as: "kpis" }],
+      order: [["id", "DESC"]],
+    });
+
+    return res.json({ success: true, kras });
+  } catch (e) {
+    console.error("Failed to load KRA templates:", e);
+    return res.status(500).json({ success: false, message: "Failed to load KRA templates" });
+  }
+});
+
+router.post("/pms/kras", async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res);
+    if (!orgId) return;
+
+    const body = req.body || {};
+    const kraName = String(body.kraName || "").trim();
+
+    if (!kraName) {
+      return res.status(400).json({
+        success: false,
+        message: "KRA Name is required",
+      });
+    }
+
+    const kra = await PmsKraTemplate.create({
+      orgAccountId: orgId,
+      kraName,
+      description: body.description ? String(body.description) : null,
+      department: body.department ? String(body.department).trim() : null,
+      designation: body.designation ? String(body.designation).trim() : null,
+      category: body.category ? String(body.category).trim() : "General",
+      weightage: body.weightage !== undefined ? Number(body.weightage) : 0,
+      measurementType: body.measurementType ? String(body.measurementType).trim() : "Percentage",
+      target: body.target !== undefined && body.target !== null ? String(body.target) : null,
+      minTarget: body.minTarget !== undefined && body.minTarget !== null ? String(body.minTarget) : null,
+      maxTarget: body.maxTarget !== undefined && body.maxTarget !== null ? String(body.maxTarget) : null,
+      unit: body.unit ? String(body.unit).trim() : "%",
+      active: body.active !== undefined ? !!body.active : true,
+    });
+
+    return res.json({ success: true, kra, message: "KRA Template created successfully" });
+  } catch (e) {
+    console.error("Failed to create KRA template:", e);
+    return res.status(500).json({ success: false, message: "Failed to create KRA template" });
+  }
+});
+
+router.put("/pms/kras/:id", async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res);
+    if (!orgId) return;
+    const id = Number(req.params.id);
+
+    const kra = await PmsKraTemplate.findOne({
+      where: { id, orgAccountId: orgId },
+    });
+
+    if (!kra) {
+      return res.status(404).json({ success: false, message: "KRA Template not found" });
+    }
+
+    const body = req.body || {};
+    const payload = {};
+
+    if (body.kraName !== undefined) payload.kraName = String(body.kraName).trim();
+    if (body.description !== undefined) payload.description = body.description ? String(body.description) : null;
+    if (body.department !== undefined) payload.department = body.department ? String(body.department).trim() : null;
+    if (body.designation !== undefined) payload.designation = body.designation ? String(body.designation).trim() : null;
+    if (body.category !== undefined) payload.category = body.category ? String(body.category).trim() : "General";
+    if (body.weightage !== undefined) payload.weightage = Number(body.weightage);
+    if (body.measurementType !== undefined) payload.measurementType = String(body.measurementType).trim();
+    if (body.target !== undefined) payload.target = body.target !== null ? String(body.target) : null;
+    if (body.minTarget !== undefined) payload.minTarget = body.minTarget !== null ? String(body.minTarget) : null;
+    if (body.maxTarget !== undefined) payload.maxTarget = body.maxTarget !== null ? String(body.maxTarget) : null;
+    if (body.unit !== undefined) payload.unit = body.unit ? String(body.unit).trim() : null;
+    if (body.active !== undefined) payload.active = !!body.active;
+
+    await kra.update(payload);
+    return res.json({ success: true, kra, message: "KRA Template updated successfully" });
+  } catch (e) {
+    console.error("Failed to update KRA template:", e);
+    return res.status(500).json({ success: false, message: "Failed to update KRA template" });
+  }
+});
+
+router.delete("/pms/kras/:id", async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res);
+    if (!orgId) return;
+    const id = Number(req.params.id);
+
+    const kra = await PmsKraTemplate.findOne({
+      where: { id, orgAccountId: orgId },
+    });
+
+    if (!kra) {
+      return res.status(404).json({ success: false, message: "KRA Template not found" });
+    }
+
+    await kra.destroy();
+    return res.json({ success: true, message: "KRA Template deleted successfully" });
+  } catch (e) {
+    console.error("Failed to delete KRA template:", e);
+    return res.status(500).json({ success: false, message: "Failed to delete KRA template" });
+  }
+});
+
+// --- PMS KPI Management Routes ---
+
+router.get("/pms/kpis", async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res);
+    if (!orgId) return;
+
+    const { kraTemplateId } = req.query;
+    const where = { orgAccountId: orgId };
+    if (kraTemplateId) where.kraTemplateId = Number(kraTemplateId);
+
+    const kpis = await PmsKpiTemplate.findAll({
+      where,
+      include: [{ model: PmsKraTemplate, as: "kra", attributes: ["id", "kraName", "category", "weightage"] }],
+      order: [["id", "DESC"]],
+    });
+
+    return res.json({ success: true, kpis });
+  } catch (e) {
+    console.error("Failed to load KPI templates:", e);
+    return res.status(500).json({ success: false, message: "Failed to load KPI templates" });
+  }
+});
+
+router.post("/pms/kpis", async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res);
+    if (!orgId) return;
+
+    const body = req.body || {};
+    const kpiName = String(body.kpiName || "").trim();
+    const kraTemplateId = Number(body.kraTemplateId);
+
+    if (!kpiName || !kraTemplateId || isNaN(kraTemplateId)) {
+      return res.status(400).json({
+        success: false,
+        message: "KPI Name and valid Parent KRA are required",
+      });
+    }
+
+    const kra = await PmsKraTemplate.findOne({ where: { id: kraTemplateId, orgAccountId: orgId } });
+    if (!kra) {
+      return res.status(404).json({ success: false, message: "Parent KRA not found" });
+    }
+
+    const kpi = await PmsKpiTemplate.create({
+      orgAccountId: orgId,
+      kraTemplateId,
+      kpiName,
+      description: body.description ? String(body.description) : null,
+      target: body.target !== undefined && body.target !== null ? String(body.target) : null,
+      unit: body.unit ? String(body.unit).trim() : null,
+      weightage: body.weightage !== undefined ? Number(body.weightage) : 0,
+      measurementMethod: body.measurementMethod ? String(body.measurementMethod).trim() : "Direct Value",
+      dataSource: body.dataSource ? String(body.dataSource).trim() : "Manual Input",
+      frequency: body.frequency ? String(body.frequency).trim() : "Monthly",
+      active: body.active !== undefined ? !!body.active : true,
+    });
+
+    return res.json({ success: true, kpi, message: "KPI Template created successfully" });
+  } catch (e) {
+    console.error("Failed to create KPI template:", e);
+    return res.status(500).json({ success: false, message: "Failed to create KPI template" });
+  }
+});
+
+router.put("/pms/kpis/:id", async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res);
+    if (!orgId) return;
+    const id = Number(req.params.id);
+
+    const kpi = await PmsKpiTemplate.findOne({
+      where: { id, orgAccountId: orgId },
+    });
+
+    if (!kpi) {
+      return res.status(404).json({ success: false, message: "KPI Template not found" });
+    }
+
+    const body = req.body || {};
+    const payload = {};
+
+    if (body.kraTemplateId !== undefined) payload.kraTemplateId = Number(body.kraTemplateId);
+    if (body.kpiName !== undefined) payload.kpiName = String(body.kpiName).trim();
+    if (body.description !== undefined) payload.description = body.description ? String(body.description) : null;
+    if (body.target !== undefined) payload.target = body.target !== null ? String(body.target) : null;
+    if (body.unit !== undefined) payload.unit = body.unit ? String(body.unit).trim() : null;
+    if (body.weightage !== undefined) payload.weightage = Number(body.weightage);
+    if (body.measurementMethod !== undefined) payload.measurementMethod = String(body.measurementMethod).trim();
+    if (body.dataSource !== undefined) payload.dataSource = String(body.dataSource).trim();
+    if (body.frequency !== undefined) payload.frequency = String(body.frequency).trim();
+    if (body.active !== undefined) payload.active = !!body.active;
+
+    await kpi.update(payload);
+    return res.json({ success: true, kpi, message: "KPI Template updated successfully" });
+  } catch (e) {
+    console.error("Failed to update KPI template:", e);
+    return res.status(500).json({ success: false, message: "Failed to update KPI template" });
+  }
+});
+
+router.delete("/pms/kpis/:id", async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res);
+    if (!orgId) return;
+    const id = Number(req.params.id);
+
+    const kpi = await PmsKpiTemplate.findOne({
+      where: { id, orgAccountId: orgId },
+    });
+
+    if (!kpi) {
+      return res.status(404).json({ success: false, message: "KPI Template not found" });
+    }
+
+    await kpi.destroy();
+    return res.json({ success: true, message: "KPI Template deleted successfully" });
+  } catch (e) {
+    console.error("Failed to delete KPI template:", e);
+    return res.status(500).json({ success: false, message: "Failed to delete KPI template" });
+  }
+});
+
+// --- PMS Goal Setting & Assignment Routes ---
+
+router.get("/pms/goals", async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res);
+    if (!orgId) return;
+
+    const { userId, cycleId, priority, status } = req.query;
+    const where = { orgAccountId: orgId };
+    if (userId) where.userId = Number(userId);
+    if (cycleId) where.cycleId = Number(cycleId);
+    if (priority) where.priority = priority;
+    if (status) where.status = status;
+
+    const goals = await PmsGoal.findAll({
+      where,
+      include: [
+        {
+          model: User,
+          as: "employee",
+          attributes: ["id", "phone"],
+          include: [{ model: StaffProfile, as: "profile", attributes: ["name", "department", "designation", "staffId"] }],
+        },
+        { model: PmsAppraisalCycle, as: "cycle", attributes: ["id", "cycleName", "financialYear"] },
+        { model: PmsKpiTemplate, as: "kpi", attributes: ["id", "kpiName", "unit"] },
+      ],
+      order: [["id", "DESC"]],
+    });
+
+    return res.json({ success: true, goals });
+  } catch (e) {
+    console.error("Failed to load PMS goals:", e);
+    return res.status(500).json({ success: false, message: "Failed to load PMS goals" });
+  }
+});
+
+router.post("/pms/goals", async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res);
+    if (!orgId) return;
+
+    const body = req.body || {};
+    const userId = Number(body.userId);
+    const goalText = String(body.goal || "").trim();
+
+    if (!userId || isNaN(userId) || !goalText) {
+      return res.status(400).json({
+        success: false,
+        message: "Target Employee and Goal Title are required",
+      });
+    }
+
+    const employee = await User.findOne({ where: { id: userId, orgAccountId: orgId } });
+    if (!employee) {
+      return res.status(404).json({ success: false, message: "Employee not found in organization" });
+    }
+
+    let assignedByName = null;
+    if (req.user) {
+      const assignerProfile = await StaffProfile.findOne({ where: { userId: req.user.id } });
+      assignedByName = assignerProfile?.name || req.user.phone || "Admin/Manager";
+    }
+
+    const newGoal = await PmsGoal.create({
+      orgAccountId: orgId,
+      userId,
+      cycleId: body.cycleId ? Number(body.cycleId) : null,
+      kpiId: body.kpiId ? Number(body.kpiId) : null,
+      goal: goalText,
+      description: body.description ? String(body.description) : null,
+      target: body.target !== undefined && body.target !== null ? String(body.target) : null,
+      unit: body.unit ? String(body.unit).trim() : null,
+      startDate: body.startDate ? String(body.startDate).trim() : null,
+      endDate: body.endDate ? String(body.endDate).trim() : null,
+      weightage: body.weightage !== undefined ? Number(body.weightage) : 0,
+      priority: body.priority ? String(body.priority).trim() : "Medium",
+      status: body.status ? String(body.status).trim() : "In Progress",
+      assignedBy: req.user ? req.user.id : null,
+      assignedByName,
+      active: body.active !== undefined ? !!body.active : true,
+    });
+
+    return res.json({ success: true, goal: newGoal, message: "Goal assigned successfully" });
+  } catch (e) {
+    console.error("Failed to assign PMS goal:", e);
+    return res.status(500).json({ success: false, message: "Failed to assign PMS goal" });
+  }
+});
+
+// Template/Group Auto-Assignment (based on Department, Designation, Location, Staff Type)
+router.post("/pms/goals/template-assign", async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res);
+    if (!orgId) return;
+
+    const body = req.body || {};
+    const { department, designation, staffType, goal, description, target, unit, startDate, endDate, weightage, priority, cycleId, kpiId } = body;
+
+    const goalText = String(goal || "").trim();
+    if (!goalText) {
+      return res.status(400).json({ success: false, message: "Goal Title is required" });
+    }
+
+    const profileWhere = {};
+    if (department) profileWhere.department = String(department).trim();
+    if (designation) profileWhere.designation = String(designation).trim();
+    if (staffType) profileWhere.staffType = String(staffType).trim();
+
+    const staffList = await User.findAll({
+      where: { orgAccountId: orgId, role: "staff" },
+      include: [{
+        model: StaffProfile,
+        as: "profile",
+        where: Object.keys(profileWhere).length > 0 ? profileWhere : undefined,
+        required: Object.keys(profileWhere).length > 0,
+      }],
+    });
+
+    if (!staffList || staffList.length === 0) {
+      return res.status(404).json({ success: false, message: "No matching employees found for the selected criteria" });
+    }
+
+    let assignedByName = null;
+    if (req.user) {
+      const assignerProfile = await StaffProfile.findOne({ where: { userId: req.user.id } });
+      assignedByName = assignerProfile?.name || req.user.phone || "Admin/Manager";
+    }
+
+    const createdGoals = [];
+    for (const s of staffList) {
+      const newGoal = await PmsGoal.create({
+        orgAccountId: orgId,
+        userId: s.id,
+        cycleId: cycleId ? Number(cycleId) : null,
+        kpiId: kpiId ? Number(kpiId) : null,
+        goal: goalText,
+        description: description ? String(description) : null,
+        target: target !== undefined && target !== null ? String(target) : null,
+        unit: unit ? String(unit).trim() : null,
+        startDate: startDate ? String(startDate).trim() : null,
+        endDate: endDate ? String(endDate).trim() : null,
+        weightage: weightage !== undefined ? Number(weightage) : 0,
+        priority: priority ? String(priority).trim() : "Medium",
+        status: "In Progress",
+        assignedBy: req.user ? req.user.id : null,
+        assignedByName,
+        active: true,
+      });
+      createdGoals.push(newGoal);
+    }
+
+    return res.json({
+      success: true,
+      assignedCount: createdGoals.length,
+      message: `Successfully assigned goal to ${createdGoals.length} employees`,
+    });
+  } catch (e) {
+    console.error("Failed to auto-assign template goals:", e);
+    return res.status(500).json({ success: false, message: "Failed to auto-assign template goals" });
+  }
+});
+
+// Download Sample Excel Template for PMS Goal Upload
+router.get("/pms/goals/sample-template", async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res);
+    if (!orgId) return;
+
+    const workbook = new exceljs.Workbook();
+    const worksheet = workbook.addWorksheet("PMS Goals Template");
+
+    worksheet.columns = [
+      { header: "Staff Code or Phone", key: "staffId", width: 22 },
+      { header: "Goal Title", key: "goal", width: 35 },
+      { header: "Weightage (%)", key: "weightage", width: 16 },
+      { header: "Target Value", key: "target", width: 16 },
+      { header: "Unit", key: "unit", width: 12 },
+      { header: "Linked KPI ID or Name", key: "kpi", width: 25 },
+      { header: "Appraisal Cycle ID or Name", key: "cycle", width: 28 },
+      { header: "Start Date (YYYY-MM-DD)", key: "startDate", width: 22 },
+      { header: "End Date (YYYY-MM-DD)", key: "endDate", width: 22 },
+      { header: "Priority", key: "priority", width: 14 },
+      { header: "Goal Status", key: "status", width: 16 },
+      { header: "Description / Guidelines", key: "description", width: 35 },
+    ];
+
+    // Format Header Row
+    const headerRow = worksheet.getRow(1);
+    headerRow.font = { bold: true, color: { argb: "FFFFFF" } };
+    headerRow.fill = {
+      type: "pattern",
+      pattern: "solid",
+      fgColor: { argb: "1677FF" },
+    };
+
+    // Add Sample Rows
+    worksheet.addRow({
+      staffId: "STF001",
+      goal: "Achieve ₹50 Lakh Sales",
+      weightage: 30,
+      target: "5000000",
+      unit: "₹",
+      kpi: "Annual Sales Revenue Target",
+      cycle: "Annual Review FY2026-2027",
+      startDate: "2026-04-01",
+      endDate: "2027-03-31",
+      priority: "High",
+      status: "In Progress",
+      description: "Target for Q1-Q4 Sales Growth",
+    });
+
+    worksheet.addRow({
+      staffId: "9876543210",
+      goal: "Complete 12 Client Onboardings",
+      weightage: 20,
+      target: "12",
+      unit: "Clients",
+      kpi: "New Client Acquisition Rate",
+      cycle: "Mid-Year Appraisal 2026",
+      startDate: "2026-04-01",
+      endDate: "2026-09-30",
+      priority: "Medium",
+      status: "Not Started",
+      description: "H1 onboarding milestone",
+    });
+
+    res.setHeader(
+      "Content-Type",
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    );
+    res.setHeader(
+      "Content-Disposition",
+      "attachment; filename=PMS_Goals_Import_Template.xlsx"
+    );
+
+    await workbook.xlsx.write(res);
+    return res.end();
+  } catch (e) {
+    console.error("Download PMS goals template error:", e);
+    return res.status(500).json({ success: false, message: "Failed to generate template" });
+  }
+});
+
+// Bulk Upload Excel/CSV File or Rows Assignment
+router.post("/pms/goals/bulk-upload", (req, res, next) => upload.single("file")(req, res, next), async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res);
+    if (!orgId) return;
+
+    let rowsToProcess = [];
+
+    if (req.file) {
+      // Parse uploaded Excel (.xlsx) file
+      try {
+        const workbook = new exceljs.Workbook();
+        if (req.file.buffer) {
+          await workbook.xlsx.load(req.file.buffer);
+        } else if (req.file.path) {
+          await workbook.xlsx.readFile(req.file.path);
+        }
+        const worksheet = workbook.getWorksheet(1);
+
+        if (worksheet) {
+          const headerRow = worksheet.getRow(1);
+          const headers = [];
+          headerRow.eachCell((cell, colNumber) => {
+            headers[colNumber] = String(cell.value || "").trim();
+          });
+
+          worksheet.eachRow((row, rowNumber) => {
+            if (rowNumber === 1) return; // skip header
+            const rowData = {};
+            row.eachCell((cell, colNumber) => {
+              const hName = (headers[colNumber] || "").toLowerCase();
+              let val = cell.value;
+              if (val && typeof val === "object" && val.result !== undefined) val = val.result;
+              if (val && typeof val === "object" && val.text !== undefined) val = val.text;
+
+              if (hName.includes("staff") || hName.includes("phone") || hName.includes("code") || hName.includes("employee")) {
+                rowData.staffId = val;
+              } else if (hName.includes("title") || hName.includes("goal")) {
+                rowData.goal = val;
+              } else if (hName.includes("target")) {
+                rowData.target = val;
+              } else if (hName.includes("unit")) {
+                rowData.unit = val;
+              } else if (hName.includes("weight")) {
+                rowData.weightage = val;
+              } else if (hName.includes("kpi")) {
+                rowData.kpi = val;
+              } else if (hName.includes("cycle")) {
+                rowData.cycle = val;
+              } else if (hName.includes("prio")) {
+                rowData.priority = val;
+              } else if (hName.includes("status")) {
+                rowData.status = val;
+              } else if (hName.includes("start")) {
+                rowData.startDate = val;
+              } else if (hName.includes("end")) {
+                rowData.endDate = val;
+              } else if (hName.includes("desc") || hName.includes("note") || hName.includes("guide")) {
+                rowData.description = val;
+              }
+            });
+
+            if (rowData.staffId || rowData.goal) {
+              rowsToProcess.push(rowData);
+            }
+          });
+        }
+      } catch (parseErr) {
+        console.error("Excel buffer parse error:", parseErr);
+      }
+    }
+
+    if (rowsToProcess.length === 0 && req.body.rows) {
+      if (typeof req.body.rows === "string") {
+        try {
+          rowsToProcess = JSON.parse(req.body.rows);
+        } catch (_) {
+          rowsToProcess = [];
+        }
+      } else if (Array.isArray(req.body.rows)) {
+        rowsToProcess = req.body.rows;
+      }
+    }
+
+    if (!Array.isArray(rowsToProcess) || rowsToProcess.length === 0) {
+      return res.status(400).json({ success: false, message: "No valid rows or file data found for bulk upload" });
+    }
+
+    const allStaff = await User.findAll({
+      where: { orgAccountId: orgId, role: "staff" },
+      include: [{ model: StaffProfile, as: "profile" }],
+    });
+
+    const staffMap = new Map();
+    allStaff.forEach(s => {
+      if (s.phone) staffMap.set(String(s.phone).trim(), s);
+      if (s.profile?.staffId) staffMap.set(String(s.profile.staffId).trim(), s);
+      staffMap.set(String(s.id), s);
+    });
+
+    // Auxiliary lookup maps for KPI and Appraisal Cycle
+    const allKpis = await PmsKpiTemplate.findAll({ where: { orgAccountId: orgId } });
+    const kpiMap = new Map();
+    allKpis.forEach(k => {
+      kpiMap.set(String(k.id), k.id);
+      kpiMap.set(String(k.kpiName).trim().toLowerCase(), k.id);
+    });
+
+    const allCycles = await PmsAppraisalCycle.findAll({ where: { orgAccountId: orgId } });
+    const cycleMap = new Map();
+    allCycles.forEach(c => {
+      cycleMap.set(String(c.id), c.id);
+      cycleMap.set(String(c.cycleName).trim().toLowerCase(), c.id);
+    });
+
+    let assignedByName = null;
+    if (req.user) {
+      const assignerProfile = await StaffProfile.findOne({ where: { userId: req.user.id } });
+      assignedByName = assignerProfile?.name || req.user.phone || "Admin/Manager";
+    }
+
+    let successCount = 0;
+    let failedCount = 0;
+    const errors = [];
+
+    for (let i = 0; i < rowsToProcess.length; i++) {
+      const row = rowsToProcess[i];
+      const identifier = String(row.phone || row.employeePhone || row.staffId || row.userId || "").trim();
+      const goalTitle = String(row.goal || row.goalTitle || "").trim();
+
+      if (!identifier || !goalTitle) {
+        failedCount++;
+        errors.push(`Row ${i + 1}: Missing Employee ID/Phone or Goal Title`);
+        continue;
+      }
+
+      const targetStaff = staffMap.get(identifier);
+      if (!targetStaff) {
+        failedCount++;
+        errors.push(`Row ${i + 1}: Employee '${identifier}' not found`);
+        continue;
+      }
+
+      // Resolve linked KPI and Cycle
+      let resolvedKpiId = row.kpiId ? Number(row.kpiId) : null;
+      if (!resolvedKpiId && row.kpi) {
+        resolvedKpiId = kpiMap.get(String(row.kpi).trim().toLowerCase()) || null;
+      }
+
+      let resolvedCycleId = row.cycleId ? Number(row.cycleId) : null;
+      if (!resolvedCycleId && row.cycle) {
+        resolvedCycleId = cycleMap.get(String(row.cycle).trim().toLowerCase()) || null;
+      }
+
+      await PmsGoal.create({
+        orgAccountId: orgId,
+        userId: targetStaff.id,
+        cycleId: resolvedCycleId,
+        kpiId: resolvedKpiId,
+        goal: goalTitle,
+        description: row.description ? String(row.description) : null,
+        target: row.target !== undefined && row.target !== null ? String(row.target) : null,
+        unit: row.unit ? String(row.unit).trim() : null,
+        startDate: row.startDate ? String(row.startDate).trim() : null,
+        endDate: row.endDate ? String(row.endDate).trim() : null,
+        weightage: row.weightage !== undefined ? Number(row.weightage) : 0,
+        priority: row.priority ? String(row.priority).trim() : "Medium",
+        status: row.status ? String(row.status).trim() : "In Progress",
+        assignedBy: req.user ? req.user.id : null,
+        assignedByName,
+        active: true,
+      });
+
+      successCount++;
+    }
+
+    return res.json({
+      success: true,
+      successCount,
+      failedCount,
+      errors,
+      message: `Bulk Goal Upload: ${successCount} assigned successfully, ${failedCount} failed`,
+    });
+  } catch (e) {
+    console.error("Bulk upload PMS goals error:", e);
+    return res.status(500).json({ success: false, message: "Failed to process bulk upload" });
+  }
+});
+
+router.put("/pms/goals/:id", async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res);
+    if (!orgId) return;
+    const id = Number(req.params.id);
+
+    const goalObj = await PmsGoal.findOne({
+      where: { id, orgAccountId: orgId },
+    });
+
+    if (!goalObj) {
+      return res.status(404).json({ success: false, message: "Goal not found" });
+    }
+
+    const body = req.body || {};
+    const payload = {};
+
+    if (body.userId !== undefined) payload.userId = Number(body.userId);
+    if (body.cycleId !== undefined) payload.cycleId = body.cycleId ? Number(body.cycleId) : null;
+    if (body.kpiId !== undefined) payload.kpiId = body.kpiId ? Number(body.kpiId) : null;
+    if (body.goal !== undefined) payload.goal = String(body.goal).trim();
+    if (body.description !== undefined) payload.description = body.description ? String(body.description) : null;
+    if (body.target !== undefined) payload.target = body.target !== null ? String(body.target) : null;
+    if (body.achievement !== undefined) payload.achievement = body.achievement !== null ? String(body.achievement) : null;
+    if (body.achievementPct !== undefined) payload.achievementPct = body.achievementPct !== null ? Number(body.achievementPct) : null;
+    if (body.unit !== undefined) payload.unit = body.unit ? String(body.unit).trim() : null;
+    if (body.startDate !== undefined) payload.startDate = body.startDate ? String(body.startDate).trim() : null;
+    if (body.endDate !== undefined) payload.endDate = body.endDate ? String(body.endDate).trim() : null;
+    if (body.weightage !== undefined) payload.weightage = Number(body.weightage);
+    if (body.priority !== undefined) payload.priority = String(body.priority).trim();
+    if (body.status !== undefined) payload.status = String(body.status).trim();
+    if (body.employeeComment !== undefined) payload.employeeComment = body.employeeComment ? String(body.employeeComment) : null;
+    if (body.managerComment !== undefined) payload.managerComment = body.managerComment ? String(body.managerComment) : null;
+    if (body.supportingDocument !== undefined) payload.supportingDocument = body.supportingDocument ? String(body.supportingDocument) : null;
+    if (body.active !== undefined) payload.active = !!body.active;
+
+    await goalObj.update(payload);
+    return res.json({ success: true, goal: goalObj, message: "Goal updated successfully" });
+  } catch (e) {
+    console.error("Failed to update PMS goal:", e);
+    return res.status(500).json({ success: false, message: "Failed to update PMS goal" });
+  }
+});
+
+// Update Goal Progress (Section 9)
+router.put("/pms/goals/:id/progress", async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res);
+    if (!orgId) return;
+    const id = Number(req.params.id);
+
+    const goalObj = await PmsGoal.findOne({
+      where: { id, orgAccountId: orgId },
+    });
+
+    if (!goalObj) {
+      return res.status(404).json({ success: false, message: "Goal not found" });
+    }
+
+    const { achievement, achievementPct, status, employeeComment, managerComment, supportingDocument } = req.body || {};
+
+    const payload = {};
+    if (achievement !== undefined) payload.achievement = achievement !== null ? String(achievement) : null;
+    if (achievementPct !== undefined) payload.achievementPct = achievementPct !== null ? Number(achievementPct) : null;
+    if (status) payload.status = String(status).trim();
+    if (employeeComment !== undefined) payload.employeeComment = employeeComment ? String(employeeComment) : null;
+    if (managerComment !== undefined) payload.managerComment = managerComment ? String(managerComment) : null;
+    if (supportingDocument !== undefined) payload.supportingDocument = supportingDocument ? String(supportingDocument) : null;
+
+    await goalObj.update(payload);
+    return res.json({ success: true, goal: goalObj, message: "Goal progress updated successfully" });
+  } catch (e) {
+    console.error("Update goal progress error:", e);
+    return res.status(500).json({ success: false, message: "Failed to update goal progress" });
+  }
+});
+
+router.delete("/pms/goals/:id", async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res);
+    if (!orgId) return;
+    const id = Number(req.params.id);
+
+    const goalObj = await PmsGoal.findOne({
+      where: { id, orgAccountId: orgId },
+    });
+
+    if (!goalObj) {
+      return res.status(404).json({ success: false, message: "Goal not found" });
+    }
+
+    await goalObj.destroy();
+    return res.json({ success: true, message: "Goal deleted successfully" });
+  } catch (e) {
+    console.error("Failed to delete PMS goal:", e);
+    return res.status(500).json({ success: false, message: "Failed to delete PMS goal" });
+  }
+});
+
+// --- Section 11: Rating System & Scales Routes ---
+
+// Default 5-Point Rating Scale seed levels (Doc exact specifications)
+const DEFAULT_5_POINT_LEVELS = [
+  { score: 5, title: "Outstanding", description: "Consistently exceeds expectations in all performance criteria", minPct: 90, maxPct: 100, color: "#52c41a" },
+  { score: 4, title: "Exceeds Expectations", description: "Frequently exceeds requirements and achieves high standards", minPct: 75, maxPct: 89, color: "#1677ff" },
+  { score: 3, title: "Meets Expectations", description: "Fulfills position requirements and targets consistently", minPct: 60, maxPct: 74, color: "#fa8c16" },
+  { score: 2, title: "Needs Improvement", description: "Performance is below expectations in some areas", minPct: 40, maxPct: 59, color: "#faad14" },
+  { score: 1, title: "Unsatisfactory", description: "Consistently fails to meet basic position requirements", minPct: 0, maxPct: 39, color: "#f5222d" },
+];
+
+router.get("/pms/rating-scales", async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res);
+    if (!orgId) return;
+
+    let scales = await PmsRatingScale.findAll({
+      where: { orgAccountId: orgId },
+      order: [["isDefault", "DESC"], ["id", "ASC"]],
+    });
+
+    if (scales.length === 0) {
+      const defaultLevels = [
+        { score: 5, minScore: 4.50, maxScore: 5.00, title: 'Outstanding', description: 'Consistently exceeds expectations in all performance criteria', minPct: 90, maxPct: 100, color: '#52c41a' },
+        { score: 4, minScore: 3.75, maxScore: 4.49, title: 'Exceeds Expectations', description: 'Frequently exceeds requirements and achieves high standards', minPct: 75, maxPct: 89.99, color: '#1677ff' },
+        { score: 3, minScore: 3.00, maxScore: 3.74, title: 'Meets Expectations', description: 'Fulfills position requirements and targets consistently', minPct: 60, maxPct: 74.99, color: '#fa8c16' },
+        { score: 2, minScore: 2.00, maxScore: 2.99, title: 'Needs Improvement', description: 'Performance is below expectations in some areas', minPct: 40, maxPct: 59.99, color: '#faad14' },
+        { score: 1, minScore: 0.00, maxScore: 1.99, title: 'Unsatisfactory', description: 'Consistently fails to meet basic position requirements', minPct: 0, maxPct: 39.99, color: '#f5222d' },
+      ];
+
+      await PmsRatingScale.create({
+        orgAccountId: orgId,
+        scaleName: 'Standard 5-Point Rating Scale',
+        scaleType: '5-Point',
+        maxPoints: 5,
+        description: 'Standard 5-point performance rating scale with configurable score ranges.',
+        isDefault: true,
+        levels: defaultLevels,
+        active: true,
+      });
+
+      scales = await PmsRatingScale.findAll({
+        where: { orgAccountId: orgId },
+        order: [["isDefault", "DESC"], ["id", "ASC"]],
+      });
+    }
+
+    return res.json({ success: true, scales });
+  } catch (e) {
+    console.error("Fetch PMS rating scales error:", e);
+    return res.status(500).json({ success: false, message: "Failed to load rating scales" });
+  }
+});
+
+router.post("/pms/rating-scales", async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res);
+    if (!orgId) return;
+
+    const { scaleName, scaleType, maxPoints, description, isDefault, levels } = req.body || {};
+    const name = String(scaleName || "").trim();
+
+    if (!name) {
+      return res.status(400).json({ success: false, message: "Rating Scale Name is required" });
+    }
+
+    if (isDefault) {
+      await PmsRatingScale.update({ isDefault: false }, { where: { orgAccountId: orgId } });
+    }
+
+    const newScale = await PmsRatingScale.create({
+      orgAccountId: orgId,
+      scaleName: name,
+      scaleType: scaleType || "Custom",
+      maxPoints: maxPoints ? Number(maxPoints) : 5,
+      description: description ? String(description) : null,
+      isDefault: !!isDefault,
+      levels: Array.isArray(levels) ? levels : DEFAULT_5_POINT_LEVELS,
+      active: true,
+    });
+
+    return res.json({ success: true, scale: newScale, message: "Rating Scale created successfully" });
+  } catch (e) {
+    console.error("Create PMS rating scale error:", e);
+    return res.status(500).json({ success: false, message: "Failed to create rating scale" });
+  }
+});
+
+router.put("/pms/rating-scales/:id", async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res);
+    if (!orgId) return;
+    const id = Number(req.params.id);
+
+    const scale = await PmsRatingScale.findOne({
+      where: { id, orgAccountId: orgId },
+    });
+
+    if (!scale) {
+      return res.status(404).json({ success: false, message: "Rating Scale not found" });
+    }
+
+    const { scaleName, scaleType, maxPoints, description, isDefault, levels, active } = req.body || {};
+
+    if (isDefault) {
+      await PmsRatingScale.update({ isDefault: false }, { where: { orgAccountId: orgId } });
+    }
+
+    const payload = {};
+    if (scaleName !== undefined) payload.scaleName = String(scaleName).trim();
+    if (scaleType !== undefined) payload.scaleType = String(scaleType).trim();
+    if (maxPoints !== undefined) payload.maxPoints = Number(maxPoints);
+    if (description !== undefined) payload.description = description ? String(description) : null;
+    if (isDefault !== undefined) payload.isDefault = !!isDefault;
+    if (levels !== undefined && Array.isArray(levels)) payload.levels = levels;
+    if (active !== undefined) payload.active = !!active;
+
+    await scale.update(payload);
+    return res.json({ success: true, scale, message: "Rating Scale updated successfully" });
+  } catch (e) {
+    console.error("Update PMS rating scale error:", e);
+    return res.status(500).json({ success: false, message: "Failed to update rating scale" });
+  }
+});
+
+router.post("/pms/rating-scales/:id/set-default", async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res);
+    if (!orgId) return;
+    const id = Number(req.params.id);
+
+    const scale = await PmsRatingScale.findOne({
+      where: { id, orgAccountId: orgId },
+    });
+
+    if (!scale) {
+      return res.status(404).json({ success: false, message: "Rating Scale not found" });
+    }
+
+    await PmsRatingScale.update({ isDefault: false }, { where: { orgAccountId: orgId } });
+    await scale.update({ isDefault: true });
+
+    return res.json({ success: true, scale, message: `'${scale.scaleName}' is now set as the default rating scale` });
+  } catch (e) {
+    console.error("Set default rating scale error:", e);
+    return res.status(500).json({ success: false, message: "Failed setting default rating scale" });
+  }
+});
+
+router.delete("/pms/rating-scales/:id", async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res);
+    if (!orgId) return;
+    const id = Number(req.params.id);
+
+    const scale = await PmsRatingScale.findOne({
+      where: { id, orgAccountId: orgId },
+    });
+
+    if (!scale) {
+      return res.status(404).json({ success: false, message: "Rating Scale not found" });
+    }
+
+    const totalScales = await PmsRatingScale.count({
+      where: { orgAccountId: orgId },
+    });
+
+    if (totalScales <= 1) {
+      return res.status(400).json({
+        success: false,
+        message: "Cannot delete the only rating scale in your organization. Please create another rating scale first before deleting this one.",
+      });
+    }
+
+    // If deleting default scale, reassign default to another scale
+    if (scale.isDefault) {
+      const { Op } = require("sequelize");
+      const remainingScale = await PmsRatingScale.findOne({
+        where: {
+          orgAccountId: orgId,
+          id: { [Op.ne]: id },
+        },
+        order: [["id", "ASC"]],
+      });
+      if (remainingScale) {
+        await remainingScale.update({ isDefault: true });
+      }
+    }
+
+    await scale.destroy();
+    return res.json({ success: true, message: "Rating Scale deleted successfully" });
+  } catch (e) {
+    console.error("Delete rating scale error:", e);
+    return res.status(500).json({ success: false, message: "Failed to delete rating scale" });
+  }
+});
+
+// --- Section 10: Self-Appraisal Routes ---
+
+router.get("/pms/self-appraisals/my", async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res);
+    if (!orgId) return;
+
+    const requestedUserId = req.query.userId ? Number(req.query.userId) : (req.user?.id || 1);
+    let cycleId = req.query.cycleId ? Number(req.query.cycleId) : null;
+
+    let activeCycle = null;
+    if (cycleId) {
+      activeCycle = await PmsAppraisalCycle.findOne({
+        where: { id: cycleId, orgAccountId: orgId },
+      });
+    }
+
+    if (!activeCycle) {
+      activeCycle = await PmsAppraisalCycle.findOne({
+        where: { orgAccountId: orgId, active: true },
+        order: [["id", "DESC"]],
+      });
+    }
+
+    if (!activeCycle) {
+      activeCycle = await PmsAppraisalCycle.findOne({
+        where: { orgAccountId: orgId },
+        order: [["id", "DESC"]],
+      });
+    }
+
+    if (!activeCycle) {
+      return res.json({
+        success: true,
+        cycle: null,
+        appraisal: null,
+        goals: [],
+        activeRatingScale: null,
+        message: "No active appraisal cycle found",
+      });
+    }
+
+    cycleId = activeCycle.id;
+
+    let appraisal = await PmsSelfAppraisal.findOne({
+      where: { orgAccountId: orgId, userId: requestedUserId, cycleId },
+    });
+
+    if (!appraisal) {
+      appraisal = await PmsSelfAppraisal.create({
+        orgAccountId: orgId,
+        userId: requestedUserId,
+        cycleId,
+        status: "DRAFT",
+      });
+    }
+
+    const goals = await PmsGoal.findAll({
+      where: { orgAccountId: orgId, userId: requestedUserId, cycleId },
+      include: [
+        {
+          model: PmsKpiTemplate,
+          as: "kpi",
+          include: [{ model: PmsKraTemplate, as: "kra" }],
+        },
+      ],
+      order: [["id", "ASC"]],
+    });
+
+    let ratingScale = await PmsRatingScale.findOne({
+      where: { orgAccountId: orgId, isDefault: true, active: true },
+    });
+    if (!ratingScale) {
+      ratingScale = await PmsRatingScale.findOne({
+        where: { orgAccountId: orgId, active: true },
+        order: [["id", "ASC"]],
+      });
+    }
+
+    return res.json({
+      success: true,
+      cycle: activeCycle,
+      appraisal,
+      goals,
+      activeRatingScale: ratingScale,
+    });
+  } catch (e) {
+    console.error("Fetch self appraisal error:", e);
+    return res.status(500).json({ success: false, message: "Failed to fetch self appraisal" });
+  }
+});
+
+router.post("/pms/self-appraisals/save-draft", async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res);
+    if (!orgId) return;
+
+    let { cycleId, userId, items, overallSelfRating, overallSelfComments } = req.body;
+    const targetUserId = userId ? Number(userId) : (req.user?.id || 1);
+
+    let targetCycleId = cycleId ? Number(cycleId) : null;
+    if (!targetCycleId) {
+      const activeCycle = await PmsAppraisalCycle.findOne({
+        where: { orgAccountId: orgId, active: true },
+        order: [["id", "DESC"]],
+      });
+      if (activeCycle) targetCycleId = activeCycle.id;
+    }
+    if (!targetCycleId) {
+      const anyCycle = await PmsAppraisalCycle.findOne({
+        where: { orgAccountId: orgId },
+        order: [["id", "DESC"]],
+      });
+      if (anyCycle) targetCycleId = anyCycle.id;
+    }
+
+    if (!targetCycleId) {
+      return res.status(400).json({ success: false, message: "No active appraisal cycle found" });
+    }
+
+    let appraisal = await PmsSelfAppraisal.findOne({
+      where: { orgAccountId: orgId, userId: targetUserId, cycleId: targetCycleId },
+    });
+
+    if (!appraisal) {
+      appraisal = await PmsSelfAppraisal.create({
+        orgAccountId: orgId,
+        userId: targetUserId,
+        cycleId: targetCycleId,
+        status: "DRAFT",
+      });
+    }
+
+    if (appraisal.status === "SUBMITTED") {
+      return res.status(403).json({
+        success: false,
+        message: "Self-appraisal has been submitted and locked. Ask HR to reopen it if modifications are needed.",
+      });
+    }
+
+    if (Array.isArray(items)) {
+      for (const item of items) {
+        if (!item.id) continue;
+        const goalObj = await PmsGoal.findOne({
+          where: { id: Number(item.id), orgAccountId: orgId, userId: targetUserId },
+        });
+        if (goalObj) {
+          const updateData = {};
+          if (item.selfRating !== undefined) updateData.selfRating = item.selfRating !== null ? Number(item.selfRating) : null;
+          if (item.achievement !== undefined) updateData.achievement = item.achievement !== null ? String(item.achievement) : null;
+          if (item.employeeComment !== undefined) updateData.employeeComment = item.employeeComment ? String(item.employeeComment) : null;
+          await goalObj.update(updateData);
+        }
+      }
+    }
+
+    const appraisalUpdates = {};
+    if (overallSelfRating !== undefined) appraisalUpdates.overallSelfRating = overallSelfRating !== null ? Number(overallSelfRating) : null;
+    if (overallSelfComments !== undefined) appraisalUpdates.overallSelfComments = overallSelfComments ? String(overallSelfComments) : null;
+    if (appraisal.status === "REOPENED") appraisalUpdates.status = "DRAFT";
+
+    await appraisal.update(appraisalUpdates);
+
+    return res.json({
+      success: true,
+      appraisal,
+      message: "Draft saved successfully",
+    });
+  } catch (e) {
+    console.error("Save draft self appraisal error:", e);
+    return res.status(500).json({ success: false, message: "Failed to save draft self appraisal" });
+  }
+});
+
+router.post("/pms/self-appraisals/submit", async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res);
+    if (!orgId) return;
+
+    let { cycleId, userId, items, overallSelfRating, overallSelfComments } = req.body;
+    const targetUserId = userId ? Number(userId) : (req.user?.id || 1);
+
+    let targetCycleId = cycleId ? Number(cycleId) : null;
+    if (!targetCycleId) {
+      const activeCycle = await PmsAppraisalCycle.findOne({
+        where: { orgAccountId: orgId, active: true },
+        order: [["id", "DESC"]],
+      });
+      if (activeCycle) targetCycleId = activeCycle.id;
+    }
+    if (!targetCycleId) {
+      const anyCycle = await PmsAppraisalCycle.findOne({
+        where: { orgAccountId: orgId },
+        order: [["id", "DESC"]],
+      });
+      if (anyCycle) targetCycleId = anyCycle.id;
+    }
+
+    if (!targetCycleId) {
+      return res.status(400).json({ success: false, message: "No active appraisal cycle found" });
+    }
+
+    let appraisal = await PmsSelfAppraisal.findOne({
+      where: { orgAccountId: orgId, userId: targetUserId, cycleId: targetCycleId },
+    });
+
+    if (!appraisal) {
+      appraisal = await PmsSelfAppraisal.create({
+        orgAccountId: orgId,
+        userId: targetUserId,
+        cycleId: targetCycleId,
+        status: "DRAFT",
+      });
+    }
+
+    if (appraisal.status === "SUBMITTED") {
+      return res.status(400).json({
+        success: false,
+        message: "Self-appraisal is already submitted.",
+      });
+    }
+
+    if (Array.isArray(items)) {
+      for (const item of items) {
+        if (!item.id) continue;
+        const goalObj = await PmsGoal.findOne({
+          where: { id: Number(item.id), orgAccountId: orgId, userId: targetUserId },
+        });
+        if (goalObj) {
+          const updateData = {};
+          if (item.selfRating !== undefined) updateData.selfRating = item.selfRating !== null ? Number(item.selfRating) : null;
+          if (item.achievement !== undefined) updateData.achievement = item.achievement !== null ? String(item.achievement) : null;
+          if (item.employeeComment !== undefined) updateData.employeeComment = item.employeeComment ? String(item.employeeComment) : null;
+          await goalObj.update(updateData);
+        }
+      }
+    }
+
+    await appraisal.update({
+      status: "SUBMITTED",
+      overallSelfRating: overallSelfRating !== undefined && overallSelfRating !== null ? Number(overallSelfRating) : appraisal.overallSelfRating,
+      overallSelfComments: overallSelfComments !== undefined ? String(overallSelfComments) : appraisal.overallSelfComments,
+      submittedAt: new Date(),
+    });
+
+    return res.json({
+      success: true,
+      appraisal,
+      message: "Self-appraisal submitted successfully! Editing is now locked.",
+    });
+  } catch (e) {
+    console.error("Submit self appraisal error:", e);
+    return res.status(500).json({ success: false, message: "Failed to submit self appraisal" });
+  }
+});
+
+router.get("/pms/self-appraisals/all", async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res);
+    if (!orgId) return;
+
+    const cycleId = req.query.cycleId ? Number(req.query.cycleId) : null;
+    const where = { orgAccountId: orgId };
+    if (cycleId) where.cycleId = cycleId;
+
+    const selfAppraisals = await PmsSelfAppraisal.findAll({
+      where,
+      include: [
+        { model: User, as: "employee", include: [{ model: StaffProfile, as: "profile" }] },
+        { model: PmsAppraisalCycle, as: "cycle" },
+      ],
+      order: [["id", "DESC"]],
+    });
+
+    return res.json({ success: true, selfAppraisals });
+  } catch (e) {
+    console.error("Fetch all self appraisals error:", e);
+    return res.status(500).json({ success: false, message: "Failed to fetch self appraisals" });
+  }
+});
+
+router.post("/pms/self-appraisals/:id/reopen", async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res);
+    if (!orgId) return;
+    const id = Number(req.params.id);
+    const { reason } = req.body;
+
+    const appraisal = await PmsSelfAppraisal.findOne({
+      where: { id, orgAccountId: orgId },
+    });
+
+    if (!appraisal) {
+      return res.status(404).json({ success: false, message: "Self-appraisal record not found" });
+    }
+
+    await appraisal.update({
+      status: "REOPENED",
+      reopenedAt: new Date(),
+      reopenedBy: req.user?.id || null,
+      reopenReason: reason ? String(reason) : "Reopened by HR for corrections",
+    });
+
+    return res.json({
+      success: true,
+      appraisal,
+      message: "Appraisal reopened successfully. The employee can now edit and re-submit.",
+    });
+  } catch (e) {
+    console.error("Reopen self appraisal error:", e);
+    return res.status(500).json({ success: false, message: "Failed to reopen self appraisal" });
+  }
+});
+
+// --- Section 12: Manager Appraisal Routes ---
+
+router.get("/pms/manager-appraisals", async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res);
+    if (!orgId) return;
+
+    const cycleId = req.query.cycleId ? Number(req.query.cycleId) : null;
+    const targetUserId = req.query.userId ? Number(req.query.userId) : null;
+
+    let activeCycle = null;
+    if (cycleId) {
+      activeCycle = await PmsAppraisalCycle.findOne({
+        where: { id: cycleId, orgAccountId: orgId },
+      });
+    }
+
+    if (!activeCycle) {
+      activeCycle = await PmsAppraisalCycle.findOne({
+        where: { orgAccountId: orgId, active: true },
+        order: [["id", "DESC"]],
+      });
+    }
+
+    const allAppraisals = await PmsSelfAppraisal.findAll({
+      where: { orgAccountId: orgId, ...(activeCycle ? { cycleId: activeCycle.id } : {}) },
+      include: [
+        { model: User, as: "employee", include: [{ model: StaffProfile, as: "profile" }] },
+        { model: PmsAppraisalCycle, as: "cycle" },
+      ],
+      order: [["id", "DESC"]],
+    });
+
+    let selectedAppraisal = null;
+    let goals = [];
+    let previousAppraisalRating = null;
+
+    if (targetUserId && activeCycle) {
+      selectedAppraisal = await PmsSelfAppraisal.findOne({
+        where: { orgAccountId: orgId, userId: targetUserId, cycleId: activeCycle.id },
+        include: [
+          { model: User, as: "employee", include: [{ model: StaffProfile, as: "profile" }] },
+        ],
+      });
+
+      goals = await PmsGoal.findAll({
+        where: { orgAccountId: orgId, userId: targetUserId, cycleId: activeCycle.id },
+        include: [
+          {
+            model: PmsKpiTemplate,
+            as: "kpi",
+            include: [{ model: PmsKraTemplate, as: "kra" }],
+          },
+        ],
+        order: [["id", "ASC"]],
+      });
+
+      const prevAppraisal = await PmsSelfAppraisal.findOne({
+        where: {
+          orgAccountId: orgId,
+          userId: targetUserId,
+          cycleId: { [require("sequelize").Op.ne]: activeCycle.id },
+        },
+        order: [["id", "DESC"]],
+      });
+
+      if (prevAppraisal) {
+        previousAppraisalRating = prevAppraisal.overallManagerRating || prevAppraisal.overallSelfRating || null;
+      }
+    }
+
+    let ratingScale = await PmsRatingScale.findOne({
+      where: { orgAccountId: orgId, isDefault: true, active: true },
+    });
+    if (!ratingScale) {
+      ratingScale = await PmsRatingScale.findOne({
+        where: { orgAccountId: orgId, active: true },
+        order: [["id", "ASC"]],
+      });
+    }
+
+    let salaryComponents = [];
+    if (selectedAppraisal?.employee) {
+      const empUser = selectedAppraisal.employee;
+      let template = null;
+      if (empUser.salaryTemplateId) {
+        template = await PmsRatingScale.sequelize.models.SalaryTemplate.findByPk(empUser.salaryTemplateId);
+      }
+      if (template?.earnings) {
+        try {
+          let earn = typeof template.earnings === 'string' ? JSON.parse(template.earnings) : template.earnings;
+          if (Array.isArray(earn) && earn.length > 0) {
+            salaryComponents = earn.map(item => ({
+              key: String(item.key || item.label || 'component').toLowerCase().replace(/\s+/g, '_'),
+              label: item.label || item.key || 'Component',
+              type: item.type || 'fixed',
+              value: Number(item.valueNumber || 0)
+            }));
+          }
+        } catch (e) {}
+      }
+
+      if (salaryComponents.length === 0 && empUser.salaryValues) {
+        try {
+          let salVals = typeof empUser.salaryValues === 'string' ? JSON.parse(empUser.salaryValues) : empUser.salaryValues;
+          if (salVals?.earnings && typeof salVals.earnings === 'object') {
+            salaryComponents = Object.keys(salVals.earnings).map(k => ({
+              key: k,
+              label: k.replace(/_/g, ' ').toUpperCase(),
+              value: Number(salVals.earnings[k] || 0)
+            }));
+          }
+        } catch (e) {}
+      }
+    }
+
+    return res.json({
+      success: true,
+      cycle: activeCycle,
+      appraisals: allAppraisals,
+      selectedAppraisal,
+      goals,
+      previousAppraisalRating,
+      activeRatingScale: ratingScale,
+      currentSalary: selectedAppraisal?.previousSalary && Number(selectedAppraisal.previousSalary) > 0
+        ? Number(selectedAppraisal.previousSalary)
+        : (selectedAppraisal?.employee ? Number(selectedAppraisal.employee.grossSalary || selectedAppraisal.employee.basicSalary || 0) : 0),
+      salaryComponents,
+    });
+  } catch (e) {
+    console.error("Fetch manager appraisals error:", e);
+    return res.status(500).json({ success: false, message: "Failed to fetch manager appraisals" });
+  }
+});
+
+router.post("/pms/manager-appraisals/:id/increment", async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res);
+    if (!orgId) return;
+    const id = Number(req.params.id);
+    const { incrementType, incrementValue, effectiveDate, notes, applyToPayroll, componentBreakdown } = req.body;
+
+    if (incrementValue == null || isNaN(Number(incrementValue)) || Number(incrementValue) < 0) {
+      return res.status(400).json({ success: false, message: "Valid increment value is required" });
+    }
+
+    const appraisal = await PmsSelfAppraisal.findOne({
+      where: { id, orgAccountId: orgId },
+      include: [{ model: User, as: "employee" }],
+    });
+
+    if (!appraisal) {
+      return res.status(404).json({ success: false, message: "Appraisal record not found" });
+    }
+
+    const employee = appraisal.employee || (await User.findByPk(appraisal.userId));
+    if (!employee) {
+      return res.status(404).json({ success: false, message: "Employee user record not found" });
+    }
+
+    // Get current base salary before increment (preserve previousSalary if already set to avoid compounding)
+    const prevSalary = (appraisal.previousSalary && Number(appraisal.previousSalary) > 0)
+      ? Number(appraisal.previousSalary)
+      : Number(employee.grossSalary || employee.basicSalary || 0);
+
+    const type = String(incrementType || 'PERCENTAGE').toUpperCase();
+    const val = Number(incrementValue);
+    let incAmount = 0;
+    let newSal = 0;
+
+    if (type === 'PERCENTAGE') {
+      incAmount = (prevSalary * val) / 100;
+      newSal = prevSalary + incAmount;
+    } else {
+      // FIXED
+      incAmount = val;
+      newSal = prevSalary + incAmount;
+    }
+
+    const isApplied = Boolean(applyToPayroll);
+    const now = new Date();
+    const hrUserId = req.user?.id || 1;
+
+    // Create or Update PmsSalaryRevision approval record (Section 21 Audit Log)
+    let revision = await PmsSalaryRevision.findOne({
+      where: { orgAccountId: orgId, appraisalId: appraisal.id },
+    });
+
+    const revisionData = {
+      orgAccountId: orgId,
+      userId: appraisal.userId,
+      appraisalId: appraisal.id,
+      previousSalary: prevSalary,
+      newSalary: newSal,
+      incrementType: type,
+      incrementValue: val,
+      incrementAmount: incAmount,
+      componentBreakdown: Array.isArray(componentBreakdown) ? componentBreakdown : (appraisal.componentBreakdown || []),
+      effectiveDate: effectiveDate ? effectiveDate : now.toISOString().split('T')[0],
+      status: isApplied ? 'APPLIED_TO_PAYROLL' : 'PENDING_APPROVAL',
+      requestedBy: hrUserId,
+      notes: notes ? String(notes).trim() : null,
+      ...(isApplied ? { approvedBy: hrUserId, approvedAt: now, appliedAt: now } : {}),
+    };
+
+    if (revision) {
+      await revision.update(revisionData);
+    } else {
+      revision = await PmsSalaryRevision.create(revisionData);
+    }
+
+    await appraisal.update({
+      incrementType: type,
+      incrementValue: val,
+      incrementAmount: incAmount,
+      previousSalary: prevSalary,
+      newSalary: newSal,
+      incrementEffectiveDate: effectiveDate ? new Date(effectiveDate) : now,
+      incrementNotes: notes ? String(notes).trim() : null,
+      incrementStatus: isApplied ? 'APPLIED' : 'PENDING_APPROVAL',
+      incrementAppliedAt: isApplied ? now : (appraisal.incrementAppliedAt || null),
+      incrementAppliedBy: isApplied ? hrUserId : (appraisal.incrementAppliedBy || null),
+      componentBreakdown: Array.isArray(componentBreakdown) ? componentBreakdown : (appraisal.componentBreakdown || []),
+    });
+
+    if (isApplied) {
+      // Update User salary fields for payroll integration
+      const userUpdates = {
+        grossSalary: newSal,
+        basicSalary: newSal,
+        netSalary: newSal,
+      };
+
+      // If user has salaryValues JSON or componentBreakdown, update exact template component keys in earnings
+      let salVals = employee.salaryValues;
+      if (typeof salVals === 'string') {
+        try { salVals = JSON.parse(salVals); } catch(e) {}
+      }
+      if (!salVals || typeof salVals !== 'object') salVals = { earnings: {}, deductions: {} };
+      if (!salVals.earnings) salVals.earnings = {};
+
+      if (Array.isArray(componentBreakdown) && componentBreakdown.length > 0) {
+        let newBasic = 0;
+        let newHra = 0;
+        let newDa = 0;
+        let newSpecial = 0;
+
+        componentBreakdown.forEach(item => {
+          if (item.key && item.revised != null) {
+            const revVal = Number(item.revised);
+            salVals.earnings[item.key] = revVal;
+            const keyLower = String(item.key).toLowerCase();
+            if (keyLower.includes('basic')) newBasic = revVal;
+            else if (keyLower.includes('hra')) newHra = revVal;
+            else if (keyLower.includes('da')) newDa = revVal;
+            else if (keyLower.includes('special')) newSpecial = revVal;
+          }
+        });
+
+        userUpdates.salaryValues = salVals;
+        if (newBasic > 0) userUpdates.basicSalary = newBasic;
+        if (newHra > 0) userUpdates.hra = newHra;
+        if (newDa > 0) userUpdates.da = newDa;
+        if (newSpecial > 0) userUpdates.specialAllowance = newSpecial;
+      } else {
+        salVals.earnings.basic_salary = newSal;
+        userUpdates.salaryValues = salVals;
+      }
+
+      await employee.update(userUpdates);
+    }
+
+    return res.json({
+      success: true,
+      appraisal,
+      revision,
+      message: isApplied
+        ? `Salary revision HR approved & applied successfully! New salary ₹${newSal.toLocaleString('en-IN')} synced to Payroll.`
+        : `Salary revision proposal submitted for HR approval! Proposed salary: ₹${newSal.toLocaleString('en-IN')}`,
+    });
+  } catch (e) {
+    console.error("Save increment error:", e);
+    return res.status(500).json({ success: false, message: "Failed to save increment details" });
+  }
+});
+
+router.delete("/pms/manager-appraisals/:id/increment", async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res);
+    if (!orgId) return;
+    const id = Number(req.params.id);
+
+    const appraisal = await PmsSelfAppraisal.findOne({
+      where: { id, orgAccountId: orgId },
+      include: [{ model: User, as: "employee" }],
+    });
+
+    if (!appraisal) {
+      return res.status(404).json({ success: false, message: "Appraisal record not found" });
+    }
+
+    // If it was applied to payroll, revert User salary back to previousSalary if previousSalary exists
+    if (appraisal.incrementStatus === 'APPLIED' && appraisal.previousSalary && Number(appraisal.previousSalary) > 0) {
+      const employee = appraisal.employee || (await User.findByPk(appraisal.userId));
+      if (employee) {
+        const prevSal = Number(appraisal.previousSalary);
+        const userUpdates = {
+          grossSalary: prevSal,
+          basicSalary: prevSal,
+          netSalary: prevSal,
+        };
+        let salVals = employee.salaryValues;
+        if (typeof salVals === 'string') {
+          try { salVals = JSON.parse(salVals); } catch(e) {}
+        }
+        if (salVals && typeof salVals === 'object') {
+          if (!salVals.earnings) salVals.earnings = {};
+          salVals.earnings.basic_salary = prevSal;
+          userUpdates.salaryValues = salVals;
+        }
+        await employee.update(userUpdates);
+      }
+    }
+
+    await appraisal.update({
+      incrementType: 'PERCENTAGE',
+      incrementValue: null,
+      incrementAmount: null,
+      previousSalary: null,
+      newSalary: null,
+      incrementEffectiveDate: null,
+      incrementStatus: 'PENDING',
+      incrementAppliedAt: null,
+      incrementAppliedBy: null,
+      incrementNotes: null,
+    });
+
+    return res.json({
+      success: true,
+      message: "Increment record deleted/reset successfully!",
+    });
+  } catch (e) {
+    console.error("Delete increment error:", e);
+    return res.status(500).json({ success: false, message: "Failed to delete increment record" });
+  }
+});
+
+// Section 21: HR Approval for Salary Revision
+router.post("/pms/salary-revisions/:id/approve", async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res);
+    if (!orgId) return;
+    const revisionId = Number(req.params.id);
+
+    const revision = await PmsSalaryRevision.findOne({
+      where: { id: revisionId, orgAccountId: orgId },
+      include: [{ model: User, as: "employee" }],
+    });
+
+    if (!revision) {
+      return res.status(404).json({ success: false, message: "Salary revision approval record not found" });
+    }
+
+    const hrUserId = req.user?.id || 1;
+    const now = new Date();
+    const newSal = Number(revision.newSalary || 0);
+
+    // Update Revision record status
+    await revision.update({
+      status: 'APPLIED_TO_PAYROLL',
+      approvedBy: hrUserId,
+      approvedAt: now,
+      appliedAt: now,
+    });
+
+    // Update linked Appraisal if exists
+    if (revision.appraisalId) {
+      const appraisal = await PmsSelfAppraisal.findByPk(revision.appraisalId);
+      if (appraisal) {
+        await appraisal.update({
+          incrementStatus: 'APPLIED',
+          incrementAppliedAt: now,
+          incrementAppliedBy: hrUserId,
+        });
+      }
+    }
+
+    // Sync to User Salary
+    const employee = revision.employee || (await User.findByPk(revision.userId));
+    if (employee && newSal > 0) {
+      const userUpdates = {
+        grossSalary: newSal,
+        basicSalary: newSal,
+        netSalary: newSal,
+      };
+
+      let salVals = employee.salaryValues;
+      if (typeof salVals === 'string') {
+        try { salVals = JSON.parse(salVals); } catch(e) {}
+      }
+      if (!salVals || typeof salVals !== 'object') salVals = { earnings: {}, deductions: {} };
+      if (!salVals.earnings) salVals.earnings = {};
+
+      const componentBreakdown = revision.componentBreakdown;
+      if (Array.isArray(componentBreakdown) && componentBreakdown.length > 0) {
+        let newBasic = 0;
+        let newHra = 0;
+        let newDa = 0;
+        let newSpecial = 0;
+
+        componentBreakdown.forEach(item => {
+          if (item.key && item.revised != null) {
+            const revVal = Number(item.revised);
+            salVals.earnings[item.key] = revVal;
+            const keyLower = String(item.key).toLowerCase();
+            if (keyLower.includes('basic')) newBasic = revVal;
+            else if (keyLower.includes('hra')) newHra = revVal;
+            else if (keyLower.includes('da')) newDa = revVal;
+            else if (keyLower.includes('special')) newSpecial = revVal;
+          }
+        });
+
+        userUpdates.salaryValues = salVals;
+        if (newBasic > 0) userUpdates.basicSalary = newBasic;
+        if (newHra > 0) userUpdates.hra = newHra;
+        if (newDa > 0) userUpdates.da = newDa;
+        if (newSpecial > 0) userUpdates.specialAllowance = newSpecial;
+      } else {
+        salVals.earnings.basic_salary = newSal;
+        userUpdates.salaryValues = salVals;
+      }
+
+      await employee.update(userUpdates);
+    }
+
+    return res.json({
+      success: true,
+      revision,
+      message: `Salary revision approved by HR and synced to Payroll! New salary: ₹${newSal.toLocaleString('en-IN')}`,
+    });
+  } catch (e) {
+    console.error("Approve revision error:", e);
+    return res.status(500).json({ success: false, message: "Failed to approve salary revision" });
+  }
+});
+
+// Section 21: HR Reject Salary Revision
+router.post("/pms/salary-revisions/:id/reject", async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res);
+    if (!orgId) return;
+    const revisionId = Number(req.params.id);
+    const { rejectionReason } = req.body;
+
+    const revision = await PmsSalaryRevision.findOne({
+      where: { id: revisionId, orgAccountId: orgId },
+    });
+
+    if (!revision) {
+      return res.status(404).json({ success: false, message: "Salary revision approval record not found" });
+    }
+
+    const hrUserId = req.user?.id || 1;
+    const now = new Date();
+
+    await revision.update({
+      status: 'REJECTED',
+      approvedBy: hrUserId,
+      approvedAt: now,
+      rejectionReason: rejectionReason ? String(rejectionReason).trim() : 'Rejected by HR',
+    });
+
+    if (revision.appraisalId) {
+      const appraisal = await PmsSelfAppraisal.findByPk(revision.appraisalId);
+      if (appraisal) {
+        await appraisal.update({
+          incrementStatus: 'REJECTED',
+        });
+      }
+    }
+
+    return res.json({
+      success: true,
+      revision,
+      message: "Salary revision rejected by HR.",
+    });
+  } catch (e) {
+    console.error("Reject revision error:", e);
+    return res.status(500).json({ success: false, message: "Failed to reject salary revision" });
+  }
+});
+
+// Section 21: Get All Salary Revision Approval Records Audit Trail
+router.get("/pms/salary-revisions", async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res);
+    if (!orgId) return;
+
+    const revisions = await PmsSalaryRevision.findAll({
+      where: { orgAccountId: orgId },
+      include: [
+        { model: User, as: "employee", include: [{ model: StaffProfile, as: "profile" }] },
+        { model: User, as: "approver", include: [{ model: StaffProfile, as: "profile" }] },
+        { model: User, as: "requester", include: [{ model: StaffProfile, as: "profile" }] },
+      ],
+      order: [["id", "DESC"]],
+    });
+
+    return res.json({
+      success: true,
+      revisions,
+    });
+  } catch (e) {
+    console.error("Fetch salary revisions error:", e);
+    return res.status(500).json({ success: false, message: "Failed to fetch salary revisions history" });
+  }
+});
+
+router.post("/pms/manager-appraisals/save", async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res);
+    if (!orgId) return;
+
+    const {
+      appraisalId,
+      items,
+      overallManagerRating,
+      overallManagerComments,
+      strengths,
+      weaknesses,
+      developmentAreas,
+      recommendation,
+      isFinalSubmit,
+    } = req.body;
+
+    if (!appraisalId) {
+      return res.status(400).json({ success: false, message: "Appraisal ID is required" });
+    }
+
+    const appraisal = await PmsSelfAppraisal.findOne({
+      where: { id: Number(appraisalId), orgAccountId: orgId },
+    });
+
+    if (!appraisal) {
+      return res.status(404).json({ success: false, message: "Appraisal record not found" });
+    }
+
+    if (Array.isArray(items)) {
+      for (const item of items) {
+        if (!item.id) continue;
+        const goalObj = await PmsGoal.findOne({
+          where: { id: Number(item.id), orgAccountId: orgId, userId: appraisal.userId },
+        });
+        if (goalObj) {
+          const updateData = {};
+          if (item.managerRating !== undefined) updateData.managerRating = item.managerRating !== null ? Number(item.managerRating) : null;
+          if (item.managerComment !== undefined) updateData.managerComment = item.managerComment ? String(item.managerComment) : null;
+          if (item.managerAchievement !== undefined) updateData.managerAchievement = item.managerAchievement ? String(item.managerAchievement) : null;
+          await goalObj.update(updateData);
+        }
+      }
+    }
+
+    const updates = {
+      overallManagerRating: overallManagerRating !== undefined && overallManagerRating !== null ? Number(overallManagerRating) : appraisal.overallManagerRating,
+      overallManagerComments: overallManagerComments !== undefined ? String(overallManagerComments) : appraisal.overallManagerComments,
+      strengths: strengths !== undefined ? String(strengths) : appraisal.strengths,
+      weaknesses: weaknesses !== undefined ? String(weaknesses) : appraisal.weaknesses,
+      developmentAreas: developmentAreas !== undefined ? String(developmentAreas) : appraisal.developmentAreas,
+      recommendation: recommendation !== undefined ? String(recommendation) : appraisal.recommendation,
+      managerId: req.user?.id || null,
+    };
+
+    if (isFinalSubmit) {
+      updates.status = "MANAGER_REVIEWED";
+      updates.managerReviewedAt = new Date();
+    }
+
+    await appraisal.update(updates);
+
+    return res.json({
+      success: true,
+      appraisal,
+      message: isFinalSubmit
+        ? "Manager Appraisal submitted successfully! Status updated to Manager Reviewed."
+        : "Manager Appraisal draft saved successfully.",
+    });
+  } catch (e) {
+    console.error("Save manager appraisal error:", e);
+    return res.status(500).json({ success: false, message: "Failed to save manager appraisal" });
+  }
+});
+
+router.post("/pms/manager-appraisals/:id/override", async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res);
+    if (!orgId) return;
+    const id = Number(req.params.id);
+    const { overrideRating, reason, originalRating } = req.body;
+
+    if (overrideRating == null || !reason) {
+      return res.status(400).json({
+        success: false,
+        message: "Both Revised Override Rating and Audit Reason are required for rating override.",
+      });
+    }
+
+    const appraisal = await PmsSelfAppraisal.findOne({
+      where: { id, orgAccountId: orgId },
+    });
+
+    if (!appraisal) {
+      return res.status(404).json({ success: false, message: "Appraisal record not found" });
+    }
+
+    const origScore = originalRating !== undefined && originalRating !== null
+      ? Number(originalRating)
+      : Number(appraisal.overallManagerRating || appraisal.overallSelfRating || 0);
+
+    const revisedScore = Number(overrideRating);
+    const modifierId = req.user?.id || 1;
+    let modifierName = req.user?.name || req.user?.username || `HR Admin #${modifierId}`;
+    if (req.user?.profile?.name) modifierName = req.user.profile.name;
+
+    const auditEntry = {
+      originalRating: origScore,
+      revisedRating: revisedScore,
+      modifiedBy: modifierId,
+      modifiedByName: modifierName,
+      modifiedDate: new Date(),
+      reason: String(reason).trim(),
+    };
+
+    const existingHistory = Array.isArray(appraisal.overrideHistory) ? appraisal.overrideHistory : [];
+
+    await appraisal.update({
+      originalRating: origScore,
+      overrideRating: revisedScore,
+      overallManagerRating: revisedScore,
+      overrideBy: modifierId,
+      overrideAt: auditEntry.modifiedDate,
+      overrideReason: auditEntry.reason,
+      overrideHistory: [auditEntry, ...existingHistory],
+    });
+
+    return res.json({
+      success: true,
+      appraisal,
+      auditEntry,
+      message: "HR Rating Override applied successfully! Audit trail recorded.",
+    });
+  } catch (e) {
+    console.error("HR Override rating error:", e);
+    return res.status(500).json({ success: false, message: "Failed to apply HR rating override" });
+  }
+});
+
+// --- PMS Competency Library Routes ---
+
+router.get("/pms/competencies", async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res);
+    if (!orgId) return;
+    const { category, department, designation, search } = req.query;
+    const where = { orgAccountId: orgId, active: true };
+    if (category) where.category = category;
+    if (department) where.department = department;
+    if (designation) where.designation = designation;
+    const { Op } = require("sequelize");
+    if (search) where.name = { [Op.like]: `%${search}%` };
+
+    let competencies = await PmsCompetency.findAll({ where, order: [["category", "ASC"], ["name", "ASC"]] });
+
+    // If no filter query is passed and no competencies exist for this org, auto-seed standard competencies
+    if (competencies.length === 0 && !category && !department && !designation && !search) {
+      const countTotal = await PmsCompetency.count({ where: { orgAccountId: orgId } });
+      if (countTotal === 0) {
+        const defaults = [
+          { name: 'Communication', category: 'Core Competencies', description: 'Articulates ideas clearly, listens actively, and communicates effectively across teams.', defaultRatingScale: '1-5 Scale', weightage: 15 },
+          { name: 'Leadership', category: 'Leadership', description: 'Inspires, motivates, and guides team members toward achieving common organizational goals.', defaultRatingScale: '1-5 Scale', weightage: 15 },
+          { name: 'Teamwork & Collaboration', category: 'Behavioral', description: 'Works constructively with colleagues, builds positive working relationships, and supports team success.', defaultRatingScale: '1-5 Scale', weightage: 15 },
+          { name: 'Problem Solving', category: 'Functional / Technical', description: 'Analyzes complex problems, identifies root causes, and implements efficient solutions.', defaultRatingScale: '1-5 Scale', weightage: 15 },
+          { name: 'Technical Knowledge', category: 'Functional / Technical', description: 'Demonstrates strong subject matter expertise and stays updated with industry practices.', defaultRatingScale: '1-5 Scale', weightage: 15 },
+          { name: 'Customer Orientation', category: 'Customer Focus', description: 'Understands customer needs, delivers high quality service, and maintains high satisfaction.', defaultRatingScale: '1-5 Scale', weightage: 10 },
+          { name: 'Time Management', category: 'Behavioral', description: 'Prioritizes tasks efficiently, meets deadlines consistently, and manages workload effectively.', defaultRatingScale: '1-5 Scale', weightage: 10 },
+          { name: 'Discipline & Accountability', category: 'Core Competencies', description: 'Takes ownership of work, adheres to workplace standards, and maintains punctuality and integrity.', defaultRatingScale: '1-5 Scale', weightage: 5 },
+        ];
+        for (const item of defaults) {
+          await PmsCompetency.create({
+            orgAccountId: orgId,
+            ...item,
+            active: true,
+          });
+        }
+        competencies = await PmsCompetency.findAll({ where, order: [["category", "ASC"], ["name", "ASC"]] });
+      }
+    }
+
+    return res.json({ success: true, competencies });
+  } catch (e) {
+    console.error("Fetch competencies error:", e);
+    return res.status(500).json({ success: false, message: "Failed to load competencies" });
+  }
+});
+
+router.post("/pms/competencies", async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res);
+    if (!orgId) return;
+    const { name, category, description, department, designation, defaultRatingScale, weightage } = req.body;
+    if (!name) return res.status(400).json({ success: false, message: "Competency name is required" });
+    const competency = await PmsCompetency.create({
+      orgAccountId: orgId,
+      name: String(name).trim(),
+      category: category || "Core",
+      description: description || null,
+      department: department || null,
+      designation: designation || null,
+      defaultRatingScale: defaultRatingScale || "1-5 Scale",
+      weightage: weightage != null ? Number(weightage) : 0,
+      active: true,
+    });
+    return res.json({ success: true, competency, message: "Competency created successfully" });
+  } catch (e) {
+    console.error("Create competency error:", e);
+    return res.status(500).json({ success: false, message: "Failed to create competency" });
+  }
+});
+
+router.put("/pms/competencies/:id", async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res);
+    if (!orgId) return;
+    const comp = await PmsCompetency.findOne({ where: { id: Number(req.params.id), orgAccountId: orgId } });
+    if (!comp) return res.status(404).json({ success: false, message: "Competency not found" });
+    const { name, category, description, department, designation, defaultRatingScale, weightage, active } = req.body;
+    await comp.update({
+      name: name != null ? String(name).trim() : comp.name,
+      category: category != null ? category : comp.category,
+      description: description != null ? description : comp.description,
+      department: department != null ? department : comp.department,
+      designation: designation != null ? designation : comp.designation,
+      defaultRatingScale: defaultRatingScale != null ? defaultRatingScale : comp.defaultRatingScale,
+      weightage: weightage != null ? Number(weightage) : comp.weightage,
+      active: active != null ? active : comp.active,
+    });
+    return res.json({ success: true, competency: comp, message: "Competency updated successfully" });
+  } catch (e) {
+    console.error("Update competency error:", e);
+    return res.status(500).json({ success: false, message: "Failed to update competency" });
+  }
+});
+
+router.delete("/pms/competencies/:id", async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res);
+    if (!orgId) return;
+    const comp = await PmsCompetency.findOne({ where: { id: Number(req.params.id), orgAccountId: orgId } });
+    if (!comp) return res.status(404).json({ success: false, message: "Competency not found" });
+    await comp.update({ active: false });
+    return res.json({ success: true, message: "Competency deleted successfully" });
+  } catch (e) {
+    console.error("Delete competency error:", e);
+    return res.status(500).json({ success: false, message: "Failed to delete competency" });
+  }
+});
+
+// --- PMS Competency Assessment Routes ---
+
+router.get("/pms/competency-assessments", async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res);
+    if (!orgId) return;
+    const { cycleId, employeeId, evaluatorRole } = req.query;
+    const where = { orgAccountId: orgId, active: true };
+    if (cycleId) where.cycleId = Number(cycleId);
+    if (evaluatorRole) where.evaluatorRole = evaluatorRole;
+
+    if (employeeId) {
+      const empIdNum = Number(employeeId);
+      const sp = await StaffProfile.findOne({ where: { id: empIdNum, orgAccountId: orgId } });
+      const targetUserId = sp && sp.userId ? sp.userId : empIdNum;
+      where.employeeId = targetUserId;
+    }
+
+    const assessments = await PmsCompetencyAssessment.findAll({
+      where,
+      include: [
+        { model: PmsCompetency, as: "competency", attributes: ["id", "name", "category", "weightage", "defaultRatingScale"] },
+        { model: User, as: "employee", include: [{ model: StaffProfile, as: "profile", attributes: ["name", "department", "designation"] }] },
+        { model: PmsAppraisalCycle, as: "cycle", attributes: ["id", "cycleName", "financialYear"] },
+      ],
+      order: [["createdAt", "DESC"]],
+    });
+    return res.json({ success: true, assessments });
+  } catch (e) {
+    console.error("Fetch competency assessments error:", e);
+    return res.status(500).json({ success: false, message: "Failed to load competency assessments" });
+  }
+});
+
+router.post("/pms/competency-assessments", async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res);
+    if (!orgId) return;
+    const { cycleId, employeeId, evaluatorId, evaluatorRole, competencyId, rating, maxRating, comments } = req.body;
+    if (!employeeId || !competencyId || rating == null) {
+      return res.status(400).json({ success: false, message: "Employee, competency and rating are required" });
+    }
+    const comp = await PmsCompetency.findOne({ where: { id: Number(competencyId), orgAccountId: orgId, active: true } });
+    if (!comp) return res.status(404).json({ success: false, message: "Competency not found" });
+
+    const empIdNum = Number(employeeId);
+    const sp = await StaffProfile.findOne({ where: { id: empIdNum, orgAccountId: orgId } });
+    const targetUserId = sp && sp.userId ? sp.userId : empIdNum;
+
+    // Upsert: update if same employee+cycle+competency+evaluatorRole already exists
+    const [assessment, created] = await PmsCompetencyAssessment.findOrCreate({
+      where: {
+        orgAccountId: orgId,
+        employeeId: targetUserId,
+        cycleId: cycleId ? Number(cycleId) : null,
+        competencyId: Number(competencyId),
+        evaluatorRole: evaluatorRole || "Manager",
+      },
+      defaults: {
+        evaluatorId: evaluatorId ? Number(evaluatorId) : null,
+        rating: Number(rating),
+        maxRating: maxRating != null ? Number(maxRating) : 5,
+        comments: comments || null,
+        active: true,
+      },
+    });
+    if (!created) {
+      await assessment.update({
+        rating: Number(rating),
+        maxRating: maxRating != null ? Number(maxRating) : assessment.maxRating,
+        comments: comments != null ? comments : assessment.comments,
+        evaluatorId: evaluatorId ? Number(evaluatorId) : assessment.evaluatorId,
+      });
+    }
+    return res.json({ success: true, assessment, created, message: created ? "Assessment created" : "Assessment updated" });
+  } catch (e) {
+    console.error("Save competency assessment error:", e);
+    return res.status(500).json({ success: false, message: "Failed to save competency assessment" });
+  }
+});
+
+router.post("/pms/competency-assessments/bulk", async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res);
+    if (!orgId) return;
+    const { cycleId, employeeId, evaluatorRole, assessments } = req.body;
+    if (!employeeId || !Array.isArray(assessments) || assessments.length === 0) {
+      return res.status(400).json({ success: false, message: "Employee and assessments array are required" });
+    }
+
+    const empIdNum = Number(employeeId);
+    const sp = await StaffProfile.findOne({ where: { id: empIdNum, orgAccountId: orgId } });
+    const targetUserId = sp && sp.userId ? sp.userId : empIdNum;
+
+    const results = [];
+    for (const item of assessments) {
+      const { competencyId, rating, maxRating, comments } = item;
+      if (!competencyId || rating == null) continue;
+      const [record, created] = await PmsCompetencyAssessment.findOrCreate({
+        where: {
+          orgAccountId: orgId,
+          employeeId: targetUserId,
+          cycleId: cycleId ? Number(cycleId) : null,
+          competencyId: Number(competencyId),
+          evaluatorRole: evaluatorRole || "Manager",
+        },
+        defaults: {
+          evaluatorId: req.user?.id || null,
+          rating: Number(rating),
+          maxRating: maxRating != null ? Number(maxRating) : 5,
+          comments: comments || null,
+          active: true,
+        },
+      });
+      if (!created) {
+        await record.update({
+          rating: Number(rating),
+          maxRating: maxRating != null ? Number(maxRating) : record.maxRating,
+          comments: comments != null ? comments : record.comments,
+          evaluatorId: req.user?.id || record.evaluatorId,
+        });
+      }
+      results.push(record);
+    }
+    return res.json({ success: true, results, message: `${results.length} competency assessment(s) saved` });
+  } catch (e) {
+    console.error("Bulk save competency assessments error:", e);
+    return res.status(500).json({ success: false, message: "Failed to save competency assessments" });
+  }
+});
+
+router.delete("/pms/competency-assessments/:id", async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res);
+    if (!orgId) return;
+    const assessment = await PmsCompetencyAssessment.findOne({ where: { id: Number(req.params.id), orgAccountId: orgId } });
+    if (!assessment) return res.status(404).json({ success: false, message: "Assessment not found" });
+    await assessment.destroy();
+    return res.json({ success: true, message: "Assessment deleted" });
+  } catch (e) {
+    console.error("Delete competency assessment error:", e);
+    return res.status(500).json({ success: false, message: "Failed to delete assessment" });
   }
 });
 

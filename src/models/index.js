@@ -132,6 +132,15 @@ const defineShiftRotationRule = require('./ShiftRotationRule');
 const defineBiometricPunch = require('./BiometricPunch');
 const defineOrgAddonSetting = require('./OrgAddonSetting');
 const defineAttendancePunch = require('./AttendancePunch');
+const definePmsAppraisalCycle = require('./PmsAppraisalCycle');
+const definePmsKraTemplate = require('./PmsKraTemplate');
+const definePmsKpiTemplate = require('./PmsKpiTemplate');
+const definePmsGoal = require('./PmsGoal');
+const definePmsRatingScale = require('./PmsRatingScale');
+const definePmsSelfAppraisal = require('./PmsSelfAppraisal');
+const definePmsCompetency = require('./PmsCompetency');
+const definePmsCompetencyAssessment = require('./PmsCompetencyAssessment');
+const definePmsSalaryRevision = require('./PmsSalaryRevision');
 
 
 
@@ -270,6 +279,71 @@ const ShiftRotationRule = defineShiftRotationRule(sequelize);
 const BiometricPunch = defineBiometricPunch(sequelize);
 const OrgAddonSetting = defineOrgAddonSetting(sequelize);
 const AttendancePunch = defineAttendancePunch(sequelize);
+const PmsAppraisalCycle = definePmsAppraisalCycle(sequelize);
+const PmsKraTemplate = definePmsKraTemplate(sequelize);
+const PmsKpiTemplate = definePmsKpiTemplate(sequelize);
+const PmsGoal = definePmsGoal(sequelize);
+const PmsRatingScale = definePmsRatingScale(sequelize);
+const PmsSelfAppraisal = definePmsSelfAppraisal(sequelize);
+const PmsCompetency = definePmsCompetency(sequelize);
+const PmsCompetencyAssessment = definePmsCompetencyAssessment(sequelize);
+const PmsSalaryRevision = definePmsSalaryRevision(sequelize);
+
+OrgAccount.hasMany(PmsSalaryRevision, { foreignKey: 'orgAccountId', as: 'pmsSalaryRevisions' });
+PmsSalaryRevision.belongsTo(OrgAccount, { foreignKey: 'orgAccountId', as: 'orgAccount' });
+
+User.hasMany(PmsSalaryRevision, { foreignKey: 'userId', as: 'salaryRevisions' });
+PmsSalaryRevision.belongsTo(User, { foreignKey: 'userId', as: 'employee' });
+
+User.hasMany(PmsSalaryRevision, { foreignKey: 'approvedBy', as: 'approvedSalaryRevisions' });
+PmsSalaryRevision.belongsTo(User, { foreignKey: 'approvedBy', as: 'approver' });
+
+User.hasMany(PmsSalaryRevision, { foreignKey: 'requestedBy', as: 'requestedSalaryRevisions' });
+PmsSalaryRevision.belongsTo(User, { foreignKey: 'requestedBy', as: 'requester' });
+
+OrgAccount.hasMany(PmsCompetency, { foreignKey: 'orgAccountId', as: 'pmsCompetencies' });
+PmsCompetency.belongsTo(OrgAccount, { foreignKey: 'orgAccountId', as: 'orgAccount' });
+
+OrgAccount.hasMany(PmsCompetencyAssessment, { foreignKey: 'orgAccountId', as: 'pmsCompetencyAssessments' });
+PmsCompetencyAssessment.belongsTo(OrgAccount, { foreignKey: 'orgAccountId', as: 'orgAccount' });
+
+User.hasMany(PmsCompetencyAssessment, { foreignKey: 'employeeId', as: 'competencyAssessments' });
+PmsCompetencyAssessment.belongsTo(User, { foreignKey: 'employeeId', as: 'employee' });
+
+PmsCompetency.hasMany(PmsCompetencyAssessment, { foreignKey: 'competencyId', as: 'competency' });
+
+OrgAccount.hasMany(PmsRatingScale, { foreignKey: 'orgAccountId', as: 'pmsRatingScales' });
+PmsRatingScale.belongsTo(OrgAccount, { foreignKey: 'orgAccountId', as: 'orgAccount' });
+
+OrgAccount.hasMany(PmsSelfAppraisal, { foreignKey: 'orgAccountId', as: 'pmsSelfAppraisals' });
+PmsSelfAppraisal.belongsTo(OrgAccount, { foreignKey: 'orgAccountId', as: 'orgAccount' });
+
+User.hasMany(PmsSelfAppraisal, { foreignKey: 'userId', as: 'pmsSelfAppraisals' });
+PmsSelfAppraisal.belongsTo(User, { foreignKey: 'userId', as: 'employee' });
+
+PmsAppraisalCycle.hasMany(PmsSelfAppraisal, { foreignKey: 'cycleId', as: 'selfAppraisals' });
+PmsSelfAppraisal.belongsTo(PmsAppraisalCycle, { foreignKey: 'cycleId', as: 'cycle' });
+
+OrgAccount.hasMany(PmsAppraisalCycle, { foreignKey: 'orgAccountId', as: 'pmsAppraisalCycles' });
+PmsAppraisalCycle.belongsTo(OrgAccount, { foreignKey: 'orgAccountId', as: 'orgAccount' });
+
+OrgAccount.hasMany(PmsKraTemplate, { foreignKey: 'orgAccountId', as: 'pmsKraTemplates' });
+PmsKraTemplate.belongsTo(OrgAccount, { foreignKey: 'orgAccountId', as: 'orgAccount' });
+
+OrgAccount.hasMany(PmsKpiTemplate, { foreignKey: 'orgAccountId', as: 'pmsKpiTemplates' });
+PmsKpiTemplate.belongsTo(OrgAccount, { foreignKey: 'orgAccountId', as: 'orgAccount' });
+
+PmsKraTemplate.hasMany(PmsKpiTemplate, { foreignKey: 'kraTemplateId', as: 'kpis' });
+PmsKpiTemplate.belongsTo(PmsKraTemplate, { foreignKey: 'kraTemplateId', as: 'kra' });
+
+OrgAccount.hasMany(PmsGoal, { foreignKey: 'orgAccountId', as: 'pmsGoals' });
+PmsGoal.belongsTo(OrgAccount, { foreignKey: 'orgAccountId', as: 'orgAccount' });
+
+User.hasMany(PmsGoal, { foreignKey: 'userId', as: 'pmsGoals' });
+PmsGoal.belongsTo(User, { foreignKey: 'userId', as: 'employee' });
+PmsGoal.belongsTo(User, { foreignKey: 'assignedBy', as: 'assigner' });
+PmsGoal.belongsTo(PmsAppraisalCycle, { foreignKey: 'cycleId', as: 'cycle' });
+PmsGoal.belongsTo(PmsKpiTemplate, { foreignKey: 'kpiId', as: 'kpi' });
 
 OrgAccount.hasOne(OrgAddonSetting, { foreignKey: 'orgAccountId', as: 'addonSetting' });
 OrgAddonSetting.belongsTo(OrgAccount, { foreignKey: 'orgAccountId', as: 'orgAccount' });
@@ -1101,4 +1175,13 @@ module.exports = {
   BiometricPunch,
   OrgAddonSetting,
   AttendancePunch,
+  PmsAppraisalCycle,
+  PmsKraTemplate,
+  PmsKpiTemplate,
+  PmsGoal,
+  PmsRatingScale,
+  PmsSelfAppraisal,
+  PmsCompetency,
+  PmsCompetencyAssessment,
+  PmsSalaryRevision,
 };
