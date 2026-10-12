@@ -1950,6 +1950,28 @@ router.get("/pms/goals", async (req, res) => {
   }
 });
 
+// Helper to ensure an employee has a PmsSelfAppraisal record for a given cycle
+async function ensurePmsSelfAppraisal(orgAccountId, userId, cycleId) {
+  if (!orgAccountId || !userId || !cycleId) return null;
+  try {
+    let appraisal = await PmsSelfAppraisal.findOne({
+      where: { orgAccountId, userId, cycleId },
+    });
+    if (!appraisal) {
+      appraisal = await PmsSelfAppraisal.create({
+        orgAccountId,
+        userId,
+        cycleId,
+        status: "DRAFT",
+      });
+    }
+    return appraisal;
+  } catch (err) {
+    console.error("ensurePmsSelfAppraisal error:", err);
+    return null;
+  }
+}
+
 router.post("/pms/goals", async (req, res) => {
   try {
     const orgId = requireOrg(req, res);
@@ -1977,10 +1999,19 @@ router.post("/pms/goals", async (req, res) => {
       assignedByName = assignerProfile?.name || req.user.phone || "Admin/Manager";
     }
 
+    let targetCycleId = body.cycleId ? Number(body.cycleId) : null;
+    if (!targetCycleId) {
+      const activeCycle = await PmsAppraisalCycle.findOne({
+        where: { orgAccountId: orgId, active: true },
+        order: [["id", "DESC"]],
+      });
+      if (activeCycle) targetCycleId = activeCycle.id;
+    }
+
     const newGoal = await PmsGoal.create({
       orgAccountId: orgId,
       userId,
-      cycleId: body.cycleId ? Number(body.cycleId) : null,
+      cycleId: targetCycleId,
       kpiId: body.kpiId ? Number(body.kpiId) : null,
       goal: goalText,
       description: body.description ? String(body.description) : null,
@@ -1995,6 +2026,10 @@ router.post("/pms/goals", async (req, res) => {
       assignedByName,
       active: body.active !== undefined ? !!body.active : true,
     });
+
+    if (targetCycleId) {
+      await ensurePmsSelfAppraisal(orgId, userId, targetCycleId);
+    }
 
     return res.json({ success: true, goal: newGoal, message: "Goal assigned successfully" });
   } catch (e) {
@@ -2042,12 +2077,21 @@ router.post("/pms/goals/template-assign", async (req, res) => {
       assignedByName = assignerProfile?.name || req.user.phone || "Admin/Manager";
     }
 
+    let targetCycleId = cycleId ? Number(cycleId) : null;
+    if (!targetCycleId) {
+      const activeCycle = await PmsAppraisalCycle.findOne({
+        where: { orgAccountId: orgId, active: true },
+        order: [["id", "DESC"]],
+      });
+      if (activeCycle) targetCycleId = activeCycle.id;
+    }
+
     const createdGoals = [];
     for (const s of staffList) {
       const newGoal = await PmsGoal.create({
         orgAccountId: orgId,
         userId: s.id,
-        cycleId: cycleId ? Number(cycleId) : null,
+        cycleId: targetCycleId,
         kpiId: kpiId ? Number(kpiId) : null,
         goal: goalText,
         description: description ? String(description) : null,
@@ -2063,6 +2107,10 @@ router.post("/pms/goals/template-assign", async (req, res) => {
         active: true,
       });
       createdGoals.push(newGoal);
+
+      if (targetCycleId) {
+        await ensurePmsSelfAppraisal(orgId, s.id, targetCycleId);
+      }
     }
 
     return res.json({
@@ -2310,6 +2358,13 @@ router.post("/pms/goals/bulk-upload", (req, res, next) => upload.single("file")(
       if (!resolvedCycleId && row.cycle) {
         resolvedCycleId = cycleMap.get(String(row.cycle).trim().toLowerCase()) || null;
       }
+      if (!resolvedCycleId) {
+        const activeCycle = await PmsAppraisalCycle.findOne({
+          where: { orgAccountId: orgId, active: true },
+          order: [["id", "DESC"]],
+        });
+        if (activeCycle) resolvedCycleId = activeCycle.id;
+      }
 
       await PmsGoal.create({
         orgAccountId: orgId,
@@ -2329,6 +2384,10 @@ router.post("/pms/goals/bulk-upload", (req, res, next) => upload.single("file")(
         assignedByName,
         active: true,
       });
+
+      if (resolvedCycleId) {
+        await ensurePmsSelfAppraisal(orgId, targetStaff.id, resolvedCycleId);
+      }
 
       successCount++;
     }
@@ -2383,6 +2442,13 @@ router.put("/pms/goals/:id", async (req, res) => {
     if (body.active !== undefined) payload.active = !!body.active;
 
     await goalObj.update(payload);
+
+    const finalUserId = payload.userId || goalObj.userId;
+    const finalCycleId = payload.cycleId !== undefined ? payload.cycleId : goalObj.cycleId;
+    if (finalUserId && finalCycleId) {
+      await ensurePmsSelfAppraisal(orgId, finalUserId, finalCycleId);
+    }
+
     return res.json({ success: true, goal: goalObj, message: "Goal updated successfully" });
   } catch (e) {
     console.error("Failed to update PMS goal:", e);
@@ -2907,6 +2973,32 @@ router.get("/pms/self-appraisals/all", async (req, res) => {
     const where = { orgAccountId: orgId };
     if (cycleId) where.cycleId = cycleId;
 
+    if (cycleId) {
+      const usersWithGoals = await PmsGoal.findAll({
+        where: {
+          orgAccountId: orgId,
+          [require("sequelize").Op.or]: [
+            { cycleId },
+            { cycleId: null },
+          ],
+        },
+        attributes: ["userId", "cycleId"],
+        group: ["userId", "cycleId"],
+        raw: true,
+      });
+
+      for (const item of usersWithGoals) {
+        if (!item.userId) continue;
+        if (!item.cycleId) {
+          await PmsGoal.update(
+            { cycleId },
+            { where: { orgAccountId: orgId, userId: item.userId, cycleId: null } }
+          );
+        }
+        await ensurePmsSelfAppraisal(orgId, item.userId, cycleId);
+      }
+    }
+
     const selfAppraisals = await PmsSelfAppraisal.findAll({
       where,
       include: [
@@ -2980,6 +3072,33 @@ router.get("/pms/manager-appraisals", async (req, res) => {
       });
     }
 
+    if (activeCycle) {
+      // Auto-sync: Ensure any employee with assigned goals in this cycle has a PmsSelfAppraisal
+      const usersWithGoals = await PmsGoal.findAll({
+        where: {
+          orgAccountId: orgId,
+          [require("sequelize").Op.or]: [
+            { cycleId: activeCycle.id },
+            { cycleId: null },
+          ],
+        },
+        attributes: ["userId", "cycleId"],
+        group: ["userId", "cycleId"],
+        raw: true,
+      });
+
+      for (const item of usersWithGoals) {
+        if (!item.userId) continue;
+        if (!item.cycleId) {
+          await PmsGoal.update(
+            { cycleId: activeCycle.id },
+            { where: { orgAccountId: orgId, userId: item.userId, cycleId: null } }
+          );
+        }
+        await ensurePmsSelfAppraisal(orgId, item.userId, activeCycle.id);
+      }
+    }
+
     const allAppraisals = await PmsSelfAppraisal.findAll({
       where: { orgAccountId: orgId, ...(activeCycle ? { cycleId: activeCycle.id } : {}) },
       include: [
@@ -3002,7 +3121,14 @@ router.get("/pms/manager-appraisals", async (req, res) => {
       });
 
       goals = await PmsGoal.findAll({
-        where: { orgAccountId: orgId, userId: targetUserId, cycleId: activeCycle.id },
+        where: {
+          orgAccountId: orgId,
+          userId: targetUserId,
+          [require("sequelize").Op.or]: [
+            { cycleId: activeCycle.id },
+            { cycleId: null },
+          ],
+        },
         include: [
           {
             model: PmsKpiTemplate,
