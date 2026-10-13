@@ -45,7 +45,7 @@ const wishesRoutes = require('./src/routes/wishes');
 
 const { tenantEnforce } = require('./src/middleware/tenant');
 const { scheduleSubscriptionSweep } = require('./src/jobs/subscriptionSweep');
-const { scheduleSubscriptionExpiryReminders, scheduleZktecoSync, scheduleAttendanceReminders, scheduleSocialCelebrations, scheduleMissingCheckoutReminders, scheduleShiftRotationCron } = require('./src/jobs');
+const { scheduleSubscriptionExpiryReminders, scheduleZktecoSync, scheduleAttendanceReminders, scheduleSocialCelebrations, scheduleMissingCheckoutReminders, scheduleShiftRotationCron, schedulePmsCycleJob, syncAllAppraisalCycles } = require('./src/jobs');
 const { ensureCollectionExists } = require('./src/services/awsService');
 const { scheduleBulkMailJob } = require('./src/jobs');
 
@@ -200,6 +200,12 @@ initDb()
 
     // Start Shift Rotation Cron job
     try { scheduleShiftRotationCron(); } catch (_) { }
+
+    // Start PMS Appraisal Cycle status automation job
+    try {
+      schedulePmsCycleJob();
+      syncAllAppraisalCycles();
+    } catch (_) { }
     // app.listen(port, () => {
     //   console.log(`Backend running on http://localhost:${port}`);
     // });

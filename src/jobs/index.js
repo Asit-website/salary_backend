@@ -5,8 +5,17 @@ const { checkMissingAttendanceAndNotify } = require('./attendanceReminder');
 const { checkMissingCheckoutAndNotify } = require('./missingCheckoutReminder');
 const { checkAbsentStaffAndNotify } = require('./absentStaffReminder');
 const { processMailQueue } = require('./mailCampaignJob');
-const { checkAndPostCelebrations } = require('./socialJob');
 const { scheduleShiftRotationCron, runShiftRotationCronManual } = require('./rotationCron');
+const { syncAllAppraisalCycles } = require('./pmsCycleJob');
+
+// Schedule PMS appraisal cycles status automation check (runs hourly and at midnight)
+const schedulePmsCycleJob = () => {
+  cron.schedule('5 0 * * *', async () => {
+    console.log('⏰ Running scheduled PMS Appraisal Cycle status automation check...');
+    await syncAllAppraisalCycles();
+  });
+  console.log('📅 PMS Appraisal Cycle automation job scheduled to run daily at 00:05 AM');
+};
 
 // Schedule the subscription expiry reminder job to run daily at 9:00 AM
 const scheduleSubscriptionExpiryReminders = () => {
@@ -86,5 +95,7 @@ module.exports = {
   runSocialCelebrationsManual,
   scheduleMissingCheckoutReminders,
   scheduleShiftRotationCron,
-  runShiftRotationCronManual
+  runShiftRotationCronManual,
+  schedulePmsCycleJob,
+  syncAllAppraisalCycles
 };

@@ -32,6 +32,25 @@ module.exports = (sequelize) => {
         type: DataTypes.STRING,
         allowNull: true,
       },
+      minTarget: {
+        type: DataTypes.STRING,
+        allowNull: true,
+        field: 'min_target',
+        comment: 'Min Acceptable Target threshold',
+      },
+      maxTarget: {
+        type: DataTypes.STRING,
+        allowNull: true,
+        field: 'max_target',
+        comment: 'Max Target (Cap) ceiling',
+      },
+      performanceDirection: {
+        type: DataTypes.STRING(50),
+        allowNull: true,
+        defaultValue: 'Higher is Better',
+        field: 'performance_direction',
+        comment: 'Higher is Better, Lower is Better, Exact Target, Rating-Based',
+      },
       unit: {
         type: DataTypes.STRING,
         allowNull: true,

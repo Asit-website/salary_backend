@@ -1035,6 +1035,56 @@ ShiftRotationRule.belongsTo(ShiftTemplate, { foreignKey: 'alternateShiftTemplate
     } catch (e) {
       // Ignore if already exists
     }
+    try {
+      await sequelize.query(`ALTER TABLE pms_appraisal_cycles ADD COLUMN management_approval_deadline DATE NULL`);
+    } catch (e) {
+      // Ignore if already exists
+    }
+    try {
+      await sequelize.query(`ALTER TABLE pms_appraisal_cycles ADD COLUMN salary_revision_effective_date DATE NULL`);
+    } catch (e) {
+      // Ignore if already exists
+    }
+
+    try {
+      await sequelize.query(`ALTER TABLE pms_kra_templates ADD COLUMN kra_code VARCHAR(100) NULL`);
+      console.log('[DB FIX] Successfully added column kra_code to pms_kra_templates');
+    } catch (e) {}
+
+    try {
+      await sequelize.query(`ALTER TABLE pms_kra_templates ADD COLUMN performance_direction VARCHAR(50) NOT NULL DEFAULT 'Higher is Better'`);
+      console.log('[DB FIX] Successfully added column performance_direction to pms_kra_templates');
+    } catch (e) {}
+
+    try {
+      await sequelize.query(`ALTER TABLE pms_kra_templates ADD COLUMN status VARCHAR(50) NOT NULL DEFAULT 'Active'`);
+      console.log('[DB FIX] Successfully added column status to pms_kra_templates');
+    } catch (e) {}
+
+    try {
+      await sequelize.query(`ALTER TABLE pms_kra_templates ADD COLUMN effective_from DATE NULL`);
+      console.log('[DB FIX] Successfully added column effective_from to pms_kra_templates');
+    } catch (e) {}
+
+    try {
+      await sequelize.query(`ALTER TABLE pms_kra_templates ADD COLUMN effective_to DATE NULL`);
+      console.log('[DB FIX] Successfully added column effective_to to pms_kra_templates');
+    } catch (e) {}
+
+    try {
+      await sequelize.query(`ALTER TABLE pms_kpi_templates ADD COLUMN min_target VARCHAR(255) NULL`);
+      console.log('[DB FIX] Successfully added column min_target to pms_kpi_templates');
+    } catch (e) {}
+
+    try {
+      await sequelize.query(`ALTER TABLE pms_kpi_templates ADD COLUMN max_target VARCHAR(255) NULL`);
+      console.log('[DB FIX] Successfully added column max_target to pms_kpi_templates');
+    } catch (e) {}
+
+    try {
+      await sequelize.query(`ALTER TABLE pms_kpi_templates ADD COLUMN performance_direction VARCHAR(50) NULL DEFAULT 'Higher is Better'`);
+      console.log('[DB FIX] Successfully added column performance_direction to pms_kpi_templates');
+    } catch (e) {}
     
     console.log('[DB FIX] Schema repair script finished.');
   } catch (err) {

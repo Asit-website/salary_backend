@@ -14,6 +14,12 @@ module.exports = (sequelize) => {
         allowNull: false,
         field: 'org_account_id',
       },
+      kraCode: {
+        type: DataTypes.STRING(100),
+        allowNull: true,
+        field: 'kra_code',
+        comment: 'Unique identifier for each KRA',
+      },
       kraName: {
         type: DataTypes.STRING,
         allowNull: false,
@@ -50,24 +56,33 @@ module.exports = (sequelize) => {
         field: 'measurement_type',
         comment: 'Percentage, Numeric, Currency, Score, Boolean',
       },
-      target: {
-        type: DataTypes.STRING,
+      performanceDirection: {
+        type: DataTypes.STRING(50),
         allowNull: true,
-      },
-      minTarget: {
-        type: DataTypes.STRING,
-        allowNull: true,
-        field: 'min_target',
-      },
-      maxTarget: {
-        type: DataTypes.STRING,
-        allowNull: true,
-        field: 'max_target',
+        defaultValue: 'Higher is Better',
+        field: 'performance_direction',
+        comment: 'Higher is Better, Lower is Better, Exact Target',
       },
       unit: {
         type: DataTypes.STRING,
         allowNull: true,
         comment: '%, INR, Units, Count, Days, Hours, Score',
+      },
+      status: {
+        type: DataTypes.STRING(50),
+        allowNull: true,
+        defaultValue: 'Active',
+        comment: 'Active, Inactive',
+      },
+      effectiveFrom: {
+        type: DataTypes.DATEONLY,
+        allowNull: true,
+        field: 'effective_from',
+      },
+      effectiveTo: {
+        type: DataTypes.DATEONLY,
+        allowNull: true,
+        field: 'effective_to',
       },
       active: {
         type: DataTypes.BOOLEAN,

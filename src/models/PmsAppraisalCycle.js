@@ -54,10 +54,20 @@ module.exports = (sequelize) => {
         allowNull: true,
         field: 'hr_review_deadline',
       },
+      managementApprovalDeadline: {
+        type: DataTypes.DATEONLY,
+        allowNull: true,
+        field: 'management_approval_deadline',
+      },
       finalApprovalDeadline: {
         type: DataTypes.DATEONLY,
         allowNull: true,
         field: 'final_approval_deadline',
+      },
+      salaryRevisionEffectiveDate: {
+        type: DataTypes.DATEONLY,
+        allowNull: true,
+        field: 'salary_revision_effective_date',
       },
       frequency: {
         type: DataTypes.STRING,

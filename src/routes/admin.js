@@ -1542,6 +1542,130 @@ router.put("/performance/ratings/:id", async (req, res) => {
 
 // --- PMS Appraisal Cycle Management Routes ---
 
+// --- PMS Appraisal Cycle Validation & Automation Helpers ---
+function validateAppraisalCycleDates(data) {
+  const {
+    startDate,
+    endDate,
+    appraisalStartDate,
+    selfAppraisalDeadline,
+    managerReviewDeadline,
+    hrReviewDeadline,
+    managementApprovalDeadline,
+    salaryRevisionEffectiveDate,
+  } = data;
+
+  // 1. Performance end date must be after its start date
+  if (startDate && endDate) {
+    if (new Date(endDate) <= new Date(startDate)) {
+      return "Performance Period End Date must be after its Start Date";
+    }
+  }
+
+  // 2. Self-appraisal deadline should not be before the appraisal process start date
+  if (appraisalStartDate && selfAppraisalDeadline) {
+    if (new Date(selfAppraisalDeadline) < new Date(appraisalStartDate)) {
+      return "Self-Appraisal Deadline should not be before the Appraisal Process Start Date";
+    }
+  }
+
+  // 3. Manager review deadline should not be before self-appraisal deadline
+  if (selfAppraisalDeadline && managerReviewDeadline) {
+    if (new Date(managerReviewDeadline) < new Date(selfAppraisalDeadline)) {
+      return "Manager Review Deadline cannot be before Self-Appraisal Deadline";
+    }
+  }
+
+  // 4. HR review deadline should not be before manager review deadline
+  if (managerReviewDeadline && hrReviewDeadline) {
+    if (new Date(hrReviewDeadline) < new Date(managerReviewDeadline)) {
+      return "HR Review Deadline cannot be before Manager Review Deadline";
+    }
+  }
+
+  // 5. Management approval deadline should not be before HR review deadline
+  if (hrReviewDeadline && managementApprovalDeadline) {
+    if (new Date(managementApprovalDeadline) < new Date(hrReviewDeadline)) {
+      return "Management Approval Deadline cannot be before HR Review Deadline";
+    }
+  }
+
+  // 6. Salary revision effective date should not be before management approval deadline
+  if (managementApprovalDeadline && salaryRevisionEffectiveDate) {
+    if (new Date(salaryRevisionEffectiveDate) < new Date(managementApprovalDeadline)) {
+      return "Salary Revision Effective Date cannot be before Management Approval Deadline";
+    }
+  }
+
+  return null;
+}
+
+function calculateAutomatedCycleStatus(cycleData, explicitStatus) {
+  const explicit = String(explicitStatus || "").trim();
+  const subStages = ["Self Assessment", "Manager Review", "HR Review", "Approval Pending"];
+  if (subStages.includes(explicit)) {
+    return explicit;
+  }
+
+  const todayStr = dayjs().format("YYYY-MM-DD");
+  const start = cycleData.startDate || cycleData.appraisalStartDate;
+  const end = cycleData.managementApprovalDeadline || cycleData.finalApprovalDeadline || cycleData.endDate;
+
+  if (!start) return "Draft";
+
+  // Future cycle
+  if (todayStr < start) {
+    return "Scheduled";
+  }
+
+  // Past completion
+  if (end && todayStr > end) {
+    return "Completed";
+  }
+
+  // Currently in progress
+  return "Active";
+}
+
+async function autoSyncCycleStatuses(cycles) {
+  const todayStr = dayjs().format("YYYY-MM-DD");
+
+  for (const c of cycles) {
+    const start = c.startDate || c.appraisalStartDate;
+    const end = c.managementApprovalDeadline || c.finalApprovalDeadline || c.endDate;
+
+    if (!start) continue;
+
+    let targetStatus = c.status;
+    let targetActive = c.active;
+
+    if (todayStr < start) {
+      // Future cycle: move Draft or Active -> Scheduled
+      targetStatus = "Scheduled";
+      targetActive = false;
+    } else if (end && todayStr > end) {
+      // Past completion: move to Completed
+      targetStatus = "Completed";
+      targetActive = false;
+    } else {
+      // Within active date range: todayStr >= start && (!end || todayStr <= end)
+      // Automatically transition Draft, Scheduled, or empty status to Active!
+      if (["Draft", "Scheduled"].includes(c.status) || !c.status) {
+        targetStatus = "Active";
+        targetActive = true;
+      } else if (["Active", "Open", "Self Assessment", "Manager Review", "HR Review", "Approval Pending"].includes(c.status)) {
+        targetActive = true;
+      }
+    }
+
+    if (targetStatus !== c.status || targetActive !== c.active) {
+      await c.update({ status: targetStatus, active: targetActive });
+      c.status = targetStatus;
+      c.active = targetActive;
+    }
+  }
+}
+
 router.get(["/pms/cycles", "/pms/appraisal-cycles"], async (req, res) => {
   try {
     const orgId = requireOrg(req, res);
@@ -1551,6 +1675,9 @@ router.get(["/pms/cycles", "/pms/appraisal-cycles"], async (req, res) => {
       where: { orgAccountId: orgId },
       order: [["createdAt", "DESC"]],
     });
+
+    // Cycle status automation: auto-transition Draft -> Scheduled -> Active -> Completed based on dates
+    await autoSyncCycleStatuses(cycles);
 
     return res.json({ success: true, cycles });
   } catch (e) {
@@ -1577,6 +1704,35 @@ router.post("/pms/cycles", async (req, res) => {
       });
     }
 
+    const validationError = validateAppraisalCycleDates({
+      startDate,
+      endDate,
+      appraisalStartDate: body.appraisalStartDate || null,
+      selfAppraisalDeadline: body.selfAppraisalDeadline || null,
+      managerReviewDeadline: body.managerReviewDeadline || null,
+      hrReviewDeadline: body.hrReviewDeadline || null,
+      managementApprovalDeadline: body.managementApprovalDeadline || body.finalApprovalDeadline || null,
+      salaryRevisionEffectiveDate: body.salaryRevisionEffectiveDate || null,
+    });
+
+    if (validationError) {
+      return res.status(400).json({ success: false, message: validationError });
+    }
+
+    const initialStatus = calculateAutomatedCycleStatus(
+      {
+        startDate,
+        endDate,
+        appraisalStartDate: body.appraisalStartDate,
+        managementApprovalDeadline: body.managementApprovalDeadline || body.finalApprovalDeadline,
+      },
+      body.status || "Auto"
+    );
+
+    const isActive = body.active !== undefined
+      ? !!body.active
+      : ["Active", "Open", "Self Assessment", "Manager Review", "HR Review", "Approval Pending"].includes(initialStatus);
+
     const cycle = await PmsAppraisalCycle.create({
       orgAccountId: orgId,
       cycleName,
@@ -1587,13 +1743,15 @@ router.post("/pms/cycles", async (req, res) => {
       selfAppraisalDeadline: body.selfAppraisalDeadline || null,
       managerReviewDeadline: body.managerReviewDeadline || null,
       hrReviewDeadline: body.hrReviewDeadline || null,
-      finalApprovalDeadline: body.finalApprovalDeadline || null,
+      managementApprovalDeadline: body.managementApprovalDeadline || body.finalApprovalDeadline || null,
+      finalApprovalDeadline: body.managementApprovalDeadline || body.finalApprovalDeadline || null,
+      salaryRevisionEffectiveDate: body.salaryRevisionEffectiveDate || null,
       frequency: body.frequency || "Annual",
       frequencyPeriod: body.frequencyPeriod ? String(body.frequencyPeriod).trim() : null,
       allowHrExtension: body.allowHrExtension !== undefined ? !!body.allowHrExtension : false,
-      status: body.status || "Draft",
+      status: initialStatus,
       description: body.description ? String(body.description) : null,
-      active: body.active !== undefined ? !!body.active : true,
+      active: isActive,
     });
 
     return res.json({ success: true, cycle, message: "Appraisal Cycle created successfully" });
@@ -1618,6 +1776,25 @@ router.put("/pms/cycles/:id", async (req, res) => {
     }
 
     const body = req.body || {};
+
+    const mergedData = {
+      startDate: body.startDate !== undefined ? String(body.startDate).trim() : cycle.startDate,
+      endDate: body.endDate !== undefined ? String(body.endDate).trim() : cycle.endDate,
+      appraisalStartDate: body.appraisalStartDate !== undefined ? body.appraisalStartDate : cycle.appraisalStartDate,
+      selfAppraisalDeadline: body.selfAppraisalDeadline !== undefined ? body.selfAppraisalDeadline : cycle.selfAppraisalDeadline,
+      managerReviewDeadline: body.managerReviewDeadline !== undefined ? body.managerReviewDeadline : cycle.managerReviewDeadline,
+      hrReviewDeadline: body.hrReviewDeadline !== undefined ? body.hrReviewDeadline : cycle.hrReviewDeadline,
+      managementApprovalDeadline: (body.managementApprovalDeadline !== undefined || body.finalApprovalDeadline !== undefined)
+        ? (body.managementApprovalDeadline || body.finalApprovalDeadline)
+        : (cycle.managementApprovalDeadline || cycle.finalApprovalDeadline),
+      salaryRevisionEffectiveDate: body.salaryRevisionEffectiveDate !== undefined ? body.salaryRevisionEffectiveDate : cycle.salaryRevisionEffectiveDate,
+    };
+
+    const validationError = validateAppraisalCycleDates(mergedData);
+    if (validationError) {
+      return res.status(400).json({ success: false, message: validationError });
+    }
+
     const payload = {};
 
     if (body.cycleName !== undefined) payload.cycleName = String(body.cycleName).trim();
@@ -1628,12 +1805,23 @@ router.put("/pms/cycles/:id", async (req, res) => {
     if (body.selfAppraisalDeadline !== undefined) payload.selfAppraisalDeadline = body.selfAppraisalDeadline || null;
     if (body.managerReviewDeadline !== undefined) payload.managerReviewDeadline = body.managerReviewDeadline || null;
     if (body.hrReviewDeadline !== undefined) payload.hrReviewDeadline = body.hrReviewDeadline || null;
-    if (body.finalApprovalDeadline !== undefined) payload.finalApprovalDeadline = body.finalApprovalDeadline || null;
+    if (body.managementApprovalDeadline !== undefined || body.finalApprovalDeadline !== undefined) {
+      const mgmtVal = body.managementApprovalDeadline || body.finalApprovalDeadline || null;
+      payload.managementApprovalDeadline = mgmtVal;
+      payload.finalApprovalDeadline = mgmtVal;
+    }
+    if (body.salaryRevisionEffectiveDate !== undefined) payload.salaryRevisionEffectiveDate = body.salaryRevisionEffectiveDate || null;
     if (body.frequency !== undefined) payload.frequency = String(body.frequency).trim();
     if (body.frequencyPeriod !== undefined) payload.frequencyPeriod = body.frequencyPeriod ? String(body.frequencyPeriod).trim() : null;
     if (body.allowHrExtension !== undefined) payload.allowHrExtension = !!body.allowHrExtension;
-    if (body.status !== undefined) payload.status = String(body.status).trim();
     if (body.description !== undefined) payload.description = body.description ? String(body.description) : null;
+
+    if (body.status !== undefined || body.startDate !== undefined || body.endDate !== undefined) {
+      payload.status = calculateAutomatedCycleStatus(mergedData, body.status !== undefined ? body.status : cycle.status);
+      if (body.active === undefined) {
+        payload.active = ["Active", "Open", "Self Assessment", "Manager Review", "HR Review", "Approval Pending"].includes(payload.status);
+      }
+    }
     if (body.active !== undefined) payload.active = !!body.active;
 
     await cycle.update(payload);
@@ -1641,6 +1829,58 @@ router.put("/pms/cycles/:id", async (req, res) => {
   } catch (e) {
     console.error("Failed to update appraisal cycle:", e);
     return res.status(500).json({ success: false, message: "Failed to update appraisal cycle" });
+  }
+});
+
+// Authorized transition action on appraisal cycle status
+router.post("/pms/cycles/:id/transition", async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res);
+    if (!orgId) return;
+    const id = Number(req.params.id);
+
+    const cycle = await PmsAppraisalCycle.findOne({
+      where: { id, orgAccountId: orgId },
+    });
+
+    if (!cycle) {
+      return res.status(404).json({ success: false, message: "Appraisal cycle not found" });
+    }
+
+    const { action, targetStatus } = req.body || {};
+    let newStatus = cycle.status;
+    let isActive = cycle.active;
+
+    if (action === "schedule") {
+      newStatus = "Scheduled";
+      isActive = false;
+    } else if (action === "activate") {
+      newStatus = "Active";
+      isActive = true;
+    } else if (action === "complete") {
+      newStatus = "Completed";
+      isActive = false;
+    } else if (action === "revert_draft") {
+      newStatus = "Draft";
+      isActive = false;
+    } else if (action === "auto") {
+      newStatus = calculateAutomatedCycleStatus(cycle, "Auto");
+      isActive = ["Active", "Open"].includes(newStatus);
+    } else if (targetStatus) {
+      newStatus = targetStatus;
+      isActive = ["Active", "Open", "Self Assessment", "Manager Review", "HR Review", "Approval Pending"].includes(newStatus);
+    }
+
+    await cycle.update({ status: newStatus, active: isActive });
+
+    return res.json({
+      success: true,
+      cycle,
+      message: `Cycle status updated to ${newStatus}`,
+    });
+  } catch (e) {
+    console.error("Failed to transition cycle status:", e);
+    return res.status(500).json({ success: false, message: "Failed to transition cycle status" });
   }
 });
 
@@ -1673,11 +1913,12 @@ router.get("/pms/kras", async (req, res) => {
     const orgId = requireOrg(req, res);
     if (!orgId) return;
 
-    const { department, designation, category } = req.query;
+    const { department, designation, category, status } = req.query;
     const where = { orgAccountId: orgId };
     if (department) where.department = department;
     if (designation) where.designation = designation;
     if (category) where.category = category;
+    if (status) where.status = status;
 
     const kras = await PmsKraTemplate.findAll({
       where,
@@ -1707,8 +1948,34 @@ router.post("/pms/kras", async (req, res) => {
       });
     }
 
+    const kraCode = body.kraCode ? String(body.kraCode).trim() : null;
+    if (kraCode) {
+      const existing = await PmsKraTemplate.findOne({
+        where: { orgAccountId: orgId, kraCode },
+      });
+      if (existing) {
+        return res.status(400).json({
+          success: false,
+          message: `KRA Code "${kraCode}" already exists in your organization`,
+        });
+      }
+    }
+
+    if (body.effectiveFrom && body.effectiveTo) {
+      if (new Date(body.effectiveTo) < new Date(body.effectiveFrom)) {
+        return res.status(400).json({
+          success: false,
+          message: "Effective To date cannot be before Effective From date",
+        });
+      }
+    }
+
+    const statusVal = body.status ? String(body.status).trim() : (body.active === false ? "Inactive" : "Active");
+    const activeVal = statusVal === "Active";
+
     const kra = await PmsKraTemplate.create({
       orgAccountId: orgId,
+      kraCode: kraCode || null,
       kraName,
       description: body.description ? String(body.description) : null,
       department: body.department ? String(body.department).trim() : null,
@@ -1716,11 +1983,12 @@ router.post("/pms/kras", async (req, res) => {
       category: body.category ? String(body.category).trim() : "General",
       weightage: body.weightage !== undefined ? Number(body.weightage) : 0,
       measurementType: body.measurementType ? String(body.measurementType).trim() : "Percentage",
-      target: body.target !== undefined && body.target !== null ? String(body.target) : null,
-      minTarget: body.minTarget !== undefined && body.minTarget !== null ? String(body.minTarget) : null,
-      maxTarget: body.maxTarget !== undefined && body.maxTarget !== null ? String(body.maxTarget) : null,
+      performanceDirection: body.performanceDirection ? String(body.performanceDirection).trim() : "Higher is Better",
       unit: body.unit ? String(body.unit).trim() : "%",
-      active: body.active !== undefined ? !!body.active : true,
+      status: statusVal,
+      effectiveFrom: body.effectiveFrom || null,
+      effectiveTo: body.effectiveTo || null,
+      active: activeVal,
     });
 
     return res.json({ success: true, kra, message: "KRA Template created successfully" });
@@ -1747,6 +2015,28 @@ router.put("/pms/kras/:id", async (req, res) => {
     const body = req.body || {};
     const payload = {};
 
+    if (body.kraCode !== undefined) {
+      const newKraCode = body.kraCode ? String(body.kraCode).trim() : null;
+      if (newKraCode && newKraCode !== kra.kraCode) {
+        const existing = await PmsKraTemplate.findOne({
+          where: {
+            orgAccountId: orgId,
+            kraCode: newKraCode,
+            id: { [Op.ne]: id },
+          },
+        });
+        if (existing) {
+          return res.status(400).json({
+            success: false,
+            message: `KRA Code "${newKraCode}" already exists in your organization`,
+          });
+        }
+        payload.kraCode = newKraCode;
+      } else {
+        payload.kraCode = newKraCode;
+      }
+    }
+
     if (body.kraName !== undefined) payload.kraName = String(body.kraName).trim();
     if (body.description !== undefined) payload.description = body.description ? String(body.description) : null;
     if (body.department !== undefined) payload.department = body.department ? String(body.department).trim() : null;
@@ -1754,11 +2044,27 @@ router.put("/pms/kras/:id", async (req, res) => {
     if (body.category !== undefined) payload.category = body.category ? String(body.category).trim() : "General";
     if (body.weightage !== undefined) payload.weightage = Number(body.weightage);
     if (body.measurementType !== undefined) payload.measurementType = String(body.measurementType).trim();
-    if (body.target !== undefined) payload.target = body.target !== null ? String(body.target) : null;
-    if (body.minTarget !== undefined) payload.minTarget = body.minTarget !== null ? String(body.minTarget) : null;
-    if (body.maxTarget !== undefined) payload.maxTarget = body.maxTarget !== null ? String(body.maxTarget) : null;
+    if (body.performanceDirection !== undefined) payload.performanceDirection = String(body.performanceDirection).trim();
     if (body.unit !== undefined) payload.unit = body.unit ? String(body.unit).trim() : null;
-    if (body.active !== undefined) payload.active = !!body.active;
+
+    const effFrom = body.effectiveFrom !== undefined ? body.effectiveFrom : kra.effectiveFrom;
+    const effTo = body.effectiveTo !== undefined ? body.effectiveTo : kra.effectiveTo;
+    if (effFrom && effTo && new Date(effTo) < new Date(effFrom)) {
+      return res.status(400).json({
+        success: false,
+        message: "Effective To date cannot be before Effective From date",
+      });
+    }
+    if (body.effectiveFrom !== undefined) payload.effectiveFrom = body.effectiveFrom || null;
+    if (body.effectiveTo !== undefined) payload.effectiveTo = body.effectiveTo || null;
+
+    if (body.status !== undefined) {
+      payload.status = String(body.status).trim();
+      payload.active = payload.status === "Active";
+    } else if (body.active !== undefined) {
+      payload.active = !!body.active;
+      payload.status = payload.active ? "Active" : "Inactive";
+    }
 
     await kra.update(payload);
     return res.json({ success: true, kra, message: "KRA Template updated successfully" });
@@ -1841,9 +2147,12 @@ router.post("/pms/kpis", async (req, res) => {
       kpiName,
       description: body.description ? String(body.description) : null,
       target: body.target !== undefined && body.target !== null ? String(body.target) : null,
+      minTarget: body.minTarget !== undefined && body.minTarget !== null ? String(body.minTarget) : null,
+      maxTarget: body.maxTarget !== undefined && body.maxTarget !== null ? String(body.maxTarget) : null,
+      performanceDirection: body.performanceDirection ? String(body.performanceDirection).trim() : (body.measurementMethod ? String(body.measurementMethod).trim() : "Higher is Better"),
       unit: body.unit ? String(body.unit).trim() : null,
       weightage: body.weightage !== undefined ? Number(body.weightage) : 0,
-      measurementMethod: body.measurementMethod ? String(body.measurementMethod).trim() : "Direct Value",
+      measurementMethod: body.measurementMethod ? String(body.measurementMethod).trim() : (body.performanceDirection ? String(body.performanceDirection).trim() : "Higher is Better"),
       dataSource: body.dataSource ? String(body.dataSource).trim() : "Manual Input",
       frequency: body.frequency ? String(body.frequency).trim() : "Monthly",
       active: body.active !== undefined ? !!body.active : true,
@@ -1877,9 +2186,18 @@ router.put("/pms/kpis/:id", async (req, res) => {
     if (body.kpiName !== undefined) payload.kpiName = String(body.kpiName).trim();
     if (body.description !== undefined) payload.description = body.description ? String(body.description) : null;
     if (body.target !== undefined) payload.target = body.target !== null ? String(body.target) : null;
+    if (body.minTarget !== undefined) payload.minTarget = body.minTarget !== null ? String(body.minTarget) : null;
+    if (body.maxTarget !== undefined) payload.maxTarget = body.maxTarget !== null ? String(body.maxTarget) : null;
+    if (body.performanceDirection !== undefined) payload.performanceDirection = String(body.performanceDirection).trim();
     if (body.unit !== undefined) payload.unit = body.unit ? String(body.unit).trim() : null;
     if (body.weightage !== undefined) payload.weightage = Number(body.weightage);
-    if (body.measurementMethod !== undefined) payload.measurementMethod = String(body.measurementMethod).trim();
+    if (body.measurementMethod !== undefined) {
+      payload.measurementMethod = String(body.measurementMethod).trim();
+      if (body.performanceDirection === undefined) payload.performanceDirection = payload.measurementMethod;
+    }
+    if (body.performanceDirection !== undefined && body.measurementMethod === undefined) {
+      payload.measurementMethod = payload.performanceDirection;
+    }
     if (body.dataSource !== undefined) payload.dataSource = String(body.dataSource).trim();
     if (body.frequency !== undefined) payload.frequency = String(body.frequency).trim();
     if (body.active !== undefined) payload.active = !!body.active;
