@@ -3,7 +3,9 @@
 /** @type {import('sequelize-cli').Migration} */
 module.exports = {
   async up(queryInterface, Sequelize) {
-    await queryInterface.addColumn('OvertimeRules', 'includeEarlyArrival', {
+    const table = await queryInterface.describeTable('overtime_rules').catch(() => null);
+    if (!table || table.include_early_arrival) return;
+    await queryInterface.addColumn('overtime_rules', 'include_early_arrival', {
       type: Sequelize.BOOLEAN,
       defaultValue: false,
       allowNull: false
@@ -11,6 +13,6 @@ module.exports = {
   },
 
   async down(queryInterface, Sequelize) {
-    await queryInterface.removeColumn('OvertimeRules', 'includeEarlyArrival');
+    await queryInterface.removeColumn('overtime_rules', 'include_early_arrival');
   }
 };

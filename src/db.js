@@ -1,9 +1,41 @@
 const bcrypt = require('bcryptjs');
 
-const { sequelize, User, StaffProfile, MailCampaign, MailQueue, JobPosting, Candidate, Interview, RefreshToken } = require('./models');
+const { sequelize, User, StaffProfile, OrgAccount, MailCampaign, MailQueue, JobPosting, Candidate, Interview, RefreshToken } = require('./models');
 
 async function initDb() {
-  await sequelize.authenticate();
+  const maxAttempts = 3;
+  let lastErr;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      await sequelize.authenticate();
+      lastErr = null;
+      break;
+    } catch (err) {
+      lastErr = err;
+      const code = err?.parent?.code || err?.code || '';
+      console.error(
+        `MySQL connect attempt ${attempt}/${maxAttempts} failed (${code || err.message}). ` +
+          `Host ${process.env.DB_HOST || '127.0.0.1'}:${process.env.DB_PORT || 3306}`,
+      );
+      if (attempt < maxAttempts) {
+        await new Promise((r) => setTimeout(r, 2000));
+      }
+    }
+  }
+  if (lastErr) {
+    console.error(
+      '\nCannot reach MySQL. Start XAMPP → MySQL (or restart MySQL if it is already running), ' +
+        'then run npm run dev again.\n',
+    );
+    throw lastErr;
+  }
+
+  try {
+    const { runAggressiveSchemaFix } = require('./models');
+    await runAggressiveSchemaFix();
+  } catch (e) {
+    console.log('⚠️ Schema repair skipped or failed:', e.message);
+  }
 
   // Ensure RefreshToken table exists
   try {
@@ -133,6 +165,39 @@ async function initDb() {
     console.log('attendance_location_enabled column in subscriptions already exists or error:', err.message);
   }
 
+  // Align staff_profiles with Sequelize model (partial migrations may omit newer columns)
+  try {
+    await StaffProfile.sync({ alter: true });
+    console.log('⏰ StaffProfile table synced.');
+  } catch (err) {
+    console.log('⚠️ Error syncing StaffProfile table:', err.message);
+  }
+
+  const orgAccountRuleCols = [
+    'overtime_rule_id BIGINT UNSIGNED NULL',
+    'early_exit_rule_id BIGINT UNSIGNED NULL',
+    'break_rule_id BIGINT UNSIGNED NULL',
+    'early_overtime_rule_id BIGINT UNSIGNED NULL',
+    'community_enabled TINYINT(1) NOT NULL DEFAULT 0',
+  ];
+  for (const colDef of orgAccountRuleCols) {
+    const colName = colDef.split(' ')[0];
+    try {
+      await sequelize.query(`ALTER TABLE org_accounts ADD COLUMN ${colDef}`);
+    } catch (err) {
+      if (!String(err.message).includes('Duplicate column')) {
+        console.log(`Note on org_accounts.${colName} (might already exist):`, err.message);
+      }
+    }
+  }
+
+  try {
+    await OrgAccount.sync({ alter: true });
+    console.log('⏰ OrgAccount table synced.');
+  } catch (err) {
+    console.log('⚠️ Error syncing OrgAccount table:', err.message);
+  }
+
   const phone = process.env.SUPERADMIN_PHONE;
   const password = process.env.SUPERADMIN_PASSWORD;
 
@@ -166,7 +231,7 @@ async function initDb() {
     if (samplePhone && sampleStaffId) {
       const staffUser = await User.findOne({ where: { phone: String(samplePhone) } });
       if (!staffUser) {
-        const passwordHash = await bcrypt.hash(String(process.env.SAMPLE_STAFF_PASSWORD || '123456'), 10);
+        const passwordHash = await bcrypt.hash(String(process.env.SAMPLE_STAFF_PASSWORD || process.env.DEFAULT_USER_PASSWORD || 'Thinktech@123'), 10);
         const created = await User.create({
           role: 'staff',
           phone: String(samplePhone),
@@ -188,7 +253,13 @@ async function initDb() {
     const missingTable = /doesn't exist|no such table|ER_NO_SUCH_TABLE/i.test(msg);
     if (missingTable) {
       throw new Error(
-        'Database tables not found. Create the MySQL database and run migrations: npm run migrate'
+        'Database tables not found. Create the MySQL database and run migrations: npm run migrate:all'
+      );
+    }
+    const missingColumn = /Unknown column|ER_BAD_FIELD_ERROR/i.test(msg);
+    if (missingColumn) {
+      throw new Error(
+        `Database schema is out of date (${msg}). Run: npm run migrate:all — or restart after StaffProfile sync.`
       );
     }
     throw e;

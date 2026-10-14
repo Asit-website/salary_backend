@@ -439,32 +439,57 @@ router.get('/status', async (req, res) => {
     }
   }
 
-  const REQUIRED_WORK_SECONDS = await getRequiredWorkSecondsFor(userId, effectiveKey);
-  // Load max allowed paid break minutes
-  const maxBreakSetting = await AppSetting.findOne({ where: { key: 'MAX_BREAK_DURATION' } });
+  // Parallelize independent DB queries for blazing fast response
+  const [
+    REQUIRED_WORK_SECONDS,
+    maxBreakSetting,
+    tpl,
+    assignedShift,
+    mobilePunchAccess,
+    qrPunchAccess,
+    multiPunchActive,
+    zonesRow,
+    isApprovedLeave,
+    isHoliday,
+    woAsg,
+    rosterEntry
+  ] = await Promise.all([
+    getRequiredWorkSecondsFor(userId, effectiveKey),
+    AppSetting.findOne({ where: { key: 'MAX_BREAK_DURATION' } }),
+    getEffectiveTemplate(userId),
+    shiftService.getEffectiveShiftTemplate(userId, effectiveKey),
+    getMobilePunchRestriction(userId, req.user.orgAccountId),
+    getQrPunchRestriction(userId, req.user.orgAccountId),
+    isMultiPunchEnabled(req.user.orgAccountId),
+    AppSetting.findOne({ where: { key: 'qr_attendance_zones', orgAccountId: req.user.orgAccountId } }).catch(() => null),
+    hasApprovedLeave(userId, effectiveKey),
+    isPaidHoliday(userId, effectiveKey),
+    StaffWeeklyOffAssignment.findOne({
+      where: { userId, effectiveFrom: { [Op.lte]: effectiveKey } },
+      order: [['effectiveFrom', 'DESC']]
+    }),
+    StaffRoster.findOne({ where: { userId, date: effectiveKey } })
+  ]);
+
   const maxBreakMinutes = maxBreakSetting ? parseInt(maxBreakSetting.value) : 0;
-  const tpl = await getEffectiveTemplate(userId);
   const effectiveHoursRule = tpl ? (tpl.effectiveHoursRule ?? tpl.effective_hours_rule ?? null) : null;
-  const assignedShift = await shiftService.getEffectiveShiftTemplate(userId, effectiveKey);
+  const mobilePunchRestricted = mobilePunchAccess?.restricted ?? false;
+  const qrPunchRestricted = qrPunchAccess?.restricted ?? false;
 
-  const mobilePunchAccess = await getMobilePunchRestriction(userId, req.user.orgAccountId);
-  const mobilePunchRestricted = mobilePunchAccess.restricted;
-
-  const qrPunchAccess = await getQrPunchRestriction(userId, req.user.orgAccountId);
-  const qrPunchRestricted = qrPunchAccess.restricted;
-
-  const multiPunchActive = await isMultiPunchEnabled(req.user.orgAccountId);
   let activePunch = null;
   let todayPunches = [];
   if (multiPunchActive) {
-    activePunch = await AttendancePunch.findOne({ where: { userId, date: effectiveKey, status: 'ACTIVE' } });
-    todayPunches = await AttendancePunch.findAll({ where: { userId, date: effectiveKey }, order: [['punchNumber', 'ASC']] });
+    const [ap, tp] = await Promise.all([
+      AttendancePunch.findOne({ where: { userId, date: effectiveKey, status: 'ACTIVE' } }),
+      AttendancePunch.findAll({ where: { userId, date: effectiveKey }, order: [['punchNumber', 'ASC']] })
+    ]);
+    activePunch = ap;
+    todayPunches = tp;
   }
 
   // Verify staff QR zone assignment
   let isQrZoneAssigned = true;
   try {
-    const zonesRow = await AppSetting.findOne({ where: { key: 'qr_attendance_zones', orgAccountId: req.user.orgAccountId } });
     if (zonesRow) {
       const zones = JSON.parse(zonesRow.value);
       const activeZones = zones.filter(z => z.active !== false);
@@ -483,14 +508,7 @@ router.get('/status', async (req, res) => {
 
   const now = new Date();
 
-  const isApprovedLeave = await hasApprovedLeave(userId, effectiveKey);
-  const isHoliday = await isPaidHoliday(userId, effectiveKey);
-
   // Weekly Off Check
-  const woAsg = await StaffWeeklyOffAssignment.findOne({
-    where: { userId, effectiveFrom: { [Op.lte]: effectiveKey } },
-    order: [['effectiveFrom', 'DESC']]
-  });
   let isWO = false;
   if (woAsg) {
     const wTpl = await WeeklyOffTemplate.findByPk(woAsg.weeklyOffTemplateId || woAsg.weekly_off_template_id);
@@ -503,9 +521,16 @@ router.get('/status', async (req, res) => {
   }
 
   // 0. Roster override check
-  const rosterEntry = await StaffRoster.findOne({ where: { userId, date: effectiveKey } });
   const isRosterWO = rosterEntry?.status === 'WEEKLY_OFF';
   const isRosterHoliday = rosterEntry?.status === 'HOLIDAY';
+
+  const assignedShiftPayload = assignedShift ? {
+    id: assignedShift.id, name: assignedShift.name, shiftType: assignedShift.shiftType,
+    startTime: assignedShift.startTime, endTime: assignedShift.endTime,
+    workMinutes: assignedShift.workMinutes, bufferMinutes: assignedShift.bufferMinutes,
+    earliestPunchInTime: assignedShift.earliestPunchInTime, latestPunchOutTime: assignedShift.latestPunchOutTime,
+    minPunchOutAfterMinutes: assignedShift.minPunchOutAfterMinutes, maxPunchOutAfterMinutes: assignedShift.maxPunchOutAfterMinutes,
+  } : null;
 
   // Default behaviors when no record exists
   if (!record) {
@@ -516,6 +541,7 @@ router.get('/status', async (req, res) => {
           date: effectiveKey, punchedInAt: null, punchedOutAt: null, punchInPhotoUrl: null, punchOutPhotoUrl: null,
           isOnBreak: false, breakStartedAt: null, breakSeconds: 0, workingSeconds: 0, overtimeSeconds: 0,
           requiredWorkSeconds: REQUIRED_WORK_SECONDS, dayStatus: 'HOLIDAY', mobilePunchRestricted, qrPunchRestricted, isQrZoneAssigned,
+          assignedShift: assignedShiftPayload,
         },
       });
     }
@@ -526,6 +552,7 @@ router.get('/status', async (req, res) => {
           date: effectiveKey, punchedInAt: null, punchedOutAt: null, punchInPhotoUrl: null, punchOutPhotoUrl: null,
           isOnBreak: false, breakStartedAt: null, breakSeconds: 0, workingSeconds: 0, overtimeSeconds: 0,
           requiredWorkSeconds: REQUIRED_WORK_SECONDS, dayStatus: 'WEEKLY_OFF', mobilePunchRestricted, qrPunchRestricted, isQrZoneAssigned,
+          assignedShift: assignedShiftPayload,
         },
       });
     }
@@ -536,6 +563,7 @@ router.get('/status', async (req, res) => {
           date: effectiveKey, punchedInAt: null, punchedOutAt: null, punchInPhotoUrl: null, punchOutPhotoUrl: null,
           isOnBreak: false, breakStartedAt: null, breakSeconds: 0, workingSeconds: 0, overtimeSeconds: 0,
           requiredWorkSeconds: REQUIRED_WORK_SECONDS, dayStatus: 'LEAVE', mobilePunchRestricted, qrPunchRestricted, isQrZoneAssigned,
+          assignedShift: assignedShiftPayload,
         },
       });
     }

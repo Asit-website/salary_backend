@@ -340,10 +340,19 @@ async function calculateSalary(userId, monthKey) {
   };
 
   const calculateAdvanceDeduction = async () => {
-    const advances = await StaffAdvance.findAll({
-      where: { staffId: u.id, deductionMonth: monthKey }
+    const { loadGeneratedPayrollMonths, computeStaffAdvancePayroll } = require('./staffAdvancePayroll');
+    const staffAdvances = await StaffAdvance.findAll({
+      where: {
+        staffId: u.id,
+        orgAccountId: u.orgAccountId,
+        status: { [Op.ne]: 'cancelled' },
+      },
     });
-    return advances.reduce((sum, adv) => sum + parseFloat(adv.amount || 0), 0);
+    const generatedMonths = u.orgAccountId
+      ? await loadGeneratedPayrollMonths(u.orgAccountId)
+      : new Set();
+    const { advanceDeductions } = computeStaffAdvancePayroll(staffAdvances, monthKey, generatedMonths);
+    return advanceDeductions;
   };
 
   // 1. If PayrollLine exists and cycle is LOCKED or PAID, use immutable stored snapshot

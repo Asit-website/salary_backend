@@ -12,9 +12,9 @@ const {
 async function checkMissingAttendanceAndNotify() {
     console.log('[ATTENDANCE REMINDER] Starting missing attendance check...');
 
-    // Yesterday's date in IST
-    const yesterday = dayjs().subtract(1, 'day').format('YYYY-MM-DD');
-    console.log(`[ATTENDANCE REMINDER] Checking for date: ${yesterday}`);
+    // Check attendance for 2 days ago (e.g. 13th missing check is run on 15th)
+    const targetDate = dayjs().subtract(2, 'day').format('YYYY-MM-DD');
+    console.log(`[ATTENDANCE REMINDER] Checking for date: ${targetDate}`);
 
     try {
         const activeOrgs = await OrgAccount.findAll({ where: { status: 'ACTIVE' } });
@@ -48,7 +48,7 @@ async function checkMissingAttendanceAndNotify() {
 
                 // 1. Check if attendance record exists
                 const att = await Attendance.findOne({
-                    where: { userId, date: yesterday }
+                    where: { userId, date: targetDate }
                 });
 
                 if (att) {
@@ -57,28 +57,28 @@ async function checkMissingAttendanceAndNotify() {
                 }
 
                 // 2. Check if it's a Weekly Off
-                const isWO = await checkIsWeeklyOff(userId, yesterday);
+                const isWO = await checkIsWeeklyOff(userId, targetDate);
                 if (isWO) {
                     console.log(`[ATTENDANCE REMINDER] Skipping ${name} - Weekly Off`);
                     continue;
                 }
 
                 // 3. Check if it's a Holiday
-                const isHoliday = await checkIsHoliday(userId, yesterday);
+                const isHoliday = await checkIsHoliday(userId, targetDate);
                 if (isHoliday) {
                     console.log(`[ATTENDANCE REMINDER] Skipping ${name} - Holiday`);
                     continue;
                 }
 
                 // 4. Check if it's an approved Leave
-                const isLeave = await checkIsLeave(userId, yesterday);
+                const isLeave = await checkIsLeave(userId, targetDate);
                 if (isLeave) {
                     console.log(`[ATTENDANCE REMINDER] Skipping ${name} - Approved Leave`);
                     continue;
                 }
 
                 // If we reach here, attendance is missing on a workday
-                console.log(`[ATTENDANCE REMINDER] Missing attendance detected for ${name} (${phone}) on ${yesterday}`);
+                console.log(`[ATTENDANCE REMINDER] Missing attendance detected for ${name} (${phone}) on ${targetDate}`);
 
                 // Deduplicate check: verify if a missing attendance notification has already been created for this date/employee
                 try {
@@ -87,12 +87,12 @@ async function checkMissingAttendanceAndNotify() {
                       orgAccountId: org.id,
                       type: 'missing_attendance',
                       message: {
-                        [Op.like]: `%${name}%did not mark attendance for yesterday (${yesterday})%`
+                        [Op.like]: `%${name}%did not mark attendance for%(${targetDate})%`
                       }
                     }
                   });
                   if (existingNotif) {
-                    console.log(`[ATTENDANCE REMINDER] ${name} already notified for ${yesterday}. Skipping duplicates.`);
+                    console.log(`[ATTENDANCE REMINDER] ${name} already notified for ${targetDate}. Skipping duplicates.`);
                     continue;
                   }
                 } catch (dbErr) {
@@ -103,7 +103,7 @@ async function checkMissingAttendanceAndNotify() {
                   await Notification.create({
                     orgAccountId: org.id,
                     title: 'Missing Attendance',
-                    message: `${name} did not mark attendance for yesterday (${yesterday}).`,
+                    message: `${name} did not mark attendance for date (${targetDate}).`,
                     type: 'missing_attendance',
                     isRead: false
                   });
@@ -113,7 +113,7 @@ async function checkMissingAttendanceAndNotify() {
 
                 if (canSendSMS) {
                     const bizName = org.name || 'Business';
-                    const d = new Date(yesterday);
+                    const d = new Date(targetDate);
                     const months = ["january", "february", "march", "april", "may", "june", "july", "august", "september", "october", "november", "december"];
                     const day = d.getDate();
                     const m = months[d.getMonth()];

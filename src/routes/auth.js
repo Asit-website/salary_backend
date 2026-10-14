@@ -1,14 +1,17 @@
 const express = require('express');
 const jwt = require('jsonwebtoken');
-const bcrypt = require('bcryptjs');
 
 const crypto = require('crypto');
 const { User, StaffProfile, OtpVerify, OrgAccount, ChannelPartner, Subscription, Plan, RefreshToken, LocationPing } = require('../models');
 const { logAudit } = require('../utils/auditLogger');
 const otpStore = require('../otpStore');
+const { getJwtSecret } = require('../utils/jwtSecret');
+const { REFRESH_TOKEN_MS, getRefreshTokenExpiresAt } = require('../utils/refreshTokenTtl');
+const { consumeImpersonationCode } = require('../utils/impersonationStore');
+const { hashPassword, verifyPassword, validateNewPassword } = require('../utils/password');
 
 // Minimal SMS sender using the provided HTTP API
-async function sendSmsViaGateway({ phoneE164, code }) {
+async function sendSmsViaGateway({ phoneE164, code, purpose }) {
   try {
     const API_URL = process.env.SMS_API_URL || 'http://182.18.162.128/api/mt/SendSMS';
     const APIKEY = process.env.SMS_APIKEY || '';
@@ -22,7 +25,10 @@ async function sendSmsViaGateway({ phoneE164, code }) {
 
     // Compose message: keep OTP clearly visible; SMS Autofill works on iOS by oneTimeCode
     // For Android SMS Retriever API, a hash is needed – not added here to avoid extra deps.
-    const text = `Dear customer, the one time password to reset your password is ${code}. This OTP will expire in 5 minutes. Thinktech Software company`;
+    const isReset = String(purpose || '').toLowerCase() === 'reset';
+    const text = isReset
+      ? `Dear customer, the one time password to reset your password is ${code}. This OTP will expire in 5 minutes. Thinktech Software company`
+      : `Dear customer, your login OTP is ${code}. This OTP will expire in 5 minutes. Thinktech Software company`;
 
     const url = new URL(API_URL);
     url.searchParams.set('APIKEY', APIKEY);
@@ -74,8 +80,56 @@ const recordSuccessfulAttempt = async (users) => {
   }
 };
 
+/** Same org/subscription rules as password login (null = allowed). */
+async function getOrgLoginBlockReason(user) {
+  if (!user || user.role === 'superadmin' || user.role === 'channel_partner' || !user.orgAccountId) {
+    return null;
+  }
+  const org = user.orgAccount || await OrgAccount.findByPk(user.orgAccountId);
+  if (!org || org.status !== 'ACTIVE') {
+    return { status: 403, message: 'Organization disabled' };
+  }
+  const now = new Date();
+  const sub = await Subscription.findOne({
+    where: { orgAccountId: org.id, status: 'ACTIVE' },
+    order: [['endAt', 'DESC']],
+  });
+  if (!sub || new Date(sub.endAt) < now) {
+    return { status: 402, message: 'your Plan Expired pls renew' };
+  }
+  return null;
+}
+
+/** Before login OTP: block if no active user can authenticate (multi-org: allow if any org is OK). */
+async function assertPhoneEligibleForLoginOtp(allUsers) {
+  const activeUsers = allUsers.filter((u) => u.active !== false);
+  if (!activeUsers.length) {
+    return { status: 403, message: 'User disabled' };
+  }
+
+  const privileged = activeUsers.filter(
+    (u) => u.role === 'superadmin' || u.role === 'channel_partner' || !u.orgAccountId
+  );
+  if (privileged.length) return null;
+
+  const orgUsers = activeUsers.filter((u) => u.orgAccountId);
+  let sawDisabledOrg = false;
+  let sawExpiredPlan = false;
+
+  for (const u of orgUsers) {
+    const block = await getOrgLoginBlockReason(u);
+    if (!block) return null;
+    if (block.status === 403) sawDisabledOrg = true;
+    if (block.status === 402) sawExpiredPlan = true;
+  }
+
+  if (sawDisabledOrg) return { status: 403, message: 'Organization disabled' };
+  if (sawExpiredPlan) return { status: 402, message: 'your Plan Expired pls renew' };
+  return { status: 403, message: 'User disabled' };
+}
+
 async function sendAuthResponse(user, req, res, extraJson = {}) {
-  const secret = process.env.JWT_SECRET || 'dev_secret_change_me';
+  const secret = getJwtSecret();
   const profile = await StaffProfile.findOne({ where: { userId: user.id } });
   const name = profile?.name || null;
   const staffId = profile?.staffId || null;
@@ -122,9 +176,9 @@ async function sendAuthResponse(user, req, res, extraJson = {}) {
     { expiresIn: '15m' }
   );
 
-  // 2. Generate Refresh Token (Perpetual - 100 years for both Web and Mobile)
+  // 2. Generate Refresh Token
   const refreshToken = crypto.randomBytes(40).toString('hex');
-  const expiresAt = new Date(Date.now() + 100 * 365 * 24 * 60 * 60 * 1000); // 100 years
+  const expiresAt = getRefreshTokenExpiresAt();
 
   // Enforce concurrent session limit: max 3 active sessions
   try {
@@ -148,24 +202,27 @@ async function sendAuthResponse(user, req, res, extraJson = {}) {
   const userAgent = req.headers['user-agent'] || null;
   const deviceFingerprint = req.headers['x-device-fingerprint'] || null;
 
-  // Store in database with metadata
-  await RefreshToken.create({
-    token: refreshToken,
-    userId: user.id,
-    expiresAt,
-    ipAddress,
-    userAgent,
-    deviceFingerprint,
-    lastActivityAt: new Date()
-  });
+  // Store in database with metadata (non-fatal if id/AUTO_INCREMENT is broken on imported DBs)
+  try {
+    await RefreshToken.create({
+      token: refreshToken,
+      userId: user.id,
+      expiresAt,
+      ipAddress,
+      userAgent,
+      deviceFingerprint,
+      lastActivityAt: new Date()
+    });
+  } catch (refreshErr) {
+    console.error('[sendAuthResponse] RefreshToken.create failed (session still issued):', refreshErr?.original?.sqlMessage || refreshErr.message);
+  }
 
   if (!isMobile) {
-    // Web client: Set refresh token as secure HttpOnly cookie (100 years perpetual)
     res.cookie('refreshToken', refreshToken, {
       httpOnly: true,
       secure: process.env.NODE_ENV === 'production',
       sameSite: 'lax',
-      maxAge: 100 * 365 * 24 * 60 * 60 * 1000 // 100 years
+      maxAge: REFRESH_TOKEN_MS
     });
 
     return res.json({
@@ -210,6 +267,37 @@ function normalizePhone(phone) {
   const digits = String(phone || '').replace(/[^0-9]/g, '');
   if (!digits) return '';
   return digits.length > 10 ? digits.slice(-10) : digits;
+}
+
+async function consumeOtp(normalizedPhone, code) {
+  const storeResult = otpStore.verifyOtp(String(normalizedPhone), String(code));
+  const row = await OtpVerify.findOne({
+    where: { phone: normalizedPhone },
+    order: [['createdAt', 'DESC']],
+  });
+
+  if (storeResult.ok) {
+    if (row && !row.consumedAt) {
+      await row.update({ consumedAt: new Date() });
+    }
+    return true;
+  }
+
+  if (!row || row.consumedAt || String(row.code) !== String(code)) {
+    return false;
+  }
+  if ((new Date() - new Date(row.createdAt)) > 10 * 60 * 1000) {
+    return false;
+  }
+  await row.update({ consumedAt: new Date() });
+  return true;
+}
+
+async function updatePasswordForPhone(normalizedPhone, passwordHash) {
+  await User.update(
+    { passwordHash, failedLoginAttempts: 0, lockoutUntil: null },
+    { where: { phone: String(normalizedPhone) } }
+  );
 }
 
 async function validateChannelPartnerMapping({ phone, channelPartnerId }) {
@@ -294,7 +382,7 @@ async function syncOrgMetadata(orgId, sequelize) {
 
 router.post('/send-otp', authLimiter, async (req, res) => {
   try {
-    const { phone } = req.body || {};
+    const { phone, purpose } = req.body || {};
     if (!phone) {
       return res.status(400).json({ success: false, message: 'phone required' });
     }
@@ -304,7 +392,10 @@ router.post('/send-otp', authLimiter, async (req, res) => {
       return res.status(400).json({ success: false, message: 'phone required' });
     }
 
-    const allUsers = await User.findAll({ where: { phone: String(normalizedPhone) } });
+    const allUsers = await User.findAll({
+      where: { phone: String(normalizedPhone) },
+      include: [{ model: OrgAccount, as: 'orgAccount' }],
+    });
     const lockoutStatus = checkPhoneLockout(allUsers);
     if (lockoutStatus.locked) {
       return res.status(423).json({
@@ -313,9 +404,16 @@ router.post('/send-otp', authLimiter, async (req, res) => {
       });
     }
 
-    const user = allUsers.find(u => u.active !== false) || allUsers[0];
-    if (user && user.active === false) {
-      return res.status(403).json({ success: false, message: 'User disabled' });
+    const otpPurpose = String(purpose || 'login').toLowerCase();
+    if (otpPurpose === 'reset') {
+      if (allUsers.length && !allUsers.some((u) => u.active !== false)) {
+        return res.status(403).json({ success: false, message: 'User disabled' });
+      }
+    } else if (allUsers.length > 0) {
+      const block = await assertPhoneEligibleForLoginOtp(allUsers);
+      if (block) {
+        return res.status(block.status).json({ success: false, message: block.message });
+      }
     }
 
     const ttlMs = Number(process.env.OTP_TTL_MS || 5 * 60 * 1000);
@@ -323,8 +421,7 @@ router.post('/send-otp', authLimiter, async (req, res) => {
     const useFixed = String(process.env.OTP_USE_FIXED || '').toLowerCase() === 'true';
     let code = String(useFixed && fixed ? fixed : Math.floor(100000 + Math.random() * 900000));
 
-    // Special case for test number
-    if (normalizedPhone === '1231231232') {
+    if (String(process.env.NODE_ENV || 'development') !== 'production' && normalizedPhone === '1231231232') {
       code = '123456';
     }
 
@@ -344,14 +441,16 @@ router.post('/send-otp', authLimiter, async (req, res) => {
     }
 
     // Attempt SMS send if credentials configured; gateway expects the raw local number per user example
-    const smsResult = await sendSmsViaGateway({ phoneE164: normalizedPhone, code });
+    const smsResult = await sendSmsViaGateway({ phoneE164: normalizedPhone, code, purpose });
 
 
 
-    let includeCode = String(process.env.OTP_INCLUDE_IN_RESPONSE || 'true') === 'true';
-    if (normalizedPhone === '1231231232') includeCode = false;
+    let includeCode = String(process.env.OTP_INCLUDE_IN_RESPONSE || 'false') === 'true';
+    if (String(process.env.NODE_ENV || 'development') !== 'production' && normalizedPhone === '1231231232') {
+      includeCode = false;
+    }
 
-    const exists = !!user;
+    const exists = allUsers.length > 0;
     return res.json({ success: true, message: smsResult.ok ? 'OTP sent' : 'OTP generated', exists, ...(includeCode ? { otp: code } : {}) });
   } catch (e) {
     return res.status(500).json({ success: false, message: 'Failed to send OTP' });
@@ -361,8 +460,8 @@ router.post('/send-otp', authLimiter, async (req, res) => {
 // Dev-only helper to fetch the latest OTP for a phone (for web autofill during development)
 router.get('/otp/latest', async (req, res) => {
   try {
-    const expose = (String(process.env.NODE_ENV || 'development') !== 'production')
-      || (String(process.env.OTP_INCLUDE_IN_RESPONSE || 'true') === 'true');
+    const expose = String(process.env.NODE_ENV || 'development') !== 'production'
+      && String(process.env.OTP_INCLUDE_IN_RESPONSE || 'false') === 'true';
     if (!expose) return res.status(404).json({ success: false, message: 'Not found' });
 
     const phone = req.query?.phone;
@@ -563,7 +662,7 @@ router.post('/verify-otp', authLimiter, async (req, res) => {
 
         const others = Array.from(othersMap.values());
 
-        const secret = process.env.JWT_SECRET || 'dev_secret_change_me';
+        const secret = getJwtSecret();
         const tempToken = jwt.sign(
           { phone: normalizedPhone },
           secret,
@@ -694,7 +793,7 @@ router.post('/switch-account', async (req, res) => {
     if (!authHeader) return res.status(401).json({ success: false, message: 'Unauthorized' });
 
     const token = authHeader.split(' ')[1];
-    const secret = process.env.JWT_SECRET || 'dev_secret_change_me';
+    const secret = getJwtSecret();
     let decoded;
     try {
       decoded = jwt.verify(token, secret);
@@ -771,7 +870,7 @@ router.post('/add-organization', async (req, res) => {
     if (!authHeader) return res.status(401).json({ success: false, message: 'Unauthorized' });
 
     const token = authHeader.split(' ')[1];
-    const secret = process.env.JWT_SECRET || 'dev_secret_change_me';
+    const secret = getJwtSecret();
     let decoded;
     try {
       decoded = jwt.verify(token, secret);
@@ -1203,10 +1302,16 @@ router.post('/login', authLimiter, async (req, res) => {
       return res.status(400).json({ success: false, message: 'phone and password required' });
     }
 
-    const allUsers = await User.findAll({
-      where: { phone: String(normalizedPhone) },
-      include: [{ model: OrgAccount, as: 'orgAccount' }]
-    });
+    let allUsers;
+    try {
+      allUsers = await User.findAll({
+        where: { phone: String(normalizedPhone) },
+        include: [{ model: OrgAccount, as: 'orgAccount' }]
+      });
+    } catch (includeErr) {
+      console.error('[login] org include failed, retrying without org:', includeErr.message);
+      allUsers = await User.findAll({ where: { phone: String(normalizedPhone) } });
+    }
 
     const lockoutStatus = checkPhoneLockout(allUsers);
     if (lockoutStatus.locked) {
@@ -1216,13 +1321,16 @@ router.post('/login', authLimiter, async (req, res) => {
       });
     }
 
-    const user = allUsers.find(u => u.active !== false) || allUsers[0];
-    if (!user || user.active === false) {
-      return res.status(401).json({ success: false, message: 'Invalid credentials' });
+    let user = null;
+    for (const candidate of allUsers) {
+      if (candidate.active === false) continue;
+      const ok = await verifyPassword(password, candidate.passwordHash);
+      if (ok) {
+        user = candidate;
+        break;
+      }
     }
-
-    const ok = await bcrypt.compare(String(password), user.passwordHash);
-    if (!ok) {
+    if (!user) {
       await recordFailedAttempt(allUsers);
       return res.status(401).json({ success: false, message: 'Invalid credentials' });
     }
@@ -1254,7 +1362,7 @@ router.post('/login', authLimiter, async (req, res) => {
     const name = profile?.name || null;
     const staffId = profile?.staffId || null;
 
-    const secret = process.env.JWT_SECRET || 'dev_secret_change_me';
+    const secret = getJwtSecret();
 
     if (user.role === 'admin' || allUsers.length > 1) {
       const orgMap = new Map();
@@ -1301,18 +1409,88 @@ router.post('/login', authLimiter, async (req, res) => {
         success: true,
         requireSelection: true,
         token: tempToken,
-        organizations: [...selectableOrgs, ...others]
+        organizations: [...selectableOrgs, ...others],
+        canCreateOrg: allUsers.some(u => u.role === 'admin')
       });
     }
 
     return sendAuthResponse(user, req, res);
   } catch (e) {
+    console.error('[login] EXCEPTION:', e.message, e.stack?.split('\n')[1]);
     return res.status(500).json({ success: false, message: 'Login failed' });
   }
 });
 
+router.post('/reset-password', authLimiter, async (req, res) => {
+  try {
+    const { phone, code, newPassword, password } = req.body || {};
+    const nextPassword = newPassword || password;
+    if (!phone || !code || !nextPassword) {
+      return res.status(400).json({ success: false, message: 'phone, code and newPassword required' });
+    }
+
+    const passwordError = validateNewPassword(nextPassword);
+    if (passwordError) {
+      return res.status(400).json({ success: false, message: passwordError });
+    }
+
+    const normalizedPhone = normalizePhone(phone);
+    if (!normalizedPhone) {
+      return res.status(400).json({ success: false, message: 'phone, code and newPassword required' });
+    }
+
+    const allUsers = await User.findAll({ where: { phone: String(normalizedPhone) } });
+    if (!allUsers.length) {
+      return res.status(404).json({ success: false, message: 'No account found for this phone number' });
+    }
+
+    const lockoutStatus = checkPhoneLockout(allUsers);
+    if (lockoutStatus.locked) {
+      return res.status(423).json({
+        success: false,
+        message: `Too many failed attempts. Account is temporarily locked. Try again in ${lockoutStatus.remainingMinutes} minutes.`
+      });
+    }
+
+    const otpOk = await consumeOtp(normalizedPhone, String(code));
+    if (!otpOk) {
+      await recordFailedAttempt(allUsers);
+      return res.status(400).json({ success: false, message: 'Invalid or expired OTP' });
+    }
+
+    const passwordHash = await hashPassword(nextPassword);
+    await updatePasswordForPhone(normalizedPhone, passwordHash);
+    await recordSuccessfulAttempt(allUsers);
+
+    logAudit({
+      req,
+      action: 'PASSWORD_RESET',
+      remarks: `Password reset via OTP for phone ${normalizedPhone}.`,
+      overrides: { userPhone: normalizedPhone, userId: allUsers[0].id, orgAccountId: allUsers[0].orgAccountId }
+    });
+
+    return res.json({ success: true, message: 'Password updated. Please log in with your new password.' });
+  } catch (e) {
+    console.error('[reset-password] EXCEPTION:', e.message);
+    return res.status(500).json({ success: false, message: 'Failed to reset password' });
+  }
+});
+
+router.post('/impersonate/exchange', async (req, res) => {
+  try {
+    const { code } = req.body || {};
+    const payload = consumeImpersonationCode(code);
+    if (!payload) {
+      return res.status(400).json({ success: false, message: 'Invalid or expired impersonation code' });
+    }
+    return res.json({ success: true, ...payload });
+  } catch (e) {
+    return res.status(500).json({ success: false, message: 'Impersonation exchange failed' });
+  }
+});
+
 // Public: signup a new Admin for a new OrgAccount (pending activation by Super Admin)
-router.post('/signup-admin', async (req, res) => {
+router.post('/signup-admin', authLimiter, async (req, res) => {
   try {
     const {
       phone, name, businessName, password, businessEmail, state, city,
@@ -1321,6 +1499,9 @@ router.post('/signup-admin', async (req, res) => {
     } = req.body || {};
     if (!phone || !name || !businessName) {
       return res.status(400).json({ success: false, message: 'phone, name, businessName required' });
+    }
+    if (!password || String(password).length < 8) {
+      return res.status(400).json({ success: false, message: 'Password must be at least 8 characters' });
     }
 
     const normalizedPhone = normalizePhone(phone);
@@ -1366,7 +1547,7 @@ router.post('/signup-admin', async (req, res) => {
       console.error('Failed to sync business info on signup-admin:', e);
     }
 
-    const hash = await bcrypt.hash(String(password || '123456'), 10);
+    const hash = await hashPassword(password);
     const admin = await User.create({ role: 'admin', orgAccountId: org.id, phone: String(normalizedPhone), passwordHash: hash, active: true });
     try { await StaffProfile.create({ userId: admin.id, orgAccountId: org.id, name: String(name), email: businessEmail || null }); } catch (_) { }
 
@@ -1447,7 +1628,7 @@ router.post('/refresh', async (req, res) => {
     }
 
     // Token Rotation
-    const secret = process.env.JWT_SECRET || 'dev_secret_change_me';
+    const secret = getJwtSecret();
     const profile = await StaffProfile.findOne({ where: { userId: user.id } });
     const name = profile?.name || null;
     const staffId = profile?.staffId || null;
@@ -1475,12 +1656,11 @@ router.post('/refresh', async (req, res) => {
     const userAgent = req.headers['user-agent'] || null;
     const deviceFingerprint = req.headers['x-device-fingerprint'] || null;
 
-    // Swap tokens in DB (rotation) - 100 years perpetual
     await tokenRecord.destroy();
     await RefreshToken.create({
       token: newRefreshToken,
       userId: user.id,
-      expiresAt: new Date(Date.now() + 100 * 365 * 24 * 60 * 60 * 1000), // 100 years
+      expiresAt: getRefreshTokenExpiresAt(),
       ipAddress,
       userAgent,
       deviceFingerprint,
@@ -1491,7 +1671,7 @@ router.post('/refresh', async (req, res) => {
       httpOnly: true,
       secure: process.env.NODE_ENV === 'production',
       sameSite: 'lax',
-      maxAge: 100 * 365 * 24 * 60 * 60 * 1000 // 100 years
+      maxAge: REFRESH_TOKEN_MS
     });
 
     return res.json({
@@ -1559,7 +1739,7 @@ router.post('/refresh-mobile', async (req, res) => {
     }
 
     // Token Rotation
-    const secret = process.env.JWT_SECRET || 'dev_secret_change_me';
+    const secret = getJwtSecret();
     const profile = await StaffProfile.findOne({ where: { userId: user.id } });
     const name = profile?.name || null;
     const staffId = profile?.staffId || null;
@@ -1581,7 +1761,7 @@ router.post('/refresh-mobile', async (req, res) => {
     );
 
     const newRefreshToken = crypto.randomBytes(40).toString('hex');
-    const expiresAt = new Date(Date.now() + 100 * 365 * 24 * 60 * 60 * 1000); // 100 years for perpetual login
+    const expiresAt = getRefreshTokenExpiresAt();
 
     // Capture session metadata
     const ipAddress = req.headers['x-forwarded-for'] || req.socket.remoteAddress || null;

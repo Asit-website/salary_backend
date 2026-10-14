@@ -6,7 +6,7 @@ module.exports = {
       type: Sequelize.INTEGER,
       allowNull: true,
       defaultValue: 0,
-      after: 'staff_limit'
+      after: 'attendance_location_enabled'
     });
   },
 

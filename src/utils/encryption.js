@@ -5,6 +5,10 @@ const getEncryptionKey = () => {
   const envKey = process.env.DATABASE_ENCRYPTION_KEY;
   if (!envKey) {
     console.warn('[SECURITY WARNING] DATABASE_ENCRYPTION_KEY is not defined. Using fallback hash key.');
+    if (String(process.env.NODE_ENV || 'development') === 'production') {
+      throw new Error('DATABASE_ENCRYPTION_KEY must be set in production');
+    }
+    console.warn('[SECURITY] DATABASE_ENCRYPTION_KEY not set — using dev-only fallback.');
     return crypto.createHash('sha256').update('fallback_secret_32_bytes_long_key').digest();
   }
 

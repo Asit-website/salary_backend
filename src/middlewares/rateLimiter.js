@@ -1,12 +1,16 @@
 const rateLimit = require('express-rate-limit');
 
-// Rate limiter for authentication routes (5 requests per 1 minute per IP)
+const isDev = process.env.NODE_ENV !== 'production';
+
+// Rate limiter for authentication routes (stricter in production)
 const authLimiter = rateLimit({
-  windowMs: 5 * 60 * 1000, // 5 minute
-  max: 5, // Limit each IP to 5 requests per auth route
+  windowMs: 5 * 60 * 1000,
+  max: isDev ? 200 : 5,
   message: {
     success: false,
-    message: 'Too many login or OTP attempts. Please try again after 5 minute.'
+    message: isDev
+      ? 'Too many login attempts from this device. Wait a few minutes or restart the backend (local dev).'
+      : 'Too many login or OTP attempts. Please try again after 5 minute.',
   },
   standardHeaders: true,
   legacyHeaders: false,

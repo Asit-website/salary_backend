@@ -698,7 +698,8 @@ router.get('/my-permissions-open', async (req, res) => {
 
     // Simple token verification (for testing only)
     const jwt = require('jsonwebtoken');
-    const JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key';
+    const { getJwtSecret } = require('../utils/jwtSecret');
+    const JWT_SECRET = getJwtSecret();
 
     let decoded;
     try {
@@ -709,9 +710,11 @@ router.get('/my-permissions-open', async (req, res) => {
       return res.status(401).json({ success: false, message: 'Invalid token' });
     }
 
-    // Check if X-User-ID header is provided (for getting specific user's permissions)
     const targetUserId = req.headers['x-user-id'];
-    const userId = targetUserId || decoded.id;
+    if (targetUserId && Number(targetUserId) !== Number(decoded.id)) {
+      return res.status(403).json({ success: false, message: 'Forbidden' });
+    }
+    const userId = decoded.id;
 
     // console.log('Getting permissions for user ID:', userId, '(requested by:', decoded.id, ')');
 

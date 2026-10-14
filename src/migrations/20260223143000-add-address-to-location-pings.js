@@ -7,7 +7,7 @@ module.exports = {
       await queryInterface.addColumn('location_pings', 'address', {
         type: Sequelize.STRING(255),
         allowNull: true,
-        after: 'accuracyMeters',
+        after: 'accuracy_meters',
       });
     }
   },

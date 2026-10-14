@@ -5,8 +5,11 @@ require('dotenv').config();
 
 const express = require('express');
 const cors = require('cors');
+const helmet = require('helmet');
 
 const cookieParser = require('cookie-parser');
+const { authRequired } = require('./src/middleware/auth');
+const { mountSecureUploads } = require('./src/middleware/secureUploads');
 const { initDb } = require('./src/db');
 const authRoutes = require('./src/routes/auth');
 const adminRoutes = require('./src/routes/admin');
@@ -60,9 +63,18 @@ ensureCollectionExists().then(success => {
   }
 });
 
+const allowedOrigins = (process.env.CORS_ORIGINS || 'http://localhost:3000')
+  .split(',')
+  .map((s) => s.trim())
+  .filter(Boolean);
+
+app.use(helmet({ crossOriginResourcePolicy: { policy: 'cross-origin' } }));
 app.use(cors({
   origin: (origin, callback) => {
-    callback(null, origin || true);
+    if (!origin || allowedOrigins.includes(origin)) {
+      return callback(null, true);
+    }
+    return callback(new Error('Not allowed by CORS'));
   },
   credentials: true
 }));
@@ -76,11 +88,11 @@ if (!fs.existsSync(uploadsDir)) {
 
 //this
 
-// Serve PDF Viewer Page (HTML Wrapper) to force open in browser
-app.get('/view-pdf/:month/:filename', (req, res) => {
+// Serve PDF Viewer Page (HTML Wrapper) — requires authentication
+app.get('/view-pdf/:month/:filename', authRequired, (req, res) => {
   const { month, filename } = req.params;
-  const fileUrl = `/uploads/payslips/${month}/${filename}`;
-  // Return HTML with embedded PDF
+  const tokenQ = req.query.token ? `?token=${encodeURIComponent(req.query.token)}` : '';
+  const fileUrl = `/uploads/payslips/${month}/${filename}${tokenQ}`;
   res.send(`
     <html>
       <head>
@@ -96,21 +108,7 @@ app.get('/view-pdf/:month/:filename', (req, res) => {
   `);
 });
 
-// Explicitly serve payslips with inline headers (for the iframe source)
-app.get('/uploads/payslips/:month/:filename', (req, res) => {
-  const { month, filename } = req.params;
-  const filePath = path.join(uploadsDir, 'payslips', month, filename);
-  if (fs.existsSync(filePath)) {
-    res.setHeader('Content-Type', 'application/pdf');
-    res.setHeader('Content-Disposition', `inline; filename="${filename}"`); // Force open with filename
-    res.setHeader('Cache-Control', 'no-cache');
-    fs.createReadStream(filePath).pipe(res);
-  } else {
-    res.status(404).send('File not found');
-  }
-});
-
-app.use('/uploads', express.static(uploadsDir));
+mountSecureUploads(app, uploadsDir);
 
 app.use('/health', (_req, res) => res.json({ ok: true }));
 app.use('/api/webhook/essl', require('./src/routes/esslWebhook'));
@@ -130,6 +128,7 @@ app.use('/channel-partner', channelPartnerRoutes);
 app.use(rosterRoutes);
 app.use('/admin/shift-rotation', shiftRotationRoutes);
 app.use('/admin/ai', aiRoutes);
+app.use('/admin/payroll-inspection', require('./src/routes/payrollInspection'));
 app.use('/admin', adminRoutes);
 app.use('/admin/tally', require('./src/routes/tally'));
 app.use('/superadmin/mail', superadminMailRoutes);
@@ -157,6 +156,8 @@ app.use((req, res) => {
 });
 
 const port = Number(process.env.PORT || 4000);
+const backgroundJobsEnabled = String(process.env.ENABLE_BACKGROUND_JOBS || '').toLowerCase() === 'true'
+  && String(process.env.DISABLE_BACKGROUND_JOBS || '').toLowerCase() !== 'true';
 
 initDb()
   .then(async () => {
@@ -181,12 +182,17 @@ initDb()
     // Start ZKTeco biometric sync job
     try { scheduleZktecoSync(); } catch (_) { }
 
-    // Start Attendance Missing Reminder job
+    // Start Attendance Missing Reminder job (5:00 PM IST)
     try { 
       scheduleAttendanceReminders(); 
-      // Catch-up check: Scan for yesterday's missing attendance immediately on startup to recover from server reboots/downtimes during 9:30 AM
-      const { checkMissingAttendanceAndNotify } = require('./src/jobs/attendanceReminder');
-      checkMissingAttendanceAndNotify().catch((err) => console.error('[STARTUP CHECK] Attendance check failed:', err.message));
+      // Catch-up check: Only run on startup if server rebooted after 5:00 PM (17:00) IST
+      const now = new Date();
+      const istMinutes = now.getUTCHours() * 60 + now.getUTCMinutes() + 330;
+      const istHour = Math.floor(istMinutes / 60) % 24;
+      if (istHour >= 17) {
+        const { checkMissingAttendanceAndNotify } = require('./src/jobs/attendanceReminder');
+        checkMissingAttendanceAndNotify().catch((err) => console.error('[STARTUP CHECK] Attendance check failed:', err.message));
+      }
     } catch (_) { }
 
     // Start Bulk Mailing job (1-minute interval)

@@ -817,7 +817,7 @@ StaffAdvance.belongsTo(OrgAccount, { foreignKey: 'orgAccountId', as: 'orgAccount
 OrgAccount.hasMany(OvertimeRule, { foreignKey: 'orgAccountId', as: 'overtimeRules' });
 OvertimeRule.belongsTo(OrgAccount, { foreignKey: 'orgAccountId', as: 'orgAccount' });
 
-OrgAccount.belongsTo(OvertimeRule, { foreignKey: 'overtimeRuleId', as: 'activeOvertimeRule' });
+OrgAccount.belongsTo(OvertimeRule, { foreignKey: 'overtimeRuleId', as: 'activeOvertimeRule', constraints: false });
 
 Attendance.belongsTo(OvertimeRule, { foreignKey: 'overtimeRuleId', as: 'overtimeRule' });
 OvertimeRule.hasMany(Attendance, { foreignKey: 'overtimeRuleId', as: 'attendanceRecords' });
@@ -831,7 +831,7 @@ StaffOvertimeAssignment.belongsTo(OvertimeRule, { foreignKey: 'overtimeRuleId', 
 OrgAccount.hasMany(EarlyExitRule, { foreignKey: 'orgAccountId', as: 'earlyExitRules' });
 EarlyExitRule.belongsTo(OrgAccount, { foreignKey: 'orgAccountId', as: 'orgAccount' });
 
-OrgAccount.belongsTo(EarlyExitRule, { foreignKey: 'earlyExitRuleId', as: 'activeEarlyExitRule' });
+OrgAccount.belongsTo(EarlyExitRule, { foreignKey: 'earlyExitRuleId', as: 'activeEarlyExitRule', constraints: false });
 
 Attendance.belongsTo(EarlyExitRule, { foreignKey: 'earlyExitRuleId', as: 'earlyExitRule' });
 EarlyExitRule.hasMany(Attendance, { foreignKey: 'earlyExitRuleId', as: 'attendanceRecords' });
@@ -844,7 +844,7 @@ StaffEarlyExitAssignment.belongsTo(EarlyExitRule, { foreignKey: 'earlyExitRuleId
 // Break Rule associations
 OrgAccount.hasMany(BreakRule, { foreignKey: 'orgAccountId', as: 'breakRules' });
 BreakRule.belongsTo(OrgAccount, { foreignKey: 'orgAccountId', as: 'orgAccount' });
-OrgAccount.belongsTo(BreakRule, { foreignKey: 'breakRuleId', as: 'activeBreakRule' });
+OrgAccount.belongsTo(BreakRule, { foreignKey: 'breakRuleId', as: 'activeBreakRule', constraints: false });
 Attendance.belongsTo(BreakRule, { foreignKey: 'breakRuleId', as: 'breakRule' });
 BreakRule.hasMany(Attendance, { foreignKey: 'breakRuleId', as: 'attendanceRecords' });
 User.hasMany(StaffBreakAssignment, { foreignKey: 'userId', as: 'breakAssignments' });
@@ -855,7 +855,7 @@ StaffBreakAssignment.belongsTo(BreakRule, { foreignKey: 'breakRuleId', as: 'rule
 // Early Overtime Rule associations
 OrgAccount.hasMany(EarlyOvertimeRule, { foreignKey: 'orgAccountId', as: 'earlyOvertimeRules' });
 EarlyOvertimeRule.belongsTo(OrgAccount, { foreignKey: 'orgAccountId', as: 'orgAccount' });
-OrgAccount.belongsTo(EarlyOvertimeRule, { foreignKey: 'earlyOvertimeRuleId', as: 'activeEarlyOvertimeRule' });
+OrgAccount.belongsTo(EarlyOvertimeRule, { foreignKey: 'earlyOvertimeRuleId', as: 'activeEarlyOvertimeRule', constraints: false });
 
 Attendance.belongsTo(EarlyOvertimeRule, { foreignKey: 'earlyOvertimeRuleId', as: 'earlyOvertimeRule' });
 EarlyOvertimeRule.hasMany(Attendance, { foreignKey: 'earlyOvertimeRuleId', as: 'attendanceRecords' });
@@ -953,8 +953,8 @@ ShiftRotationRule.belongsTo(ShiftRotationGroup, { foreignKey: 'shiftRotationGrou
 ShiftRotationRule.belongsTo(ShiftTemplate, { foreignKey: 'startShiftTemplateId', as: 'startShift' });
 ShiftRotationRule.belongsTo(ShiftTemplate, { foreignKey: 'alternateShiftTemplateId', as: 'alternateShift' });
 
-// Database Schema Fix: Remove restrictive global unique constraints
-(async () => {
+// Database Schema Fix: Remove restrictive global unique constraints (after DB auth)
+async function runAggressiveSchemaFix() {
   try {
     console.log('[DB FIX] Starting aggressive schema repair script...');
     
@@ -1090,9 +1090,10 @@ ShiftRotationRule.belongsTo(ShiftTemplate, { foreignKey: 'alternateShiftTemplate
   } catch (err) {
     console.error('[DB FIX] Schema repair script error:', err.message);
   }
-})();
+}
 
 module.exports = {
+  runAggressiveSchemaFix,
   sequelize,
   User,
   StaffProfile,

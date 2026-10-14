@@ -15,6 +15,10 @@ const COLLECTION_ID = process.env.AWS_REKOGNITION_COLLECTION_ID || 'thinktech_st
  * Ensure the Rekognition collection exists
  */
 async function ensureCollectionExists() {
+  if (!process.env.AWS_ACCESS_KEY_ID || !process.env.AWS_SECRET_ACCESS_KEY) {
+    console.log('AWS Rekognition: skipped (no credentials in .env).');
+    return false;
+  }
   try {
     const listCommand = new ListCollectionsCommand({});
     const response = await client.send(listCommand);

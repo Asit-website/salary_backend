@@ -167,9 +167,28 @@ async function recalculateUserAttendance(userId, orgId, targetDateStr) {
   });
 }
 
+function verifyWebhookSecret(req, res) {
+  const expected = process.env.ESSL_WEBHOOK_SECRET;
+  if (!expected) {
+    if (String(process.env.NODE_ENV || 'development') === 'production') {
+      res.status(503).send('Webhook secret not configured');
+      return false;
+    }
+    return true;
+  }
+  const provided = req.headers['x-webhook-secret'] || req.query.secret;
+  if (provided !== expected) {
+    res.status(401).send('Unauthorized');
+    return false;
+  }
+  return true;
+}
+
 // POST /api/webhook/essl
 router.post('/', async (req, res) => {
   try {
+    if (!verifyWebhookSecret(req, res)) return;
+
     let orgId = req.query.orgId || req.body.orgId;
     let payload = req.body;
     

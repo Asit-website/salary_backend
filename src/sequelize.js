@@ -12,6 +12,15 @@ const sequelize = new Sequelize(
     dialect: 'mysql',
     logging: false,
     timezone: '+05:30',
+    dialectOptions: {
+      connectTimeout: 15000,
+    },
+    pool: {
+      max: 10,
+      min: 0,
+      acquire: 20000,
+      idle: 10000,
+    },
   }
 );
 

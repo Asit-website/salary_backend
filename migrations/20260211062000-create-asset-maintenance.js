@@ -4,16 +4,14 @@ module.exports = {
   up: async (queryInterface, Sequelize) => {
     await queryInterface.createTable('asset_maintenance', {
       id: {
-        type: Sequelize.BIGINT,
+        type: Sequelize.BIGINT.UNSIGNED,
         allowNull: false,
         autoIncrement: true,
         primaryKey: true,
-        unsigned: true,
       },
       assetId: {
-        type: Sequelize.BIGINT,
+        type: Sequelize.BIGINT.UNSIGNED,
         allowNull: false,
-        unsigned: true,
         field: 'assetId',
         references: {
           model: 'assets',
@@ -50,9 +48,8 @@ module.exports = {
         allowNull: true,
       },
       performedBy: {
-        type: Sequelize.BIGINT,
+        type: Sequelize.BIGINT.UNSIGNED,
         allowNull: true,
-        unsigned: true,
         field: 'performedBy',
         references: {
           model: 'users',
@@ -76,9 +73,8 @@ module.exports = {
         defaultValue: [],
       },
       createdBy: {
-        type: Sequelize.BIGINT,
+        type: Sequelize.BIGINT.UNSIGNED,
         allowNull: false,
-        unsigned: true,
         field: 'createdBy',
         references: {
           model: 'users',
@@ -88,9 +84,8 @@ module.exports = {
         onDelete: 'RESTRICT',
       },
       updatedBy: {
-        type: Sequelize.BIGINT,
+        type: Sequelize.BIGINT.UNSIGNED,
         allowNull: true,
-        unsigned: true,
         field: 'updatedBy',
         references: {
           model: 'users',

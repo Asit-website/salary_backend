@@ -27,7 +27,7 @@ module.exports = {
         defaultValue: true
       },
       org_account_id: {
-        type: Sequelize.BIGINT,
+        type: Sequelize.BIGINT.UNSIGNED,
         allowNull: false,
         references: {
           model: 'org_accounts',
@@ -35,11 +35,11 @@ module.exports = {
         }
       },
       createdById: {
-        type: Sequelize.BIGINT,
+        type: Sequelize.BIGINT.UNSIGNED,
         allowNull: false
       },
       updatedById: {
-        type: Sequelize.BIGINT,
+        type: Sequelize.BIGINT.UNSIGNED,
         allowNull: true
       },
       createdAt: {
@@ -92,7 +92,7 @@ module.exports = {
         defaultValue: true
       },
       org_account_id: {
-        type: Sequelize.BIGINT,
+        type: Sequelize.BIGINT.UNSIGNED,
         allowNull: false,
         references: {
           model: 'org_accounts',
@@ -141,7 +141,7 @@ module.exports = {
         }
       },
       org_account_id: {
-        type: Sequelize.BIGINT,
+        type: Sequelize.BIGINT.UNSIGNED,
         allowNull: false,
         references: {
           model: 'org_accounts',
@@ -153,7 +153,7 @@ module.exports = {
         defaultValue: true
       },
       createdById: {
-        type: Sequelize.BIGINT,
+        type: Sequelize.BIGINT.UNSIGNED,
         allowNull: false
       },
       createdAt: {
@@ -182,7 +182,7 @@ module.exports = {
         autoIncrement: true
       },
       userId: {
-        type: Sequelize.BIGINT,
+        type: Sequelize.BIGINT.UNSIGNED,
         allowNull: false,
         references: {
           model: 'users',
@@ -198,7 +198,7 @@ module.exports = {
         }
       },
       org_account_id: {
-        type: Sequelize.BIGINT,
+        type: Sequelize.BIGINT.UNSIGNED,
         allowNull: false,
         references: {
           model: 'org_accounts',
@@ -206,7 +206,7 @@ module.exports = {
         }
       },
       assignedById: {
-        type: Sequelize.BIGINT,
+        type: Sequelize.BIGINT.UNSIGNED,
         allowNull: false
       },
       isActive: {

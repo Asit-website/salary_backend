@@ -6,6 +6,7 @@ const { logAudit } = require("../utils/auditLogger");
 const mockPayments = new Map();
 
 const bcrypt = require("bcryptjs");
+const { DEFAULT_USER_PASSWORD, hashPassword, hashDefaultPassword } = require("../utils/password");
 
 const exceljs = require("exceljs");
 
@@ -549,8 +550,7 @@ const handleMockPgCheckout = (req, res) => {
   res.send(html);
 };
 
-router.get("/mock-pg-checkout", handleMockPgCheckout);
-router.get("/mock_pg_checkout", handleMockPgCheckout);
+const allowMockPayments = String(process.env.ALLOW_MOCK_PAYMENTS || 'false') === 'true';
 
 const handleMockPgCheckoutPay = async (req, res) => {
   try {
@@ -570,8 +570,12 @@ const handleMockPgCheckoutPay = async (req, res) => {
   }
 };
 
-router.post("/mock-pg-checkout/pay", handleMockPgCheckoutPay);
-router.post("/mock_pg_checkout/pay", handleMockPgCheckoutPay);
+if (allowMockPayments) {
+  router.get("/mock-pg-checkout", handleMockPgCheckout);
+  router.get("/mock_pg_checkout", handleMockPgCheckout);
+  router.post("/mock-pg-checkout/pay", handleMockPgCheckoutPay);
+  router.post("/mock_pg_checkout/pay", handleMockPgCheckoutPay);
+}
 
 router.use(authRequired);
 
@@ -4422,6 +4426,8 @@ router.get("/payroll/:cycleId/export", async (req, res) => {
       StaffProfile,
       AppSetting,
       StaffAdvance,
+      SalaryTemplate,
+      StaffSalaryAssignment,
     } = require("../models");
 
     const id = Number(req.params.cycleId);
@@ -4470,7 +4476,16 @@ router.get("/payroll/:cycleId/export", async (req, res) => {
     const userIds = [...new Set(lines.map((l) => l.userId))];
     const users = await User.findAll({
       where: { id: userIds },
-      include: [{ model: StaffProfile, as: "profile" }],
+      include: [
+        { model: StaffProfile, as: "profile" },
+        { model: SalaryTemplate, as: "salaryTemplate", required: false },
+        {
+          model: StaffSalaryAssignment,
+          as: "salaryAssignments",
+          required: false,
+          include: [{ model: SalaryTemplate, as: "template", required: false }],
+        },
+      ],
     });
 
     // Map of user data for quick lookup
@@ -4574,6 +4589,68 @@ router.get("/payroll/:cycleId/export", async (req, res) => {
 
       return { line: l, e, i, d, s, t };
     });
+
+    // Check if Income Tax is present in any staff's salary template or non-zero in lines
+    const isIncomeTaxKey = (k) => {
+      if (!k) return false;
+      const clean = String(k).trim().toUpperCase().replace(/[\s_-]+/g, "");
+      return (
+        clean === "INCOMETAX" ||
+        clean === "TDS" ||
+        clean === "TDSDEDUCTION" ||
+        clean === "ITAX" ||
+        clean.includes("INCOMETAX")
+      );
+    };
+
+    const checkTemplateHasIncomeTax = (tpl) => {
+      if (!tpl) return false;
+      let deductionsList = tpl.deductions;
+      while (typeof deductionsList === "string") {
+        try {
+          deductionsList = JSON.parse(deductionsList);
+        } catch (_) {
+          break;
+        }
+      }
+      if (!Array.isArray(deductionsList)) return false;
+      return deductionsList.some(
+        (d) => isIncomeTaxKey(d.key) || isIncomeTaxKey(d.label) || isIncomeTaxKey(d.name)
+      );
+    };
+
+    let hasIncomeTaxInTemplate = false;
+    for (const u of users) {
+      if (checkTemplateHasIncomeTax(u.salaryTemplate)) {
+        hasIncomeTaxInTemplate = true;
+        break;
+      }
+      if (u.salaryAssignments && u.salaryAssignments.length > 0) {
+        for (const sa of u.salaryAssignments) {
+          if (checkTemplateHasIncomeTax(sa.template)) {
+            hasIncomeTaxInTemplate = true;
+            break;
+          }
+        }
+      }
+      if (hasIncomeTaxInTemplate) break;
+    }
+
+    const hasNonZeroIncomeTax = parsedLines.some((pl) => {
+      return Object.entries(pl.d || {}).some(
+        ([k, v]) => isIncomeTaxKey(k) && Number(v || 0) > 0
+      );
+    });
+
+    const shouldIncludeIncomeTax = hasIncomeTaxInTemplate || hasNonZeroIncomeTax;
+
+    if (!shouldIncludeIncomeTax) {
+      for (const k of Array.from(deductionsKeys)) {
+        if (isIncomeTaxKey(k)) {
+          deductionsKeys.delete(k);
+        }
+      }
+    }
 
     const sortedEarnings = Array.from(earningsKeys).sort();
     const sortedIncentives = Array.from(incentivesKeys).sort();
@@ -5473,7 +5550,7 @@ router.get("/payroll/:cycleId/salary-register-excel", async (req, res) => {
         penaltyKeys.add("breakDeductionAmount");
       const otMeta = salaryRegisterOtMeta.get(Number(line.userId)) || {};
       if (Number(otMeta.otPay || s.overtimePay)) earningKeys.add("overtimePay");
-      earningKeys.add("fooding");
+      if (Number(otMeta.fooding || 0) > 0) earningKeys.add("fooding");
       if (Number(s.earlyOvertimePay)) earningKeys.add("earlyOvertimePay");
     });
 
@@ -5557,39 +5634,108 @@ router.get("/payroll/:cycleId/salary-register-excel", async (req, res) => {
 
     const workbook = new exceljs.Workbook();
     const worksheet = workbook.addWorksheet("Salary Register");
-    worksheet.columns = cols; // CRITICAL: Map rowData to columns
-    worksheet.views = [{ showGridLines: false }];
+    worksheet.columns = cols.map((c) => ({ key: c.key, width: c.width }));
+    worksheet.pageSetup = {
+      orientation: "landscape",
+      fitToPage: true,
+      fitToWidth: 1,
+      fitToHeight: 0,
+      paperSize: 9,
+    };
+    worksheet.views = [{ state: "frozen", ySplit: 5, showGridLines: true }];
+
+    const thinBorder = {
+      top: { style: "thin" },
+      left: { style: "thin" },
+      bottom: { style: "thin" },
+      right: { style: "thin" },
+    };
+    const headerGray = {
+      type: "pattern",
+      pattern: "solid",
+      fgColor: { argb: "FFD9D9D9" },
+    };
+    const colKeyAt = (idx1) => cols[idx1 - 1]?.key;
+    const intColKeys = new Set([
+      "sl",
+      "workDays",
+      "paidSun",
+      "paidHoli",
+      "absent",
+      "totalPayDay",
+      "otDays",
+    ]);
+    const textColKeys = new Set(["name", "bankName", "bankAccount", "signature"]);
+    const styleRegisterDataCell = (cell, key, opts = {}) => {
+      cell.border = thinBorder;
+      if (opts.fill) cell.fill = opts.fill;
+      if (opts.bold) cell.font = { ...(cell.font || {}), bold: true };
+      if (textColKeys.has(key)) {
+        cell.alignment = { horizontal: "left", vertical: "middle", wrapText: true };
+        return;
+      }
+      if (key === "sl" || intColKeys.has(key)) {
+        cell.alignment = { horizontal: "center", vertical: "middle" };
+        if (typeof cell.value === "number" && key !== "sl") cell.numFmt = "0";
+        return;
+      }
+      if (key === "otHours" && typeof cell.value === "number") {
+        cell.numFmt = "0.00";
+        cell.alignment = { horizontal: "right", vertical: "middle" };
+        return;
+      }
+      if (typeof cell.value === "number") {
+        cell.numFmt = "#,##0.00";
+        cell.alignment = { horizontal: "right", vertical: "middle" };
+      }
+    };
+    const paintMergedHeader = (r4, c, label) => {
+      worksheet.mergeCells(4, c, 5, c);
+      const cell = worksheet.getCell(4, c);
+      cell.value = label;
+      cell.font = { bold: true, size: 10 };
+      cell.fill = headerGray;
+      cell.border = thinBorder;
+      cell.alignment = { horizontal: "center", vertical: "middle", wrapText: true };
+    };
 
     // Company Header
     worksheet.mergeCells(1, 1, 1, cols.length);
     const companyCell = worksheet.getCell(1, 1);
-    companyCell.value = org.name.toUpperCase();
-    companyCell.font = { bold: true, size: 18 };
-    companyCell.alignment = { horizontal: "center" };
+    companyCell.value = (org.name || "Organization").toUpperCase();
+    companyCell.font = { bold: true, size: 16 };
+    companyCell.alignment = { horizontal: "center", vertical: "middle" };
 
     worksheet.mergeCells(2, 1, 2, cols.length);
     const addressCell = worksheet.getCell(2, 1);
     addressCell.value = org.address || "";
-    addressCell.alignment = { horizontal: "center" };
+    addressCell.alignment = { horizontal: "center", vertical: "middle", wrapText: true };
+    addressCell.font = { size: 10 };
 
     worksheet.mergeCells(3, 1, 3, cols.length);
     const titleCell = worksheet.getCell(3, 1);
     titleCell.value = `Pay Register for the Month of ${monthName.toUpperCase()}`;
-    titleCell.font = { bold: true, size: 14 };
-    titleCell.alignment = { horizontal: "center" };
+    titleCell.font = { bold: true, size: 12 };
+    titleCell.alignment = { horizontal: "center", vertical: "middle" };
 
-    // Group Headers (Earnings / Deductions) Row 4
-    const eStart =
-      cols.findIndex(
-        (c) => String(c.key).startsWith("e_") || String(c.key).startsWith("i_"),
-      ) + 1;
-    const eEnd = eStart + fdE.length + dI.length - 1;
-    if (eStart > 0 && eEnd >= eStart) {
+    const basicRateCol =
+      cols.findIndex((c) => c.key === "basicRate") + 1 || 12;
+    const grossCol = cols.findIndex((c) => c.key === "grossPay") + 1;
+    const totalDedCol = cols.findIndex((c) => c.key === "totalDeduction") + 1;
+    const eStart = basicRateCol;
+    const eEnd = grossCol > 0 ? grossCol - 1 : eStart + fdE.length + dI.length - 1;
+    const dStart = grossCol > 0 ? grossCol + 1 : cols.findIndex((c) => String(c.key).startsWith("d_")) + 1;
+    const dEnd = totalDedCol > 0 ? totalDedCol - 1 : dStart + fdD.length - 1;
+
+    for (let c = 1; c < eStart; c++) {
+      paintMergedHeader(4, c, cols[c - 1].header);
+    }
+    if (eEnd >= eStart) {
       worksheet.mergeCells(4, eStart, 4, eEnd);
       const eH = worksheet.getCell(4, eStart);
       eH.value = "E A R N I N G S";
       eH.alignment = { horizontal: "center", vertical: "middle" };
-      eH.font = { bold: true, color: { argb: "FFFFFFFF" } };
+      eH.font = { bold: true, color: { argb: "FFFFFFFF" }, size: 11 };
       eH.fill = {
         type: "pattern",
         pattern: "solid",
@@ -5601,15 +5747,33 @@ router.get("/payroll/:cycleId/salary-register-excel", async (req, res) => {
         bottom: { style: "medium" },
         right: { style: "medium" },
       };
+      let ec = eStart;
+      fdE.forEach((e) => {
+        const cell = worksheet.getRow(5).getCell(ec);
+        cell.value = e.label;
+        cell.font = { bold: true, size: 10 };
+        cell.fill = headerGray;
+        cell.border = thinBorder;
+        cell.alignment = { horizontal: "center", vertical: "middle", wrapText: true };
+        ec++;
+      });
+      dI.forEach((i) => {
+        const cell = worksheet.getRow(5).getCell(ec);
+        cell.value = i.label;
+        cell.font = { bold: true, size: 10 };
+        cell.fill = headerGray;
+        cell.border = thinBorder;
+        cell.alignment = { horizontal: "center", vertical: "middle", wrapText: true };
+        ec++;
+      });
     }
-    const dStart = cols.findIndex((c) => String(c.key).startsWith("d_")) + 1;
-    const dEnd = dStart + fdD.length - 1;
-    if (dStart > 0 && dEnd >= dStart) {
+    if (grossCol > 0) paintMergedHeader(4, grossCol, "GROSS PAY");
+    if (dEnd >= dStart && dStart > 0) {
       worksheet.mergeCells(4, dStart, 4, dEnd);
       const dH = worksheet.getCell(4, dStart);
       dH.value = "D E D U C T I O N S";
       dH.alignment = { horizontal: "center", vertical: "middle" };
-      dH.font = { bold: true, color: { argb: "FFFFFFFF" } };
+      dH.font = { bold: true, color: { argb: "FFFFFFFF" }, size: 11 };
       dH.fill = {
         type: "pattern",
         pattern: "solid",
@@ -5621,26 +5785,22 @@ router.get("/payroll/:cycleId/salary-register-excel", async (req, res) => {
         bottom: { style: "medium" },
         right: { style: "medium" },
       };
+      let dc = dStart;
+      fdD.forEach((d) => {
+        const cell = worksheet.getRow(5).getCell(dc);
+        cell.value = d.label;
+        cell.font = { bold: true, size: 10 };
+        cell.fill = headerGray;
+        cell.border = thinBorder;
+        cell.alignment = { horizontal: "center", vertical: "middle", wrapText: true };
+        dc++;
+      });
     }
-
-    const headerRow = worksheet.getRow(5);
-    headerRow.values = cols.map((c) => c.header);
-    headerRow.font = { bold: true, color: { argb: "FF000000" } };
-    headerRow.height = 25;
-    headerRow.eachCell((cell) => {
-      cell.fill = {
-        type: "pattern",
-        pattern: "solid",
-        fgColor: { argb: "FFD9D9D9" },
-      };
-      cell.border = {
-        top: { style: "thin" },
-        left: { style: "thin" },
-        bottom: { style: "thin" },
-        right: { style: "thin" },
-      };
-      cell.alignment = { horizontal: "center", vertical: "middle" };
-    });
+    for (let c = totalDedCol; c <= cols.length; c++) {
+      if (c <= 0) break;
+      paintMergedHeader(4, c, cols[c - 1].header);
+    }
+    worksheet.getRow(5).height = 28;
 
     const grouped = {};
     lines.forEach((line) => {
@@ -5671,7 +5831,26 @@ router.get("/payroll/:cycleId/salary-register-excel", async (req, res) => {
     fdD.forEach((dk) => (grandTotals.d[dk.key] = 0));
     dI.forEach((dk) => (grandTotals.i[dk.key] = 0));
 
-    for (const [groupVal, groupLines] of Object.entries(grouped)) {
+    const sortedGroups = Object.entries(grouped).sort(([a], [b]) =>
+      String(a).localeCompare(String(b), undefined, { sensitivity: "base" }),
+    );
+
+    for (const [groupVal, groupLines] of sortedGroups) {
+      const groupTitleRow = worksheet.addRow({});
+      const gtNum = groupTitleRow.number;
+      worksheet.mergeCells(gtNum, 1, gtNum, cols.length);
+      const gtCell = worksheet.getCell(gtNum, 1);
+      gtCell.value = String(groupVal || "OTHER").toUpperCase();
+      gtCell.font = { bold: true, size: 11, color: { argb: "FF1F3864" } };
+      gtCell.fill = {
+        type: "pattern",
+        pattern: "solid",
+        fgColor: { argb: "FFD9E1F2" },
+      };
+      gtCell.alignment = { horizontal: "left", vertical: "middle" };
+      gtCell.border = thinBorder;
+      groupTitleRow.height = 20;
+
       const subTotals = {
         basicRate: 0,
         otDays: 0,
@@ -5830,36 +6009,23 @@ router.get("/payroll/:cycleId/salary-register-excel", async (req, res) => {
         }
 
         const row = worksheet.addRow(rowData);
-        row.eachCell((cell, colNumber) => {
-          cell.border = {
-            top: { style: "thin" },
-            left: { style: "thin" },
-            bottom: { style: "thin" },
-            right: { style: "thin" },
-          };
-          // Number formatting for amount columns
-          if (colNumber >= 8 && typeof cell.value === "number") {
-            cell.numFmt = "#,##0.00";
-          }
-          // Zebra striping
-          if (sl % 2 === 0) {
-            cell.fill = {
-              type: "pattern",
-              pattern: "solid",
-              fgColor: { argb: "FFF9F9F9" },
-            };
-          }
+        const zebra =
+          sl % 2 === 0
+            ? {
+                type: "pattern",
+                pattern: "solid",
+                fgColor: { argb: "FFF9F9F9" },
+              }
+            : null;
+        row.eachCell({ includeEmpty: true }, (cell, colNumber) => {
+          styleRegisterDataCell(cell, colKeyAt(colNumber), { fill: zebra });
         });
         currRow++;
       });
 
-      // Add a small gap before sub-total
-      worksheet.addRow([]);
-      currRow++;
-
       // Sub-total for group
       const subRowData = {
-        name: `TOTAL: ${groupVal.toUpperCase()}`,
+        name: `TOTAL: ${String(groupVal).toUpperCase()}`,
         otDays: subTotals.otDays,
         otHours: subTotals.otHours,
         basicRate: subTotals.basicRate,
@@ -5879,26 +6045,20 @@ router.get("/payroll/:cycleId/salary-register-excel", async (req, res) => {
         subRowData[`d_${dk.key}`] = subTotals.d[dk.key];
       });
       const subRow = worksheet.addRow(subRowData);
-
-      subRow.font = { bold: true };
-      subRow.eachCell((cell) => {
-        cell.fill = {
-          type: "pattern",
-          pattern: "solid",
-          fgColor: { argb: "FFEBF1DE" },
-        };
-        cell.border = {
-          top: { style: "thin" },
-          left: { style: "thin" },
-          bottom: { style: "thin" },
-          right: { style: "thin" },
-        };
-        if (typeof cell.value === "number") cell.numFmt = "#,##0.00";
+      const subFill = {
+        type: "pattern",
+        pattern: "solid",
+        fgColor: { argb: "FFEBF1DE" },
+      };
+      try {
+        worksheet.mergeCells(subRow.number, 1, subRow.number, 4);
+      } catch (_) {}
+      subRow.eachCell({ includeEmpty: true }, (cell, colNumber) => {
+        styleRegisterDataCell(cell, colKeyAt(colNumber), {
+          bold: true,
+          fill: subFill,
+        });
       });
-      currRow++;
-
-      // Add another gap after group
-      worksheet.addRow([]);
       currRow++;
     }
 
@@ -5925,15 +6085,15 @@ router.get("/payroll/:cycleId/salary-register-excel", async (req, res) => {
     });
 
     const grandRow = worksheet.addRow(grandRowData);
-    grandRow.font = { bold: true };
-    grandRow.eachCell((cell) => {
+    try {
+      worksheet.mergeCells(grandRow.number, 1, grandRow.number, 4);
+    } catch (_) {}
+    grandRow.eachCell({ includeEmpty: true }, (cell, colNumber) => {
+      styleRegisterDataCell(cell, colKeyAt(colNumber), { bold: true });
       cell.border = {
-        top: { style: "thin" },
-        left: { style: "thin" },
-        bottom: { style: "thick" },
-        right: { style: "thin" },
+        ...thinBorder,
+        bottom: { style: "medium" },
       };
-      if (typeof cell.value === "number") cell.numFmt = "#,##0.00";
     });
 
     res.setHeader(
@@ -12384,6 +12544,51 @@ router.delete(
   },
 );
 
+// Get all distinct departments for the organization (from business-functions + staff profiles)
+router.get("/departments", async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res);
+    if (!orgId) return;
+
+    // 1. Business functions
+    const bfList = await BusinessFunction.findAll({
+      where: { orgAccountId: orgId },
+      include: [{ model: BusinessFunctionValue, as: "values" }],
+    });
+    const deptFn = bfList.find((f) => String(f.name || "").toLowerCase() === "department");
+    const bfValues = (deptFn?.values || []).map((v) => v.value).filter(Boolean);
+
+    // 2. Staff Profiles
+    const staffProfiles = await StaffProfile.findAll({
+      attributes: [[sequelize.fn("DISTINCT", sequelize.col("department")), "department"]],
+      include: [
+        {
+          model: User,
+          as: "user",
+          where: { orgAccountId: orgId },
+          attributes: [],
+        },
+      ],
+      raw: true,
+    }).catch(() => []);
+    const spValues = staffProfiles.map((p) => p.department).filter(Boolean);
+
+    const merged = Array.from(new Set([...bfValues, ...spValues, "General"]))
+      .map((d) => String(d).trim())
+      .filter(Boolean)
+      .sort();
+
+    return res.json({
+      success: true,
+      departments: merged,
+      data: merged,
+    });
+  } catch (e) {
+    console.error("Get departments error:", e);
+    return res.status(500).json({ success: false, message: "Failed to load departments" });
+  }
+});
+
 // Effective attendance template for a user
 
 router.get(
@@ -14525,7 +14730,7 @@ router.post("/staff/import", uploadMemory.single("file"), async (req, res) => {
           }
         }
 
-        const passwordHash = await bcrypt.hash(phone, 10);
+        const passwordHash = await hashDefaultPassword();
         const user = await User.create({
           role: "staff",
           phone,
@@ -14815,9 +15020,20 @@ router.get("/advances", async (req, res) => {
   try {
     const orgId = requireOrg(req, res);
     if (!orgId) return;
-    const { page = 1, limit = 10, staffId } = req.query;
+    const { page = 1, limit = 10, staffId, search, status } = req.query;
     const where = { orgAccountId: orgId };
     if (staffId) where.staffId = staffId;
+    if (search && String(search).trim()) {
+      const staffIds = await resolveStaffUserIdsForSearch(orgId, String(search).trim());
+      if (!staffIds || staffIds.length === 0) {
+        return res.json({
+          success: true,
+          data: [],
+          pagination: { total: 0, current: parseInt(page), pageSize: parseInt(limit) },
+        });
+      }
+      where.staffId = { [Op.in]: staffIds };
+    }
 
     const { count, rows } = await StaffAdvance.findAndCountAll({
       where,
@@ -14892,11 +15108,17 @@ router.get("/advances", async (req, res) => {
       return plain;
     });
 
+    let filtered = enriched;
+    if (status && String(status).trim()) {
+      const st = String(status).trim().toLowerCase();
+      filtered = enriched.filter((a) => String(a.status || "").toLowerCase() === st);
+    }
+
     return res.json({
       success: true,
-      data: enriched,
+      data: filtered,
       pagination: {
-        total: count,
+        total: status ? filtered.length : count,
         current: parseInt(page),
         pageSize: parseInt(limit),
       },
@@ -25111,7 +25333,7 @@ router.post("/staff", requireRole(["admin", "staff"]), async (req, res) => {
       });
     }
 
-    const passwordHash = await bcrypt.hash(String(password || "123456"), 10);
+    const passwordHash = await hashPassword(String(password || DEFAULT_USER_PASSWORD));
 
     // Helper to map request keys to User model attributes
 
@@ -25545,7 +25767,7 @@ router.post("/staff", requireRole(["admin", "staff"]), async (req, res) => {
     try {
       if (email) {
         const staffCredentials = {
-          password: phoneInput, // Using phone as default password
+          password: password || DEFAULT_USER_PASSWORD,
 
           staffId: staffId || staffUser.id,
         };
@@ -32457,13 +32679,33 @@ router.get("/reports/org-punch-matrix", async (req, res) => {
 router.get("/reports/org-attendance-matrix", async (req, res) => {
   try {
     const orgId = requireOrg(req, res);
-    if (!orgId) return;
-    const { month, year, format, employeeIds } = req.query;
+    const { month, year, startDate: qStart, endDate: qEnd, format, employeeIds } = req.query;
 
-    const startDate =
-      month && year ? dayjs(`${year}-${month}-01`) : dayjs().startOf("month");
-    const endDate = startDate.endOf("month");
-    const daysInMonth = startDate.daysInMonth();
+    let startDate, endDate;
+    if (qStart && qEnd) {
+      startDate = dayjs(qStart).startOf("day");
+      endDate = dayjs(qEnd).startOf("day");
+    } else if (month && year) {
+      startDate = dayjs(`${year}-${String(month).padStart(2, "0")}-01`).startOf("day");
+      endDate = startDate.endOf("month").startOf("day");
+    } else {
+      startDate = dayjs().startOf("month");
+      endDate = dayjs().endOf("month").startOf("day");
+    }
+
+    const daysList = [];
+    let currDay = startDate.clone();
+    while (currDay.isBefore(endDate) || currDay.isSame(endDate, "day")) {
+      daysList.push({
+        date: currDay.format("YYYY-MM-DD"),
+        dayNum: currDay.date(),
+        dayName: currDay.format("ddd"),
+        fullDayName: currDay.format("dddd"),
+        shortDate: currDay.format("DD MMM"),
+      });
+      currDay = currDay.add(1, "day");
+    }
+    const daysInMonth = daysList.length;
 
     // Helper to format date as YYYY-MM-DD in local time
     const formatLocalISO = (date) => {
@@ -32567,6 +32809,41 @@ router.get("/reports/org-attendance-matrix", async (req, res) => {
         },
       ],
     });
+
+    const startDateStr = formatLocalISO(startDate);
+    const endDateStr = formatLocalISO(endDate);
+    const approvedLeaves = await LeaveRequest.findAll({
+      where: {
+        userId: staffList.map((s) => s.id),
+        status: "APPROVED",
+        [Op.or]: [
+          { startDate: { [Op.between]: [startDateStr, endDateStr] } },
+          { endDate: { [Op.between]: [startDateStr, endDateStr] } },
+          {
+            [Op.and]: [
+              { startDate: { [Op.lte]: startDateStr } },
+              { endDate: { [Op.gte]: endDateStr } },
+            ],
+          },
+        ],
+      },
+    });
+    const leaveByUser = {};
+    approvedLeaves.forEach((lr) => {
+      const uId = String(lr.userId);
+      if (!leaveByUser[uId]) leaveByUser[uId] = [];
+      leaveByUser[uId].push(lr);
+    });
+    const isDateOnApprovedLeave = (userId, dateKey) => {
+      const list = leaveByUser[String(userId)] || [];
+      return list.some((l) => {
+        const lStart = l.startDate
+          ? dayjs(l.startDate).format("YYYY-MM-DD")
+          : null;
+        const lEnd = l.endDate ? dayjs(l.endDate).format("YYYY-MM-DD") : null;
+        return lStart && lEnd && dateKey >= lStart && dateKey <= lEnd;
+      });
+    };
 
     // Fetch Late Penalty Rule
     let lateTiers = [];
@@ -32689,7 +32966,10 @@ router.get("/reports/org-attendance-matrix", async (req, res) => {
     staffList.forEach((s) => {
       matrix[s.id] = {};
       summary[s.id] = {
+        presentDays: 0,
         halfDays: 0,
+        absentDays: 0,
+        leaveDays: 0,
         overtimeMinutes: 0,
         lateDays: 0,
         penaltyDays: 0,
@@ -32711,14 +32991,84 @@ router.get("/reports/org-attendance-matrix", async (req, res) => {
       const userWoAsg = woMap[sId] || [];
       const userHolAsg = holidayMap[sId] || [];
       let staffTierCounts = new Array(lateTiers.length).fill(0);
-
-      for (let i = 1; i <= daysInMonth; i++) {
-        const dObj = startDate.clone().date(i);
-        const dateKey = dObj.format("YYYY-MM-DD");
+      for (let i = 0; i < daysList.length; i++) {
+        const dItem = daysList[i];
+        const dateKey = dItem.date;
+        const dObj = dayjs(dateKey);
         const record = attendanceMap[sId]?.[dateKey];
 
         // Initialize daily details
         details[staff.id][dateKey] = { late: 0, ot: 0, status: "-" };
+
+        // Holiday / weekly off / leave take precedence (same order as attendance-overview)
+        let isHoliday = false;
+        for (const asg of userHolAsg) {
+          if (
+            dateKey >= dayjs(asg.effectiveFrom).format("YYYY-MM-DD") &&
+            (!asg.effectiveTo ||
+              dateKey <= dayjs(asg.effectiveTo).format("YYYY-MM-DD"))
+          ) {
+            if (asg.template?.holidays?.some((hd) => hd.date === dateKey)) {
+              isHoliday = true;
+              break;
+            }
+          }
+        }
+        if (isHoliday) {
+          matrix[staff.id][dateKey] = "H";
+          details[staff.id][dateKey].status = "H";
+          continue;
+        }
+
+        let isWO = false;
+        for (const asg of userWoAsg) {
+          if (
+            dateKey >= dayjs(asg.effectiveFrom).format("YYYY-MM-DD") &&
+            (!asg.effectiveTo ||
+              dateKey <= dayjs(asg.effectiveTo).format("YYYY-MM-DD"))
+          ) {
+            let config = asg.template?.config || [];
+            if (typeof config === "string") {
+              try {
+                config = JSON.parse(config);
+              } catch (_) {
+                try {
+                  config = JSON.parse(JSON.parse(config));
+                } catch (__) {
+                  config = [];
+                }
+              }
+            }
+            const configArr = Array.isArray(config) ? config : [];
+            const dayOfWeek = dObj.day();
+            const weekOfMonth = Math.ceil(dObj.date() / 7);
+
+            const match = configArr.find(
+              (c) =>
+                c &&
+                Number(c.day) === dayOfWeek &&
+                (c.weeks === "all" ||
+                  (Array.isArray(c.weeks) &&
+                    c.weeks.map(Number).includes(weekOfMonth))),
+            );
+            if (match) {
+              isWO = true;
+              break;
+            }
+          }
+        }
+        if (isWO) {
+          matrix[staff.id][dateKey] = "WO";
+          details[staff.id][dateKey].status = "WO";
+          continue;
+        }
+
+        if (isDateOnApprovedLeave(staff.id, dateKey)) {
+          matrix[staff.id][dateKey] = "L";
+          details[staff.id][dateKey].status = "L";
+          summary[staff.id].leaveDays += 1;
+          continue;
+        }
 
         if (record) {
           const statusCode = toStatusCode(record) || "P";
@@ -32726,7 +33076,9 @@ router.get("/reports/org-attendance-matrix", async (req, res) => {
           details[staff.id][dateKey].status = statusCode;
           details[staff.id][dateKey].ot = otMin;
 
+          if (statusCode === "P") summary[staff.id].presentDays += 1;
           if (statusCode === "HD") summary[staff.id].halfDays += 1;
+          if (statusCode === "A") summary[staff.id].absentDays += 1;
           if (otMin > 0) summary[staff.id].overtimeMinutes += otMin;
 
           let lateIndicator = "";
@@ -32790,70 +33142,11 @@ router.get("/reports/org-attendance-matrix", async (req, res) => {
               ? `${statusCode}${lateIndicator} OT${otMin}m`
               : `${statusCode}${lateIndicator}`;
         } else {
-          // Check Holidays first
-          let isHoliday = false;
-          for (const asg of userHolAsg) {
-            if (
-              dateKey >= dayjs(asg.effectiveFrom).format("YYYY-MM-DD") &&
-              (!asg.effectiveTo ||
-                dateKey <= dayjs(asg.effectiveTo).format("YYYY-MM-DD"))
-            ) {
-              if (asg.template?.holidays?.some((hd) => hd.date === dateKey)) {
-                isHoliday = true;
-                break;
-              }
-            }
-          }
-
-          if (isHoliday) {
-            matrix[staff.id][dateKey] = "H";
-            details[staff.id][dateKey].status = "H";
-            continue;
-          }
-
-          // Check Weekly Off
-          let isWO = false;
-          for (const asg of userWoAsg) {
-            if (
-              dateKey >= dayjs(asg.effectiveFrom).format("YYYY-MM-DD") &&
-              (!asg.effectiveTo ||
-                dateKey <= dayjs(asg.effectiveTo).format("YYYY-MM-DD"))
-            ) {
-              let config = asg.template?.config || [];
-              if (typeof config === "string") {
-                try {
-                  config = JSON.parse(config);
-                } catch (_) {
-                  try {
-                    config = JSON.parse(JSON.parse(config));
-                  } catch (__) {
-                    config = [];
-                  }
-                }
-              }
-              const configArr = Array.isArray(config) ? config : [];
-              const dayOfWeek = dObj.day();
-              const weekOfMonth = Math.ceil(dObj.date() / 7);
-
-              const match = configArr.find(
-                (c) =>
-                  c &&
-                  Number(c.day) === dayOfWeek &&
-                  (c.weeks === "all" ||
-                    (Array.isArray(c.weeks) &&
-                      c.weeks.map(Number).includes(weekOfMonth))),
-              );
-              if (match) {
-                isWO = true;
-                break;
-              }
-            }
-          }
-
           const todayStr = dayjs().format("YYYY-MM-DD");
-          const displayStatus = isWO ? "WO" : dateKey <= todayStr ? "A" : "-";
+          const displayStatus = dateKey <= todayStr ? "A" : "-";
           matrix[staff.id][dateKey] = displayStatus;
           details[staff.id][dateKey].status = displayStatus;
+          if (displayStatus === "A") summary[staff.id].absentDays += 1;
         }
       }
     });
@@ -32867,11 +33160,14 @@ router.get("/reports/org-attendance-matrix", async (req, res) => {
         { header: "S.N.", key: "sn", width: 6 },
         { header: "Staff Name", key: "staffName", width: 24 },
       ];
-      for (let i = 1; i <= daysInMonth; i++) {
-        const dayStr = i.toString().padStart(2, "0");
-        columns.push({ header: dayStr, key: `day_${i}`, width: 10 });
-      }
+      daysList.forEach((dItem) => {
+        const dayHeader = `${String(dItem.dayNum).padStart(2, "0")}\n${dItem.dayName}`;
+        columns.push({ header: dayHeader, key: `date_${dItem.date}`, width: 8 });
+      });
+      columns.push({ header: "Present", key: "presentDays", width: 10 });
       columns.push({ header: "Half Days", key: "halfDays", width: 12 });
+      columns.push({ header: "Leave", key: "leaveDays", width: 10 });
+      columns.push({ header: "Absent", key: "absentDays", width: 10 });
       columns.push({ header: "OT (Min)", key: "overtimeMinutes", width: 12 });
       columns.push({ header: "Late By (Min)", key: "lateMinutes", width: 15 });
       columns.push({ header: "Late Days", key: "lateDays", width: 12 });
@@ -32882,7 +33178,7 @@ router.get("/reports/org-attendance-matrix", async (req, res) => {
       // Header Section
       const companyRow = worksheet.getRow(1);
       worksheet.mergeCells(1, 1, 1, columns.length);
-      companyRow.getCell(1).value = (org?.name || "Organization").toUpperCase();
+      companyRow.getCell(1).value = (org?.companyName || org?.name || "Organization").toUpperCase();
       companyRow.getCell(1).font = { size: 18, bold: true };
       companyRow.getCell(1).alignment = { horizontal: "center" };
 
@@ -32895,7 +33191,7 @@ router.get("/reports/org-attendance-matrix", async (req, res) => {
       const infoRow = worksheet.getRow(4);
       worksheet.mergeCells(4, 1, 4, columns.length);
       infoRow.getCell(1).value =
-        `Month: ${month}-${year} | Printed On: ${new Date().toLocaleString()}`;
+        `Period: ${startDate.format("DD-MMM-YYYY")} to ${endDate.format("DD-MMM-YYYY")} (${daysList.length} Days) | Printed On: ${new Date().toLocaleString()}`;
       infoRow.getCell(1).alignment = { horizontal: "center" };
       infoRow.getCell(1).font = { bold: true };
 
@@ -32910,7 +33206,7 @@ router.get("/reports/org-attendance-matrix", async (req, res) => {
           pattern: "solid",
           fgColor: { argb: "FFE0E0E0" },
         };
-        cell.alignment = { horizontal: "center" };
+        cell.alignment = { horizontal: "center", vertical: "middle", wrapText: true };
         cell.border = {
           top: { style: "thin" },
           left: { style: "thin" },
@@ -32923,19 +33219,23 @@ router.get("/reports/org-attendance-matrix", async (req, res) => {
         const rowData = {
           sn: index + 1,
           staffName: staff.profile?.name || "N/A",
+          presentDays: summary[staff.id]?.presentDays || 0,
           halfDays: summary[staff.id]?.halfDays || 0,
+          leaveDays: summary[staff.id]?.leaveDays || 0,
+          absentDays: summary[staff.id]?.absentDays || 0,
           overtimeMinutes: summary[staff.id]?.overtimeMinutes || 0,
           lateMinutes: summary[staff.id]?.lateMinutes || 0,
           lateDays: summary[staff.id]?.lateDays || 0,
           penaltyDays: summary[staff.id]?.penaltyDays || 0,
         };
-        for (let i = 1; i <= daysInMonth; i++) {
-          const dateKey = startDate.clone().date(i).format("YYYY-MM-DD");
-          rowData[`day_${i}`] =
-            matrix[staff.id] && matrix[staff.id][dateKey]
-              ? matrix[staff.id][dateKey]
+        daysList.forEach((dItem, idx) => {
+          const val =
+            matrix[staff.id] && matrix[staff.id][dItem.date]
+              ? matrix[staff.id][dItem.date]
               : "-";
-        }
+          rowData[`date_${dItem.date}`] = val;
+          rowData[`day_${idx + 1}`] = val;
+        });
         worksheet.addRow(rowData);
       });
 
@@ -32957,7 +33257,7 @@ router.get("/reports/org-attendance-matrix", async (req, res) => {
       );
       res.setHeader(
         "Content-Disposition",
-        `attachment; filename=attendance-report-${startDate.year()}-${startDate.month() + 1}.xlsx`,
+        `attachment; filename=attendance-report-${startDate.format("YYYY-MM-DD")}-to-${endDate.format("YYYY-MM-DD")}.xlsx`,
       );
       await workbook.xlsx.write(res);
       return;
@@ -32965,16 +33265,25 @@ router.get("/reports/org-attendance-matrix", async (req, res) => {
 
     return res.json({
       success: true,
-      data: { staffList, matrix, summary, details, daysInMonth, startDate },
+      data: {
+        staffList,
+        matrix,
+        summary,
+        details,
+        daysList,
+        daysInMonth: daysList.length,
+        startDate: startDate.format("YYYY-MM-DD"),
+        endDate: endDate.format("YYYY-MM-DD"),
+      },
       legend: {
         P: "Present",
         A: "Absent",
-        L: "Leave",
+        L: "Leave (full day)",
         HD: "Half Day",
         WO: "Weekly Off",
         H: "Holiday",
         OT: "Overtime minutes",
-        L: "Late arrival - mark as (L)",
+        "(L)": "Late arrival suffix on present/half-day cells",
         Penalty: "Late Penalty - mark as (Penalty)",
       },
     });
@@ -33132,6 +33441,656 @@ router.get("/reports/per-day-salary-average", async (req, res) => {
     return res
       .status(500)
       .json({ success: false, message: "Internal server error" });
+  }
+});
+
+// --- Labour / Worker Wages Report (Monday to Saturday & Weekly Hours) ---
+router.get("/reports/labour-wages", async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res);
+    if (!orgId) return;
+
+    let {
+      startDate,
+      endDate,
+      department,
+      staffType,
+      search,
+      defaultHourlyRate,
+      otMultiplier,
+      format,
+    } = req.query;
+
+    const rateNum =
+      defaultHourlyRate !== undefined && !isNaN(Number(defaultHourlyRate))
+        ? Number(defaultHourlyRate)
+        : null;
+    const otMult =
+      otMultiplier !== undefined && !isNaN(Number(otMultiplier))
+        ? Number(otMultiplier)
+        : 1.0;
+
+    // Default to current week Monday to Saturday if not specified
+    if (!startDate || !endDate) {
+      const now = dayjs();
+      const currentDay = now.day(); // 0 is Sun, 1 is Mon... 6 is Sat
+      const diffToMon = currentDay === 0 ? -6 : 1 - currentDay;
+      const mon = now.add(diffToMon, "day");
+      const sat = mon.add(5, "day");
+      startDate = mon.format("YYYY-MM-DD");
+      endDate = sat.format("YYYY-MM-DD");
+    }
+
+    // Generate list of days in the period
+    const start = dayjs(startDate);
+    const end = dayjs(endDate);
+    const daysList = [];
+    const dayNames = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+    const fullDayNames = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+    const monthsShort = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+    let curr = start;
+    while (curr.isBefore(end) || curr.isSame(end, "day")) {
+      const dateStr = curr.format("YYYY-MM-DD");
+      const dOfWeek = curr.day();
+      daysList.push({
+        date: dateStr,
+        dayName: dayNames[dOfWeek],
+        fullDayName: fullDayNames[dOfWeek],
+        shortDate: `${curr.date()} ${monthsShort[curr.month()]}`,
+        isSunday: dOfWeek === 0,
+      });
+      curr = curr.add(1, "day");
+    }
+
+    // Build Staff Where clause
+    let staffWhereClause = { orgAccountId: orgId, role: "staff" };
+    let profileWhereClause = {};
+
+    if (department && department !== "all") {
+      profileWhereClause.department = department;
+    }
+    if (staffType && staffType !== "all") {
+      profileWhereClause.staffType = staffType;
+    }
+
+    const org = await OrgAccount.findByPk(orgId);
+    const monthKey = startDate.slice(0, 7);
+    const { getSettingsPayableDays } = require("../utils/salarySettingsHelper");
+    const settingsPayableDays = await getSettingsPayableDays(org, monthKey);
+    const startObj = new Date(startDate);
+    const daysInMonth = new Date(startObj.getFullYear(), startObj.getMonth() + 1, 0).getDate();
+    const daysForRate = settingsPayableDays > 0 ? settingsPayableDays : (daysInMonth || 30);
+    const hp = 8; // standard 8 hours per shift
+
+    const getWorkerGrossSalary = (staff) => {
+      // 1. Template assignment
+      if (staff.salaryAssignments && staff.salaryAssignments.length > 0) {
+        const active = staff.salaryAssignments[0];
+        const tEarnings = active.template?.earnings || [];
+        const sum = tEarnings.reduce((acc, e) => acc + (Number(e.valueNumber) || 0), 0);
+        if (sum > 0) return sum;
+      }
+      // 2. salaryValues (JSON on user)
+      if (staff.salaryValues) {
+        try {
+          const sv = typeof staff.salaryValues === "string" ? JSON.parse(staff.salaryValues) : staff.salaryValues;
+          if (sv?.earnings && typeof sv.earnings === "object") {
+            const sum = Object.values(sv.earnings).reduce((acc, v) => acc + (Number(v) || 0), 0);
+            if (sum > 0) return sum;
+          }
+        } catch (_) {}
+      }
+      // 3. User direct salary fields
+      const gross = Number(staff.grossSalary || 0);
+      if (gross > 0) return gross;
+      const basic = Number(staff.basicSalary || 0);
+      if (basic > 0) return basic;
+      return 0;
+    };
+
+    const staffList = await User.findAll({
+      where: staffWhereClause,
+      include: [
+        {
+          model: StaffProfile,
+          as: "profile",
+          where: Object.keys(profileWhereClause).length > 0 ? profileWhereClause : undefined,
+        },
+        {
+          model: StaffSalaryAssignment,
+          as: "salaryAssignments",
+          required: false,
+          include: [{ model: SalaryTemplate, as: "template", required: false }],
+        },
+      ],
+      order: [["id", "ASC"]],
+    });
+
+    // Optional Search filter in memory
+    let filteredStaff = staffList;
+    if (search && String(search).trim()) {
+      const q = String(search).trim().toLowerCase();
+      filteredStaff = staffList.filter((s) => {
+        const name = (s.profile?.name || "").toLowerCase();
+        const staffId = (s.profile?.staffId || "").toLowerCase();
+        const phone = (s.phone || "").toLowerCase();
+        return name.includes(q) || staffId.includes(q) || phone.includes(q);
+      });
+    }
+
+    const userIds = filteredStaff.map((s) => s.id);
+
+    // Fetch Attendances, Weekly Offs, Holidays, and Leaves in date range in parallel
+    let attendances = [];
+    let woAssignments = [];
+    let holidayAssignments = [];
+    let approvedLeaves = [];
+
+    if (userIds.length > 0) {
+      [attendances, woAssignments, holidayAssignments, approvedLeaves] = await Promise.all([
+        Attendance.findAll({
+          where: {
+            orgAccountId: orgId,
+            userId: { [Op.in]: userIds },
+            date: { [Op.between]: [startDate, endDate] },
+          },
+        }),
+        StaffWeeklyOffAssignment.findAll({
+          where: {
+            userId: { [Op.in]: userIds },
+            [Op.or]: [
+              { effectiveTo: null },
+              { effectiveTo: { [Op.gte]: startDate } },
+            ],
+            effectiveFrom: { [Op.lte]: endDate },
+          },
+          include: [{ model: WeeklyOffTemplate, as: "template" }],
+        }),
+        StaffHolidayAssignment.findAll({
+          where: {
+            userId: { [Op.in]: userIds },
+            [Op.or]: [
+              { effectiveTo: null },
+              { effectiveTo: { [Op.gte]: startDate } },
+            ],
+            effectiveFrom: { [Op.lte]: endDate },
+          },
+          include: [
+            {
+              model: HolidayTemplate,
+              as: "template",
+              include: [
+                {
+                  model: HolidayDate,
+                  as: "holidays",
+                  where: {
+                    date: {
+                      [Op.between]: [startDate, endDate],
+                    },
+                  },
+                },
+              ],
+            },
+          ],
+        }),
+        LeaveRequest.findAll({
+          where: {
+            userId: { [Op.in]: userIds },
+            status: { [Op.in]: ["APPROVED", "approved"] },
+            [Op.or]: [
+              { startDate: { [Op.between]: [startDate, endDate] } },
+              { endDate: { [Op.between]: [startDate, endDate] } },
+              {
+                [Op.and]: [
+                  { startDate: { [Op.lte]: startDate } },
+                  { endDate: { [Op.gte]: endDate } },
+                ],
+              },
+            ],
+          },
+        }),
+      ]);
+    }
+
+    // Map attendances: key = `${userId}_${dateKey}`
+    const attMap = {};
+    for (const a of attendances) {
+      const dKey = dayjs(a.date).format("YYYY-MM-DD");
+      attMap[`${a.userId}_${dKey}`] = a;
+    }
+
+    // Map weekly off assignments by userId
+    const woMap = {};
+    woAssignments.forEach((asg) => {
+      const uId = String(asg.userId);
+      if (!woMap[uId]) woMap[uId] = [];
+      woMap[uId].push(asg);
+    });
+
+    // Map holiday assignments by userId
+    const holidayMap = {};
+    holidayAssignments.forEach((asg) => {
+      const uId = String(asg.userId);
+      if (!holidayMap[uId]) holidayMap[uId] = [];
+      holidayMap[uId].push(asg);
+    });
+
+    // Map leave requests by userId
+    const leaveByUser = {};
+    approvedLeaves.forEach((lr) => {
+      const uId = String(lr.userId);
+      if (!leaveByUser[uId]) leaveByUser[uId] = [];
+      leaveByUser[uId].push(lr);
+    });
+
+    const fmtTime = (dt) => {
+      if (!dt) return null;
+      try {
+        const d = new Date(dt);
+        let h = d.getHours();
+        const m = String(d.getMinutes()).padStart(2, "0");
+        const ampm = h >= 12 ? "PM" : "AM";
+        h = h % 12 || 12;
+        return `${String(h).padStart(2, "0")}:${m} ${ampm}`;
+      } catch (e) {
+        return null;
+      }
+    };
+
+    // Calculate report rows
+    let grandTotalHours = 0;
+    let grandTotalWages = 0;
+    let activeWorkersCount = 0;
+
+    const reportRows = filteredStaff.map((staff, idx) => {
+      const p = staff.profile || {};
+      const gross = getWorkerGrossSalary(staff);
+
+      // Hourly wage determination:
+      let workerHourlyRate = 0;
+      if (rateNum !== null && rateNum > 0) {
+        workerHourlyRate = rateNum;
+      } else if (gross > 0) {
+        workerHourlyRate = Number((gross / (daysForRate * hp)).toFixed(2));
+      }
+
+      let totalWorkHours = 0;
+      let daysWorked = 0;
+      const dailyBreakdown = {};
+
+      for (const d of daysList) {
+        const att = attMap[`${staff.id}_${d.date}`];
+        let hours = 0;
+        let inTime = null;
+        let outTime = null;
+        let status = "absent";
+        let statusType = "absent";
+        let holidayName = "";
+
+        if (att) {
+          const rawStatus = String(att.status || "").toLowerCase();
+          status = rawStatus || (att.punchedInAt ? "present" : "absent");
+          inTime = fmtTime(att.punchedInAt);
+          outTime = fmtTime(att.punchedOutAt);
+
+          if (att.totalWorkHours !== null && att.totalWorkHours !== undefined && Number(att.totalWorkHours) > 0) {
+            hours = Number(att.totalWorkHours || 0);
+          } else if (att.punchedInAt && att.punchedOutAt) {
+            const breakSec = Number(att.breakTotalSeconds || 0);
+            const diffMs = new Date(att.punchedOutAt) - new Date(att.punchedInAt) - (breakSec * 1000);
+            hours = Math.max(0, diffMs / 3600000);
+          }
+          hours = Number(hours.toFixed(2));
+
+          if (rawStatus === "weekly_off" || rawStatus === "weekly-off" || rawStatus === "weeklyoff") {
+            statusType = "weekly_off";
+          } else if (rawStatus === "holiday") {
+            statusType = "holiday";
+          } else if (rawStatus === "leave") {
+            statusType = "leave";
+          } else if (rawStatus === "half_day" || rawStatus === "half-day" || rawStatus === "half") {
+            statusType = "half";
+          } else if (hours > 0 || rawStatus === "present" || rawStatus === "overtime" || att.punchedInAt) {
+            statusType = "present";
+          }
+        }
+
+        // If no punch hours recorded and not explicit status, check assigned Leave, Holiday, Weekly Off
+        if (hours === 0 && statusType === "absent") {
+          // 1. Check approved leave
+          const isLeave = (leaveByUser[String(staff.id)] || []).some((l) => {
+            const lStart = dayjs(l.startDate).format("YYYY-MM-DD");
+            const lEnd = dayjs(l.endDate).format("YYYY-MM-DD");
+            return d.date >= lStart && d.date <= lEnd;
+          });
+          if (isLeave) {
+            statusType = "leave";
+            status = "leave";
+          } else {
+            // 2. Check assigned holiday
+            const userHols = holidayMap[String(staff.id)] || [];
+            let isHol = false;
+            for (const asg of userHols) {
+              if (
+                d.date >= dayjs(asg.effectiveFrom).format("YYYY-MM-DD") &&
+                (!asg.effectiveTo || d.date <= dayjs(asg.effectiveTo).format("YYYY-MM-DD"))
+              ) {
+                const hDates = asg.template?.holidays || [];
+                const match = hDates.find((h) => dayjs(h.date).format("YYYY-MM-DD") === d.date);
+                if (match) {
+                  isHol = true;
+                  holidayName = match.name || asg.template?.name || "Holiday";
+                  break;
+                }
+              }
+            }
+            if (isHol) {
+              statusType = "holiday";
+              status = "holiday";
+            } else {
+              // 3. Check assigned weekly off (ONLY if assigned!)
+              const userWos = woMap[String(staff.id)] || [];
+              let isWo = false;
+              for (const asg of userWos) {
+                if (
+                  d.date >= dayjs(asg.effectiveFrom).format("YYYY-MM-DD") &&
+                  (!asg.effectiveTo || d.date <= dayjs(asg.effectiveTo).format("YYYY-MM-DD"))
+                ) {
+                  let config = asg.template?.config || [];
+                  if (typeof config === "string") {
+                    try {
+                      config = JSON.parse(config);
+                    } catch (_) {
+                      try {
+                        config = JSON.parse(JSON.parse(config));
+                      } catch (__) {
+                        config = [];
+                      }
+                    }
+                  }
+                  const configArr = Array.isArray(config) ? config : [];
+                  const dObj = dayjs(d.date);
+                  const dayOfWeek = dObj.day(); // 0 is Sun
+                  const weekOfMonth = Math.ceil(dObj.date() / 7);
+                  const match = configArr.find(
+                    (c) =>
+                      c &&
+                      Number(c.day) === dayOfWeek &&
+                      (c.weeks === "all" ||
+                        (Array.isArray(c.weeks) && c.weeks.map(Number).includes(weekOfMonth)))
+                  );
+                  if (match) {
+                    isWo = true;
+                    break;
+                  }
+                }
+              }
+              if (isWo) {
+                statusType = "weekly_off";
+                status = "weekly_off";
+              }
+            }
+          }
+        }
+
+        if (hours > 0 || statusType === "present" || statusType === "half") {
+          daysWorked += 1;
+        }
+
+        totalWorkHours += hours;
+
+        dailyBreakdown[d.date] = {
+          date: d.date,
+          dayName: d.dayName,
+          status,
+          statusType,
+          holidayName,
+          workHours: hours,
+          inTime,
+          outTime,
+        };
+      }
+
+      totalWorkHours = Number(totalWorkHours.toFixed(2));
+
+      // Calculate Wages purely on actual hours worked
+      const totalWages = Math.round(totalWorkHours * workerHourlyRate * 100) / 100;
+
+      if (totalWorkHours > 0) activeWorkersCount++;
+      grandTotalHours += totalWorkHours;
+      grandTotalWages += totalWages;
+
+      return {
+        sn: idx + 1,
+        userId: staff.id,
+        staffId: p.staffId || `STF-${staff.id}`,
+        name: p.name || staff.phone || "Worker",
+        phone: staff.phone || "-",
+        department: p.department || "General",
+        designation: p.designation || "Worker",
+        staffType: p.staffType || "Worker",
+        grossSalary: gross,
+        hourlyRate: workerHourlyRate,
+        days: dailyBreakdown,
+        daysWorked,
+        totalWorkHours,
+        totalWages,
+      };
+    });
+
+    // Sort reportRows so workers who worked appear first, followed by others alphabetically
+    reportRows.sort((a, b) => {
+      if (b.totalWorkHours !== a.totalWorkHours) {
+        return b.totalWorkHours - a.totalWorkHours;
+      }
+      return a.name.localeCompare(b.name);
+    });
+    // Re-assign S.N. sequentially after sorting
+    reportRows.forEach((r, idx) => {
+      r.sn = idx + 1;
+    });
+
+    grandTotalHours = Number(grandTotalHours.toFixed(2));
+    grandTotalWages = Number(grandTotalWages.toFixed(2));
+
+    // Handle EXCEL Export
+    if (format === "excel") {
+      const workbook = new exceljs.Workbook();
+      const sheet = workbook.addWorksheet("Labour Wages Report");
+      const org = await OrgAccount.findByPk(orgId);
+      const orgName = org?.companyName || org?.name || "Organization";
+
+      // 1. Columns Setup
+      const headers = [
+        { header: "S.N.", key: "sn", width: 6 },
+        { header: "Worker ID", key: "staffId", width: 14 },
+        { header: "Worker Name", key: "name", width: 24 },
+        { header: "Department", key: "department", width: 16 },
+        { header: "Designation", key: "designation", width: 16 },
+        { header: "Staff Type", key: "staffType", width: 14 },
+      ];
+
+      for (const d of daysList) {
+        headers.push({
+          header: `${d.dayName}\n(${d.shortDate})`,
+          key: `day_${d.date}`,
+          width: 13,
+        });
+      }
+
+      headers.push(
+        { header: "Total Work\nHours", key: "totalWorkHours", width: 14 },
+        { header: "Worker Signature / Remarks", key: "signature", width: 25 }
+      );
+
+      // 2. Title Block
+      sheet.mergeCells(1, 1, 1, headers.length);
+      const titleCell = sheet.getCell(1, 1);
+      titleCell.value = `${orgName.toUpperCase()} - LABOUR / WORKER WORKING HOURS REPORT`;
+      titleCell.font = { name: "Calibri", size: 16, bold: true, color: { argb: "FFFFFFFF" } };
+      titleCell.alignment = { horizontal: "center", vertical: "middle" };
+      titleCell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF1677FF" } };
+      sheet.getRow(1).height = 36;
+
+      // 3. Subtitle: Period & Info
+      sheet.mergeCells(2, 1, 2, headers.length);
+      const subCell = sheet.getCell(2, 1);
+      subCell.value = `Wage Period: ${startDate} to ${endDate} (${daysList.length} Days) | Total Working Hours Register`;
+      subCell.font = { name: "Calibri", size: 11, bold: true, color: { argb: "FF334155" } };
+      subCell.alignment = { horizontal: "center", vertical: "middle" };
+      subCell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFF1F5F9" } };
+      sheet.getRow(2).height = 24;
+
+      sheet.getRow(4).values = headers.map((h) => h.header);
+      sheet.getRow(4).height = 34;
+
+      sheet.getRow(4).eachCell((cell) => {
+        cell.font = { name: "Calibri", size: 10, bold: true, color: { argb: "FFFFFFFF" } };
+        cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF0958D9" } };
+        cell.alignment = { horizontal: "center", vertical: "middle", wrapText: true };
+        cell.border = {
+          top: { style: "thin" },
+          bottom: { style: "thin" },
+          left: { style: "thin" },
+          right: { style: "thin" },
+        };
+      });
+
+      headers.forEach((h, colIdx) => {
+        sheet.getColumn(colIdx + 1).width = h.width;
+      });
+
+      // Data Rows
+      reportRows.forEach((r) => {
+        const rowVals = [
+          r.sn,
+          r.staffId,
+          r.name,
+          r.department,
+          r.designation,
+          r.staffType,
+        ];
+
+        for (const d of daysList) {
+          const dayData = r.days[d.date];
+          const hrs = dayData ? Number(dayData.workHours || 0) : 0;
+          if (hrs > 0) {
+            rowVals.push(hrs);
+          } else if (dayData?.statusType === "weekly_off") {
+            rowVals.push("OFF");
+          } else if (dayData?.statusType === "holiday") {
+            rowVals.push("HOLIDAY");
+          } else if (dayData?.statusType === "leave") {
+            rowVals.push("LEAVE");
+          } else {
+            rowVals.push("0.0");
+          }
+        }
+
+        rowVals.push(
+          r.totalWorkHours,
+          ""
+        );
+
+        const dataRow = sheet.addRow(rowVals);
+        dataRow.height = 22;
+
+        dataRow.eachCell((cell, colNum) => {
+          cell.font = { name: "Calibri", size: 10 };
+          cell.alignment = {
+            vertical: "middle",
+            horizontal: colNum > 6 && colNum < rowVals.length ? "right" : "left",
+          };
+          cell.border = {
+            top: { style: "thin", color: { argb: "FFE2E8F0" } },
+            bottom: { style: "thin", color: { argb: "FFE2E8F0" } },
+            left: { style: "thin", color: { argb: "FFE2E8F0" } },
+            right: { style: "thin", color: { argb: "FFE2E8F0" } },
+          };
+          if (colNum === 1) cell.alignment = { horizontal: "center", vertical: "middle" };
+        });
+      });
+
+      // Total Row
+      const totalVals = [
+        "",
+        "",
+        `TOTAL (${reportRows.length} Workers)`,
+        "",
+        "",
+        "",
+      ];
+      for (const d of daysList) {
+        const daySum = reportRows.reduce(
+          (acc, r) => acc + (r.days[d.date]?.workHours || 0),
+          0
+        );
+        totalVals.push(Number(daySum.toFixed(2)));
+      }
+      totalVals.push(grandTotalHours, "");
+
+      const totalRow = sheet.addRow(totalVals);
+      totalRow.height = 26;
+      totalRow.eachCell((cell, colNum) => {
+        cell.font = { name: "Calibri", size: 11, bold: true, color: { argb: "FF0958D9" } };
+        cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFF0F7FF" } };
+        cell.border = {
+          top: { style: "medium", color: { argb: "FF0958D9" } },
+          bottom: { style: "double", color: { argb: "FF0958D9" } },
+          left: { style: "thin", color: { argb: "FFBBDDFF" } },
+          right: { style: "thin", color: { argb: "FFBBDDFF" } },
+        };
+        if (colNum > 6 && colNum < totalVals.length) {
+          cell.alignment = { horizontal: "right", vertical: "middle" };
+        }
+      });
+
+      res.setHeader(
+        "Content-Type",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+      );
+      res.setHeader(
+        "Content-Disposition",
+        `attachment; filename=Labour_Wages_Report_${startDate}_to_${endDate}.xlsx`
+      );
+      await workbook.xlsx.write(res);
+      return res.end();
+    }
+
+    const allOrgDepartments = Array.from(
+      new Set(
+        staffList
+          .map((s) => s.profile?.department)
+          .filter((d) => d && String(d).trim())
+      )
+    ).sort();
+
+    return res.json({
+      success: true,
+      departments: allOrgDepartments,
+      weekInfo: {
+        startDate,
+        endDate,
+        days: daysList,
+      },
+      summary: {
+        totalWorkers: filteredStaff.length,
+        activeWorkers: activeWorkersCount,
+        totalHoursWorked: grandTotalHours,
+        totalWages: grandTotalWages,
+        avgHoursPerWorker:
+          activeWorkersCount > 0
+            ? Number((grandTotalHours / activeWorkersCount).toFixed(2))
+            : 0,
+      },
+      data: reportRows,
+    });
+  } catch (error) {
+    console.error("Error generating labour wages report:", error);
+    return res
+      .status(500)
+      .json({ success: false, message: "Failed to generate labour wages report" });
   }
 });
 
@@ -36516,6 +37475,39 @@ router.post("/asset-maintenance/:id/complete", async (req, res) => {
 
 // LOANS MANAGEMENT ROUTES
 
+async function resolveStaffUserIdsForSearch(orgAccountId, search) {
+  const q = String(search || "").trim();
+  if (!q) return null;
+  const like = `%${q}%`;
+  const idSet = new Set();
+  const byProfile = await User.findAll({
+    where: { orgAccountId },
+    attributes: ["id"],
+    include: [
+      {
+        model: StaffProfile,
+        as: "profile",
+        required: true,
+        attributes: [],
+        where: {
+          [Op.or]: [
+            { name: { [Op.like]: like } },
+            { staffId: { [Op.like]: like } },
+          ],
+        },
+      },
+    ],
+  });
+  byProfile.forEach((u) => idSet.add(u.id));
+  const byPhone = await User.findAll({
+    where: { orgAccountId, phone: { [Op.like]: like } },
+    attributes: ["id"],
+  });
+  byPhone.forEach((u) => idSet.add(u.id));
+  if (Number.isFinite(Number(q))) idSet.add(Number(q));
+  return Array.from(idSet);
+}
+
 // GET /admin/loans - Get all staff loans
 
 router.get("/loans", async (req, res) => {
@@ -36548,12 +37540,17 @@ router.get("/loans", async (req, res) => {
 
     if (staffId) whereClause.staffId = staffId;
 
-    if (search) {
-      whereClause[Op.or] = [
-        { loanType: { [Op.like]: `%${search}%` } },
-
-        { purpose: { [Op.like]: `%${search}%` } },
+    if (search && String(search).trim()) {
+      const q = String(search).trim();
+      const staffIds = await resolveStaffUserIdsForSearch(orgId, q);
+      const or = [
+        { loanType: { [Op.like]: `%${q}%` } },
+        { purpose: { [Op.like]: `%${q}%` } },
       ];
+      if (staffIds && staffIds.length > 0) {
+        or.push({ staffId: { [Op.in]: staffIds } });
+      }
+      whereClause[Op.or] = or;
     }
 
     const offset = (page - 1) * limit;

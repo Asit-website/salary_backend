@@ -28,13 +28,15 @@ const scheduleSubscriptionExpiryReminders = () => {
   console.log('📅 Subscription expiry reminder job scheduled to run daily at 9:00 AM');
 };
 
-// Schedule missing attendance reminder at 9:30 AM daily
+// Schedule missing attendance reminder at 5:00 PM daily (checks attendance of 2 days ago, e.g. 13th missing is sent on 15th)
 const scheduleAttendanceReminders = () => {
-  cron.schedule('30 9 * * *', async () => {
-    console.log('⏰ Running scheduled missing attendance reminder...');
+  cron.schedule('0 17 * * *', async () => {
+    console.log('⏰ Running scheduled missing attendance reminder at 5:00 PM...');
     await checkMissingAttendanceAndNotify();
+  }, {
+    timezone: 'Asia/Kolkata'
   });
-  console.log('📅 Missing attendance reminder job scheduled to run daily at 9:30 AM');
+  console.log('📅 Missing attendance reminder job scheduled to run daily at 5:00 PM (IST)');
 };
 
 // Schedule social celebrations (Birthdays/Anniversaries) at 8:00 AM daily

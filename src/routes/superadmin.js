@@ -5,7 +5,10 @@ const jwt = require('jsonwebtoken');
 const { sequelize } = require('../sequelize');
 const { Plan, OrgAccount, Subscription, User, Permission, Role, StaffProfile, ChannelPartner, Lead, LeadConfig, HolidayTemplate, HolidayDate } = require('../models');
 const bcrypt = require('bcryptjs');
+const { DEFAULT_USER_PASSWORD, hashPassword, hashDefaultPassword, validateNewPassword } = require('../utils/password');
 const { authRequired } = require('../middleware/auth');
+const { getJwtSecret } = require('../utils/jwtSecret');
+const { createImpersonationCode } = require('../utils/impersonationStore');
 const { requireRole } = require('../middleware/roles');
 const { Op } = require('sequelize');
 const multer = require('multer');
@@ -229,7 +232,7 @@ router.post('/channel-partners', async (req, res) => {
     if (normalizedPhone) {
       let user = await User.findOne({ where: { phone: String(normalizedPhone) } });
       if (!user) {
-        const hash = await bcrypt.hash('123456', 10);
+        const hash = await hashDefaultPassword();
         await User.create({
           role: 'channel_partner',
           phone: String(normalizedPhone),
@@ -337,7 +340,7 @@ router.put('/channel-partners/:id', async (req, res) => {
       if (user) {
         await user.update({ channelPartnerId: finalPartnerId });
       } else {
-        const hash = await bcrypt.hash('123456', 10);
+        const hash = await hashDefaultPassword();
         await User.create({
           role: 'channel_partner',
           phone: String(finalPhone),
@@ -368,6 +371,26 @@ router.get('/clients', async (req, res) => {
         const selectedIds = Array.isArray(perms.selectedClients) ? perms.selectedClients : [];
         where = { id: { [Op.in]: selectedIds } };
       }
+    }
+
+    // Fast list for UI (skips heavy staff/geo aggregation)
+    if (String(req.query.lite || '') === '1') {
+      const liteOrgs = await OrgAccount.findAll({
+        where,
+        order: [['createdAt', 'DESC']],
+      });
+      const clients = liteOrgs.map((org) => {
+        const row = org.toJSON ? org.toJSON() : org;
+        return {
+          ...row,
+          staffCount: row.staffCount ?? 0,
+          geoStaffCount: row.geoStaffCount ?? 0,
+          staffLimit: row.staffLimit ?? 0,
+          maxGeolocationStaff: row.maxGeolocationStaff ?? 0,
+          staffBreakdown: [],
+        };
+      });
+      return res.json({ success: true, clients, lite: true });
     }
 
     const { User, Subscription, Plan, Role, Permission } = require('../models');
@@ -499,12 +522,10 @@ router.get('/clients', async (req, res) => {
         totalGeoStaffCount += orgGeoCount;
       }
 
-      // Update Parent Org status based on sub
-      const shouldBeActive = !!(effectiveSub && new Date(effectiveSub.endAt) >= now);
-      const targetStatus = shouldBeActive ? 'ACTIVE' : 'DISABLED';
-      if (parentOrg.status !== targetStatus && parentOrg.status !== 'SUSPENDED') {
-        await parentOrg.update({ status: targetStatus });
-      }
+      // Do not auto-activate on read: manual DISABLED/SUSPENDED must stay until superadmin toggles.
+      // Expired plans are handled by subscriptionSweep; optional downgrade-only could run in jobs.
+      const subscriptionActive = !!(effectiveSub && new Date(effectiveSub.endAt) >= now);
+      parentOrg.dataValues.subscriptionActive = subscriptionActive;
 
       parentOrg.dataValues.currentSubscription = effectiveSub;
       parentOrg.dataValues.plan = effectiveSub?.plan || null;
@@ -706,9 +727,15 @@ router.post('/clients', async (req, res) => {
     const {
       name, phone, status = 'ACTIVE', clientType, location, extra, businessEmail, state, city,
       channelPartnerId, roleDescription, employeeCount,
-      contactPersonName, address, birthDate, anniversaryDate, gstNumber, createdBy
+      contactPersonName, address, birthDate, anniversaryDate, gstNumber, createdBy, password
     } = data;
     if (!name) return res.status(400).json({ success: false, message: 'name required' });
+
+    const pwdRaw = password !== undefined && password !== null ? String(password).trim() : '';
+    if (pwdRaw) {
+      const pwdErr = validateNewPassword(pwdRaw);
+      if (pwdErr) return res.status(400).json({ success: false, message: pwdErr });
+    }
 
     const normalizedPhone = normalizePhone(phone);
 
@@ -757,7 +784,7 @@ router.post('/clients', async (req, res) => {
       if (normalizedPhone) {
         let admin = await User.findOne({ where: { phone: String(normalizedPhone), orgAccountId: row.id } });
         if (!admin) {
-          const hash = await bcrypt.hash('123456', 10);
+          const hash = await hashPassword(pwdRaw || DEFAULT_USER_PASSWORD);
           admin = await User.create({ role: 'admin', orgAccountId: row.id, phone: String(normalizedPhone), passwordHash: hash, active: true });
 
           // Send admin signup review email to business email when admin is created
@@ -807,7 +834,7 @@ router.put('/clients/:id', async (req, res) => {
     const {
       name, phone, status, clientType, location, extra, businessEmail, state, city,
       channelPartnerId, roleDescription, employeeCount,
-      contactPersonName, address, birthDate, anniversaryDate, gstNumber
+      contactPersonName, address, birthDate, anniversaryDate, gstNumber, password
     } = req.body || {};
 
     // Check if phone number already exists in either OrgAccount or User table (excluding current client)
@@ -898,6 +925,31 @@ router.put('/clients/:id', async (req, res) => {
       }
     } catch (e) {
       console.error('[SYNC CLIENT] Failed to sync business info on client update:', e);
+    }
+
+    const pwdRaw = password !== undefined && password !== null ? String(password).trim() : '';
+    if (pwdRaw) {
+      const pwdErr = validateNewPassword(pwdRaw);
+      if (pwdErr) return res.status(400).json({ success: false, message: pwdErr });
+      const passwordHash = await hashPassword(pwdRaw);
+      const adminPhone = normalizePhone(phone !== undefined ? phone : row.phone);
+      let admin = await User.findOne({ where: { orgAccountId: row.id, role: 'admin' } });
+      if (!admin && adminPhone) {
+        admin = await User.findOne({
+          where: { phone: String(adminPhone), orgAccountId: row.id, role: 'admin' },
+        });
+      }
+      if (admin) {
+        await admin.update({ passwordHash });
+      } else if (adminPhone) {
+        await User.create({
+          role: 'admin',
+          orgAccountId: row.id,
+          phone: String(adminPhone),
+          passwordHash,
+          active: true,
+        });
+      }
     }
 
     return res.json({ success: true, client: row });
@@ -1171,7 +1223,7 @@ router.post('/clients/:id/subscription', async (req, res) => {
       if (normalizedPhone) {
         let admin = await User.findOne({ where: { phone: String(normalizedPhone), orgAccountId: org.id } });
         if (!admin) {
-          const hash = await bcrypt.hash('123456', 10);
+          const hash = await hashDefaultPassword();
           admin = await User.create({ role: 'admin', orgAccountId: org.id, phone: String(normalizedPhone), passwordHash: hash, active: true });
           
           try {
@@ -1380,14 +1432,9 @@ router.get('/dashboard', async (req, res) => {
         include: [{ model: Plan, as: 'plan' }]
       });
 
-      // Update Parent Org status based on sub
-      const shouldBeActive = !!(effectiveSub && new Date(effectiveSub.endAt) >= now);
-      const targetStatus = shouldBeActive ? 'ACTIVE' : 'DISABLED';
-      if (parentOrg.status !== targetStatus && parentOrg.status !== 'SUSPENDED') {
-        await parentOrg.update({ status: targetStatus });
-      }
+      const subscriptionActive = !!(effectiveSub && new Date(effectiveSub.endAt) >= now);
 
-      // Read status
+      // Read status (no auto-activate on dashboard load)
       if (parentOrg.status === 'ACTIVE') active += 1;
       else if (parentOrg.status === 'DISABLED') disabled += 1;
       else if (parentOrg.status === 'SUSPENDED') suspended += 1;
@@ -1578,9 +1625,18 @@ router.post('/clients/:id/impersonate', async (req, res) => {
     const profile = await StaffProfile.findOne({ where: { userId: admin.id } });
     const name = profile?.name || org.name || null;
 
-    const secret = process.env.JWT_SECRET || 'dev_secret_change_me';
+    const secret = getJwtSecret();
+    const staffId = profile?.staffId || null;
     const token = jwt.sign(
-      { id: admin.id, role: admin.role, phone: admin.phone, name },
+      {
+        id: admin.id,
+        role: admin.role,
+        phone: admin.phone,
+        name,
+        staffId,
+        orgAccountId: org.id,
+        permissions: admin.permissions,
+      },
       secret,
       { expiresIn: process.env.JWT_EXPIRES_IN || '7d' }
     );
@@ -1626,13 +1682,21 @@ router.post('/clients/:id/impersonate', async (req, res) => {
       if (assignment) hasCreateOrgAccess = true;
     }
 
-    return res.json({
-      success: true,
+    const code = createImpersonationCode({
       token,
-      user: { id: admin.id, role: admin.role, phone: admin.phone, name },
+      user: {
+        id: admin.id,
+        role: admin.role,
+        phone: admin.phone,
+        name,
+        orgAccountId: org.id,
+      },
+      targetOrgId: org.id,
       organizations: [...selectableOrgs, ...others],
-      canCreateOrg: hasCreateOrgAccess || selectableOrgs.some(o => o.role === 'admin')
+      canCreateOrg: hasCreateOrgAccess || selectableOrgs.some(o => o.role === 'admin'),
     });
+
+    return res.json({ success: true, code });
   } catch (e) {
     console.error('Impersonate error:', e);
     return res.status(500).json({ success: false, message: 'Impersonation failed' });
@@ -1779,7 +1843,7 @@ router.post('/staff', async (req, res) => {
       return res.json({ success: true, user: existing });
     }
 
-    const passwordHash = await bcrypt.hash(password || 'staff123', 10);
+    const passwordHash = await hashPassword(password || DEFAULT_USER_PASSWORD);
     const user = await User.create({
       phone: normalized,
       role: 'staff', // Default to staff so they can use APK

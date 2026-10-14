@@ -49,7 +49,7 @@ const sendWelcomeEmail = async (staffEmail, staffName, organizationName, staffCr
     console.log(`📧 Sending welcome email to: ${staffEmail}`);
     console.log(`📧 Staff name: ${staffName}`);
     console.log(`📧 Organization: ${organizationName}`);
-    console.log(`📧 Credentials: Password=${staffCredentials.password}, StaffID=${staffCredentials.staffId}`);
+    console.log(`📧 Credentials sent for StaffID=${staffCredentials.staffId}`);
 
     const mailOptions = {
       from: `"${organizationName}" <${emailFrom.address}>`,

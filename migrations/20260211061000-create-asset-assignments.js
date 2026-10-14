@@ -4,16 +4,14 @@ module.exports = {
   up: async (queryInterface, Sequelize) => {
     await queryInterface.createTable('asset_assignments', {
       id: {
-        type: Sequelize.BIGINT,
+        type: Sequelize.BIGINT.UNSIGNED,
         allowNull: false,
         autoIncrement: true,
         primaryKey: true,
-        unsigned: true,
       },
       assetId: {
-        type: Sequelize.BIGINT,
+        type: Sequelize.BIGINT.UNSIGNED,
         allowNull: false,
-        unsigned: true,
         field: 'assetId',
         references: {
           model: 'assets',
@@ -23,9 +21,8 @@ module.exports = {
         onDelete: 'CASCADE',
       },
       assignedTo: {
-        type: Sequelize.BIGINT,
+        type: Sequelize.BIGINT.UNSIGNED,
         allowNull: false,
-        unsigned: true,
         field: 'assignedTo',
         references: {
           model: 'users',
@@ -35,9 +32,8 @@ module.exports = {
         onDelete: 'RESTRICT',
       },
       assignedBy: {
-        type: Sequelize.BIGINT,
+        type: Sequelize.BIGINT.UNSIGNED,
         allowNull: false,
-        unsigned: true,
         field: 'assignedBy',
         references: {
           model: 'users',

@@ -2,6 +2,7 @@ const jwt = require('jsonwebtoken');
 const { continuousVerify } = require('./continuousAuth');
 const { verifyDevice } = require('./verifyDevice');
 const { checkGeoVelocity } = require('./geoVelocity');
+const { getJwtSecret } = require('../utils/jwtSecret');
 
 function authRequired(req, res, next) {
   try {
@@ -17,8 +18,7 @@ function authRequired(req, res, next) {
       return res.status(401).json({ success: false, message: 'Missing token due to lags of internet or not properly authorized' });
     }
 
-    const secret = process.env.JWT_SECRET || 'dev_secret_change_me';
-    const payload = jwt.verify(token, secret);
+    const payload = jwt.verify(token, getJwtSecret());
     req.user = payload;
 
     // Slide session activity (throttled to once every 5 minutes to reduce DB load)

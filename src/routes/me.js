@@ -5,6 +5,8 @@ const fs = require('fs');
 const path = require('path');
 const { User, StaffProfile, StaffShiftAssignment, ShiftTemplate, SalaryAccess, StaffAttendanceAssignment, AttendanceTemplate, StaffSalaryAssignment, SalaryTemplate, PayrollCycle, PayrollLine, ExpenseClaim } = require('../models');
 const { authRequired } = require('../middleware/auth');
+const { hashPassword, verifyPassword, validateNewPassword } = require('../utils/password');
+const { logAudit } = require('../utils/auditLogger');
 const { tenantEnforce } = require('../middleware/tenant');
 const { upload } = require('../upload');
 const { calculateSalary, generatePayslipPDF } = require('../services/payrollService');
@@ -160,6 +162,53 @@ router.put('/phone', async (req, res) => {
     return res.json({ success: true, phone: nextPhone });
   } catch (e) {
     return res.status(500).json({ success: false, message: 'Failed to update phone' });
+  }
+});
+
+router.put('/password', async (req, res) => {
+  try {
+    const { currentPassword, newPassword } = req.body || {};
+    if (!currentPassword || !newPassword) {
+      return res.status(400).json({ success: false, message: 'currentPassword and newPassword required' });
+    }
+
+    const passwordError = validateNewPassword(newPassword);
+    if (passwordError) {
+      return res.status(400).json({ success: false, message: passwordError });
+    }
+
+    const me = await User.findByPk(req.user.id);
+    if (!me) return res.status(404).json({ success: false, message: 'User not found' });
+
+    const ok = await verifyPassword(currentPassword, me.passwordHash);
+    if (!ok) {
+      return res.status(401).json({ success: false, message: 'Current password is incorrect' });
+    }
+
+    const passwordHash = await hashPassword(newPassword);
+    const normalizedPhone = String(me.phone || '').replace(/[^0-9]/g, '').slice(-10) || me.phone;
+    await User.update(
+      { passwordHash, failedLoginAttempts: 0, lockoutUntil: null },
+      { where: { phone: String(me.phone) } }
+    );
+    if (normalizedPhone && String(normalizedPhone) !== String(me.phone)) {
+      await User.update(
+        { passwordHash, failedLoginAttempts: 0, lockoutUntil: null },
+        { where: { phone: String(normalizedPhone) } }
+      );
+    }
+
+    logAudit({
+      req,
+      action: 'PASSWORD_CHANGE',
+      remarks: `User ${me.phone} changed password from profile.`,
+      overrides: { userId: me.id, orgAccountId: me.orgAccountId, userPhone: me.phone }
+    });
+
+    return res.json({ success: true, message: 'Password updated' });
+  } catch (e) {
+    console.error('[me/password] EXCEPTION:', e.message);
+    return res.status(500).json({ success: false, message: 'Failed to update password' });
   }
 });
 

@@ -12,7 +12,8 @@ module.exports = {
     // Pick any staff user
     const [staffs] = await sequelize.query("SELECT id FROM users WHERE role = 'staff' ORDER BY id ASC LIMIT 1");
     if (!staffs || !staffs[0]) {
-      throw new Error('No staff user found. Create a staff user first (via /admin/staff or SAMPLE_STAFF env)');
+      console.log('[migration] Skipping seed-initial-sales-data: no staff user yet (created on first app boot)');
+      return;
     }
     const staffUserId = staffs[0].id;
 
