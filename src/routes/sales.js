@@ -69,7 +69,16 @@ router.use(tenantEnforce);
 
 // Global check for sales module access
 router.use((req, res, next) => {
-  if (req.user.role !== 'superadmin' && !req.subscriptionInfo?.salesEnabled) {
+  let perms = req.user?.permissions;
+  if (typeof perms === 'string') {
+    try { perms = JSON.parse(perms); } catch (_) {}
+  }
+  const hasSuperAccess = req.user?.role === 'superadmin' || (perms && perms.superadmin_access === true);
+  if (hasSuperAccess) {
+    return next();
+  }
+
+  if (!req.subscriptionInfo?.salesEnabled) {
     return res.status(403).json({ success: false, message: 'Sales module is not enabled for your subscription' });
   }
   next();

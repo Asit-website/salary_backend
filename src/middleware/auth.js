@@ -14,6 +14,11 @@ function authRequired(req, res, next) {
       token = req.query.token;
     }
 
+    // Support token in cookies if available
+    if (!token && req.cookies && (req.cookies.token || req.cookies.jwt)) {
+      token = req.cookies.token || req.cookies.jwt;
+    }
+
     if (!token) {
       return res.status(401).json({ success: false, message: 'Missing token due to lags of internet or not properly authorized' });
     }

@@ -24,6 +24,20 @@ async function tenantEnforce(req, res, next) {
         if (!isNaN(n)) finalOrg = n;
       }
       req.tenantOrgAccountId = finalOrg;
+      req.subscriptionInfo = {
+        staffLimit: 999999,
+        currentTotalStaff: 0,
+        maxGeolocationStaff: 999999,
+        salesEnabled: true,
+        geolocationEnabled: true,
+        expenseEnabled: true,
+        payrollEnabled: true,
+        performanceEnabled: true,
+        aiReportsEnabled: true,
+        aiAssistantEnabled: true,
+        taskManagementEnabled: true,
+        rosterEnabled: true
+      };
       return next();
     }
 

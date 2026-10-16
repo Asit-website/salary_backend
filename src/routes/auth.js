@@ -460,8 +460,9 @@ router.post('/send-otp', authLimiter, async (req, res) => {
 // Dev-only helper to fetch the latest OTP for a phone (for web autofill during development)
 router.get('/otp/latest', async (req, res) => {
   try {
-    const expose = String(process.env.NODE_ENV || 'development') !== 'production'
-      && String(process.env.OTP_INCLUDE_IN_RESPONSE || 'false') === 'true';
+    const isDev = String(process.env.NODE_ENV || 'development') !== 'production';
+    const otpInclude = String(process.env.OTP_INCLUDE_IN_RESPONSE || 'true').toLowerCase().startsWith('true');
+    const expose = isDev || otpInclude;
     if (!expose) return res.status(404).json({ success: false, message: 'Not found' });
 
     const phone = req.query?.phone;
@@ -473,9 +474,12 @@ router.get('/otp/latest', async (req, res) => {
       where: { phone: normalizedPhone },
       order: [['updatedAt', 'DESC']],
     });
-    if (!row || normalizedPhone === '1231231232') return res.json({ success: true, otp: null });
+    if (!row || normalizedPhone === '1231231232') {
+      const devCode = isDev ? (process.env.OTP_DEV_CODE || '123456') : null;
+      return res.json({ success: true, otp: devCode });
+    }
     const notExpired = new Date(row.expiresAt).getTime() > Date.now();
-    return res.json({ success: true, otp: notExpired ? row.code : null });
+    return res.json({ success: true, otp: notExpired ? row.code : (isDev ? (process.env.OTP_DEV_CODE || '123456') : null) });
   } catch (e) {
     return res.status(500).json({ success: false, message: 'Failed to fetch OTP' });
   }

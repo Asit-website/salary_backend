@@ -63,18 +63,46 @@ ensureCollectionExists().then(success => {
   }
 });
 
-const allowedOrigins = (process.env.CORS_ORIGINS || 'http://localhost:3000')
+const defaultAllowedOrigins = [
+  'http://localhost:3000',
+  'http://127.0.0.1:3000',
+  'http://localhost:8081',
+  'http://localhost:19006',
+  'https://vetansutra.com',
+  'https://web.vetansutra.com',
+  'https://backend.vetansutra.com'
+];
+
+const envOrigins = (process.env.CORS_ORIGINS || '')
   .split(',')
   .map((s) => s.trim())
   .filter(Boolean);
 
+const allowedOrigins = [...new Set([...defaultAllowedOrigins, ...envOrigins])];
+
 app.use(helmet({ crossOriginResourcePolicy: { policy: 'cross-origin' } }));
 app.use(cors({
   origin: (origin, callback) => {
-    if (!origin || allowedOrigins.includes(origin)) {
+    // 1. Requests from mobile apps (APK / React Native / Capacitor), Postman, or native webviews without origin or "null"
+    if (!origin || origin === 'null' || origin.startsWith('file://')) {
       return callback(null, true);
     }
-    return callback(new Error('Not allowed by CORS'));
+    // 2. Allow any localhost / 127.0.0.1 on any port, LAN IP, Expo, or vetansutra domain
+    if (
+      /^https?:\/\/(localhost|127\.0\.0\.1|10\.\d+\.\d+\.\d+|192\.168\.\d+\.\d+|172\.(1[6-9]|2\d|3[01])\.\d+\.\d+)(:\d+)?$/.test(origin) ||
+      origin.startsWith('exp://') ||
+      origin.startsWith('capacitor://') ||
+      origin.endsWith('.vetansutra.com') ||
+      origin === 'https://vetansutra.com' ||
+      allowedOrigins.includes(origin)
+    ) {
+      return callback(null, true);
+    }
+    // 3. Fallback for non-production environments
+    if (process.env.NODE_ENV !== 'production') {
+      return callback(null, true);
+    }
+    return callback(null, false);
   },
   credentials: true
 }));
