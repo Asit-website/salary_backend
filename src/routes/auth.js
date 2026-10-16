@@ -25,10 +25,12 @@ async function sendSmsViaGateway({ phoneE164, code, purpose }) {
 
     // Compose message: keep OTP clearly visible; SMS Autofill works on iOS by oneTimeCode
     // For Android SMS Retriever API, a hash is needed – not added here to avoid extra deps.
-    const isReset = String(purpose || '').toLowerCase() === 'reset';
-    const text = isReset
-      ? `Dear customer, the one time password to reset your password is ${code}. This OTP will expire in 5 minutes. Thinktech Software company`
-      : `Dear customer, your login OTP is ${code}. This OTP will expire in 5 minutes. Thinktech Software company`;
+    // Commented out isReset split because SMS provider/DLT only approves the reset password template text
+    // const isReset = String(purpose || '').toLowerCase() === 'reset';
+    // const text = isReset
+    //   ? `Dear customer, the one time password to reset your password is ${code}. This OTP will expire in 5 minutes. Thinktech Software company`
+    //   : `Dear customer, your login OTP is ${code}. This OTP will expire in 5 minutes. Thinktech Software company`;
+    const text = `Dear customer, the one time password to reset your password is ${code}. This OTP will expire in 5 minutes. Thinktech Software company`;
 
     const url = new URL(API_URL);
     url.searchParams.set('APIKEY', APIKEY);
