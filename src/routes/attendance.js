@@ -1175,8 +1175,10 @@ router.post('/punch-in', upload.single('photo'), async (req, res) => {
     if (await hasApprovedLeave(req.user.id, dateKey)) {
       return res.status(409).json({ success: false, message: 'You are on leave today' });
     }
-    const lat = Number(req.body?.lat ?? req.body?.latitude);
-    const lng = Number(req.body?.lng ?? req.body?.longitude);
+    const rawLat = req.body?.lat ?? req.body?.latitude;
+    const rawLng = req.body?.lng ?? req.body?.longitude;
+    const lat = (rawLat !== undefined && rawLat !== null && rawLat !== '' && Number.isFinite(Number(rawLat))) ? Number(rawLat) : null;
+    const lng = (rawLng !== undefined && rawLng !== null && rawLng !== '' && Number.isFinite(Number(rawLng))) ? Number(rawLng) : null;
     const geoCheck = await validateAssignedGeofence(req.user.id, dateKey, lat, lng);
     if (!geoCheck.ok) {
       return res.status(geoCheck.status || 403).json({
@@ -1421,8 +1423,10 @@ router.post('/punch-in', upload.single('photo'), async (req, res) => {
 // Live location ping
 router.post('/location/ping', async (req, res) => {
   try {
-    const lat = Number(req.body?.lat ?? req.body?.latitude);
-    const lng = Number(req.body?.lng ?? req.body?.longitude);
+    const rawLat = req.body?.lat ?? req.body?.latitude;
+    const rawLng = req.body?.lng ?? req.body?.longitude;
+    const lat = (rawLat !== undefined && rawLat !== null && rawLat !== '' && Number.isFinite(Number(rawLat))) ? Number(rawLat) : null;
+    const lng = (rawLng !== undefined && rawLng !== null && rawLng !== '' && Number.isFinite(Number(rawLng))) ? Number(rawLng) : null;
     const accuracy = req.body?.accuracyMeters !== undefined ? Number(req.body.accuracyMeters) : null;
     const address = req.body?.address ? String(req.body.address).slice(0, 255) : null;
     const timestamp = req.body?.timestamp || req.body?.createdAt;
@@ -1470,8 +1474,10 @@ router.post('/punch-out', upload.single('photo'), async (req, res) => {
 
 
     let key = todayKey();
-    const lat = Number(req.body?.lat ?? req.body?.latitude);
-    const lng = Number(req.body?.lng ?? req.body?.longitude);
+    const rawLat = req.body?.lat ?? req.body?.latitude;
+    const rawLng = req.body?.lng ?? req.body?.longitude;
+    const lat = (rawLat !== undefined && rawLat !== null && rawLat !== '' && Number.isFinite(Number(rawLat))) ? Number(rawLat) : null;
+    const lng = (rawLng !== undefined && rawLng !== null && rawLng !== '' && Number.isFinite(Number(rawLng))) ? Number(rawLng) : null;
     const geoCheck = await validateAssignedGeofence(req.user.id, key, lat, lng);
     if (!geoCheck.ok) {
       return res.status(geoCheck.status || 403).json({
@@ -2514,8 +2520,10 @@ router.post('/qr-punch', upload.single('photo'), async (req, res) => {
       }
     }
 
-    const lat = Number(req.body?.lat ?? req.body?.latitude);
-    const lng = Number(req.body?.lng ?? req.body?.longitude);
+    const rawLat = req.body?.lat ?? req.body?.latitude;
+    const rawLng = req.body?.lng ?? req.body?.longitude;
+    const lat = (rawLat !== undefined && rawLat !== null && rawLat !== '' && Number.isFinite(Number(rawLat))) ? Number(rawLat) : null;
+    const lng = (rawLng !== undefined && rawLng !== null && rawLng !== '' && Number.isFinite(Number(rawLng))) ? Number(rawLng) : null;
 
     // Verify coordinates if configured
     if (matchedZone.latitude != null && matchedZone.longitude != null) {

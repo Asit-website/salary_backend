@@ -52,7 +52,7 @@ async function computeOvertimeMeta({ userId, monthKey, overtimeBaseSalary, orgAc
   const { start, endKey, end } = getMonthRange(monthKey);
   const rows = await Attendance.findAll({
     where: { userId, date: { [Op.gte]: start, [Op.lte]: endKey } },
-    attributes: ['id', 'userId', 'orgAccountId', 'overtimeMinutes', 'date', 'status'],
+    attributes: ['id', 'userId', 'orgAccountId', 'overtimeMinutes', 'overtimeAmount', 'date', 'status'],
     order: [['date', 'ASC']]
   });
   const daysInMonth = Number(end.getDate() || 30);
@@ -75,8 +75,8 @@ async function computeOvertimeMeta({ userId, monthKey, overtimeBaseSalary, orgAc
   let totalOvertimePay = 0;
 
   for (const row of rows) {
-    let otAmount = Number(row.overtimeAmount !== undefined ? row.overtimeAmount : (row.getDataValue ? row.getDataValue('overtime_amount') : (row.overtime_amount || 0)));
-    let otMinutes = Number(row.overtimeMinutes !== undefined ? row.overtimeMinutes : (row.getDataValue ? row.getDataValue('overtime_minutes') : (row.overtime_minutes || 0)));
+    let otAmount = Number(row.overtimeAmount !== undefined && row.overtimeAmount !== null ? row.overtimeAmount : (row.getDataValue ? row.getDataValue('overtime_amount') : (row.overtime_amount || 0))) || 0;
+    let otMinutes = Number(row.overtimeMinutes !== undefined && row.overtimeMinutes !== null ? row.overtimeMinutes : (row.getDataValue ? row.getDataValue('overtime_minutes') : (row.overtime_minutes || 0))) || 0;
 
     let forceRecalc = false;
     if (woHolidayAsOtEnabled) {
@@ -86,11 +86,10 @@ async function computeOvertimeMeta({ userId, monthKey, overtimeBaseSalary, orgAc
       }
     }
 
-    if (orgAccount?.overtimeRuleId && (forceRecalc || (otAmount <= 0 && otMinutes > 0))) {
-      // Always re-calculate to ensure latest logic and correct daysForRate are applied
+    if (forceRecalc || (otAmount <= 0 && otMinutes > 0)) {
       const result = await calculateOvertime(row, orgAccount, daysForRate);
-      otAmount = result.overtimeAmount;
-      otMinutes = result.overtimeMinutes;
+      otAmount = Number(result?.overtimeAmount || 0);
+      otMinutes = Number(result?.overtimeMinutes || otMinutes);
     }
 
     totalOvertimeMinutes += otMinutes;
@@ -245,7 +244,7 @@ async function computeLatePenaltyMeta({ userId, monthKey, orgAccount, baseSalary
   };
 }
 
-async function calculateSalary(userId, monthKey) {
+async function calculateSalary(userId, monthKey, options = {}) {
   const u = await User.findByPk(userId, {
     include: [
       { association: 'profile' },
@@ -355,8 +354,8 @@ async function calculateSalary(userId, monthKey) {
     return advanceDeductions;
   };
 
-  // 1. If PayrollLine exists and cycle is LOCKED or PAID, use immutable stored snapshot
-  if (cycle && line && (cycle.status === 'LOCKED' || cycle.status === 'PAID')) {
+  // 1. If PayrollLine exists and has computed totals, use stored snapshot (ensures payslip matches payroll screen exactly)
+  if (cycle && line && (cycle.status === 'LOCKED' || cycle.status === 'PAID' || (line.totals && !options?.forceRecalculate))) {
     // ... parse existing ...
     // We do NOT recalculate loans here if it's already generated/locked, 
     // UNLESS the user explicitly requested "regeneration" via the API which calls this.
@@ -467,7 +466,11 @@ async function calculateSalary(userId, monthKey) {
           if (pfRule && Number(pfRule.valueNumber || 0) > 0) pfRate = Number(pfRule.valueNumber);
         }
         const pfBase = Math.max(0, bVal + dVal - eePen - lpPen);
-        deductions.provident_fund = Number((pfBase * (pfRate / 100)).toFixed(2));
+        let calcPf = Number((pfBase * (pfRate / 100)).toFixed(2));
+        if (salarySettings?.pfCapEnabled && Number(salarySettings?.pfCapAmount) > 0) {
+          calcPf = Math.min(calcPf, Number(salarySettings.pfCapAmount));
+        }
+        deductions.provident_fund = calcPf;
       }
 
       // Preserve manual totals if they exist and earnings/deductions are missing or zeroed out (prevents zeroing out historical entries)
@@ -1748,7 +1751,9 @@ async function generatePayslipPDF(data, savePath = null) {
 
   const { user, monthKey, earnings, incentives, deductions, totals, attendanceSummary, generatedAt } = data;
 
-  const { OrgBusinessInfo } = require('../models');
+  const { OrgBusinessInfo, StaffAdvance, Attendance, HolidayDate, StaffHolidayAssignment, StaffWeeklyOffAssignment, WeeklyOffTemplate } = require('../models');
+  const { computeStaffAdvancePayroll, loadGeneratedPayrollMonths, parseDeductionsList } = require('./staffAdvancePayroll');
+  const { Op } = require('sequelize');
 
   // Get Details
   const employeeName = user.profile ? user.profile.name : (user.name || user.fullName || 'Unknown');
@@ -1767,18 +1772,15 @@ async function generatePayslipPDF(data, savePath = null) {
       const bizInfo = await OrgBusinessInfo.findOne({ where: { orgAccountId: user.orgAccount.id } });
       if (bizInfo) {
         if (bizInfo.logoUrl) {
-          // Construct absolute path. logoUrl is likely like '/uploads/logos/...'
-          // Remove leading slash if present to join with process.cwd()
           const cleanPath = bizInfo.logoUrl.startsWith('/') ? bizInfo.logoUrl.slice(1) : bizInfo.logoUrl;
           const logoPath = path.join(process.cwd(), cleanPath);
 
           if (fs.existsSync(logoPath)) {
             const bitmap = fs.readFileSync(logoPath);
             const base64 = Buffer.from(bitmap).toString('base64');
-            // Guess mime type based on extension
             const ext = path.extname(logoPath).toLowerCase();
             const mime = ext === '.png' ? 'image/png' : (ext === '.jpg' || ext === '.jpeg' ? 'image/jpeg' : 'image/png');
-            logoHtml = `<img src="data:${mime};base64,${base64}" alt="Logo" style="max-height: 60px; margin-bottom: 10px;" />`;
+            logoHtml = `<img src="data:${mime};base64,${base64}" alt="Logo" style="max-height: 50px; margin-bottom: 6px;" />`;
           }
         }
         if (bizInfo.signatureUrl) {
@@ -1790,7 +1792,7 @@ async function generatePayslipPDF(data, savePath = null) {
             const base64 = Buffer.from(bitmap).toString('base64');
             const ext = path.extname(sigPath).toLowerCase();
             const mime = ext === '.png' ? 'image/png' : (ext === '.jpg' || ext === '.jpeg' ? 'image/jpeg' : 'image/png');
-            employerSignatureHtml = `<img src="data:${mime};base64,${base64}" alt="Employer Signature" style="max-height: 45px; max-width: 140px; margin-bottom: 2px;" />`;
+            employerSignatureHtml = `<img src="data:${mime};base64,${base64}" alt="Employer Signature" style="max-height: 40px; max-width: 130px; margin-bottom: 2px;" />`;
           }
         }
       }
@@ -1799,11 +1801,11 @@ async function generatePayslipPDF(data, savePath = null) {
     }
   }
 
-  // Format amounts
+  // Format amounts & dates
   const fmt = (n) => Number(n || 0).toLocaleString('en-IN', { minimumFractionDigits: 0, maximumFractionDigits: 0 });
-  const dateFmt = (d) => new Date(d).toLocaleDateString('en-IN');
+  const dateFmt = (d) => d ? new Date(d).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' }) : '-';
 
-  // Prepare rows
+  // Prepare earnings & deductions rows
   const earningRows = Object.entries(earnings || {}).map(([k, v]) =>
     `<tr><td>${k.replace(/_/g, ' ').toUpperCase()}</td><td class="text-right">${fmt(v)}</td></tr>`
   ).join('');
@@ -1827,47 +1829,281 @@ async function generatePayslipPDF(data, savePath = null) {
   const overtimePay = Number(att.overtimePay || (earnings && earnings.overtime_pay) || 0);
   const showOvertime = overtimeMinutes > 0 || overtimePay > 0;
 
+  // Advance & Payments Details
+  let advanceRowsHtml = '';
+  try {
+    const orgId = user.orgAccountId || (user.orgAccount ? user.orgAccount.id : null);
+    const staffAdvances = await StaffAdvance.findAll({
+      where: {
+        staffId: user.id,
+        ...(orgId ? { orgAccountId: orgId } : {})
+      },
+      order: [['advanceDate', 'ASC'], ['id', 'ASC']]
+    });
+
+    const generatedMonths = orgId ? await loadGeneratedPayrollMonths(orgId) : new Set();
+    const { perAdvance } = computeStaffAdvancePayroll(staffAdvances, monthKey, generatedMonths);
+
+    if (perAdvance && perAdvance.length > 0) {
+      advanceRowsHtml = perAdvance.map((adv) => {
+        const rawAdv = staffAdvances.find(a => a.id === adv.id);
+        const deductionsList = parseDeductionsList(rawAdv);
+
+        let clearanceMonthText = adv.deductionMonth || '-';
+        if (deductionsList && deductionsList.length > 0) {
+          const sortedMonths = [...deductionsList].sort((a, b) => (a.month || '').localeCompare(b.month || ''));
+          const lastInstallment = sortedMonths[sortedMonths.length - 1];
+          clearanceMonthText = lastInstallment?.month || adv.deductionMonth;
+        }
+
+        const remainingBalance = Math.max(0, (adv.outstandingBeforeMonth || adv.amount) - (adv.deductionThisMonth || 0));
+
+        let statusBadge = '';
+        if (remainingBalance <= 0 || adv.status === 'deducted') {
+          statusBadge = '<span class="status-badge badge-cleared">CLEARED</span>';
+        } else if (adv.deductionThisMonth > 0) {
+          statusBadge = '<span class="status-badge badge-partial">PARTIAL</span>';
+        } else {
+          statusBadge = '<span class="status-badge badge-active">ACTIVE</span>';
+        }
+
+        let clearanceFormatted = clearanceMonthText;
+        try {
+          if (clearanceMonthText && clearanceMonthText.includes('-')) {
+            const [cYear, cMonth] = clearanceMonthText.split('-');
+            clearanceFormatted = new Date(cYear, cMonth - 1, 1).toLocaleString('default', { month: 'short', year: 'numeric' });
+          }
+        } catch (_) {}
+
+        return `
+          <tr>
+            <td>${dateFmt(adv.advanceDate)}</td>
+            <td>${clearanceFormatted}</td>
+            <td class="text-right">₹${fmt(adv.amount)}</td>
+            <td class="text-right">₹${fmt(adv.deductionThisMonth)}</td>
+            <td class="text-right">₹${fmt(remainingBalance)}</td>
+            <td style="text-align: center;">${statusBadge}</td>
+          </tr>
+        `;
+      }).join('');
+    }
+  } catch (err) {
+    console.error('Error fetching advance details for payslip:', err);
+  }
+
+  if (!advanceRowsHtml) {
+    advanceRowsHtml = `
+      <tr>
+        <td colspan="6" style="text-align: center; color: #777; font-style: italic; padding: 6px;">No advance taken or pending for this period</td>
+      </tr>
+    `;
+  }
+
+  // Parse Month and dates for Calendar (Page 2)
+  const [yearStr, monthStr] = monthKey.split('-');
+  const year = parseInt(yearStr, 10);
+  const month = parseInt(monthStr, 10);
+  const daysInMonth = new Date(year, month, 0).getDate();
+  const startDateStr = `${year}-${String(month).padStart(2, '0')}-01`;
+  const endDateStr = `${year}-${String(month).padStart(2, '0')}-${String(daysInMonth).padStart(2, '0')}`;
+  const monthName = new Date(year, month - 1, 1).toLocaleString('default', { month: 'long' });
+
+  let calendarRowsHtml = '';
+  try {
+    const attendances = await Attendance.findAll({
+      where: {
+        userId: user.id,
+        date: { [Op.gte]: startDateStr, [Op.lte]: endDateStr }
+      },
+      attributes: ['date', 'status', 'punchedInAt', 'punchedOutAt', 'totalWorkHours', 'overtimeMinutes']
+    });
+
+    const attByDate = {};
+    for (const a of attendances) {
+      const k = String(a.date).slice(0, 10);
+      attByDate[k] = a;
+    }
+
+    // Weekly Off
+    let woConfig = null;
+    try {
+      const woAsg = await StaffWeeklyOffAssignment.findOne({
+        where: {
+          userId: user.id,
+          effectiveFrom: { [Op.lte]: endDateStr },
+          [Op.or]: [{ effectiveTo: null }, { effectiveTo: { [Op.gte]: startDateStr } }]
+        },
+        order: [['effectiveFrom', 'DESC'], ['id', 'DESC']],
+        include: [{ model: WeeklyOffTemplate, as: 'template' }]
+      });
+      if (woAsg?.template?.days) {
+        woConfig = typeof woAsg.template.days === 'string' ? JSON.parse(woAsg.template.days) : woAsg.template.days;
+      }
+    } catch (_) {}
+
+    const isWeeklyOff = (d) => {
+      if (!woConfig || !Array.isArray(woConfig)) {
+        return d.getDay() === 0; // Default Sunday
+      }
+      return woConfig.some(c => Number(c.day) === d.getDay());
+    };
+
+    // Calendar HTML
+    const firstDay = new Date(year, month - 1, 1);
+    let startCol = firstDay.getDay() - 1;
+    if (startCol === -1) startCol = 6; // Sunday
+
+    calendarRowsHtml = '<tr>';
+    for (let i = 0; i < startCol; i++) {
+      calendarRowsHtml += '<td class="cal-cell empty"></td>';
+    }
+
+    let currentCol = startCol;
+    for (let day = 1; day <= daysInMonth; day++) {
+      const dObj = new Date(year, month - 1, day);
+      const dateKey = `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+      const attRec = attByDate[dateKey];
+      const rawStatus = attRec ? String(attRec.status).toLowerCase() : null;
+
+      let badgeClass = 'badge-a';
+      let badgeText = 'A';
+      let timingText = '';
+
+      if (rawStatus === 'present' || rawStatus === 'overtime' || rawStatus === 'work_from_home') {
+        badgeClass = 'badge-p';
+        badgeText = 'P';
+      } else if (rawStatus === 'half_day' || rawStatus === 'half') {
+        badgeClass = 'badge-hd';
+        badgeText = 'HD';
+      } else if (rawStatus === 'leave' || rawStatus === 'paid_leave') {
+        badgeClass = 'badge-l';
+        badgeText = 'L';
+      } else if (rawStatus === 'weekly_off' || (!rawStatus && isWeeklyOff(dObj))) {
+        badgeClass = 'badge-wo';
+        badgeText = 'WO';
+      } else if (rawStatus === 'holiday') {
+        badgeClass = 'badge-h';
+        badgeText = 'H';
+      } else {
+        badgeClass = 'badge-a';
+        badgeText = 'A';
+      }
+
+      if (attRec && attRec.punchedInAt) {
+        const inTime = new Date(attRec.punchedInAt).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: false, timeZone: 'Asia/Kolkata' });
+        if (attRec.punchedOutAt) {
+          const outTime = new Date(attRec.punchedOutAt).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: false, timeZone: 'Asia/Kolkata' });
+          timingText = `${inTime}-${outTime}`;
+        } else {
+          timingText = inTime;
+        }
+      }
+
+      calendarRowsHtml += `
+        <td class="cal-cell">
+          <div class="cal-day-num">${day}</div>
+          <div class="cal-badge ${badgeClass}">${badgeText}</div>
+          ${timingText ? `<div class="cal-timing">${timingText}</div>` : ''}
+        </td>
+      `;
+
+      currentCol++;
+      if (currentCol === 7 && day < daysInMonth) {
+        calendarRowsHtml += '</tr><tr>';
+        currentCol = 0;
+      }
+    }
+
+    if (currentCol > 0 && currentCol < 7) {
+      for (let i = currentCol; i < 7; i++) {
+        calendarRowsHtml += '<td class="cal-cell empty"></td>';
+      }
+    }
+    calendarRowsHtml += '</tr>';
+  } catch (err) {
+    console.error('Error generating calendar grid for payslip:', err);
+  }
+
   const html = `
     <!DOCTYPE html>
     <html>
     <head>
       <title>Payslip ${monthKey}</title>
       <style>
-        body { font-family: Helvetica, Arial, sans-serif; padding: 40px; color: #000; max-width: 800px; margin: 0 auto; line-height: 1.5; }
-        .header { text-align: center; margin-bottom: 20px; }
-        .company-name { font-size: 18px; font-weight: bold; margin-bottom: 5px; }
-        .doc-title { font-size: 14px; }
+        @page { size: A4; margin: 12mm 15mm; }
+        body { font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; color: #1f2937; margin: 0; padding: 0; font-size: 11px; line-height: 1.4; }
         
-        .grid-header { display: flex; justify-content: space-between; margin-bottom: 20px; border-bottom: 1px solid #ccc; padding-bottom: 10px; }
-        .info-col { font-size: 12px; }
-        .info-row { margin-bottom: 4px; }
+        .header { text-align: center; margin-bottom: 12px; }
+        .company-name { font-size: 18px; font-weight: 700; color: #111827; margin-bottom: 2px; }
+        .doc-title { font-size: 13px; font-weight: 600; color: #4b5563; }
         
-        .tables-container { display: flex; gap: 20px; margin-bottom: 20px; }
-        .table-box { flex: 1; }
+        .grid-header { display: flex; justify-content: space-between; margin-bottom: 14px; background: #f9fafb; border: 1px solid #e5e7eb; border-radius: 6px; padding: 10px 14px; }
+        .info-col { font-size: 11px; }
+        .info-row { margin-bottom: 3px; }
+        
+        .tables-container { display: flex; gap: 14px; margin-bottom: 12px; }
+        .table-box { flex: 1; border: 1px solid #e5e7eb; border-radius: 6px; overflow: hidden; }
         
         table { width: 100%; border-collapse: collapse; font-size: 11px; }
-        th { text-align: left; font-weight: bold; border-bottom: 1px solid #000; padding: 5px; }
-        td { padding: 5px; }
+        th { text-align: left; font-weight: 600; background: #f3f4f6; color: #374151; padding: 6px 8px; border-bottom: 1px solid #e5e7eb; }
+        td { padding: 5px 8px; border-bottom: 1px solid #f3f4f6; }
         .text-right { text-align: right; }
-        .amount-col { width: 80px; }
+        .amount-col { width: 85px; }
         
-        .total-row td { font-weight: bold; border-top: 1px solid #000; padding-top: 5px; }
+        .total-row td { font-weight: 700; background: #f9fafb; border-top: 1px solid #d1d5db; border-bottom: none; }
         
-        .net-pay-container { text-align: center; margin-top: 20px; margin-bottom: 40px; border-top: 1px solid #ccc; border-bottom: 1px solid #ccc; padding: 10px; }
-        .net-pay { font-size: 16px; font-weight: bold; }
+        .net-pay-box { display: flex; justify-content: space-between; align-items: center; background: #eff6ff; border: 1px solid #bfdbfe; border-radius: 6px; padding: 8px 14px; margin-bottom: 12px; }
+        .net-pay-title { font-size: 13px; font-weight: 700; color: #1e40af; }
+        .net-pay-amount { font-size: 16px; font-weight: 800; color: #1d4ed8; }
         
-        .signatures { display: flex; justify-content: space-between; margin-top: 50px; font-size: 12px; }
-        .sig-box { width: 200px; text-align: center; }
-        .sig-line { border-top: 1px solid #000; margin-top: 40px; padding-top: 5px; }
+        .section-box { border: 1px solid #e5e7eb; border-radius: 6px; overflow: hidden; margin-bottom: 12px; }
+        .section-header { font-size: 11px; font-weight: 700; background: #f3f4f6; color: #374151; padding: 6px 8px; border-bottom: 1px solid #e5e7eb; letter-spacing: 0.5px; }
         
-        .footer { margin-top: 30px; text-align: center; font-size: 10px; color: #555; }
+        .att-summary-grid { width: 100%; border-collapse: collapse; }
+        .att-summary-grid td { width: 25%; padding: 6px 10px; border: 1px solid #f3f4f6; }
+        .att-label { display: block; font-size: 9.5px; color: #6b7280; text-transform: uppercase; font-weight: 600; margin-bottom: 2px; }
+        .att-value { font-size: 13px; font-weight: 700; color: #111827; }
+        .att-highlight { background: #ecfdf5 !important; }
+        .att-highlight .att-value { color: #047857; font-size: 14px; }
+        
+        .status-badge { display: inline-block; padding: 2px 6px; border-radius: 4px; font-weight: 700; font-size: 9px; letter-spacing: 0.5px; }
+        .badge-cleared { background: #d1fae5; color: #065f46; }
+        .badge-partial { background: #fef3c7; color: #92400e; }
+        .badge-active { background: #dbeafe; color: #1e40af; }
+        
+        .signatures { display: flex; justify-content: space-between; margin-top: 25px; margin-bottom: 15px; font-size: 11px; }
+        .sig-box { width: 180px; text-align: center; }
+        .sig-line { border-top: 1px solid #9ca3af; margin-top: 35px; padding-top: 4px; font-weight: 600; color: #4b5563; }
+        
+        .footer { text-align: center; font-size: 9.5px; color: #9ca3af; border-top: 1px solid #f3f4f6; padding-top: 8px; }
+
+        /* Page 2 Calendar */
+        .page-2 { page-break-before: always; padding-top: 10px; }
+        .calendar-table { width: 100%; border-collapse: collapse; margin-top: 12px; table-layout: fixed; }
+        .calendar-table th { background: #1f2937; color: #ffffff; text-align: center; font-weight: 600; font-size: 11px; padding: 6px 2px; border: 1px solid #374151; }
+        .cal-cell { height: 58px; vertical-align: top; border: 1px solid #e5e7eb; padding: 4px; text-align: center; background: #ffffff; }
+        .cal-cell.empty { background: #f9fafb; }
+        .cal-day-num { font-size: 10px; font-weight: 700; color: #6b7280; text-align: left; }
+        .cal-badge { display: inline-block; width: 24px; height: 24px; line-height: 24px; border-radius: 50%; font-size: 11px; font-weight: 700; margin-top: 2px; }
+        .badge-p { background: #d1fae5; color: #065f46; }
+        .badge-a { background: #fee2e2; color: #991b1b; }
+        .badge-hd { background: #fef3c7; color: #92400e; }
+        .badge-wo { background: #e0e7ff; color: #3730a3; }
+        .badge-h { background: #ccfbf1; color: #115e59; }
+        .badge-l { background: #ffedd5; color: #9a3412; }
+        .cal-timing { font-size: 8.5px; color: #4b5563; margin-top: 3px; font-family: monospace; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        
+        .legend-container { display: flex; justify-content: center; gap: 16px; margin-top: 16px; background: #f9fafb; border: 1px solid #e5e7eb; border-radius: 6px; padding: 8px 12px; }
+        .legend-item { display: flex; align-items: center; gap: 6px; font-size: 10px; font-weight: 600; color: #374151; }
+        .legend-badge { display: inline-block; width: 18px; height: 18px; line-height: 18px; text-align: center; border-radius: 50%; font-size: 9px; font-weight: 700; }
       </style>
     </head>
     <body>
+      <!-- PAGE 1 -->
       <div class="header">
         ${logoHtml ? `<div>${logoHtml}</div>` : ''}
         <div class="company-name">${businessName}</div>
-        <div class="doc-title">Payslip for the month of ${new Date(monthKey + '-01').toLocaleString('default', { month: 'long', year: 'numeric' })}</div>
+        <div class="doc-title">Payslip for the month of ${monthName} ${year}</div>
       </div>
 
       <div class="grid-header">
@@ -1879,16 +2115,14 @@ async function generatePayslipPDF(data, savePath = null) {
         </div>
         <div class="info-col" style="text-align: right;">
           <div class="info-row"><strong>Pay Period:</strong> ${monthKey}</div>
-          <div class="info-row"><strong>Status:</strong> ${data.isPaid || data.paidAt ? 'PAID' : 'DUE'}</div>
+          <div class="info-row"><strong>Status:</strong> ${data.isPaid || data.paidAt || data.paymentStatus === 'PAID' ? 'PAID' : 'DUE'}</div>
           <div class="info-row"><strong>Generated:</strong> ${dateFmt(generatedAt || new Date())}</div>
           <div class="info-row"><strong>Working Days:</strong> ${workDays}</div>
           ${showOvertime ? `<div class="info-row"><strong>Overtime:</strong> ${overtimeHours.toFixed(2)}h (${overtimeMinutes}m)</div>` : ''}
-          ${showOvertime ? `<div class="info-row"><strong>OT Rate:</strong> ${fmt(overtimeRate)}/hr</div>` : ''}
-          ${showOvertime ? `<div class="info-row"><strong>OT Pay:</strong> ${fmt(overtimePay)}</div>` : ''}
+          ${showOvertime ? `<div class="info-row"><strong>OT Rate:</strong> ₹${fmt(overtimeRate)}/hr</div>` : ''}
+          ${showOvertime ? `<div class="info-row"><strong>OT Pay:</strong> ₹${fmt(overtimePay)}</div>` : ''}
           ${(att.earlyExitMinutes > 0 || att.earlyExitPenalty > 0) ? `<div class="info-row"><strong>Early Exit:</strong> ${att.earlyExitMinutes}m</div>` : ''}
-          ${(att.earlyExitPenalty > 0) ? `<div class="info-row"><strong>Early Exit Fine:</strong> ${fmt(att.earlyExitPenalty)}</div>` : ''}
-          ${(att.earlyOvertimeMinutes > 0) ? `<div class="info-row"><strong>Early Overtime:</strong> ${att.earlyOvertimeMinutes}m</div>` : ''}
-          ${(att.earlyOvertimePay > 0) ? `<div class="info-row"><strong>Early OT Pay:</strong> ${fmt(att.earlyOvertimePay)}</div>` : ''}
+          ${(att.earlyExitPenalty > 0) ? `<div class="info-row"><strong>Early Exit Fine:</strong> ₹${fmt(att.earlyExitPenalty)}</div>` : ''}
         </div>
       </div>
 
@@ -1904,12 +2138,11 @@ async function generatePayslipPDF(data, savePath = null) {
             <tbody>
               ${earningRows}
               ${incentiveRows}
-              <!-- Spacer rows if needed to align height could go here -->
             </tbody>
             <tfoot>
               <tr class="total-row">
-                <td>Total</td>
-                <td class="text-right">${fmt((totals.totalEarnings || 0) + (totals.totalIncentives || 0))}</td>
+                <td>Total Earnings</td>
+                <td class="text-right">₹${fmt((totals.totalEarnings || 0) + (totals.totalIncentives || 0))}</td>
               </tr>
             </tfoot>
           </table>
@@ -1926,37 +2159,133 @@ async function generatePayslipPDF(data, savePath = null) {
             <tbody>
               ${deductionRows}
             </tbody>
-             <tfoot>
+            <tfoot>
               <tr class="total-row">
-                <td>Total</td>
-                <td class="text-right">${fmt(totals.totalDeductions)}</td>
+                <td>Total Deductions</td>
+                <td class="text-right">₹${fmt(totals.totalDeductions)}</td>
               </tr>
             </tfoot>
           </table>
         </div>
       </div>
 
-      <div class="net-pay-container">
-        <div class="net-pay">Net Salary: ${fmt(totals.netSalary)}</div>
+      <div class="net-pay-box">
+        <div class="net-pay-title">NET SALARY PAYABLE</div>
+        <div class="net-pay-amount">₹${fmt(totals.netSalary)}</div>
+      </div>
+
+      <!-- ADVANCE & PAYMENTS DETAILS -->
+      <div class="section-box">
+        <div class="section-header">ADVANCE & PAYMENTS DETAILS</div>
+        <table>
+          <thead>
+            <tr>
+              <th>ADVANCE DATE</th>
+              <th>CLEARANCE / DEDUCTION MONTH</th>
+              <th class="text-right">TOTAL ADVANCE</th>
+              <th class="text-right">DEDUCTED THIS MONTH</th>
+              <th class="text-right">REMAINING BALANCE</th>
+              <th style="text-align: center;">STATUS</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${advanceRowsHtml}
+          </tbody>
+        </table>
+      </div>
+
+      <!-- ATTENDANCE SUMMARY -->
+      <div class="section-box">
+        <div class="section-header">ATTENDANCE SUMMARY</div>
+        <table class="att-summary-grid">
+          <tr>
+            <td><span class="att-label">Present</span><span class="att-value">${att.present || 0}</span></td>
+            <td><span class="att-label">Absent</span><span class="att-value">${att.absent || 0}</span></td>
+            <td><span class="att-label">Half Day</span><span class="att-value">${att.half || 0}</span></td>
+            <td><span class="att-label">Weekly Off</span><span class="att-value">${att.weeklyOff || 0}</span></td>
+          </tr>
+          <tr>
+            <td><span class="att-label">Paid Leaves</span><span class="att-value">${att.paidLeave || 0}</span></td>
+            <td><span class="att-label">Holidays</span><span class="att-value">${att.holidays || 0}</span></td>
+            <td><span class="att-label">Overtime</span><span class="att-value">${overtimeHours > 0 || overtimeMinutes > 0 ? `${overtimeHours.toFixed(1)}h (${overtimeMinutes}m)` : '-'}</span></td>
+            <td class="att-highlight"><span class="att-label">Payable Days</span><span class="att-value">${att.payableDays !== undefined ? att.payableDays : workDays}</span></td>
+          </tr>
+          ${(att.lateMinutes > 0 || att.latePenalty > 0 || att.earlyExitMinutes > 0 || att.earlyExitPenalty > 0) ? `
+          <tr>
+            <td colspan="2"><span class="att-label">Late Arrival</span><span class="att-value">${att.lateMinutes || 0} mins ${att.latePenalty > 0 ? `(Fine: ₹${fmt(att.latePenalty)})` : ''}</span></td>
+            <td colspan="2"><span class="att-label">Early Exit</span><span class="att-value">${att.earlyExitMinutes || 0} mins ${att.earlyExitPenalty > 0 ? `(Fine: ₹${fmt(att.earlyExitPenalty)})` : ''}</span></td>
+          </tr>` : ''}
+        </table>
       </div>
 
       <div class="signatures">
         <div class="sig-box">
-          <div>Employee Signature</div>
-          <div class="sig-line"></div>
+          <div class="sig-line">Employee Signature</div>
         </div>
         <div class="sig-box">
-          <div style="min-height: 48px; display: flex; align-items: flex-end; justify-content: center;">
+          <div style="min-height: 40px; display: flex; align-items: flex-end; justify-content: center;">
             ${employerSignatureHtml}
           </div>
-          <div>Employer Signature</div>
-          <div class="sig-line" style="margin-top: 5px;"></div>
+          <div class="sig-line" style="margin-top: 5px;">Employer Signature</div>
         </div>
       </div>
 
       <div class="footer">
-        Generated on ${new Date().toLocaleString('en-IN')} <br>
-        This is a computer generated document.
+        Page 1 of 2 | Generated on ${new Date().toLocaleString('en-IN')} | This is a computer generated document.
+      </div>
+
+      <!-- PAGE 2: MONTHLY ATTENDANCE CALENDAR -->
+      <div class="page-2">
+        <div class="header">
+          ${logoHtml ? `<div>${logoHtml}</div>` : ''}
+          <div class="company-name">${businessName}</div>
+          <div class="doc-title">Monthly Attendance Calendar - ${monthName} ${year}</div>
+          <div style="font-size: 11px; color: #4b5563; margin-top: 4px;">
+            Employee: <strong>${employeeName}</strong> (ID: ${employeeId}) &nbsp;|&nbsp; Department: ${department}
+          </div>
+        </div>
+
+        <table class="calendar-table">
+          <thead>
+            <tr>
+              <th>Mon</th>
+              <th>Tue</th>
+              <th>Wed</th>
+              <th>Thu</th>
+              <th>Fri</th>
+              <th>Sat</th>
+              <th>Sun</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${calendarRowsHtml}
+          </tbody>
+        </table>
+
+        <div class="legend-container">
+          <div class="legend-item"><span class="legend-badge badge-p">P</span> Present</div>
+          <div class="legend-item"><span class="legend-badge badge-a">A</span> Absent</div>
+          <div class="legend-item"><span class="legend-badge badge-hd">HD</span> Half Day</div>
+          <div class="legend-item"><span class="legend-badge badge-wo">WO</span> Weekly Off</div>
+          <div class="legend-item"><span class="legend-badge badge-h">H</span> Holiday</div>
+          <div class="legend-item"><span class="legend-badge badge-l">L</span> Leave</div>
+        </div>
+
+        <div class="signatures" style="margin-top: 40px;">
+          <div class="sig-box">
+            <div class="sig-line">Employee Signature</div>
+          </div>
+          <div class="sig-box">
+            <div style="min-height: 40px; display: flex; align-items: flex-end; justify-content: center;">
+              ${employerSignatureHtml}
+            </div>
+            <div class="sig-line" style="margin-top: 5px;">Employer Signature</div>
+          </div>
+        </div>
+
+        <div class="footer">
+          Page 2 of 2 | Generated on ${new Date().toLocaleString('en-IN')} | This is a computer generated document.
+        </div>
       </div>
     </body>
     </html>
