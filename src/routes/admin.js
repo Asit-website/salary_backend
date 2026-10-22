@@ -3114,7 +3114,10 @@ router.get("/pms/self-appraisals/my", async (req, res) => {
       cycle: activeCycle,
       appraisal,
       goals,
-      activeRatingScale: ratingScale,
+      activeRatingScale: ratingScale ? {
+        ...ratingScale.toJSON(),
+        levels: typeof ratingScale.levels === "string" ? JSON.parse(ratingScale.levels) : (ratingScale.levels || [])
+      } : null,
     });
   } catch (e) {
     console.error("Fetch self appraisal error:", e);
@@ -3325,6 +3328,7 @@ router.get("/pms/self-appraisals/all", async (req, res) => {
       where,
       include: [
         { model: User, as: "employee", include: [{ model: StaffProfile, as: "profile" }] },
+        { model: User, as: "overrideUser", include: [{ model: StaffProfile, as: "profile" }] },
         { model: PmsAppraisalCycle, as: "cycle" },
       ],
       order: [["id", "DESC"]],
@@ -3439,6 +3443,7 @@ router.get("/pms/manager-appraisals", async (req, res) => {
         where: { orgAccountId: orgId, userId: targetUserId, cycleId: activeCycle.id },
         include: [
           { model: User, as: "employee", include: [{ model: StaffProfile, as: "profile" }] },
+          { model: User, as: "overrideUser", include: [{ model: StaffProfile, as: "profile" }] },
         ],
       });
 
@@ -3959,7 +3964,11 @@ router.post("/pms/manager-appraisals/save", async (req, res) => {
         });
         if (goalObj) {
           const updateData = {};
-          if (item.managerRating !== undefined) updateData.managerRating = item.managerRating !== null ? Number(item.managerRating) : null;
+          if (item.managerRating !== undefined) {
+            updateData.managerRating = (item.managerRating !== null && item.managerRating !== "")
+              ? Number(item.managerRating)
+              : (overallManagerRating !== null && overallManagerRating !== undefined ? Number(overallManagerRating) : null);
+          }
           if (item.managerComment !== undefined) updateData.managerComment = item.managerComment ? String(item.managerComment) : null;
           if (item.managerAchievement !== undefined) updateData.managerAchievement = item.managerAchievement ? String(item.managerAchievement) : null;
           await goalObj.update(updateData);
@@ -4025,8 +4034,12 @@ router.post("/pms/manager-appraisals/:id/override", async (req, res) => {
 
     const revisedScore = Number(overrideRating);
     const modifierId = req.user?.id || 1;
-    let modifierName = req.user?.name || req.user?.username || `HR Admin #${modifierId}`;
+    let modifierName = req.user?.name || req.user?.username || null;
     if (req.user?.profile?.name) modifierName = req.user.profile.name;
+    if (!modifierName) {
+      const modUser = await User.findByPk(modifierId, { include: [{ model: StaffProfile, as: 'profile' }] });
+      modifierName = modUser?.profile?.name || modUser?.name || `HR Admin #${modifierId}`;
+    }
 
     const auditEntry = {
       originalRating: origScore,
@@ -4048,6 +4061,21 @@ router.post("/pms/manager-appraisals/:id/override", async (req, res) => {
       overrideReason: auditEntry.reason,
       overrideHistory: [auditEntry, ...existingHistory],
     });
+
+    // Sync revised override score to unrated or existing goals for this employee in this cycle
+    await PmsGoal.update(
+      { managerRating: revisedScore },
+      {
+        where: {
+          orgAccountId: orgId,
+          userId: appraisal.userId,
+          [require('sequelize').Op.or]: [
+            { cycleId: appraisal.cycleId },
+            { cycleId: null },
+          ],
+        },
+      }
+    );
 
     return res.json({
       success: true,

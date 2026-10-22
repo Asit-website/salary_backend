@@ -320,6 +320,7 @@ PmsSelfAppraisal.belongsTo(OrgAccount, { foreignKey: 'orgAccountId', as: 'orgAcc
 
 User.hasMany(PmsSelfAppraisal, { foreignKey: 'userId', as: 'pmsSelfAppraisals' });
 PmsSelfAppraisal.belongsTo(User, { foreignKey: 'userId', as: 'employee' });
+PmsSelfAppraisal.belongsTo(User, { foreignKey: 'overrideBy', as: 'overrideUser' });
 
 PmsAppraisalCycle.hasMany(PmsSelfAppraisal, { foreignKey: 'cycleId', as: 'selfAppraisals' });
 PmsSelfAppraisal.belongsTo(PmsAppraisalCycle, { foreignKey: 'cycleId', as: 'cycle' });
