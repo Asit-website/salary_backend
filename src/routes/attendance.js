@@ -1,3 +1,4 @@
+const { formatDate } = require('../utils/dateUtils');
 const express = require('express');
 const { Op } = require('sequelize');
 const puppeteer = require('puppeteer');
@@ -2178,11 +2179,11 @@ router.get('/user/:userId', async (req, res) => {
 
     for (let day = 1; day <= endDate.getDate(); day++) {
       const currentDate = new Date(yearNum, monthNum - 1, day);
-      const dateStr = currentDate.toISOString().split('T')[0];
+      const dateStr = formatDate(currentDate);
 
       // Check if there's an attendance record for this date
       const attendance = attendanceRecords.find(record => {
-        const recordDate = new Date(record.date).toISOString().split('T')[0];
+        const recordDate = formatDate(record.date);
         return recordDate === dateStr;
       });
 

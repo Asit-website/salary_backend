@@ -9,6 +9,7 @@ const { getJwtSecret } = require('../utils/jwtSecret');
 const { REFRESH_TOKEN_MS, getRefreshTokenExpiresAt } = require('../utils/refreshTokenTtl');
 const { consumeImpersonationCode } = require('../utils/impersonationStore');
 const { hashPassword, verifyPassword, validateNewPassword } = require('../utils/password');
+const { sendPasswordResetOtpEmail } = require('../services/emailService');
 
 // Minimal SMS sender using the provided HTTP API
 async function sendSmsViaGateway({ phoneE164, code, purpose }) {
@@ -384,7 +385,85 @@ async function syncOrgMetadata(orgId, sequelize) {
 
 router.post('/send-otp', authLimiter, async (req, res) => {
   try {
-    const { phone, purpose } = req.body || {};
+    const { phone, email, purpose } = req.body || {};
+    const inputEmail = email || (phone && String(phone).includes('@') ? String(phone).trim() : null);
+
+    // Email-based OTP for Password Reset
+    if (inputEmail) {
+      const normalizedEmail = String(inputEmail).trim().toLowerCase();
+      const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+      if (!emailRegex.test(normalizedEmail)) {
+        return res.status(400).json({ success: false, message: 'Please enter a valid email address' });
+      }
+
+      // Find user associated with this email
+      let user = null;
+      let userName = 'User';
+
+      // Check in StaffProfile
+      const profile = await StaffProfile.findOne({
+        where: { email: normalizedEmail },
+        include: [{ model: User, as: 'user' }]
+      });
+
+      if (profile && profile.user) {
+        user = profile.user;
+        userName = profile.name || 'User';
+      }
+
+      // Check OrgAccount businessEmail if not found
+      if (!user) {
+        const org = await OrgAccount.findOne({ where: { businessEmail: normalizedEmail } });
+        if (org) {
+          user = await User.findOne({
+            where: { orgAccountId: org.id, role: 'admin' },
+            include: [{ model: StaffProfile, as: 'profile' }]
+          });
+          if (user) {
+            userName = user.profile?.name || org.name || 'Admin';
+          }
+        }
+      }
+
+      if (!user) {
+        return res.status(404).json({ success: false, message: 'No account found with this email address' });
+      }
+
+      if (user.active === false) {
+        return res.status(403).json({ success: false, message: 'Your account is disabled. Contact your administrator.' });
+      }
+
+      const ttlMs = Number(process.env.OTP_TTL_MS || 5 * 60 * 1000);
+      const fixed = process.env.OTP_DEV_CODE || '';
+      const useFixed = String(process.env.OTP_USE_FIXED || '').toLowerCase() === 'true';
+      const code = String(useFixed && fixed ? fixed : Math.floor(100000 + Math.random() * 900000));
+
+      otpStore.setOtp(normalizedEmail, code, ttlMs);
+
+      try {
+        const expiresAt = new Date(Date.now() + ttlMs);
+        const lastSentAt = new Date();
+        const existing = await OtpVerify.findOne({ where: { phone: normalizedEmail }, order: [['createdAt', 'DESC']] });
+        if (!existing) {
+          await OtpVerify.create({ phone: normalizedEmail, code, expiresAt, consumedAt: null, lastSentAt });
+        } else {
+          await existing.update({ code, expiresAt, consumedAt: null, lastSentAt });
+        }
+      } catch (e) {}
+
+      // Send Email OTP
+      const emailResult = await sendPasswordResetOtpEmail(normalizedEmail, code, userName);
+
+      let includeCode = String(process.env.OTP_INCLUDE_IN_RESPONSE || 'false') === 'true';
+
+      return res.json({
+        success: true,
+        message: emailResult.success ? `OTP sent successfully to ${normalizedEmail}` : 'OTP generated',
+        exists: true,
+        ...(includeCode ? { otp: code } : {})
+      });
+    }
+
     if (!phone) {
       return res.status(400).json({ success: false, message: 'phone required' });
     }
@@ -1429,15 +1508,69 @@ router.post('/login', authLimiter, async (req, res) => {
 
 router.post('/reset-password', authLimiter, async (req, res) => {
   try {
-    const { phone, code, newPassword, password } = req.body || {};
+    const { phone, email, code, newPassword, password } = req.body || {};
     const nextPassword = newPassword || password;
-    if (!phone || !code || !nextPassword) {
-      return res.status(400).json({ success: false, message: 'phone, code and newPassword required' });
+    const inputEmail = email || (phone && String(phone).includes('@') ? String(phone).trim() : null);
+
+    if ((!phone && !inputEmail) || !code || !nextPassword) {
+      return res.status(400).json({ success: false, message: 'Email or phone, code and newPassword required' });
     }
 
     const passwordError = validateNewPassword(nextPassword);
     if (passwordError) {
       return res.status(400).json({ success: false, message: passwordError });
+    }
+
+    // Email-based password reset
+    if (inputEmail) {
+      const normalizedEmail = String(inputEmail).trim().toLowerCase();
+
+      let user = null;
+      const profile = await StaffProfile.findOne({
+        where: { email: normalizedEmail },
+        include: [{ model: User, as: 'user' }]
+      });
+      if (profile && profile.user) {
+        user = profile.user;
+      }
+      if (!user) {
+        const org = await OrgAccount.findOne({ where: { businessEmail: normalizedEmail } });
+        if (org) {
+          user = await User.findOne({ where: { orgAccountId: org.id, role: 'admin' } });
+        }
+      }
+
+      if (!user) {
+        return res.status(404).json({ success: false, message: 'No account found for this email address' });
+      }
+
+      const otpOk = await consumeOtp(normalizedEmail, String(code));
+      if (!otpOk) {
+        return res.status(400).json({ success: false, message: 'Invalid or expired OTP' });
+      }
+
+      const passwordHash = await hashPassword(nextPassword);
+      await user.update({
+        passwordHash,
+        failedLoginAttempts: 0,
+        lockoutUntil: null,
+      });
+
+      if (user.phone) {
+        await User.update(
+          { passwordHash, failedLoginAttempts: 0, lockoutUntil: null },
+          { where: { phone: user.phone } }
+        );
+      }
+
+      logAudit({
+        req,
+        action: 'PASSWORD_RESET',
+        remarks: `Password reset via Email OTP for email ${normalizedEmail}.`,
+        overrides: { userId: user.id, orgAccountId: user.orgAccountId }
+      });
+
+      return res.json({ success: true, message: 'Password updated. Please log in with your new password.' });
     }
 
     const normalizedPhone = normalizePhone(phone);

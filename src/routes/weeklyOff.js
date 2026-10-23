@@ -1,3 +1,4 @@
+const { formatDate } = require('../utils/dateUtils');
 const express = require('express');
 const { authRequired } = require('../middleware/auth');
 const { requireRole } = require('../middleware/roles');
@@ -38,7 +39,7 @@ router.get('/my', requireRole(['staff']), async (req, res) => {
     const s = new Date(String(start));
     const e = new Date(String(end));
     for (let d = new Date(s); d <= e; d.setDate(d.getDate() + 1)) {
-      const dateStr = d.toISOString().slice(0, 10);
+      const dateStr = formatDate(d);
       for (const asg of rows) {
         const ef = new Date(asg.effectiveFrom);
         const et = asg.effectiveTo ? new Date(asg.effectiveTo) : null;

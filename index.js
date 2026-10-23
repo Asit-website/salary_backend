@@ -1,3 +1,5 @@
+process.env.TZ = process.env.TZ || 'Asia/Kolkata';
+
 const path = require('path');
 const fs = require('fs');
 

@@ -215,7 +215,7 @@ router.get('/categories', requireRole(['staff', 'admin', 'superadmin']), async (
   try {
     const forDate = typeof req.query.date === 'string' && req.query.date.match(/^\d{4}-\d{2}-\d{2}$/)
       ? req.query.date
-      : new Date().toISOString().slice(0, 10);
+      : formatDate(new Date());
 
     const isAdmin = ['admin', 'superadmin'].includes(req.user.role);
     const userId = (isAdmin && req.query.userId) ? Number(req.query.userId) : req.user.id;
@@ -496,7 +496,7 @@ router.get('/check-range', requireRole(['staff', 'admin', 'superadmin']), async 
     });
 
     for (let d = new Date(s); d <= e; d.setDate(d.getDate() + 1)) {
-      const dateStr = d.toISOString().slice(0, 10);
+      const dateStr = formatDate(d);
       const dayNum = d.getDate();
 
       // Check Weekly Off
@@ -830,7 +830,7 @@ router.post('/encash/claim', requireRole(['staff']), async (req, res) => {
     }
 
     // Check if enough balance exists
-    const balanceInfo = await getEffectiveLeaveBalance(req.user.id, categoryKey, new Date().toISOString().slice(0, 10));
+    const balanceInfo = await getEffectiveLeaveBalance(req.user.id, categoryKey, formatDate(new Date()));
     if (!balanceInfo) return res.status(400).json({ success: false, message: 'Invalid leave category or no active template' });
 
     if (balanceInfo.remaining < Number(days)) {
@@ -902,7 +902,7 @@ router.post('/encash/review', requireLeaveAccess(['leave_tab', 'leave_encashment
     }
 
     // Process Approval: Deduct from LeaveBalance for target month
-    let evalDate = new Date().toISOString().slice(0, 10);
+    let evalDate = formatDate(new Date());
     if (claim.monthKey && /^\d{4}-\d{2}$/.test(claim.monthKey)) {
       evalDate = `${claim.monthKey}-28`;
     }
@@ -958,7 +958,7 @@ router.get('/encash/balance-check', async (req, res) => {
       return res.status(400).json({ success: false, message: 'userId and categoryKey are required' });
     }
 
-    let evalDate = new Date().toISOString().slice(0, 10);
+    let evalDate = formatDate(new Date());
     if (monthKey && /^\d{4}-\d{2}$/.test(monthKey)) {
       evalDate = `${monthKey}-28`;
     }
@@ -988,7 +988,7 @@ router.post('/encash/admin-create', requireLeaveAccess(['leave_tab', 'leave_enca
       return res.status(400).json({ success: false, message: 'Invalid days value' });
     }
 
-    let evalDate = new Date().toISOString().slice(0, 10);
+    let evalDate = formatDate(new Date());
     if (monthKey && /^\d{4}-\d{2}$/.test(monthKey)) {
       evalDate = `${monthKey}-28`;
     }
@@ -1055,7 +1055,7 @@ router.delete('/encash/claims/:id', requireLeaveAccess(['leave_tab', 'leave_enca
     }
 
     if (claim.status === 'APPROVED') {
-      let evalDate = new Date().toISOString().slice(0, 10);
+      let evalDate = formatDate(new Date());
       if (claim.monthKey && /^\d{4}-\d{2}$/.test(claim.monthKey)) {
         evalDate = `${claim.monthKey}-28`;
       }

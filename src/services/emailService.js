@@ -1231,6 +1231,66 @@ const sendAbsentStaffEmail = async (adminEmail, adminName, organizationName, abs
   }
 };
 
+// Send password reset OTP email
+const sendPasswordResetOtpEmail = async (toEmail, otpCode, userName = 'User') => {
+  try {
+    console.log(`📧 Sending Password Reset OTP email to: ${toEmail}`);
+    const mailOptions = {
+      from: `"${emailFrom.name}" <${emailFrom.address}>`,
+      to: toEmail,
+      subject: `Your Password Reset OTP - ${emailFrom.name}`,
+      html: `
+        <!DOCTYPE html>
+        <html>
+        <head>
+          <meta charset="utf-8">
+          <style>
+            body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #f4f6f9; margin: 0; padding: 20px; }
+            .container { max-width: 520px; margin: 0 auto; background: #ffffff; border-radius: 12px; overflow: hidden; box-shadow: 0 4px 15px rgba(0,0,0,0.06); }
+            .header { background: #2463EB; padding: 28px 24px; text-align: center; color: #ffffff; }
+            .header h1 { margin: 0; font-size: 24px; font-weight: 700; letter-spacing: 0.5px; }
+            .content { padding: 32px 28px; color: #334155; }
+            .otp-box { background: #f0f7ff; border: 2px dashed #2463EB; border-radius: 10px; padding: 20px; text-align: center; margin: 24px 0; }
+            .otp-code { font-size: 36px; font-weight: 800; letter-spacing: 8px; color: #2463EB; margin: 0; font-family: monospace; }
+            .note { font-size: 13px; color: #64748b; line-height: 1.5; margin-top: 16px; }
+            .footer { background: #f8fafc; padding: 18px; text-align: center; font-size: 12px; color: #94a3b8; border-top: 1px solid #e2e8f0; }
+          </style>
+        </head>
+        <body>
+          <div class="container">
+            <div class="header">
+              <h1>Password Reset Request</h1>
+            </div>
+            <div class="content">
+              <p style="font-size: 16px; margin-top: 0;">Hello <strong>${userName}</strong>,</p>
+              <p style="font-size: 14px; line-height: 1.6;">We received a request to reset your password. Use the following One-Time Password (OTP) to complete your password reset:</p>
+              
+              <div class="otp-box">
+                <p style="margin: 0 0 6px 0; font-size: 12px; text-transform: uppercase; color: #64748b; letter-spacing: 1px; font-weight: 600;">Your Verification OTP</p>
+                <div class="otp-code">${otpCode}</div>
+              </div>
+
+              <p class="note">⚠️ This OTP is valid for <strong>5 minutes</strong>. If you did not request a password reset, please ignore this email or contact your administrator immediately.</p>
+              <p style="font-size: 14px; margin-top: 20px;">Best regards,<br><strong>${emailFrom.name} Team</strong></p>
+            </div>
+            <div class="footer">
+              <p style="margin: 0;">This is an automated security notification. Please do not reply to this email.</p>
+            </div>
+          </div>
+        </body>
+        </html>
+      `
+    };
+
+    const info = await transporter.sendMail(mailOptions);
+    console.log('✅ Password reset OTP email sent successfully:', info.messageId);
+    return { success: true, messageId: info.messageId };
+  } catch (error) {
+    console.error('❌ Error sending password reset OTP email:', error);
+    return { success: false, error: error.message };
+  }
+};
+
 module.exports = {
   verifyEmailConfig,
   sendWelcomeEmail,
@@ -1243,6 +1303,7 @@ module.exports = {
   sendMeetingInviteEmail,
   sendMissingCheckoutEmail,
   sendAbsentStaffEmail,
+  sendPasswordResetOtpEmail,
   transporter,
   emailFrom
 };
