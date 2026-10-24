@@ -63,11 +63,17 @@ class ShiftService {
                 include: [{ model: ShiftTemplate, as: 'template' }]
             });
 
-            if (asg && asg.template && asg.template.active !== false) {
-                return asg.template;
+            if (asg) {
+                if (asg.template && asg.template.active !== false) {
+                    return asg.template;
+                }
+                if (asg.shiftTemplateId) {
+                    const tpl = await ShiftTemplate.findByPk(asg.shiftTemplateId);
+                    if (tpl && tpl.active !== false) return tpl;
+                }
             }
 
-            // 3. Check User Profile Default (Lowest Priority - Fallback)
+            // 3. Check User Profile Default (Lowest Priority - Direct Assignment)
             const user = await User.findByPk(userId, { 
                 include: [{ model: StaffProfile, as: 'profile' }] 
             });
@@ -78,12 +84,38 @@ class ShiftService {
             }
 
             if (user?.profile?.shiftSelection) {
-                const tpl = await ShiftTemplate.findOne({ 
-                    where: { id: Number(user.profile.shiftSelection), active: true } 
+                const sel = user.profile.shiftSelection;
+                const numId = Number(sel);
+                if (!isNaN(numId) && numId > 0) {
+                    const tpl = await ShiftTemplate.findByPk(numId);
+                    if (tpl && tpl.active !== false) return tpl;
+                }
+                const tplByName = await ShiftTemplate.findOne({
+                    where: {
+                        [Op.or]: [{ name: String(sel).trim() }, { code: String(sel).trim() }],
+                        ...(user.orgAccountId ? { orgAccountId: user.orgAccountId } : {})
+                    }
                 });
-                if (tpl) return tpl;
+                if (tplByName && tplByName.active !== false) return tplByName;
             }
 
+            if (user?.profile?.shiftTiming) {
+                const timing = user.profile.shiftTiming;
+                const numId = Number(timing);
+                if (!isNaN(numId) && numId > 0) {
+                    const tpl = await ShiftTemplate.findByPk(numId);
+                    if (tpl && tpl.active !== false) return tpl;
+                }
+                const tplByTiming = await ShiftTemplate.findOne({
+                    where: {
+                        [Op.or]: [{ name: String(timing).trim() }, { code: String(timing).trim() }],
+                        ...(user.orgAccountId ? { orgAccountId: user.orgAccountId } : {})
+                    }
+                });
+                if (tplByTiming && tplByTiming.active !== false) return tplByTiming;
+            }
+
+            // Return null if no shift is assigned to this staff member
             return null;
         } catch (error) {
             console.error(`[ShiftService] Error resolving shift for User: ${userId}, Date: ${date}`, error);

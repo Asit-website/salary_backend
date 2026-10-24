@@ -396,22 +396,71 @@ router.post('/send-otp', authLimiter, async (req, res) => {
         return res.status(400).json({ success: false, message: 'Please enter a valid email address' });
       }
 
-      // Find user associated with this email
+      // Strict validation: if phone is provided, verify phone and ensure email is associated with this phone
+      const normalizedPhone = phone && !String(phone).includes('@') ? normalizePhone(phone) : null;
       let user = null;
       let userName = 'User';
 
-      // Check in StaffProfile
-      const profile = await StaffProfile.findOne({
-        where: { email: normalizedEmail },
-        include: [{ model: User, as: 'user' }]
-      });
+      if (normalizedPhone) {
+        if (normalizedPhone.length !== 10) {
+          return res.status(400).json({ success: false, message: 'Please enter a valid 10-digit phone number' });
+        }
 
-      if (profile && profile.user) {
-        user = profile.user;
-        userName = profile.name || 'User';
+        const phoneUsers = await User.findAll({
+          where: { phone: String(normalizedPhone) },
+          include: [
+            { model: StaffProfile, as: 'profile' },
+            { model: OrgAccount, as: 'orgAccount' }
+          ]
+        });
+
+        if (!phoneUsers || phoneUsers.length === 0) {
+          return res.status(404).json({ success: false, message: `No account found with phone number ${normalizedPhone}` });
+        }
+
+        // Check if normalizedEmail matches any user account under this phone
+        const matchingUser = phoneUsers.find(u => {
+          const profEmail = String(u.profile?.email || '').trim().toLowerCase();
+          const orgEmail = String(u.orgAccount?.businessEmail || '').trim().toLowerCase();
+          return profEmail === normalizedEmail || orgEmail === normalizedEmail;
+        });
+
+        if (!matchingUser) {
+          return res.status(400).json({
+            success: false,
+            message: `The email "${normalizedEmail}" is not associated with phone number ${normalizedPhone}. Please enter the correct registered email for this phone.`
+          });
+        }
+
+        user = matchingUser;
+        userName = user.profile?.name || user.orgAccount?.name || 'User';
+      } else {
+        // Find user associated with this email
+        // Check in StaffProfile
+        const profile = await StaffProfile.findOne({
+          where: { email: normalizedEmail },
+          include: [{ model: User, as: 'user' }]
+        });
+
+        if (profile && profile.user) {
+          user = profile.user;
+          userName = profile.name || 'User';
+        }
+
+        // Check OrgAccount businessEmail if not found
+        if (!user) {
+          const org = await OrgAccount.findOne({ where: { businessEmail: normalizedEmail } });
+          if (org) {
+            user = await User.findOne({
+              where: { orgAccountId: org.id, role: 'admin' },
+              include: [{ model: StaffProfile, as: 'profile' }]
+            });
+            if (user) {
+              userName = user.profile?.name || org.name || 'Admin';
+            }
+          }
+        }
       }
-
-      // Check OrgAccount businessEmail if not found
       if (!user) {
         const org = await OrgAccount.findOne({ where: { businessEmail: normalizedEmail } });
         if (org) {
@@ -1524,19 +1573,44 @@ router.post('/reset-password', authLimiter, async (req, res) => {
     // Email-based password reset
     if (inputEmail) {
       const normalizedEmail = String(inputEmail).trim().toLowerCase();
+      const normalizedPhone = phone && !String(phone).includes('@') ? normalizePhone(phone) : null;
 
       let user = null;
-      const profile = await StaffProfile.findOne({
-        where: { email: normalizedEmail },
-        include: [{ model: User, as: 'user' }]
-      });
-      if (profile && profile.user) {
-        user = profile.user;
-      }
-      if (!user) {
-        const org = await OrgAccount.findOne({ where: { businessEmail: normalizedEmail } });
-        if (org) {
-          user = await User.findOne({ where: { orgAccountId: org.id, role: 'admin' } });
+      if (normalizedPhone) {
+        const phoneUsers = await User.findAll({
+          where: { phone: String(normalizedPhone) },
+          include: [
+            { model: StaffProfile, as: 'profile' },
+            { model: OrgAccount, as: 'orgAccount' }
+          ]
+        });
+
+        const matchingUser = (phoneUsers || []).find(u => {
+          const profEmail = String(u.profile?.email || '').trim().toLowerCase();
+          const orgEmail = String(u.orgAccount?.businessEmail || '').trim().toLowerCase();
+          return profEmail === normalizedEmail || orgEmail === normalizedEmail;
+        });
+
+        if (!matchingUser) {
+          return res.status(400).json({
+            success: false,
+            message: `The email "${normalizedEmail}" is not associated with phone number ${normalizedPhone}.`
+          });
+        }
+        user = matchingUser;
+      } else {
+        const profile = await StaffProfile.findOne({
+          where: { email: normalizedEmail },
+          include: [{ model: User, as: 'user' }]
+        });
+        if (profile && profile.user) {
+          user = profile.user;
+        }
+        if (!user) {
+          const org = await OrgAccount.findOne({ where: { businessEmail: normalizedEmail } });
+          if (org) {
+            user = await User.findOne({ where: { orgAccountId: org.id, role: 'admin' } });
+          }
         }
       }
 
@@ -1556,11 +1630,23 @@ router.post('/reset-password', authLimiter, async (req, res) => {
         lockoutUntil: null,
       });
 
+      // Update accounts under the same phone ONLY if they share the SAME email
       if (user.phone) {
-        await User.update(
-          { passwordHash, failedLoginAttempts: 0, lockoutUntil: null },
-          { where: { phone: user.phone } }
-        );
+        const samePhoneUsers = await User.findAll({
+          where: { phone: user.phone },
+          include: [
+            { model: StaffProfile, as: 'profile' },
+            { model: OrgAccount, as: 'orgAccount' }
+          ]
+        });
+        for (const spUser of samePhoneUsers) {
+          if (spUser.id === user.id) continue;
+          const profEmail = String(spUser.profile?.email || '').trim().toLowerCase();
+          const orgEmail = String(spUser.orgAccount?.businessEmail || '').trim().toLowerCase();
+          if (profEmail === normalizedEmail || orgEmail === normalizedEmail) {
+            await spUser.update({ passwordHash, failedLoginAttempts: 0, lockoutUntil: null });
+          }
+        }
       }
 
       logAudit({

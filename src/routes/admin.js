@@ -25453,7 +25453,11 @@ router.post("/staff", requireRole(["admin", "staff"]), async (req, res) => {
 
     if (staffType) userData.staffType = staffType;
 
-    if (shiftSelection) userData.shiftSelection = shiftSelection;
+    if (shiftSelection) {
+      userData.shiftSelection = shiftSelection;
+      const sid = Number(shiftSelection);
+      if (!isNaN(sid) && sid > 0) userData.shiftTemplateId = sid;
+    }
 
     if (openingBalance) userData.openingBalance = openingBalance;
 
@@ -26170,7 +26174,11 @@ router.put("/staff/:id", requireRole(["admin", "staff"]), async (req, res) => {
       patchUser.attendanceSettingTemplate = attendanceSettingTemplate;
     if (salaryCycleDate) patchUser.salaryCycleDate = salaryCycleDate;
     if (staffType) patchUser.staffType = staffType;
-    if (shiftSelection) patchUser.shiftSelection = shiftSelection;
+    if (shiftSelection) {
+      patchUser.shiftSelection = shiftSelection;
+      const sid = Number(shiftSelection);
+      if (!isNaN(sid) && sid > 0) patchUser.shiftTemplateId = sid;
+    }
     if (openingBalance !== undefined) patchUser.openingBalance = openingBalance;
     if (salaryDetailAccess !== undefined)
       patchUser.salaryDetailAccess = !!salaryDetailAccess;

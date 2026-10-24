@@ -223,30 +223,19 @@ router.get('/shift', async (req, res) => {
     const d = String(today.getDate()).padStart(2, '0');
     const todayKey = `${y}-${m}-${d}`;
 
-    const assignment = await StaffShiftAssignment.findOne({
-      where: {
-        userId: user.id,
-        effectiveFrom: { [Op.lte]: todayKey },
-        [Op.or]: [
-          { effectiveTo: null },
-          { effectiveTo: { [Op.gte]: todayKey } },
-        ],
-      },
-      include: [{ model: ShiftTemplate, as: 'template' }],
-      order: [['effectiveFrom', 'DESC']],
-    });
+    const shiftService = require('../services/shiftService');
+    const t = await shiftService.getEffectiveShiftTemplate(user.id, todayKey);
 
-    if (!assignment || !assignment.template) {
+    if (!t) {
       return res.json({ success: true, shift: null });
     }
 
-    const t = assignment.template;
     return res.json({
       success: true,
       shift: {
-        assignmentId: assignment.id,
-        effectiveFrom: assignment.effectiveFrom,
-        effectiveTo: assignment.effectiveTo,
+        assignmentId: null,
+        effectiveFrom: todayKey,
+        effectiveTo: null,
         template: {
           id: t.id,
           shiftType: t.shiftType,

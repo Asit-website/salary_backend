@@ -1417,7 +1417,8 @@ router.post('/punch-in', upload.single('photo'), async (req, res) => {
     });
     return res.json({ success: true, attendance: record });
   } catch (e) {
-    return res.status(500).json({ success: false, message: 'Punch-in failed' });
+    console.error('[punch-in] ERROR:', e);
+    return res.status(500).json({ success: false, message: e?.message || 'Punch-in failed' });
   }
 });
 
@@ -1670,7 +1671,8 @@ router.post('/punch-out', upload.single('photo'), async (req, res) => {
     });
     return res.json({ success: true, attendance: record });
   } catch (e) {
-    return res.status(500).json({ success: false, message: 'Punch-out failed' });
+    console.error('[punch-out] ERROR:', e);
+    return res.status(500).json({ success: false, message: e?.message || 'Punch-out failed' });
   }
 });
 
