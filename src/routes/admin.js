@@ -7130,10 +7130,14 @@ router.get("/staff/:id/salary-compute", async (req, res) => {
         actualPresent += 0.5;
         continue;
       }
-      if (s === "leave") {
+      if (s === "leave" || paidLeaveSet.has(key)) {
         leave += 1;
-        if (paidLeaveSet.has(key)) paidLeave += 1;
-        else if (unpaidLeaveSet.has(key)) unpaidLeave += 1;
+        paidLeave += 1;
+        continue;
+      }
+      if (unpaidLeaveSet.has(key)) {
+        leave += 1;
+        unpaidLeave += 1;
         continue;
       }
       if (s === "weekly_off") {
@@ -7171,15 +7175,7 @@ router.get("/staff/:id/salary-compute", async (req, res) => {
         continue;
       }
 
-      if (paidLeaveSet.has(key)) {
-        leave += 1;
-        paidLeave += 1;
-      } else if (unpaidLeaveSet.has(key)) {
-        leave += 1;
-        unpaidLeave += 1;
-      } else {
-        absent += 1;
-      }
+      absent += 1;
     }
 
     const daysForRatio = daysInMonth;
@@ -8824,7 +8820,21 @@ router.post("/payroll/:cycleId/compute", async (req, res) => {
           continue;
         }
 
-        // Handle other statuses with mutual exclusivity (WO/H take precedence over leave/absent)
+        // Approved leaves (including sandwich leaves across weekly off/holidays) take precedence
+        if (s === "leave" || paidLeaveSet.has(key)) {
+          leave += 1;
+          const w = paidLeaveWeightMap[key] !== undefined ? paidLeaveWeightMap[key] : 1.0;
+          paidLeave += w;
+          paidLeaveDates.push(key);
+          continue;
+        }
+        if (unpaidLeaveSet.has(key)) {
+          leave += 1;
+          unpaidLeave += 1;
+          continue;
+        }
+
+        // Handle other statuses with mutual exclusivity (WO/H)
         if (s === "weekly_off") {
           if (!weekExclusions.has(key)) {
             weeklyOff += 1;
@@ -8846,28 +8856,8 @@ router.post("/payroll/:cycleId/compute", async (req, res) => {
           continue;
         }
 
-        if (s === "leave") {
-          leave += 1;
-          if (paidLeaveSet.has(key)) {
-            const w = paidLeaveWeightMap[key] !== undefined ? paidLeaveWeightMap[key] : 1.0;
-            paidLeave += w;
-            paidLeaveDates.push(key);
-          } else if (unpaidLeaveSet.has(key)) unpaidLeave += 1;
-          continue;
-        }
-
         // Future day projection for current month
         if (isCurrentMonth && dt > todayStart) {
-          if (paidLeaveSet.has(key)) {
-            leave += 1;
-            const w = paidLeaveWeightMap[key] !== undefined ? paidLeaveWeightMap[key] : 1.0;
-            paidLeave += w;
-            paidLeaveDates.push(key);
-          } else if (unpaidLeaveSet.has(key)) {
-            leave += 1;
-            unpaidLeave += 1;
-          }
-          // WO/H already handled above
           continue;
         }
 
@@ -8876,17 +8866,7 @@ router.post("/payroll/:cycleId/compute", async (req, res) => {
           continue;
         }
 
-        if (paidLeaveSet.has(key)) {
-          leave += 1;
-          const w = paidLeaveWeightMap[key] !== undefined ? paidLeaveWeightMap[key] : 1.0;
-          paidLeave += w;
-          paidLeaveDates.push(key);
-        } else if (unpaidLeaveSet.has(key)) {
-          leave += 1;
-          unpaidLeave += 1;
-        } else {
-          absent += 1;
-        }
+        absent += 1;
       }
 
       // Late Entry Penalty Logic (Integrated Rule Automation via Service)

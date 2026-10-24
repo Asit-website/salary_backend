@@ -984,14 +984,14 @@ async function calculateSalary(userId, monthKey, options = {}) {
       const isPaidL = paidLeaveSet.has(key);
       const isUnpaidL = unpaidLeaveSet.has(key);
 
-      if (isH || s === 'holiday') { holidaysCount += 1; }
+      if (isPaidL || s === 'leave') { leave += 1; const w = paidLeaveWeightMap[key] !== undefined ? paidLeaveWeightMap[key] : 1.0; paidLeaveCount += w; paidLeaveDates.push(key); }
+      else if (isUnpaidL) { leave += 1; unpaidLeave += 1; }
+      else if (isH || s === 'holiday') { holidaysCount += 1; }
       else if (isWO || s === 'weekly_off') { 
         if (!weekExclusions.has(key)) {
           weeklyOffCount += 1; 
         }
       }
-      else if (isPaidL || s === 'leave') { leave += 1; const w = paidLeaveWeightMap[key] !== undefined ? paidLeaveWeightMap[key] : 1.0; paidLeaveCount += w; paidLeaveDates.push(key); }
-      else if (isUnpaidL) { leave += 1; unpaidLeave += 1; }
       continue;
     }
 
@@ -1105,7 +1105,20 @@ async function calculateSalary(userId, monthKey, options = {}) {
       }
       continue;
     }
-    if (s === 'leave') { leave += 1; if (paidLeaveSet.has(key)) { const w = paidLeaveWeightMap[key] !== undefined ? paidLeaveWeightMap[key] : 1.0; paidLeaveCount += w; paidLeaveDates.push(key); } else if (unpaidLeaveSet.has(key)) unpaidLeave += 1; continue; }
+    // If approved leave covers this day (including sandwich leaves across weekly off/holidays), count as leave
+    if (s === 'leave' || paidLeaveSet.has(key)) { 
+      leave += 1; 
+      const w = paidLeaveWeightMap[key] !== undefined ? paidLeaveWeightMap[key] : 1.0; 
+      paidLeaveCount += w; 
+      paidLeaveDates.push(key); 
+      continue; 
+    }
+    if (unpaidLeaveSet.has(key)) { 
+      leave += 1; 
+      unpaidLeave += 1; 
+      continue; 
+    }
+
     if (s === 'weekly_off') { 
       if (!weekExclusions.has(key)) {
         weeklyOffCount += 1; 
@@ -1129,13 +1142,9 @@ async function calculateSalary(userId, monthKey, options = {}) {
     if (s === 'absent') { absent += 1; continue; }
 
     // For past days with no record at all
-    if (paidLeaveSet.has(key)) { leave += 1; const w = paidLeaveWeightMap[key] !== undefined ? paidLeaveWeightMap[key] : 1.0; paidLeaveCount += w; paidLeaveDates.push(key); }
-    else if (unpaidLeaveSet.has(key)) { leave += 1; unpaidLeave += 1; }
-    else {
-      // Only count as absent if the date is in the past (today or before)
-      const today = new Date(); today.setHours(0, 0, 0, 0);
-      if (dt <= today) { absent += 1; }
-    }
+    // Only count as absent if the date is in the past (today or before)
+    const today = new Date(); today.setHours(0, 0, 0, 0);
+    if (dt <= today) { absent += 1; }
   }
 
   let payableUnits = present + paidLeaveCount + weeklyOffCount + holidaysCount;

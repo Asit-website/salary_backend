@@ -838,10 +838,21 @@ router.put('/clients/:id', async (req, res) => {
     } = req.body || {};
 
     // Check if phone number already exists in either OrgAccount or User table (excluding current client)
-    const normalizedPhone = normalizePhone(phone);
+    const normalizedPhone = phone !== undefined ? normalizePhone(phone) : undefined;
 
     if (phone !== undefined) {
       await validateChannelPartnerMapping({ phone: normalizedPhone, channelPartnerId });
+      if (normalizedPhone && normalizedPhone !== row.phone) {
+        const conflict = await OrgAccount.findOne({
+          where: { phone: normalizedPhone, id: { [Op.ne]: row.id } }
+        });
+        if (conflict) {
+          return res.status(400).json({
+            success: false,
+            message: `Phone number ${normalizedPhone} is already used by organization "${conflict.name}" (#${conflict.id}). Each client must have a unique phone number.`
+          });
+        }
+      }
     }
 
     await row.update({
@@ -927,29 +938,40 @@ router.put('/clients/:id', async (req, res) => {
       console.error('[SYNC CLIENT] Failed to sync business info on client update:', e);
     }
 
+    const adminPhone = normalizePhone(phone !== undefined ? phone : row.phone);
+    let admin = await User.findOne({
+      where: { orgAccountId: row.id, role: 'admin' },
+      order: [['id', 'ASC']]
+    });
+
     const pwdRaw = password !== undefined && password !== null ? String(password).trim() : '';
+    let passwordHash = null;
     if (pwdRaw) {
       const pwdErr = validateNewPassword(pwdRaw);
       if (pwdErr) return res.status(400).json({ success: false, message: pwdErr });
-      const passwordHash = await hashPassword(pwdRaw);
-      const adminPhone = normalizePhone(phone !== undefined ? phone : row.phone);
-      let admin = await User.findOne({ where: { orgAccountId: row.id, role: 'admin' } });
-      if (!admin && adminPhone) {
-        admin = await User.findOne({
-          where: { phone: String(adminPhone), orgAccountId: row.id, role: 'admin' },
-        });
+      passwordHash = await hashPassword(pwdRaw);
+    }
+
+    if (admin) {
+      const userUpdates = {};
+      if (adminPhone && admin.phone !== String(adminPhone)) {
+        userUpdates.phone = String(adminPhone);
       }
-      if (admin) {
-        await admin.update({ passwordHash });
-      } else if (adminPhone) {
-        await User.create({
-          role: 'admin',
-          orgAccountId: row.id,
-          phone: String(adminPhone),
-          passwordHash,
-          active: true,
-        });
+      if (passwordHash) {
+        userUpdates.passwordHash = passwordHash;
       }
+      if (Object.keys(userUpdates).length > 0) {
+        await admin.update(userUpdates);
+      }
+    } else if (adminPhone) {
+      const initialPassword = passwordHash || (await hashPassword('12345678'));
+      await User.create({
+        role: 'admin',
+        orgAccountId: row.id,
+        phone: String(adminPhone),
+        passwordHash: initialPassword,
+        active: true,
+      });
     }
 
     return res.json({ success: true, client: row });

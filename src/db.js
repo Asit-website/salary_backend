@@ -165,6 +165,45 @@ async function initDb() {
     console.log('attendance_location_enabled column in subscriptions already exists or error:', err.message);
   }
 
+  // Ensure attendance_punches has all required columns for multi-punch / punch tracking
+  const punchCols = [
+    'date VARCHAR(10) NULL',
+    'punch_number INT DEFAULT 1',
+    'punched_in_at DATETIME NULL',
+    'punched_out_at DATETIME NULL',
+    'latitude DECIMAL(10,8) NULL',
+    'longitude DECIMAL(11,8) NULL',
+    'address TEXT NULL',
+  ];
+  for (const pColDef of punchCols) {
+    try {
+      await sequelize.query('ALTER TABLE attendance_punches ADD COLUMN ' + pColDef);
+    } catch (_) {
+      // Column already exists
+    }
+  }
+
+  // Ensure attendance_punches references attendance(id) instead of legacy attendances(id)
+  try {
+    await sequelize.query('ALTER TABLE attendance_punches MODIFY COLUMN punch_in_at DATETIME NULL');
+  } catch (_) {}
+  try {
+    const [fkRows] = await sequelize.query(`
+      SELECT CONSTRAINT_NAME, REFERENCED_TABLE_NAME 
+      FROM information_schema.KEY_COLUMN_USAGE 
+      WHERE TABLE_SCHEMA = DATABASE() 
+        AND TABLE_NAME = 'attendance_punches' 
+        AND COLUMN_NAME = 'attendance_id' 
+        AND REFERENCED_TABLE_NAME = 'attendances'
+    `);
+    if (fkRows && fkRows.length > 0) {
+      for (const fk of fkRows) {
+        await sequelize.query('ALTER TABLE attendance_punches DROP FOREIGN KEY `' + fk.CONSTRAINT_NAME + '`');
+      }
+      await sequelize.query('ALTER TABLE attendance_punches ADD CONSTRAINT fk_att_punches_attendance FOREIGN KEY (attendance_id) REFERENCES attendance(id) ON DELETE CASCADE');
+    }
+  } catch (_) {}
+
   // Align staff_profiles with Sequelize model (partial migrations may omit newer columns)
   try {
     await StaffProfile.sync({ alter: true });

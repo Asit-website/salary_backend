@@ -25,15 +25,36 @@ module.exports = (sequelize) => {
         allowNull: true,
         field: 'shift_id',
       },
+      date: {
+        type: DataTypes.STRING(10),
+        allowNull: true,
+        field: 'date',
+      },
+      punchNumber: {
+        type: DataTypes.INTEGER,
+        allowNull: true,
+        defaultValue: 1,
+        field: 'punch_number',
+      },
       slotNumber: {
         type: DataTypes.INTEGER,
         allowNull: true,
         defaultValue: 1,
         field: 'slot_number',
       },
+      punchedInAt: {
+        type: DataTypes.DATE,
+        allowNull: true,
+        field: 'punched_in_at',
+      },
+      punchedOutAt: {
+        type: DataTypes.DATE,
+        allowNull: true,
+        field: 'punched_out_at',
+      },
       punchInAt: {
         type: DataTypes.DATE,
-        allowNull: false,
+        allowNull: true,
         field: 'punch_in_at',
       },
       punchOutAt: {
@@ -50,6 +71,21 @@ module.exports = (sequelize) => {
         type: DataTypes.STRING(255),
         allowNull: true,
         field: 'punch_out_photo_url',
+      },
+      latitude: {
+        type: DataTypes.DECIMAL(10, 8),
+        allowNull: true,
+        field: 'latitude',
+      },
+      longitude: {
+        type: DataTypes.DECIMAL(11, 8),
+        allowNull: true,
+        field: 'longitude',
+      },
+      address: {
+        type: DataTypes.TEXT,
+        allowNull: true,
+        field: 'address',
       },
       punchInLat: {
         type: DataTypes.DECIMAL(10, 8),
@@ -96,6 +132,37 @@ module.exports = (sequelize) => {
     {
       tableName: 'attendance_punches',
       underscored: true,
+      hooks: {
+        beforeSave: (instance) => {
+          if (instance.punchedInAt && !instance.punchInAt) {
+            instance.punchInAt = instance.punchedInAt;
+          }
+          if (instance.punchInAt && !instance.punchedInAt) {
+            instance.punchedInAt = instance.punchInAt;
+          }
+          if (instance.punchedOutAt && !instance.punchOutAt) {
+            instance.punchOutAt = instance.punchedOutAt;
+          }
+          if (instance.punchOutAt && !instance.punchedOutAt) {
+            instance.punchedOutAt = instance.punchOutAt;
+          }
+          if (instance.punchNumber && !instance.slotNumber) {
+            instance.slotNumber = instance.punchNumber;
+          }
+          if (instance.slotNumber && !instance.punchNumber) {
+            instance.punchNumber = instance.slotNumber;
+          }
+          if (instance.latitude && !instance.punchInLat) {
+            instance.punchInLat = instance.latitude;
+          }
+          if (instance.longitude && !instance.punchInLng) {
+            instance.punchInLng = instance.longitude;
+          }
+          if (instance.address && !instance.punchInAddress) {
+            instance.punchInAddress = instance.address;
+          }
+        }
+      }
     }
   );
 

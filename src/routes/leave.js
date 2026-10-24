@@ -351,6 +351,43 @@ router.post('/', requireRole(['staff', 'admin', 'superadmin']), async (req, res)
     let approvalLevelRequired = null;
     let catKey = categoryKey || null;
     if (tpl) {
+      // If template has countSandwich !== true (No), block leave if date range contains weekly off or holiday
+      if (tpl && tpl.countSandwich !== true) {
+        const sandwichValidationMsg = 'You are not currently covered under the Sandwich Leave Policy. Please go to Leave Policy Settings and select Yes under Sandwich Count for the respective leave policy template.';
+        const woRows = await StaffWeeklyOffAssignment.findAll({ 
+          where: { userId }, 
+          include: [{ model: WeeklyOffTemplate, as: 'template' }] 
+        });
+        const hAsg = await StaffHolidayAssignment.findOne({
+          where: { userId, effectiveFrom: { [Op.lte]: endDate } },
+          order: [['effectiveFrom', 'DESC']],
+          include: [{ model: HolidayTemplate, as: 'template', include: [{ model: HolidayDate, as: 'holidays', where: { active: { [Op.ne]: false } }, required: false }] }]
+        });
+        const checkStart = new Date(`${startDate}T00:00:00`);
+        const checkEnd = new Date(`${endDate}T00:00:00`);
+        for (let d = new Date(checkStart); d <= checkEnd; d.setDate(d.getDate() + 1)) {
+          const dateStr = formatDate(d);
+          for (const asg of woRows) {
+            const ef = new Date(asg.effectiveFrom);
+            const et = asg.effectiveTo ? new Date(asg.effectiveTo) : null;
+            if (d >= ef && (!et || d <= et)) {
+              let raw = asg.template?.config;
+              while (typeof raw === 'string' && raw.trim().startsWith('[')) {
+                try { raw = JSON.parse(raw); } catch (_) { break; }
+              }
+              if (isWeeklyOffForDate(Array.isArray(raw) ? raw : [], d)) {
+                return res.status(400).json({ success: false, message: sandwichValidationMsg });
+              }
+            }
+          }
+          if (hAsg?.template?.holidays) {
+            const isH = hAsg.template.holidays.some(h => String(h.date) === dateStr);
+            if (isH) {
+              return res.status(400).json({ success: false, message: sandwichValidationMsg });
+            }
+          }
+        }
+      }
       approvalLevelRequired = Number(tpl.approvalLevel || 1);
       if (catKey) {
         const exists = (tpl.categories || []).some((c) => String(c.key).toLowerCase() === String(catKey).toLowerCase());
@@ -479,6 +516,14 @@ router.get('/check-range', requireRole(['staff', 'admin', 'superadmin']), async 
     const isAdmin = ['admin', 'superadmin'].includes(req.user.role);
     const userId = (isAdmin && targetUserId) ? Number(targetUserId) : req.user.id;
 
+    // Check staff's assigned leave template for sandwich rule
+    const tpl = await getActiveLeaveTemplateForUser(userId, start);
+
+    // If template has countSandwich === true (Yes), sandwich policy is allowed -> no validation error
+    if (tpl && tpl.countSandwich === true) {
+      return res.json({ success: true, conflict: false });
+    }
+
     const s = new Date(`${start}T00:00:00`);
     const e = new Date(`${end}T00:00:00`);
 
@@ -509,7 +554,7 @@ router.get('/check-range', requireRole(['staff', 'admin', 'superadmin']), async 
             try { raw = JSON.parse(raw); } catch (_) { break; }
           }
           if (isWeeklyOffForDate(Array.isArray(raw) ? raw : [], d)) {
-            return res.json({ success: true, conflict: true, type: 'weekly_off', date: dateStr, day: dayNum, message: `${dayNum} is weekly off on this date range please change range` });
+            return res.json({ success: true, conflict: true, type: 'weekly_off', date: dateStr, day: dayNum, message: 'You are not currently covered under the Sandwich Leave Policy. Please go to Leave Policy Settings and select Yes under Sandwich Count for the respective leave policy template.' });
           }
         }
       }
@@ -518,7 +563,7 @@ router.get('/check-range', requireRole(['staff', 'admin', 'superadmin']), async 
       if (hAsg?.template?.holidays) {
         const isH = hAsg.template.holidays.some(h => String(h.date) === dateStr);
         if (isH) {
-          return res.json({ success: true, conflict: true, type: 'holiday', date: dateStr, day: dayNum, message: `${dayNum} is holiday on this date range please change range` });
+          return res.json({ success: true, conflict: true, type: 'holiday', date: dateStr, day: dayNum, message: 'You are not currently covered under the Sandwich Leave Policy. Please go to Leave Policy Settings and select Yes under Sandwich Count for the respective leave policy template.' });
         }
       }
     }
