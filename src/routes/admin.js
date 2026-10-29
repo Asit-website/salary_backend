@@ -26268,6 +26268,24 @@ router.put("/staff/:id", requireRole(["admin", "staff"]), async (req, res) => {
           totalE += toNum(staff[attr]);
       });
 
+      // Also include any custom template / dynamic earnings in totalE
+      Object.entries(ev).forEach(([k, v]) => {
+        const cleanK = String(k || "").toLowerCase();
+        if (![
+          "basic_salary",
+          "hra",
+          "da",
+          "special_allowance",
+          "conveyance_allowance",
+          "medical_allowance",
+          "telephone_allowance",
+          "other_allowances",
+          "travel_allowance",
+        ].includes(cleanK)) {
+          totalE += toNum(v);
+        }
+      });
+
       let totalD = 0;
       [
         "provident_fund",
@@ -26283,6 +26301,21 @@ router.put("/staff/:id", requireRole(["admin", "staff"]), async (req, res) => {
           totalD += toNum(patchUser[attr]);
         else if (attr && staff[attr] !== undefined)
           totalD += toNum(staff[attr]);
+      });
+
+      // Also include any custom template / dynamic deductions in totalD
+      Object.entries(dv).forEach(([k, v]) => {
+        const cleanK = String(k || "").toLowerCase();
+        if (![
+          "provident_fund",
+          "esi",
+          "professional_tax",
+          "income_tax",
+          "loan_deduction",
+          "other_deductions",
+        ].includes(cleanK)) {
+          totalD += toNum(v);
+        }
       });
 
       patchUser.totalEarnings = totalE;
@@ -38021,8 +38054,8 @@ router.post("/payroll/generate-payslip", async (req, res) => {
         .status(400)
         .json({ success: false, message: "userId and monthKey required" });
 
-    // Calculate data
-    const data = await calculateSalary(userId, monthKey);
+    // Calculate data (forceRecalculate: true ensures latest holiday, attendance and weekly off rules are applied)
+    const data = await calculateSalary(userId, monthKey, { forceRecalculate: true });
 
     // Path: uploads/payslips/YYYY-MM/
     const uploadsDir = path.join(__dirname, "../../uploads/payslips", monthKey);

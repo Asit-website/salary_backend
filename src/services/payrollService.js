@@ -48,6 +48,50 @@ function calculateTenureMonths(joiningDate, targetMonthKey) {
   return Math.max(0, months);
 }
 
+// Helper to normalize weekly off weeks config
+const normalizeWeeklyOffWeeks = (input) => {
+  if (input === 'all' || input === 0 || input === '0') return 'all';
+  if (Array.isArray(input)) {
+    const lowered = input.map(v => String(v).toLowerCase());
+    if (lowered.includes('all') || lowered.includes('0')) return 'all';
+    const nums = Array.from(new Set(input.map(v => Number(v)).filter(n => Number.isFinite(n) && n >= 1 && n <= 5)));
+    return nums.length > 0 ? nums : 'all';
+  }
+  const single = String(input ?? '').toLowerCase();
+  if (single === 'all' || single === '0') return 'all';
+  const n = Number(input);
+  if (Number.isFinite(n) && n >= 1 && n <= 5) return [n];
+  return 'all';
+};
+
+// Helper to check weekly off
+const isWeeklyOffForDate = (configArray, jsDate) => {
+  try {
+    let config = configArray;
+    while (typeof config === 'string' && config.trim().startsWith('[')) {
+      try {
+        const p = JSON.parse(config);
+        if (p === config) break;
+        config = p;
+      } catch (e) { break; }
+    }
+    if (!Array.isArray(config)) return false;
+
+    const dow = jsDate.getDay();
+    const wk = Math.floor((jsDate.getDate() - 1) / 7) + 1;
+    for (const cfg of config) {
+      if (cfg && Number(cfg.day) === dow) {
+        const weeks = normalizeWeeklyOffWeeks(cfg.weeks);
+        if (weeks === 'all') return true;
+        if (Array.isArray(weeks) && (weeks.includes(wk) || weeks.map(Number).includes(wk))) return true;
+      }
+    }
+    return false;
+  } catch (_) {
+    return false;
+  }
+};
+
 async function computeOvertimeMeta({ userId, monthKey, overtimeBaseSalary, orgAccount }) {
   const { start, endKey, end } = getMonthRange(monthKey);
   const rows = await Attendance.findAll({
@@ -758,7 +802,28 @@ async function calculateSalary(userId, monthKey, options = {}) {
           order: [['effectiveFrom', 'DESC'], ['id', 'DESC']]
         });
       }
-      const asg = (asgList || [])[0];
+      let asg = (asgList || [])[0];
+      if (!asg) {
+        const orgId = u.orgAccountId || (u.orgAccount ? u.orgAccount.id : null);
+        if (orgId) {
+          const orgWoTpl = await WeeklyOffTemplate.findOne({
+            where: { orgAccountId: orgId, active: true },
+            order: [['id', 'DESC']]
+          });
+          if (orgWoTpl) {
+            hasWeeklyOffAssignment = true;
+            let rawCfg = orgWoTpl.config;
+            while (typeof rawCfg === 'string' && rawCfg.trim().startsWith('[')) {
+              try {
+                const p = JSON.parse(rawCfg);
+                if (p === rawCfg) break;
+                rawCfg = p;
+              } catch (e) { break; }
+            }
+            woConfig = Array.isArray(rawCfg) ? rawCfg : [];
+          }
+        }
+      }
       if (asg) {
         hasWeeklyOffAssignment = true;
         const tplId = asg.weeklyOffTemplateId || asg.weekly_off_template_id || (asg.getDataValue ? asg.getDataValue('weekly_off_template_id') : null);
@@ -821,27 +886,46 @@ async function calculateSalary(userId, monthKey, options = {}) {
       },
       order: [['effectiveFrom', 'DESC'], ['id', 'DESC']],
     });
+    let hs = [];
     if (hasg) {
       const tplId = Number(hasg.holidayTemplateId || hasg.holiday_template_id);
-      const hs = Number.isFinite(tplId)
-        ? await HolidayDate.findAll({
+      if (Number.isFinite(tplId)) {
+        hs = await HolidayDate.findAll({
           where: {
             holidayTemplateId: tplId,
             active: { [Op.not]: false },
             date: { [Op.gte]: queryStart, [Op.lte]: queryEnd },
           },
-          attributes: ['date', 'active'],
-        })
-        : [];
-      holidaySet = new Set(
-        hs
-          .map(h => ({ h, key: toDateKey(h?.date) }))
-          .filter(x => x.h && x.h.active !== false && x.key && x.key >= queryStart && x.key <= queryEnd)
-          .map(x => x.key)
-      );
-    } else {
-      holidaySet = new Set();
+          attributes: ['date', 'active', 'name'],
+        });
+      }
     }
+    if (!hs || hs.length === 0) {
+      const orgId = u.orgAccountId || (u.orgAccount ? u.orgAccount.id : null);
+      if (orgId) {
+        const orgTpls = await HolidayTemplate.findAll({
+          where: { orgAccountId: orgId, active: true },
+          attributes: ['id']
+        });
+        const orgTplIds = orgTpls.map(t => t.id);
+        if (orgTplIds.length > 0) {
+          hs = await HolidayDate.findAll({
+            where: {
+              holidayTemplateId: { [Op.in]: orgTplIds },
+              active: { [Op.not]: false },
+              date: { [Op.gte]: queryStart, [Op.lte]: queryEnd },
+            },
+            attributes: ['date', 'active', 'name'],
+          });
+        }
+      }
+    }
+    holidaySet = new Set(
+      (hs || [])
+        .map(h => ({ h, key: toDateKey(h?.date) }))
+        .filter(x => x.h && x.h.active !== false && x.key && x.key >= queryStart && x.key <= queryEnd)
+        .map(x => x.key)
+    );
   } catch (_) { }
 
   // Helper to normalize weekly off weeks config
@@ -1760,7 +1844,7 @@ async function generatePayslipPDF(data, savePath = null) {
 
   const { user, monthKey, earnings, incentives, deductions, totals, attendanceSummary, generatedAt } = data;
 
-  const { OrgBusinessInfo, StaffAdvance, Attendance, HolidayDate, StaffHolidayAssignment, StaffWeeklyOffAssignment, WeeklyOffTemplate } = require('../models');
+  const { OrgBusinessInfo, StaffAdvance, Attendance, HolidayDate, HolidayTemplate, StaffHolidayAssignment, StaffWeeklyOffAssignment, WeeklyOffTemplate, LeaveRequest, StaffRoster } = require('../models');
   const { computeStaffAdvancePayroll, loadGeneratedPayrollMonths, parseDeductionsList } = require('./staffAdvancePayroll');
   const { Op } = require('sequelize');
 
@@ -1933,8 +2017,114 @@ async function generatePayslipPDF(data, savePath = null) {
       attByDate[k] = a;
     }
 
+    // Roster
+    const rosterWOSet = new Set();
+    const rosterHSet = new Set();
+    try {
+      const rosters = await StaffRoster.findAll({
+        where: { userId: user.id, date: { [Op.gte]: startDateStr, [Op.lte]: endDateStr } }
+      });
+      for (const r of rosters) {
+        const k = String(r.date).slice(0, 10);
+        if (r.status === 'WEEKLY_OFF') rosterWOSet.add(k);
+        else if (r.status === 'HOLIDAY') rosterHSet.add(k);
+      }
+    } catch (_) {}
+
+    // Holidays
+    const holidayMap = {};
+    try {
+      let hasg = await StaffHolidayAssignment.findOne({
+        where: {
+          userId: user.id,
+          effectiveFrom: { [Op.lte]: endDateStr },
+          [Op.or]: [{ effectiveTo: null }, { effectiveTo: { [Op.gte]: startDateStr } }],
+        },
+        order: [['effectiveFrom', 'DESC'], ['id', 'DESC']],
+        include: [{
+          model: HolidayTemplate,
+          as: 'template',
+          include: [{
+            model: HolidayDate,
+            as: 'holidays',
+            where: {
+              active: { [Op.ne]: false },
+              date: { [Op.gte]: startDateStr, [Op.lte]: endDateStr }
+            },
+            required: false
+          }]
+        }]
+      });
+
+      let hList = [];
+      if (hasg?.template?.holidays?.length) {
+        hList = hasg.template.holidays;
+      } else if (hasg?.holidayTemplateId) {
+        hList = await HolidayDate.findAll({
+          where: {
+            holidayTemplateId: hasg.holidayTemplateId,
+            active: { [Op.ne]: false },
+            date: { [Op.gte]: startDateStr, [Op.lte]: endDateStr }
+          }
+        });
+      }
+
+      if (!hList || hList.length === 0) {
+        const orgId = user.orgAccountId || (user.orgAccount ? user.orgAccount.id : null);
+        if (orgId) {
+          const orgTpls = await HolidayTemplate.findAll({
+            where: { orgAccountId: orgId, active: true },
+            attributes: ['id']
+          });
+          const orgTplIds = orgTpls.map(t => t.id);
+          if (orgTplIds.length > 0) {
+            hList = await HolidayDate.findAll({
+              where: {
+                holidayTemplateId: { [Op.in]: orgTplIds },
+                active: { [Op.ne]: false },
+                date: { [Op.gte]: startDateStr, [Op.lte]: endDateStr }
+              }
+            });
+          }
+        }
+      }
+
+      for (const h of (hList || [])) {
+        const k = String(h.date).slice(0, 10);
+        holidayMap[k] = h.name || 'Holiday';
+      }
+    } catch (err) {
+      console.error('Error fetching holidays for payslip calendar:', err);
+    }
+
+    // Approved Leaves
+    const leaveDateSet = new Set();
+    try {
+      const leaves = await LeaveRequest.findAll({
+        where: {
+          userId: user.id,
+          status: { [Op.in]: ['APPROVED', 'approved'] },
+          startDate: { [Op.lte]: endDateStr },
+          endDate: { [Op.gte]: startDateStr }
+        }
+      });
+      for (const l of leaves) {
+        const sDate = new Date(l.startDate);
+        const eDate = new Date(l.endDate);
+        for (let d = new Date(sDate); d <= eDate; d.setDate(d.getDate() + 1)) {
+          const k = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+          if (k >= startDateStr && k <= endDateStr) {
+            leaveDateSet.add(k);
+          }
+        }
+      }
+    } catch (err) {
+      console.error('Error fetching leaves for payslip calendar:', err);
+    }
+
     // Weekly Off
     let woConfig = null;
+    let hasWoAssignment = false;
     try {
       const woAsg = await StaffWeeklyOffAssignment.findOne({
         where: {
@@ -1945,16 +2135,62 @@ async function generatePayslipPDF(data, savePath = null) {
         order: [['effectiveFrom', 'DESC'], ['id', 'DESC']],
         include: [{ model: WeeklyOffTemplate, as: 'template' }]
       });
-      if (woAsg?.template?.days) {
-        woConfig = typeof woAsg.template.days === 'string' ? JSON.parse(woAsg.template.days) : woAsg.template.days;
+      if (woAsg?.template) {
+        hasWoAssignment = true;
+        let rawCfg = woAsg.template.config;
+        while (typeof rawCfg === 'string' && rawCfg.trim().startsWith('[')) {
+          try {
+            const p = JSON.parse(rawCfg);
+            if (p === rawCfg) break;
+            rawCfg = p;
+          } catch (e) { break; }
+        }
+        woConfig = Array.isArray(rawCfg) ? rawCfg : [];
+      } else if (woAsg?.weeklyOffTemplateId) {
+        const tpl = await WeeklyOffTemplate.findByPk(woAsg.weeklyOffTemplateId);
+        if (tpl) {
+          hasWoAssignment = true;
+          let rawCfg = tpl.config;
+          while (typeof rawCfg === 'string' && rawCfg.trim().startsWith('[')) {
+            try {
+              const p = JSON.parse(rawCfg);
+              if (p === rawCfg) break;
+              rawCfg = p;
+            } catch (e) { break; }
+          }
+          woConfig = Array.isArray(rawCfg) ? rawCfg : [];
+        }
+      }
+
+      if (!hasWoAssignment) {
+        const orgId = user.orgAccountId || (user.orgAccount ? user.orgAccount.id : null);
+        if (orgId) {
+          const orgWoTpl = await WeeklyOffTemplate.findOne({
+            where: { orgAccountId: orgId, active: true },
+            order: [['id', 'DESC']]
+          });
+          if (orgWoTpl) {
+            hasWoAssignment = true;
+            let rawCfg = orgWoTpl.config;
+            while (typeof rawCfg === 'string' && rawCfg.trim().startsWith('[')) {
+              try {
+                const p = JSON.parse(rawCfg);
+                if (p === rawCfg) break;
+                rawCfg = p;
+              } catch (e) { break; }
+            }
+            woConfig = Array.isArray(rawCfg) ? rawCfg : [];
+          }
+        }
       }
     } catch (_) {}
 
-    const isWeeklyOff = (d) => {
-      if (!woConfig || !Array.isArray(woConfig)) {
-        return d.getDay() === 0; // Default Sunday
+    const isWeeklyOff = (d, dateKey) => {
+      if (rosterWOSet.has(dateKey)) return true;
+      if (hasWoAssignment && woConfig && Array.isArray(woConfig)) {
+        return isWeeklyOffForDate(woConfig, d);
       }
-      return woConfig.some(c => Number(c.day) === d.getDay());
+      return d.getDay() === 0; // Default Sunday
     };
 
     // Calendar HTML
@@ -1978,21 +2214,28 @@ async function generatePayslipPDF(data, savePath = null) {
       let badgeText = 'A';
       let timingText = '';
 
-      if (rawStatus === 'present' || rawStatus === 'overtime' || rawStatus === 'work_from_home') {
+      const hasPunches = attRec && (attRec.punchedInAt || (attRec.totalWorkHours && Number(attRec.totalWorkHours) > 0));
+      const isPresentStatus = rawStatus === 'present' || rawStatus === 'overtime' || rawStatus === 'work_from_home';
+      const isHalfDayStatus = rawStatus === 'half_day' || rawStatus === 'half';
+      const isLeaveStatus = rawStatus === 'leave' || rawStatus === 'paid_leave' || rawStatus === 'unpaid_leave' || leaveDateSet.has(dateKey);
+      const isHolidayDate = holidayMap[dateKey] !== undefined || rosterHSet.has(dateKey) || rawStatus === 'holiday';
+      const isWeeklyOffDate = isWeeklyOff(dObj, dateKey) || rawStatus === 'weekly_off';
+
+      if (isPresentStatus || (hasPunches && !isHalfDayStatus)) {
         badgeClass = 'badge-p';
         badgeText = 'P';
-      } else if (rawStatus === 'half_day' || rawStatus === 'half') {
+      } else if (isHalfDayStatus) {
         badgeClass = 'badge-hd';
         badgeText = 'HD';
-      } else if (rawStatus === 'leave' || rawStatus === 'paid_leave') {
+      } else if (isLeaveStatus) {
         badgeClass = 'badge-l';
         badgeText = 'L';
-      } else if (rawStatus === 'weekly_off' || (!rawStatus && isWeeklyOff(dObj))) {
-        badgeClass = 'badge-wo';
-        badgeText = 'WO';
-      } else if (rawStatus === 'holiday') {
+      } else if (isHolidayDate) {
         badgeClass = 'badge-h';
         badgeText = 'H';
+      } else if (isWeeklyOffDate) {
+        badgeClass = 'badge-wo';
+        badgeText = 'WO';
       } else {
         badgeClass = 'badge-a';
         badgeText = 'A';
@@ -2098,7 +2341,7 @@ async function generatePayslipPDF(data, savePath = null) {
         .badge-a { background: #fee2e2; color: #991b1b; }
         .badge-hd { background: #fef3c7; color: #92400e; }
         .badge-wo { background: #e0e7ff; color: #3730a3; }
-        .badge-h { background: #ccfbf1; color: #115e59; }
+        .badge-h { background: #f3e8ff; color: #6b21a8; }
         .badge-l { background: #ffedd5; color: #9a3412; }
         .cal-timing { font-size: 8.5px; color: #4b5563; margin-top: 3px; font-family: monospace; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
         
