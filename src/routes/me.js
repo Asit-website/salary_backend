@@ -3,7 +3,7 @@ const { Op } = require('sequelize');
 
 const fs = require('fs');
 const path = require('path');
-const { User, StaffProfile, StaffShiftAssignment, ShiftTemplate, SalaryAccess, StaffAttendanceAssignment, AttendanceTemplate, StaffSalaryAssignment, SalaryTemplate, PayrollCycle, PayrollLine, ExpenseClaim } = require('../models');
+const { User, StaffProfile, StaffShiftAssignment, ShiftTemplate, SalaryAccess, StaffAttendanceAssignment, AttendanceTemplate, StaffSalaryAssignment, SalaryTemplate, PayrollCycle, PayrollLine, ExpenseClaim, LeaveRequest, AttendanceRegularization, StaffAdvance } = require('../models');
 const { authRequired } = require('../middleware/auth');
 const { hashPassword, verifyPassword, validateNewPassword } = require('../utils/password');
 const { logAudit } = require('../utils/auditLogger');
@@ -869,6 +869,303 @@ router.get('/staff-list', async (req, res) => {
   } catch (e) {
     console.error('Staff list error:', e);
     return res.status(500).json({ success: false, message: 'Failed to load staff list' });
+  }
+});
+
+
+// ==================== STAFF DASHBOARD SUMMARY ====================
+router.get('/staff-dashboard', async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const orgAccountId = req.user.orgAccountId;
+
+    // 1. Pending Approvals:
+    let pendingLeaves = 0;
+    let pendingRegularizations = 0;
+    let pendingExpenses = 0;
+
+    try {
+      if (LeaveRequest) {
+        pendingLeaves = await LeaveRequest.count({ where: { userId, status: 'PENDING' } });
+      }
+    } catch (_) {}
+
+    try {
+      if (AttendanceRegularization) {
+        pendingRegularizations = await AttendanceRegularization.count({ where: { userId, orgAccountId, status: 'PENDING' } });
+      }
+    } catch (_) {}
+
+    try {
+      if (ExpenseClaim) {
+        pendingExpenses = await ExpenseClaim.count({ where: { userId, status: 'pending' } });
+      }
+    } catch (_) {}
+
+    // 2. Advances:
+    let advances = [];
+    let totalAdvanceBalance = 0;
+    try {
+      if (StaffAdvance) {
+        advances = await StaffAdvance.findAll({
+          where: { staffId: userId, orgAccountId, status: 'pending' },
+          order: [['advanceDate', 'DESC']]
+        });
+        totalAdvanceBalance = advances.reduce((sum, a) => sum + (Number(a.amount) || 0), 0);
+      }
+    } catch (_) {}
+
+    // 3. Expenses:
+    let myExpenses = [];
+    try {
+      if (ExpenseClaim) {
+        myExpenses = await ExpenseClaim.findAll({
+          where: { userId, orgAccountId },
+          limit: 5,
+          order: [['createdAt', 'DESC']]
+        });
+      }
+    } catch (_) {}
+
+    // 4. Tasks (Activities):
+    let recentTasks = [];
+    try {
+      const { Activity } = require('../models');
+      if (Activity) {
+        recentTasks = await Activity.findAll({
+          where: { userId, orgAccountId },
+          limit: 5,
+          order: [['date', 'DESC'], ['createdAt', 'DESC']]
+        });
+      }
+    } catch (_) {}
+
+    // 5. Sales summary if permitted
+    let salesMetrics = null;
+    try {
+      const { SalesOrder, CustomerVisit } = require('../models');
+      if (SalesOrder) {
+        const orderCount = await SalesOrder.count({ where: { userId, orgAccountId } });
+        salesMetrics = { orderCount };
+      }
+    } catch (_) {}
+
+    return res.json({
+      success: true,
+      pendingApprovals: {
+        total: (pendingLeaves || 0) + (pendingRegularizations || 0) + (pendingExpenses || 0),
+        leaves: pendingLeaves || 0,
+        regularizations: pendingRegularizations || 0,
+        expenses: pendingExpenses || 0,
+      },
+      advance: {
+        balance: totalAdvanceBalance,
+        pendingCount: advances.length,
+        items: advances.slice(0, 5),
+      },
+      expenses: {
+        recent: myExpenses,
+      },
+      tasks: {
+        recent: recentTasks,
+      },
+      sales: salesMetrics
+    });
+  } catch (err) {
+    console.error('Error fetching staff dashboard data:', err);
+    return res.status(500).json({ success: false, message: 'Failed to load staff dashboard data' });
+  }
+});
+
+// ==========================================
+// STAFF ADVANCES & LOANS API
+// ==========================================
+
+// GET /me/advances - List all advances for logged in staff with dynamic repayment calculations
+router.get('/advances', async (req, res) => {
+  try {
+    const dayjs = require('dayjs');
+    const staffId = req.user.id;
+    const orgId = req.tenantOrgAccountId;
+
+    const rows = await StaffAdvance.findAll({
+      where: { staffId, orgAccountId: orgId },
+      order: [['advanceDate', 'DESC'], ['createdAt', 'DESC']]
+    });
+
+    // Check generated/locked payroll cycles for accurate repayment progress
+    const generatedCycles = await PayrollCycle.findAll({
+      where: {
+        orgAccountId: orgId,
+        [Op.or]: [
+          { status: { [Op.in]: ['LOCKED', 'PAID'] } },
+          { '$lines.id$': { [Op.ne]: null } }
+        ]
+      },
+      include: [{ model: PayrollLine, as: 'lines', attributes: ['id'], required: false }],
+      attributes: ['monthKey', 'status']
+    });
+    const generatedMonths = new Set(generatedCycles.map(c => c.monthKey));
+
+    let totalAdvanceAmount = 0;
+    let totalRecoveredAmount = 0;
+    let totalOutstandingBalance = 0;
+    let pendingRequestsCount = 0;
+
+    const enriched = rows.map((adv) => {
+      const plain = adv.toJSON();
+      const total = Number(plain.amount || 0);
+
+      let deductionsList = plain.deductions;
+      while (typeof deductionsList === 'string') {
+        try { deductionsList = JSON.parse(deductionsList); } catch (e) { break; }
+      }
+
+      let recovered = 0;
+      if (Array.isArray(deductionsList) && deductionsList.length > 0) {
+        const updatedDeductions = deductionsList.map((d) => {
+          const isDeducted = generatedMonths.has(d.month) || d.status === 'deducted';
+          if (isDeducted) recovered += Number(d.amount || 0);
+          return {
+            ...d,
+            status: isDeducted ? 'deducted' : 'pending'
+          };
+        });
+        const allDeducted = updatedDeductions.every(d => d.status === 'deducted');
+        plain.deductions = updatedDeductions;
+        if (allDeducted) plain.status = 'deducted';
+      } else {
+        const isDeducted = generatedMonths.has(plain.deductionMonth) || plain.status === 'deducted';
+        if (isDeducted) recovered = total;
+        if (isDeducted) plain.status = 'deducted';
+      }
+
+      const outstanding = plain.status === 'cancelled' ? 0 : Math.max(0, total - recovered);
+
+      plain.totalAmount = total;
+      plain.recoveredAmount = recovered;
+      plain.outstandingBalance = outstanding;
+
+      if (plain.status !== 'cancelled') {
+        totalAdvanceAmount += total;
+        totalRecoveredAmount += recovered;
+        totalOutstandingBalance += outstanding;
+      }
+
+      if (plain.status === 'pending') {
+        pendingRequestsCount++;
+      }
+
+      return plain;
+    });
+
+    return res.json({
+      success: true,
+      advances: enriched,
+      summary: {
+        totalAdvanceAmount,
+        totalRecoveredAmount,
+        totalOutstandingBalance,
+        pendingRequestsCount,
+        totalCount: rows.length
+      }
+    });
+  } catch (error) {
+    console.error('Error fetching staff advances:', error);
+    return res.status(500).json({ success: false, message: 'Failed to load advances' });
+  }
+});
+
+// POST /me/advances - Apply for a new advance
+router.post('/advances', async (req, res) => {
+  try {
+    const dayjs = require('dayjs');
+    const staffId = req.user.id;
+    const orgId = req.tenantOrgAccountId;
+    const { advanceType, amount, advanceDate, reason, deductionMonth, installmentsCount } = req.body;
+
+    const numAmount = Number(amount);
+    if (!numAmount || numAmount <= 0) {
+      return res.status(400).json({ success: false, message: 'Please enter a valid advance amount greater than 0' });
+    }
+
+    const todayStr = dayjs().format('YYYY-MM-DD');
+    const finalAdvanceDate = advanceDate ? dayjs(advanceDate).format('YYYY-MM-DD') : todayStr;
+    const typeLabel = advanceType ? String(advanceType).trim() : 'Salary Advance';
+    const noteContent = reason ? `[${typeLabel}] ${String(reason).trim()}` : `[${typeLabel}] Advance request`;
+
+    let finalDeductions = null;
+    let finalDeductionMonth = deductionMonth ? String(deductionMonth).slice(0, 7) : dayjs().add(1, 'month').format('YYYY-MM');
+
+    // Build installment plan if installmentsCount > 1
+    const count = parseInt(installmentsCount, 10);
+    if (count && count > 1) {
+      finalDeductions = [];
+      const installmentAmt = Math.round((numAmount / count) * 100) / 100;
+      let startMonth = dayjs(finalDeductionMonth, 'YYYY-MM');
+      if (!startMonth.isValid()) startMonth = dayjs().add(1, 'month');
+
+      let accumulated = 0;
+      for (let i = 0; i < count; i++) {
+        const mKey = startMonth.add(i, 'month').format('YYYY-MM');
+        const amt = i === count - 1 ? Math.round((numAmount - accumulated) * 100) / 100 : installmentAmt;
+        accumulated += amt;
+        finalDeductions.push({
+          month: mKey,
+          amount: amt,
+          status: 'pending'
+        });
+      }
+    }
+
+    const advance = await StaffAdvance.create({
+      staffId,
+      orgAccountId: orgId,
+      amount: numAmount,
+      advanceDate: finalAdvanceDate,
+      deductionMonth: finalDeductionMonth,
+      status: 'pending',
+      notes: noteContent,
+      deductions: finalDeductions,
+      createdBy: staffId
+    });
+
+    return res.json({
+      success: true,
+      message: 'Advance request submitted successfully for approval',
+      advance
+    });
+  } catch (error) {
+    console.error('Error applying for advance:', error);
+    return res.status(500).json({ success: false, message: error.message || 'Failed to submit advance request' });
+  }
+});
+
+// DELETE /me/advances/:id - Cancel a pending advance request
+router.delete('/advances/:id', async (req, res) => {
+  try {
+    const staffId = req.user.id;
+    const orgId = req.tenantOrgAccountId;
+    const { id } = req.params;
+
+    const row = await StaffAdvance.findOne({
+      where: { id, staffId, orgAccountId: orgId }
+    });
+
+    if (!row) {
+      return res.status(404).json({ success: false, message: 'Advance request not found' });
+    }
+
+    if (row.status !== 'pending') {
+      return res.status(400).json({ success: false, message: 'Only pending advance requests can be cancelled' });
+    }
+
+    await row.update({ status: 'cancelled', updatedBy: staffId });
+
+    return res.json({ success: true, message: 'Advance request cancelled successfully' });
+  } catch (error) {
+    console.error('Error cancelling advance request:', error);
+    return res.status(500).json({ success: false, message: 'Failed to cancel advance request' });
   }
 });
 

@@ -325,9 +325,10 @@ async function getLeavesTakenInMonth(userId, categoryKey, yearMonthStr, excludeR
 router.post('/', requireRole(['staff', 'admin', 'superadmin']), async (req, res) => {
   try {
     const { startDate, endDate, leaveType, reason, categoryKey, userId: targetUserId, status: requestedStatus } = req.body || {};
+    const effectiveLeaveType = leaveType || categoryKey;
 
-    if (!startDate || !endDate || !leaveType) {
-      return res.status(400).json({ success: false, message: 'startDate, endDate and leaveType are required' });
+    if (!startDate || !endDate || !effectiveLeaveType) {
+      return res.status(400).json({ success: false, message: 'startDate, endDate and leave category/type are required' });
     }
 
     // Determine target user
@@ -469,7 +470,7 @@ router.post('/', requireRole(['staff', 'admin', 'superadmin']), async (req, res)
       orgAccountId: req.tenantOrgAccountId,
       startDate,
       endDate,
-      leaveType,
+      leaveType: effectiveLeaveType,
       categoryKey: catKey,
       days,
       approvalLevelRequired,
@@ -625,7 +626,7 @@ router.delete('/:id', requireRole(['staff', 'admin', 'superadmin']), async (req,
 });
 
 // STAFF: list own leaves
-router.get('/me', requireRole(['staff']), async (req, res) => {
+router.get('/me', requireRole(['staff', 'admin', 'superadmin']), async (req, res) => {
   try {
     const status = typeof req.query.status === 'string' && req.query.status.trim() ? req.query.status.trim().toUpperCase() : null;
     const where = { userId: req.user.id, orgAccountId: req.tenantOrgAccountId };
@@ -636,6 +637,7 @@ router.get('/me', requireRole(['staff']), async (req, res) => {
       const it = r.toJSON ? r.toJSON() : r;
       let paid = it.paidDays;
       let unpaid = it.unpaidDays;
+      let isHalfDayPay = false;
       const catSearchKey = String(it.categoryKey || it.leaveType || '').toLowerCase().trim();
       const normCatSearchKey = catSearchKey.replace(/[\s_]/g, '');
       const tpl = await getActiveLeaveTemplateForUser(it.userId, String(it.startDate));
@@ -866,8 +868,62 @@ router.patch('/:id/status', requireLeaveAccess(['leave_tab', 'leave_requests_tab
 
 // --- LEAVE ENCASHMENT ---
 
+// STAFF: list assigned organization holidays
+router.get('/holidays/my', requireRole(['staff', 'admin', 'superadmin']), async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const hAsg = await StaffHolidayAssignment.findOne({
+      where: { userId },
+      order: [['effectiveFrom', 'DESC']],
+      include: [{
+        model: HolidayTemplate,
+        as: 'template',
+        include: [{
+          model: HolidayDate,
+          as: 'holidays',
+          where: { active: { [Op.ne]: false } },
+          required: false
+        }]
+      }]
+    });
+
+    let holidays = [];
+    let templateName = 'Organization Holidays';
+
+    if (hAsg?.template?.holidays?.length) {
+      templateName = hAsg.template.name;
+      holidays = hAsg.template.holidays;
+    } else {
+      const orgTpl = await HolidayTemplate.findOne({
+        where: { orgAccountId: req.tenantOrgAccountId },
+        include: [{
+          model: HolidayDate,
+          as: 'holidays',
+          where: { active: { [Op.ne]: false } },
+          required: false
+        }]
+      });
+      if (orgTpl?.holidays?.length) {
+        templateName = orgTpl.name;
+        holidays = orgTpl.holidays;
+      }
+    }
+
+    const sortedHolidays = [...holidays].sort((a, b) => (String(a.date) > String(b.date) ? 1 : -1));
+
+    return res.json({
+      success: true,
+      templateName,
+      holidays: sortedHolidays
+    });
+  } catch (e) {
+    console.error('Failed to load my holidays:', e);
+    return res.status(500).json({ success: false, message: 'Failed to load holidays' });
+  }
+});
+
 // STAFF: claim encashment
-router.post('/encash/claim', requireRole(['staff']), async (req, res) => {
+router.post('/encash/claim', requireRole(['staff', 'admin', 'superadmin']), async (req, res) => {
   try {
     const { categoryKey, days, monthKey } = req.body || {};
     if (!categoryKey || !days || !monthKey) {
@@ -899,7 +955,7 @@ router.post('/encash/claim', requireRole(['staff']), async (req, res) => {
 });
 
 // STAFF: list my own encashment claims
-router.get('/encash/claims/me', requireRole(['staff']), async (req, res) => {
+router.get('/encash/claims/me', requireRole(['staff', 'admin', 'superadmin']), async (req, res) => {
   try {
     const claims = await LeaveEncashment.findAll({
       where: { userId: req.user.id, orgAccountId: req.tenantOrgAccountId },

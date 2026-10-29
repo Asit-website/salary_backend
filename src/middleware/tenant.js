@@ -24,10 +24,56 @@ async function tenantEnforce(req, res, next) {
         if (!isNaN(n)) finalOrg = n;
       }
       req.tenantOrgAccountId = finalOrg;
+
+      let orgSub = null;
+      let orgStaffCount = 0;
+      let orgStaffLimit = 999999;
+      let orgMaxGeo = 999999;
+
+      if (finalOrg) {
+        try {
+          const targetOrg = await OrgAccount.findByPk(finalOrg);
+          if (targetOrg && targetOrg.phone) {
+            const primaryOrg = await OrgAccount.findOne({
+              where: { phone: targetOrg.phone },
+              order: [['id', 'ASC']]
+            });
+            const effectiveOrgId = primaryOrg ? primaryOrg.id : finalOrg;
+            const now = new Date();
+            const activeSubs = await Subscription.findAll({
+              where: { orgAccountId: effectiveOrgId, status: 'ACTIVE' },
+              order: [['endAt', 'ASC']],
+              include: [{ model: Plan, as: 'plan' }]
+            });
+            orgSub = activeSubs.find(s => new Date(s.endAt) >= now) || activeSubs[0] || null;
+            if (orgSub) {
+              orgStaffLimit = orgSub.staffLimit || orgSub.plan?.staffLimit || 0;
+              orgMaxGeo = orgSub.maxGeolocationStaff !== null ? orgSub.maxGeolocationStaff : (orgSub.plan?.maxGeolocationStaff || 0);
+            }
+            const linkedOrgs = await OrgAccount.findAll({
+              where: { phone: targetOrg.phone },
+              attributes: ['id']
+            });
+            const linkedIds = linkedOrgs.map(o => o.id);
+            orgStaffCount = await User.count({
+              where: {
+                role: 'staff',
+                active: true,
+                orgAccountId: { [Op.in]: linkedIds },
+                phone: { [Op.ne]: targetOrg.phone }
+              }
+            });
+          }
+        } catch (err) {
+          console.error('[Tenant] Superadmin target org sub lookup error:', err);
+        }
+      }
+
+      req.activeSubscription = orgSub;
       req.subscriptionInfo = {
-        staffLimit: 999999,
-        currentTotalStaff: 0,
-        maxGeolocationStaff: 999999,
+        staffLimit: orgStaffLimit,
+        currentTotalStaff: orgStaffCount,
+        maxGeolocationStaff: orgMaxGeo,
         salesEnabled: true,
         geolocationEnabled: true,
         expenseEnabled: true,
@@ -107,8 +153,6 @@ async function tenantEnforce(req, res, next) {
     const linkedOrgIds = linkedOrgs.map(o => o.id);
 
     const totalStaffCount = await User.count({
-      distinct: true,
-      col: 'phone',
       where: {
         role: 'staff',
         active: true,

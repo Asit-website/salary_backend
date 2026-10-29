@@ -14502,8 +14502,11 @@ router.post("/staff/import", uploadMemory.single("file"), async (req, res) => {
       });
     });
 
-    let currentTotalCount = req.subscriptionInfo?.currentTotalStaff || 0;
-    const staffLimit = req.subscriptionInfo?.staffLimit || 0;
+    const staffLimit = req.subscriptionInfo?.staffLimit || activeSub?.staffLimit || activeSub?.plan?.staffLimit || 0;
+    let currentTotalCount = req.subscriptionInfo?.currentTotalStaff;
+    if (typeof currentTotalCount !== 'number') {
+      currentTotalCount = await User.count({ where: { orgAccountId: orgId, role: 'staff', active: true } });
+    }
 
     for (const data of rows) {
       try {
@@ -17564,6 +17567,18 @@ router.put("/staff/active", async (req, res) => {
       return res
         .status(404)
         .json({ success: false, message: "Staff not found" });
+
+    if (active === true && !user.active) {
+      const staffLimit = req.subscriptionInfo?.staffLimit || 0;
+      const currentActiveStaff = req.subscriptionInfo?.currentTotalStaff || 0;
+      if (staffLimit > 0 && currentActiveStaff >= staffLimit) {
+        return res.status(403).json({
+          success: false,
+          message: `Total staff limit across all your organizations reached (${staffLimit}). Cannot activate staff. Upgrade plan or deactivate another staff first.`,
+        });
+      }
+    }
+
     await user.update({ active });
     return res.json({ success: true, active: user.active });
   } catch (e) {
@@ -17587,6 +17602,18 @@ router.put("/staff/:id/active", async (req, res) => {
       return res
         .status(404)
         .json({ success: false, message: "Staff not found" });
+
+    if (active === true && !user.active) {
+      const staffLimit = req.subscriptionInfo?.staffLimit || 0;
+      const currentActiveStaff = req.subscriptionInfo?.currentTotalStaff || 0;
+      if (staffLimit > 0 && currentActiveStaff >= staffLimit) {
+        return res.status(403).json({
+          success: false,
+          message: `Total staff limit across all your organizations reached (${staffLimit}). Cannot activate staff. Upgrade plan or deactivate another staff first.`,
+        });
+      }
+    }
+
     await user.update({ active });
     return res.json({ success: true, active: user.active });
   } catch (e) {
@@ -33597,14 +33624,25 @@ router.get("/reports/labour-wages", async (req, res) => {
 
     const userIds = filteredStaff.map((s) => s.id);
 
-    // Fetch Attendances, Weekly Offs, Holidays, and Leaves in date range in parallel
+    // Fetch Attendances, Weekly Offs, Holidays, Leaves, and Shifts in date range in parallel
     let attendances = [];
     let woAssignments = [];
     let holidayAssignments = [];
     let approvedLeaves = [];
+    let shiftAssignments = [];
+    let rosters = [];
+    let allShiftTemplates = [];
 
     if (userIds.length > 0) {
-      [attendances, woAssignments, holidayAssignments, approvedLeaves] = await Promise.all([
+      [
+        attendances,
+        woAssignments,
+        holidayAssignments,
+        approvedLeaves,
+        shiftAssignments,
+        rosters,
+        allShiftTemplates,
+      ] = await Promise.all([
         Attendance.findAll({
           where: {
             orgAccountId: orgId,
@@ -33666,8 +33704,59 @@ router.get("/reports/labour-wages", async (req, res) => {
             ],
           },
         }),
+        StaffShiftAssignment.findAll({
+          where: {
+            userId: { [Op.in]: userIds },
+            [Op.or]: [
+              { effectiveTo: null },
+              { effectiveTo: { [Op.gte]: startDate } },
+            ],
+            effectiveFrom: { [Op.lte]: endDate },
+          },
+          include: [{ model: ShiftTemplate, as: "template" }],
+        }),
+        StaffRoster.findAll({
+          where: {
+            userId: { [Op.in]: userIds },
+            date: { [Op.between]: [startDate, endDate] },
+          },
+          include: [{ model: ShiftTemplate, as: "shiftTemplate" }],
+        }),
+        ShiftTemplate.findAll({
+          where: { orgAccountId: orgId },
+        }),
       ]);
     }
+
+    const shiftTemplateMap = {};
+    (allShiftTemplates || []).forEach((t) => {
+      shiftTemplateMap[t.id] = t;
+    });
+
+    const shiftContext = {
+      rosters: rosters || [],
+      shiftAssignments: shiftAssignments || [],
+      staffMembers: filteredStaff || [],
+      shiftTemplateMap,
+    };
+
+    const getShiftHours = (shiftTemplate, defaultHp = 8) => {
+      if (!shiftTemplate) return defaultHp;
+      if (shiftTemplate.workMinutes && Number(shiftTemplate.workMinutes) > 0) {
+        return Number((Number(shiftTemplate.workMinutes) / 60).toFixed(2));
+      }
+      if (shiftTemplate.startTime && shiftTemplate.endTime) {
+        const [sh, sm] = shiftTemplate.startTime.split(":").map(Number);
+        const [eh, em] = shiftTemplate.endTime.split(":").map(Number);
+        let startMin = sh * 60 + (sm || 0);
+        let endMin = eh * 60 + (em || 0);
+        if (endMin <= startMin) endMin += 1440;
+        let diffMin = endMin - startMin;
+        const hrs = Number((diffMin / 60).toFixed(2));
+        if (hrs > 0) return hrs;
+      }
+      return defaultHp;
+    };
 
     // Map attendances: key = `${userId}_${dateKey}`
     const attMap = {};
@@ -33723,12 +33812,15 @@ router.get("/reports/labour-wages", async (req, res) => {
       const p = staff.profile || {};
       const gross = getWorkerGrossSalary(staff);
 
-      // Hourly wage determination:
+      // Hourly wage determination based on worker's assigned shift hours:
+      const shiftTpl = shiftService.resolveShift(staff.id, startDate, shiftContext);
+      const workerShiftHours = getShiftHours(shiftTpl, hp);
+
       let workerHourlyRate = 0;
       if (rateNum !== null && rateNum > 0) {
         workerHourlyRate = rateNum;
       } else if (gross > 0) {
-        workerHourlyRate = Number((gross / (daysForRate * hp)).toFixed(2));
+        workerHourlyRate = Number((gross / (daysForRate * workerShiftHours)).toFixed(2));
       }
 
       let totalWorkHours = 0;
@@ -33887,6 +33979,8 @@ router.get("/reports/labour-wages", async (req, res) => {
         designation: p.designation || "Worker",
         staffType: p.staffType || "Worker",
         grossSalary: gross,
+        shiftHours: workerShiftHours,
+        shiftName: shiftTpl?.name || "Standard",
         hourlyRate: workerHourlyRate,
         days: dailyBreakdown,
         daysWorked,
@@ -33937,6 +34031,8 @@ router.get("/reports/labour-wages", async (req, res) => {
 
       headers.push(
         { header: "Total Work\nHours", key: "totalWorkHours", width: 14 },
+        { header: "Hourly Rate\n(₹/h)", key: "hourlyRate", width: 14 },
+        { header: "Total Wages\n(₹)", key: "totalWages", width: 16 },
         { header: "Worker Signature / Remarks", key: "signature", width: 25 }
       );
 
@@ -34006,6 +34102,8 @@ router.get("/reports/labour-wages", async (req, res) => {
 
         rowVals.push(
           r.totalWorkHours,
+          r.hourlyRate,
+          r.totalWages,
           ""
         );
 
@@ -34044,7 +34142,7 @@ router.get("/reports/labour-wages", async (req, res) => {
         );
         totalVals.push(Number(daySum.toFixed(2)));
       }
-      totalVals.push(grandTotalHours, "");
+      totalVals.push(grandTotalHours, "", grandTotalWages, "");
 
       const totalRow = sheet.addRow(totalVals);
       totalRow.height = 26;

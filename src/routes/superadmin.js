@@ -1046,7 +1046,17 @@ router.post('/clients/:id/subscription', async (req, res) => {
       }
 
       if (staffLimit !== undefined && staffLimit !== null && Number(staffLimit) !== existingSubscription.staffLimit) {
-        updateData.staffLimit = Number(staffLimit);
+        const newLimit = Number(staffLimit);
+        const currentActiveStaffCount = await User.count({
+          where: { orgAccountId: org.id, role: 'staff', active: true }
+        });
+        if (newLimit > 0 && currentActiveStaffCount > newLimit) {
+          return res.status(400).json({
+            success: false,
+            message: `Cannot set staff limit to ${newLimit} because this client currently has ${currentActiveStaffCount} active staff members. Please deactivate or remove excess staff first.`
+          });
+        }
+        updateData.staffLimit = newLimit;
         messageArr.push('Staff limit updated');
       }
 
@@ -1200,6 +1210,19 @@ router.post('/clients/:id/subscription', async (req, res) => {
       communityEnabled,
       salaryRegisterEnabled
     });
+
+    const targetStaffLimit = staffLimit !== undefined && staffLimit !== null ? Number(staffLimit) : (plan.staffLimit || 0);
+    if (targetStaffLimit > 0) {
+      const currentActiveStaffCount = await User.count({
+        where: { orgAccountId: org.id, role: 'staff', active: true }
+      });
+      if (currentActiveStaffCount > targetStaffLimit) {
+        return res.status(400).json({
+          success: false,
+          message: `Cannot assign plan with staff limit ${targetStaffLimit} because this client currently has ${currentActiveStaffCount} active staff members. Please select a plan with at least ${currentActiveStaffCount} staff or deactivate excess staff first.`
+        });
+      }
+    }
 
     const sub = await Subscription.create({
       orgAccountId: org.id,
@@ -2373,4 +2396,3 @@ router.delete('/holidays/:id', async (req, res) => {
 });
 
 module.exports = router;
-

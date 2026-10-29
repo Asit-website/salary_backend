@@ -4,7 +4,7 @@ const { Op } = require('sequelize');
 const puppeteer = require('puppeteer');
 const dayjs = require('dayjs');
 
-const { User, StaffProfile, Attendance, LeaveRequest, AppSetting, AttendanceTemplate, StaffAttendanceAssignment, StaffShiftAssignment, ShiftTemplate, StaffHolidayAssignment, HolidayTemplate, HolidayDate, StaffGeofenceAssignment, GeofenceTemplate, GeofenceSite, LocationPing, DeviceInfo, WeeklyOffTemplate, StaffWeeklyOffAssignment, AttendanceAutomationRule, OrgAccount, StaffRoster, StaffLatePunchInAssignment, LatePunchInRule, OrgAddonSetting, AttendancePunch } = require('../models');
+const { User, StaffProfile, Attendance, LeaveRequest, AppSetting, AttendanceTemplate, StaffAttendanceAssignment, StaffShiftAssignment, ShiftTemplate, StaffHolidayAssignment, HolidayTemplate, HolidayDate, StaffGeofenceAssignment, GeofenceTemplate, GeofenceSite, LocationPing, DeviceInfo, WeeklyOffTemplate, StaffWeeklyOffAssignment, AttendanceAutomationRule, OrgAccount, StaffRoster, StaffLatePunchInAssignment, LatePunchInRule, OrgAddonSetting, AttendancePunch, AttendanceRegularization } = require('../models');
 const { authRequired } = require('../middleware/auth');
 const { requireRole } = require('../middleware/roles');
 const { tenantEnforce } = require('../middleware/tenant');
@@ -20,7 +20,7 @@ const router = express.Router();
 
 router.use(authRequired);
 router.use(tenantEnforce);
-router.use(requireRole(['staff']));
+router.use(requireRole(['staff', 'admin', 'superadmin']));
 
 async function isMultiPunchEnabled(orgAccountId) {
   try {
@@ -2841,6 +2841,142 @@ router.post('/qr-punch', upload.single('photo'), async (req, res) => {
   } catch (error) {
     console.error('QR punch error:', error);
     return res.status(500).json({ success: false, message: 'QR punch failed' });
+  }
+});
+
+
+// ==================== ATTENDANCE REGULARIZATION ====================
+router.post('/regularization', authRequired, tenantEnforce, async (req, res) => {
+  try {
+    const { date, requestedInTime, requestedOutTime, reason } = req.body;
+    if (!date || !reason) {
+      return res.status(400).json({ success: false, message: 'Date and reason are required' });
+    }
+
+    const reg = await AttendanceRegularization.create({
+      orgAccountId: req.user.orgAccountId,
+      userId: req.user.id,
+      date,
+      requestedInTime: requestedInTime || null,
+      requestedOutTime: requestedOutTime || null,
+      reason,
+      status: 'PENDING'
+    });
+
+    return res.json({ success: true, message: 'Regularization request submitted successfully', regularization: reg });
+  } catch (err) {
+    console.error('Error submitting regularization request:', err);
+    return res.status(500).json({ success: false, message: 'Failed to submit regularization request' });
+  }
+});
+
+router.get('/regularization/my', authRequired, tenantEnforce, async (req, res) => {
+  try {
+    const { month } = req.query;
+    const { Op } = require('sequelize');
+    const where = { userId: req.user.id, orgAccountId: req.user.orgAccountId };
+    if (month && /^\d{4}-\d{2}$/.test(month)) {
+      where.date = { [Op.between]: [`${month}-01`, `${month}-31`] };
+    }
+    const list = await AttendanceRegularization.findAll({
+      where,
+      order: [['date', 'DESC'], ['createdAt', 'DESC']]
+    });
+    return res.json({ success: true, regularizations: list });
+  } catch (err) {
+    console.error('Error fetching my regularizations:', err);
+    return res.status(500).json({ success: false, message: 'Failed to fetch regularization requests' });
+  }
+});
+
+router.get('/regularization/list', authRequired, tenantEnforce, async (req, res) => {
+  try {
+    const { month, status } = req.query;
+    const { Op } = require('sequelize');
+    const where = { orgAccountId: req.user.orgAccountId };
+    if (status) where.status = status;
+    if (month && /^\d{4}-\d{2}$/.test(month)) {
+      where.date = { [Op.between]: [`${month}-01`, `${month}-31`] };
+    }
+
+    const list = await AttendanceRegularization.findAll({
+      where,
+      include: [{
+        model: User,
+        as: 'user',
+        attributes: ['id', 'phone', 'role'],
+        include: [{
+          model: StaffProfile,
+          as: 'profile',
+          attributes: ['name', 'staffId', 'department', 'designation']
+        }]
+      }],
+      order: [['date', 'DESC'], ['createdAt', 'DESC']]
+    });
+    return res.json({ success: true, regularizations: list });
+  } catch (err) {
+    console.error('Error listing regularizations:', err);
+    return res.status(500).json({ success: false, message: 'Failed to list regularization requests' });
+  }
+});
+
+router.patch('/regularization/:id', authRequired, tenantEnforce, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { status, adminRemarks } = req.body;
+    if (!['APPROVED', 'REJECTED'].includes(status)) {
+      return res.status(400).json({ success: false, message: 'Invalid status' });
+    }
+
+    const reg = await AttendanceRegularization.findOne({
+      where: { id, orgAccountId: req.user.orgAccountId }
+    });
+    if (!reg) {
+      return res.status(404).json({ success: false, message: 'Regularization request not found' });
+    }
+
+    await reg.update({
+      status,
+      adminRemarks: adminRemarks || null,
+      reviewedBy: req.user.id,
+      reviewedAt: new Date()
+    });
+
+    if (status === 'APPROVED') {
+      let att = await Attendance.findOne({
+        where: { userId: reg.userId, date: reg.date }
+      });
+
+      const inDateTime = reg.requestedInTime ? new Date(`${reg.date}T${reg.requestedInTime}`) : null;
+      const outDateTime = reg.requestedOutTime ? new Date(`${reg.date}T${reg.requestedOutTime}`) : null;
+      let totalWorkHours = null;
+      if (inDateTime && outDateTime) {
+        totalWorkHours = Number((Math.max(0, (outDateTime - inDateTime) / (1000 * 3600))).toFixed(2));
+      }
+
+      if (att) {
+        await att.update({
+          status: 'PRESENT',
+          punchedInAt: inDateTime || att.punchedInAt,
+          punchedOutAt: outDateTime || att.punchedOutAt,
+          totalWorkHours: totalWorkHours !== null ? totalWorkHours : att.totalWorkHours
+        });
+      } else {
+        await Attendance.create({
+          userId: reg.userId,
+          date: reg.date,
+          status: 'PRESENT',
+          punchedInAt: inDateTime,
+          punchedOutAt: outDateTime,
+          totalWorkHours: totalWorkHours || 8
+        });
+      }
+    }
+
+    return res.json({ success: true, message: `Regularization request ${status.toLowerCase()} successfully`, regularization: reg });
+  } catch (err) {
+    console.error('Error reviewing regularization:', err);
+    return res.status(500).json({ success: false, message: 'Failed to review regularization request' });
   }
 });
 

@@ -1,6 +1,7 @@
 const express = require('express');
 const { Op } = require('sequelize');
-const { StaffRoster, ShiftTemplate, User, StaffProfile, StaffShiftAssignment, Badge, BadgePermission, Attendance, LeaveRequest, StaffHolidayAssignment, HolidayDate, StaffWeeklyOffAssignment, WeeklyOffTemplate } = require('../models');
+const { StaffRoster, ShiftTemplate, User, StaffProfile, StaffShiftAssignment, Badge, BadgePermission, Attendance, LeaveRequest, StaffHolidayAssignment, HolidayTemplate, HolidayDate, StaffWeeklyOffAssignment, WeeklyOffTemplate, StaffRosterChangeRequest, Notification } = require('../models');
+const shiftService = require('../services/shiftService');
 const { authRequired } = require('../middleware/auth');
 const dayjs = require('dayjs');
 const { isWeeklyOffForDate } = require('./weeklyOff');
@@ -497,6 +498,387 @@ router.post('/admin/roster', authRequired, requireRole(['admin', 'superadmin', '
   }
 });
 
-module.exports = router;
+// --- STAFF ROSTER ENDPOINTS ---
+
+// STAFF: Get my monthly roster, upcoming shifts, shift history, and shift timings
+router.get('/roster/me', authRequired, requireRole(['staff', 'admin', 'superadmin']), tenantEnforce, async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const orgId = req.tenantOrgAccountId;
+    if (!orgId) return res.status(403).json({ success: false, message: 'No organization in context' });
+
+    const monthStr = req.query.month || dayjs().format('YYYY-MM');
+    const startOfMonth = dayjs(`${monthStr}-01`).startOf('month');
+    const endOfMonth = dayjs(`${monthStr}-01`).endOf('month');
+    const startDate = req.query.startDate || startOfMonth.format('YYYY-MM-DD');
+    const endDate = req.query.endDate || endOfMonth.format('YYYY-MM-DD');
+
+    const todayStr = dayjs().format('YYYY-MM-DD');
+
+    // 1. Fetch StaffRoster entries in range
+    const rosterEntries = await StaffRoster.findAll({
+      where: {
+        userId,
+        orgAccountId: orgId,
+        date: { [Op.between]: [startDate, endDate] }
+      },
+      include: [{ model: ShiftTemplate, as: 'shiftTemplate' }]
+    });
+    const rosterMap = new Map();
+    rosterEntries.forEach(r => rosterMap.set(r.date, r));
+
+    // 2. Fetch approved LeaveRequests in range
+    const leaveRequests = await LeaveRequest.findAll({
+      where: {
+        userId,
+        status: 'APPROVED',
+        startDate: { [Op.lte]: endDate },
+        endDate: { [Op.gte]: startDate }
+      }
+    });
+
+    // 3. Fetch WeeklyOff assignments
+    const woAssignments = await StaffWeeklyOffAssignment.findAll({
+      where: { userId },
+      include: [{ model: WeeklyOffTemplate, as: 'template' }]
+    });
+
+    // 4. Fetch Holiday assignments
+    const holidayAssignment = await StaffHolidayAssignment.findOne({
+      where: {
+        userId,
+        effectiveFrom: { [Op.lte]: endDate },
+        [Op.or]: [{ effectiveTo: null }, { effectiveTo: { [Op.gte]: startDate } }]
+      },
+      order: [['effectiveFrom', 'DESC']],
+      include: [{
+        model: HolidayTemplate,
+        as: 'template',
+        include: [{ model: HolidayDate, as: 'holidays', where: { active: { [Op.ne]: false } }, required: false }]
+      }]
+    });
+    const holidayDates = holidayAssignment?.template?.holidays || [];
+    const holidayMap = new Map();
+    holidayDates.forEach(h => holidayMap.set(String(h.date), h.name));
+
+    // 5. Fetch all active shift templates for dropdown selection
+    const activeShifts = await ShiftTemplate.findAll({
+      where: {
+        [Op.or]: [{ orgAccountId: orgId }, { orgAccountId: null }],
+        active: { [Op.ne]: false }
+      },
+      order: [['name', 'ASC']]
+    });
+
+    // Helper to format time "09:00:00" -> "9:00 AM"
+    const formatTimeStr = (t) => {
+      if (!t) return '';
+      const parts = t.split(':');
+      const h = Number(parts[0]);
+      const m = Number(parts[1] || 0);
+      const period = h >= 12 ? 'PM' : 'AM';
+      const h12 = h % 12 || 12;
+      return `${h12}:${String(m).padStart(2, '0')} ${period}`;
+    };
+
+    // 6. Build daily roster schedule
+    const days = [];
+    const startObj = dayjs(startDate);
+    const endObj = dayjs(endDate);
+    const totalDaysCount = endObj.diff(startObj, 'day') + 1;
+
+    let summary = {
+      totalDutyDays: 0,
+      dayShiftsCount: 0,
+      nightShiftsCount: 0,
+      weeklyOffCount: 0,
+      holidayCount: 0,
+      leaveCount: 0,
+      todayShift: null
+    };
+
+    for (let i = 0; i < totalDaysCount; i++) {
+      const curDay = startObj.add(i, 'day');
+      const dateKey = curDay.format('YYYY-MM-DD');
+
+      let dayType = 'SHIFT'; // 'SHIFT' | 'WEEKLY_OFF' | 'HOLIDAY' | 'LEAVE'
+      let shiftObj = null;
+      let label = 'Shift';
+      let holidayName = null;
+      let leaveType = null;
+
+      // 1. Check Roster Override (Highest Priority)
+      const rOverride = rosterMap.get(dateKey);
+      if (rOverride) {
+        if (rOverride.status === 'WEEKLY_OFF') {
+          dayType = 'WEEKLY_OFF';
+          label = 'Weekly Off';
+        } else if (rOverride.status === 'HOLIDAY') {
+          dayType = 'HOLIDAY';
+          label = 'Holiday';
+          holidayName = holidayMap.get(dateKey) || 'Company Holiday';
+        } else if (rOverride.status === 'SHIFT' && rOverride.shiftTemplate) {
+          dayType = 'SHIFT';
+          shiftObj = rOverride.shiftTemplate;
+        }
+      }
+
+      // 2. If no roster override, check Leave, Holiday, Weekly Off, or Default Shift
+      if (!rOverride) {
+        // Check Leave
+        const matchingLeave = leaveRequests.find(l => dateKey >= l.startDate && dateKey <= l.endDate);
+        if (matchingLeave) {
+          dayType = 'LEAVE';
+          leaveType = matchingLeave.categoryKey || matchingLeave.leaveType || 'Leave';
+          label = `Leave (${String(leaveType).toUpperCase()})`;
+        } else if (holidayMap.has(dateKey)) {
+          dayType = 'HOLIDAY';
+          holidayName = holidayMap.get(dateKey);
+          label = `Holiday: ${holidayName}`;
+        } else {
+          // Check Weekly Off
+          let isWO = false;
+          const targetD = curDay.toDate();
+          for (const asg of woAssignments) {
+            const ef = new Date(asg.effectiveFrom);
+            const et = asg.effectiveTo ? new Date(asg.effectiveTo) : null;
+            if (targetD >= ef && (!et || targetD <= et)) {
+              let rawConfig = asg.template?.config;
+              while (typeof rawConfig === 'string' && rawConfig.trim().startsWith('[')) {
+                try { rawConfig = JSON.parse(rawConfig); } catch (_) { break; }
+              }
+              if (isWeeklyOffForDate(Array.isArray(rawConfig) ? rawConfig : [], targetD)) {
+                isWO = true;
+                break;
+              }
+            }
+          }
+
+          if (isWO) {
+            dayType = 'WEEKLY_OFF';
+            label = 'Weekly Off';
+          } else {
+            // Default shift resolution via shiftService
+            shiftObj = await shiftService.getEffectiveShiftTemplate(userId, dateKey);
+          }
+        }
+      }
+
+      // Determine Day vs Night shift
+      let isNightShift = false;
+      let shiftTypeLabel = 'Day';
+      let timingDisplay = '--';
+
+      if (shiftObj) {
+        const sTime = shiftObj.startTime || '09:00:00';
+        const eTime = shiftObj.endTime || '18:00:00';
+        timingDisplay = `${formatTimeStr(sTime)} – ${formatTimeStr(eTime)}`;
+        label = shiftObj.name;
+
+        if (sTime >= '18:00:00' || eTime < sTime || String(shiftObj.name).toLowerCase().includes('night')) {
+          isNightShift = true;
+          shiftTypeLabel = 'Night';
+        } else {
+          shiftTypeLabel = 'Day';
+        }
+      }
+
+      // Determine Date Status
+      let dateStatus = 'Upcoming';
+      if (dateKey === todayStr) dateStatus = 'Today';
+      else if (dateKey < todayStr) dateStatus = 'Completed';
+
+      // Update Summary metrics
+      if (dayType === 'SHIFT') {
+        summary.totalDutyDays++;
+        if (isNightShift) summary.nightShiftsCount++;
+        else summary.dayShiftsCount++;
+      } else if (dayType === 'WEEKLY_OFF') {
+        summary.weeklyOffCount++;
+      } else if (dayType === 'HOLIDAY') {
+        summary.holidayCount++;
+      } else if (dayType === 'LEAVE') {
+        summary.leaveCount++;
+      }
+
+      const dayRecord = {
+        date: dateKey,
+        dayNum: curDay.date(),
+        dayOfWeek: curDay.format('ddd'),
+        dayOfWeekFull: curDay.format('dddd'),
+        formattedDate: curDay.format('DD MMM YYYY'),
+        dayType, // 'SHIFT', 'WEEKLY_OFF', 'HOLIDAY', 'LEAVE'
+        shiftId: shiftObj?.id || null,
+        shiftName: shiftObj?.name || (dayType === 'WEEKLY_OFF' ? 'Weekly Off' : dayType === 'HOLIDAY' ? `Holiday: ${holidayName}` : dayType === 'LEAVE' ? `Leave (${leaveType})` : 'General Shift'),
+        startTime: shiftObj?.startTime || null,
+        endTime: shiftObj?.endTime || null,
+        time: timingDisplay,
+        shiftType: dayType === 'SHIFT' ? shiftTypeLabel : dayType === 'WEEKLY_OFF' ? 'Weekly Off' : dayType === 'HOLIDAY' ? 'Holiday' : 'Leave',
+        isNightShift,
+        status: dateStatus, // 'Today', 'Upcoming', 'Completed'
+        label,
+        holidayName,
+        leaveType
+      };
+
+      if (dateKey === todayStr) {
+        summary.todayShift = dayRecord;
+      }
+
+      days.push(dayRecord);
+    }
+
+    return res.json({
+      success: true,
+      month: monthStr,
+      startDate,
+      endDate,
+      summary,
+      days,
+      shifts: activeShifts
+    });
+  } catch (error) {
+    console.error('Error fetching staff roster:', error);
+    return res.status(500).json({ success: false, message: 'Failed to load roster schedule' });
+  }
+});
+
+// STAFF: Submit Roster Change Request
+router.post('/roster/request-change', authRequired, requireRole(['staff', 'admin', 'superadmin']), tenantEnforce, async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const orgId = req.tenantOrgAccountId;
+    const { date, requestedShiftTemplateId, requestedStatus, reason } = req.body || {};
+
+    if (!date || !reason) {
+      return res.status(400).json({ success: false, message: 'date and reason are required' });
+    }
+
+    // Resolve current shift for that date
+    const currentShift = await shiftService.getEffectiveShiftTemplate(userId, date);
+
+    const changeReq = await StaffRosterChangeRequest.create({
+      userId,
+      orgAccountId: orgId,
+      date,
+      currentShiftTemplateId: currentShift?.id || null,
+      requestedShiftTemplateId: requestedShiftTemplateId || null,
+      requestedStatus: requestedStatus || 'SHIFT',
+      reason,
+      status: 'PENDING'
+    });
+
+    // Notify Admins
+    try {
+      const staffUser = await User.findOne({
+        where: { id: userId },
+        include: [{ model: StaffProfile, as: 'profile', attributes: ['name'] }]
+      });
+      const staffName = staffUser?.profile?.name || 'Staff Member';
+      await Notification.create({
+        orgAccountId: orgId,
+        title: 'Roster Change Request',
+        message: `${staffName} has requested a shift change for ${date}.`,
+        type: 'roster_request',
+        isRead: false
+      });
+    } catch (_) {}
+
+    return res.json({ success: true, request: changeReq, message: 'Shift change request submitted successfully' });
+  } catch (error) {
+    console.error('Error submitting roster change request:', error);
+    return res.status(500).json({ success: false, message: 'Failed to submit roster change request' });
+  }
+});
+
+// STAFF: View my roster change requests
+router.get('/roster/requests/my', authRequired, requireRole(['staff', 'admin', 'superadmin']), tenantEnforce, async (req, res) => {
+  try {
+    const requests = await StaffRosterChangeRequest.findAll({
+      where: { userId: req.user.id, orgAccountId: req.tenantOrgAccountId },
+      include: [
+        { model: ShiftTemplate, as: 'currentShift', attributes: ['id', 'name', 'startTime', 'endTime'] },
+        { model: ShiftTemplate, as: 'requestedShift', attributes: ['id', 'name', 'startTime', 'endTime'] }
+      ],
+      order: [['createdAt', 'DESC']]
+    });
+
+    return res.json({ success: true, requests });
+  } catch (error) {
+    console.error('Error fetching my roster requests:', error);
+    return res.status(500).json({ success: false, message: 'Failed to load change requests' });
+  }
+});
+
+// ADMIN: List all change requests
+router.get('/admin/roster/requests', authRequired, requireRole(['admin', 'superadmin']), tenantEnforce, async (req, res) => {
+  try {
+    const requests = await StaffRosterChangeRequest.findAll({
+      where: { orgAccountId: req.tenantOrgAccountId },
+      include: [
+        { model: User, as: 'user', attributes: ['id', 'phone'], include: [{ model: StaffProfile, as: 'profile', attributes: ['name', 'staffId'] }] },
+        { model: ShiftTemplate, as: 'currentShift', attributes: ['id', 'name', 'startTime', 'endTime'] },
+        { model: ShiftTemplate, as: 'requestedShift', attributes: ['id', 'name', 'startTime', 'endTime'] }
+      ],
+      order: [['createdAt', 'DESC']]
+    });
+
+    return res.json({ success: true, requests });
+  } catch (error) {
+    return res.status(500).json({ success: false, message: 'Failed to load requests' });
+  }
+});
+
+// ADMIN: Approve / Reject change request
+router.patch('/admin/roster/requests/:id', authRequired, requireRole(['admin', 'superadmin']), tenantEnforce, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { status, adminRemarks } = req.body; // 'APPROVED' or 'REJECTED'
+
+    if (!['APPROVED', 'REJECTED'].includes(status)) {
+      return res.status(400).json({ success: false, message: 'Status must be APPROVED or REJECTED' });
+    }
+
+    const request = await StaffRosterChangeRequest.findOne({
+      where: { id, orgAccountId: req.tenantOrgAccountId }
+    });
+    if (!request) return res.status(404).json({ success: false, message: 'Request not found' });
+
+    if (request.status !== 'PENDING') {
+      return res.status(400).json({ success: false, message: 'Request already processed' });
+    }
+
+    if (status === 'APPROVED') {
+      await StaffRoster.upsert({
+        userId: request.userId,
+        date: request.date,
+        shiftTemplateId: request.requestedStatus === 'SHIFT' ? request.requestedShiftTemplateId : null,
+        status: request.requestedStatus || 'SHIFT',
+        orgAccountId: req.tenantOrgAccountId
+      });
+      if (request.requestedStatus === 'WEEKLY_OFF') {
+        try {
+          await Attendance.upsert({
+            userId: request.userId,
+            date: request.date,
+            status: 'weekly_off',
+            orgAccountId: req.tenantOrgAccountId
+          });
+        } catch (_) {}
+      }
+    }
+
+    await request.update({
+      status,
+      adminRemarks: adminRemarks || null,
+      reviewedBy: req.user.id,
+      reviewedAt: new Date()
+    });
+
+    return res.json({ success: true, message: `Roster change request ${status.toLowerCase()}` });
+  } catch (error) {
+    return res.status(500).json({ success: false, message: 'Failed to update request' });
+  }
+});
 
 module.exports = router;

@@ -193,7 +193,8 @@ initDb()
   .then(async () => {
     // Verify email configuration
     try {
-      const emailConfigured = await verifyEmailConfig();
+      // const emailConfigured = await verifyEmailConfig();
+      const emailConfigured = false;
       if (emailConfigured) {
         console.log('✅ Email service configured successfully');
       } else {

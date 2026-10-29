@@ -132,6 +132,8 @@ const defineShiftRotationRule = require('./ShiftRotationRule');
 const defineBiometricPunch = require('./BiometricPunch');
 const defineOrgAddonSetting = require('./OrgAddonSetting');
 const defineAttendancePunch = require('./AttendancePunch');
+const defineAttendanceRegularization = require('./AttendanceRegularization');
+const defineStaffRosterChangeRequest = require('./StaffRosterChangeRequest');
 const definePmsAppraisalCycle = require('./PmsAppraisalCycle');
 const definePmsKraTemplate = require('./PmsKraTemplate');
 const definePmsKpiTemplate = require('./PmsKpiTemplate');
@@ -279,6 +281,8 @@ const ShiftRotationRule = defineShiftRotationRule(sequelize);
 const BiometricPunch = defineBiometricPunch(sequelize);
 const OrgAddonSetting = defineOrgAddonSetting(sequelize);
 const AttendancePunch = defineAttendancePunch(sequelize);
+const AttendanceRegularization = defineAttendanceRegularization(sequelize);
+const StaffRosterChangeRequest = defineStaffRosterChangeRequest(sequelize);
 const PmsAppraisalCycle = definePmsAppraisalCycle(sequelize);
 const PmsKraTemplate = definePmsKraTemplate(sequelize);
 const PmsKpiTemplate = definePmsKpiTemplate(sequelize);
@@ -354,6 +358,17 @@ AttendancePunch.belongsTo(Attendance, { foreignKey: 'attendanceId', as: 'attenda
 
 User.hasMany(AttendancePunch, { foreignKey: 'userId', as: 'punches' });
 AttendancePunch.belongsTo(User, { foreignKey: 'userId', as: 'user' });
+OrgAccount.hasMany(AttendanceRegularization, { foreignKey: 'orgAccountId', as: 'regularizations', constraints: false });
+AttendanceRegularization.belongsTo(OrgAccount, { foreignKey: 'orgAccountId', as: 'orgAccount', constraints: false });
+User.hasMany(AttendanceRegularization, { foreignKey: 'userId', as: 'regularizations', constraints: false });
+AttendanceRegularization.belongsTo(User, { foreignKey: 'userId', as: 'user', constraints: false });
+
+OrgAccount.hasMany(StaffRosterChangeRequest, { foreignKey: 'orgAccountId', as: 'rosterChangeRequests', constraints: false });
+StaffRosterChangeRequest.belongsTo(OrgAccount, { foreignKey: 'orgAccountId', as: 'orgAccount', constraints: false });
+User.hasMany(StaffRosterChangeRequest, { foreignKey: 'userId', as: 'rosterChangeRequests', constraints: false });
+StaffRosterChangeRequest.belongsTo(User, { foreignKey: 'userId', as: 'user', constraints: false });
+StaffRosterChangeRequest.belongsTo(ShiftTemplate, { foreignKey: 'currentShiftTemplateId', as: 'currentShift', constraints: false });
+StaffRosterChangeRequest.belongsTo(ShiftTemplate, { foreignKey: 'requestedShiftTemplateId', as: 'requestedShift', constraints: false });
 
 User.hasMany(BiometricPunch, { foreignKey: 'userId', as: 'biometricPunches' });
 BiometricPunch.belongsTo(User, { foreignKey: 'userId', as: 'user' });
@@ -1227,6 +1242,8 @@ module.exports = {
   BiometricPunch,
   OrgAddonSetting,
   AttendancePunch,
+  AttendanceRegularization,
+  StaffRosterChangeRequest,
   PmsAppraisalCycle,
   PmsKraTemplate,
   PmsKpiTemplate,

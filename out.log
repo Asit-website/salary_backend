@@ -1,0 +1,24 @@
+AWS Rekognition: skipped (no credentials in .env).
+[DB FIX] Starting aggressive schema repair script...
+[DB FIX] Schema repair script finished.
+⚠️ Error syncing RefreshToken table: Too many keys specified; max 64 keys allowed
+⏰ Ensure notifications table exists - verified.
+⏰ ShiftRotationGroup, ShiftRotationRule, and User tables synced.
+⏰ financial_year column in holiday_templates checked/verified.
+Note on qr_punch_enabled column (might already exist): Duplicate column name 'qr_punch_enabled'
+Note on pardon_limit column (might already exist): Duplicate column name 'pardon_limit'
+salary_register_enabled column in plans already exists or error: Duplicate column name 'salary_register_enabled'
+salary_register_enabled column in subscriptions already exists or error: Duplicate column name 'salary_register_enabled'
+monthly_summary_enabled column in plans already exists or error: Duplicate column name 'monthly_summary_enabled'
+monthly_summary_enabled column in subscriptions already exists or error: Duplicate column name 'monthly_summary_enabled'
+per_day_salary_enabled column in plans already exists or error: Duplicate column name 'per_day_salary_enabled'
+per_day_salary_enabled column in subscriptions already exists or error: Duplicate column name 'per_day_salary_enabled'
+comparison_enabled column in plans already exists or error: Duplicate column name 'comparison_enabled'
+comparison_enabled column in subscriptions already exists or error: Duplicate column name 'comparison_enabled'
+ot_impact_enabled column in plans already exists or error: Duplicate column name 'ot_impact_enabled'
+ot_impact_enabled column in subscriptions already exists or error: Duplicate column name 'ot_impact_enabled'
+late_penalty_enabled column in plans already exists or error: Duplicate column name 'late_penalty_enabled'
+late_penalty_enabled column in subscriptions already exists or error: Duplicate column name 'late_penalty_enabled'
+attendance_location_enabled column in plans already exists or error: Duplicate column name 'attendance_location_enabled'
+attendance_location_enabled column in subscriptions already exists or error: Duplicate column name 'attendance_location_enabled'
+⚠️ Error syncing StaffProfile table: Cannot add or update a child row: a foreign key constraint fails (`thinktech_attendance`.`#sql-2770_109`, CONSTRAINT `#sql-2770_109_ibfk_1` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE ON UPDATE CASCADE)

@@ -140,10 +140,12 @@ async function sendAuthResponse(user, req, res, extraJson = {}) {
   const isSuperadminPanel = !!req.body.isSuperadminPanel || user.role === 'superadmin';
   const orgAccountId = isSuperadminPanel ? null : user.orgAccountId;
   const isMobile = req.headers['x-app-platform'] === 'mobile-apk' || req.headers['x-app-platform'] === 'admin-apk';
+  const isStaffPortal = !!req.body.isStaffPortal || req.body.portal === 'staff' || !!extraJson.isStaffPortal || String(req.body.orgId || '').startsWith('staff-');
 
   // WEB ACCESS CHECK FOR STAFF ROLE:
-  // Restrict web portal entry for staff (user role) if staff has NO assigned badges in that organization
-  if (!isMobile && !isSuperadminPanel && user.role === 'staff' && user.orgAccountId) {
+  // Restrict admin portal entry for staff (user role) if staff has NO assigned badges in that organization
+  // Note: Staff portal is ALWAYS allowed for active staff members.
+  if (!isMobile && !isSuperadminPanel && !isStaffPortal && user.role === 'staff' && user.orgAccountId) {
     try {
       const { StaffBadge, Badge } = require('../models');
       const badgeCount = await StaffBadge.count({
@@ -240,6 +242,7 @@ async function sendAuthResponse(user, req, res, extraJson = {}) {
         orgAccountId,
         channelPartnerId: user.channelPartnerId,
         isSuperadminPanel,
+        isStaffPortal,
         permissions: user.permissions
       },
       ...extraJson
@@ -522,10 +525,34 @@ router.post('/send-otp', authLimiter, async (req, res) => {
       return res.status(400).json({ success: false, message: 'phone required' });
     }
 
-    const allUsers = await User.findAll({
+    let allUsers = await User.findAll({
       where: { phone: String(normalizedPhone) },
       include: [{ model: OrgAccount, as: 'orgAccount' }],
     });
+
+    if (!allUsers || allUsers.length === 0) {
+      const profiles = await StaffProfile.findAll({
+        where: { phone: String(normalizedPhone) },
+        include: [{ model: User, as: 'user', include: [{ model: OrgAccount, as: 'orgAccount' }] }],
+      });
+      const profileUsers = profiles.map((p) => p.user).filter(Boolean);
+      if (profileUsers.length > 0) {
+        allUsers = profileUsers;
+      }
+    }
+
+    const otpPurpose = String(purpose || 'login').toLowerCase();
+
+    // OTP tabhi jayega agar number database mai registered hai
+    if (!allUsers || allUsers.length === 0) {
+      if (otpPurpose !== 'signup') {
+        return res.status(404).json({
+          success: false,
+          message: 'Mobile number is not registered. Please check your number or contact your administrator.',
+        });
+      }
+    }
+
     const lockoutStatus = checkPhoneLockout(allUsers);
     if (lockoutStatus.locked) {
       return res.status(423).json({
@@ -534,12 +561,11 @@ router.post('/send-otp', authLimiter, async (req, res) => {
       });
     }
 
-    const otpPurpose = String(purpose || 'login').toLowerCase();
     if (otpPurpose === 'reset') {
-      if (allUsers.length && !allUsers.some((u) => u.active !== false)) {
+      if (!allUsers.some((u) => u.active !== false)) {
         return res.status(403).json({ success: false, message: 'User disabled' });
       }
-    } else if (allUsers.length > 0) {
+    } else {
       const block = await assertPhoneEligibleForLoginOtp(allUsers);
       if (block) {
         return res.status(block.status).json({ success: false, message: block.message });
@@ -746,19 +772,66 @@ router.post('/verify-otp', authLimiter, async (req, res) => {
       if (!orgId) {
         // Return unique list of organizations
         const orgMap = new Map();
-        allUsers.forEach(u => {
-          if (!u.orgAccountId) return;
-          const key = `${u.orgAccountId}-${u.role}`;
-          if (!orgMap.has(key)) {
-            orgMap.set(key, {
-              id: u.orgAccountId,
-              name: u.orgAccount?.name || `Organization ${u.orgAccountId}`,
-              role: u.role
-            });
-            // NEW: Sync metadata for each organization identified
-            syncOrgMetadata(u.orgAccountId, req.app.get('sequelize')).catch(() => { });
+        for (const u of allUsers) {
+          if (!u.orgAccountId) continue;
+
+          if (u.role === 'staff') {
+            let hasSidebarAccess = false;
+            try {
+              const { StaffBadge, Badge } = require('../models');
+              const badgeCount = await StaffBadge.count({
+                where: { userId: u.id, orgAccountId: u.orgAccountId, isActive: true },
+                include: [{ model: Badge, as: 'badge', where: { isActive: true }, required: true }]
+              });
+              hasSidebarAccess = badgeCount > 0;
+            } catch (_) {}
+
+            const baseName = u.orgAccount?.name || `Organization ${u.orgAccountId}`;
+
+            // If staff has sidebar permissions, provide Admin Management Portal card
+            if (hasSidebarAccess) {
+              const adminKey = `admin-${u.orgAccountId}`;
+              if (!orgMap.has(adminKey)) {
+                orgMap.set(adminKey, {
+                  id: u.orgAccountId,
+                  orgAccountId: u.orgAccountId,
+                  name: `${baseName} (Management Portal)`,
+                  role: 'staff',
+                  portal: 'admin',
+                  isStaffPortal: false,
+                  hasSidebarAccess: true
+                });
+              }
+            }
+
+            // Always provide Staff Portal card for staff
+            const staffKey = `staff-${u.orgAccountId}`;
+            if (!orgMap.has(staffKey)) {
+              orgMap.set(staffKey, {
+                id: `staff-${u.orgAccountId}`,
+                orgAccountId: u.orgAccountId,
+                name: `${baseName} (Staff Portal)`,
+                role: 'staff',
+                portal: 'staff',
+                isStaffPortal: true,
+                hasSidebarAccess
+              });
+            }
+          } else {
+            const key = `${u.orgAccountId}-${u.role}`;
+            if (!orgMap.has(key)) {
+              orgMap.set(key, {
+                id: u.orgAccountId,
+                orgAccountId: u.orgAccountId,
+                name: u.orgAccount?.name || `Organization ${u.orgAccountId}`,
+                role: u.role,
+                portal: 'admin',
+                isStaffPortal: false
+              });
+            }
           }
-        });
+          syncOrgMetadata(u.orgAccountId, req.app.get('sequelize')).catch(() => { });
+        }
 
         const selectableOrgs = Array.from(orgMap.values());
 
@@ -837,6 +910,11 @@ router.post('/verify-otp', authLimiter, async (req, res) => {
         } else if (String(orgId).startsWith('panel-')) {
           const userId = orgId.split('-')[1];
           user = allUsers.find(u => String(u.id) === String(userId));
+        } else if (String(orgId).startsWith('staff-')) {
+          const effOrgId = orgId.split('-')[1];
+          user = allUsers.find(u => (String(u.orgAccountId) === String(effOrgId) || (effOrgId === 'null' && !u.orgAccountId)) && u.role === 'staff' && u.active) || 
+                 allUsers.find(u => (String(u.orgAccountId) === String(effOrgId) || (effOrgId === 'null' && !u.orgAccountId)) && u.role === 'staff') ||
+                 allUsers.find(u => String(u.orgAccountId) === String(effOrgId));
         } else {
           user = allUsers.find(u => (String(u.orgAccountId) === String(orgId) || (orgId === 'null' && !u.orgAccountId)) && u.active) || 
                  allUsers.find(u => String(u.orgAccountId) === String(orgId) || (orgId === 'null' && !u.orgAccountId));
@@ -961,6 +1039,11 @@ router.post('/switch-account', async (req, res) => {
     } else if (String(orgId).startsWith('panel-')) {
       const userId = orgId.split('-')[1];
       user = allUsers.find(u => String(u.id) === String(userId));
+    } else if (String(orgId).startsWith('staff-')) {
+      const effOrgId = orgId.split('-')[1];
+      user = allUsers.find(u => (String(u.orgAccountId) === String(effOrgId) || (effOrgId === 'null' && !u.orgAccountId)) && u.role === 'staff' && u.active) || 
+             allUsers.find(u => (String(u.orgAccountId) === String(effOrgId) || (effOrgId === 'null' && !u.orgAccountId)) && u.role === 'staff') ||
+             allUsers.find(u => String(u.orgAccountId) === String(effOrgId));
     } else {
       user = allUsers.find(u => (String(u.orgAccountId) === String(orgId) || (orgId === 'null' && !u.orgAccountId)) && u.active) || 
              allUsers.find(u => String(u.orgAccountId) === String(orgId) || (orgId === 'null' && !u.orgAccountId));

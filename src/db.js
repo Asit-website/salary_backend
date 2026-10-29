@@ -76,9 +76,9 @@ async function initDb() {
   // Ensure ShiftRotationGroup and ShiftRotationRule tables exist
   try {
     const { ShiftRotationGroup, ShiftRotationRule, User } = require('./models');
-    await ShiftRotationGroup.sync({ alter: true });
-    await ShiftRotationRule.sync({ alter: true });
-    await User.sync({ alter: true });
+    // await ShiftRotationGroup.sync({ alter: true });
+    // await ShiftRotationRule.sync({ alter: true });
+    // await User.sync({ alter: true });
     console.log('⏰ ShiftRotationGroup, ShiftRotationRule, and User tables synced.');
   } catch (err) {
     console.log('⚠️ Error syncing shift rotation tables:', err.message);

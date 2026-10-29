@@ -1,0 +1,3 @@
+[SECURITY WARNING] DATABASE_ENCRYPTION_KEY is not defined. Using fallback hash key.
+[SECURITY] DATABASE_ENCRYPTION_KEY not set — using dev-only fallback.
+AWS Rekognition service failed to initialize collections.
