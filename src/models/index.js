@@ -133,6 +133,7 @@ const defineBiometricPunch = require('./BiometricPunch');
 const defineOrgAddonSetting = require('./OrgAddonSetting');
 const defineAttendancePunch = require('./AttendancePunch');
 const defineAttendanceRegularization = require('./AttendanceRegularization');
+const defineLatePunchApproval = require('./LatePunchApproval');
 const defineStaffRosterChangeRequest = require('./StaffRosterChangeRequest');
 const definePmsAppraisalCycle = require('./PmsAppraisalCycle');
 const definePmsKraTemplate = require('./PmsKraTemplate');
@@ -282,6 +283,7 @@ const BiometricPunch = defineBiometricPunch(sequelize);
 const OrgAddonSetting = defineOrgAddonSetting(sequelize);
 const AttendancePunch = defineAttendancePunch(sequelize);
 const AttendanceRegularization = defineAttendanceRegularization(sequelize);
+const LatePunchApproval = defineLatePunchApproval(sequelize);
 const StaffRosterChangeRequest = defineStaffRosterChangeRequest(sequelize);
 const PmsAppraisalCycle = definePmsAppraisalCycle(sequelize);
 const PmsKraTemplate = definePmsKraTemplate(sequelize);
@@ -362,6 +364,11 @@ OrgAccount.hasMany(AttendanceRegularization, { foreignKey: 'orgAccountId', as: '
 AttendanceRegularization.belongsTo(OrgAccount, { foreignKey: 'orgAccountId', as: 'orgAccount', constraints: false });
 User.hasMany(AttendanceRegularization, { foreignKey: 'userId', as: 'regularizations', constraints: false });
 AttendanceRegularization.belongsTo(User, { foreignKey: 'userId', as: 'user', constraints: false });
+
+OrgAccount.hasMany(LatePunchApproval, { foreignKey: 'orgAccountId', as: 'latePunchApprovals', constraints: false });
+LatePunchApproval.belongsTo(OrgAccount, { foreignKey: 'orgAccountId', as: 'orgAccount', constraints: false });
+User.hasMany(LatePunchApproval, { foreignKey: 'userId', as: 'latePunchApprovals', constraints: false });
+LatePunchApproval.belongsTo(User, { foreignKey: 'userId', as: 'user', constraints: false });
 
 OrgAccount.hasMany(StaffRosterChangeRequest, { foreignKey: 'orgAccountId', as: 'rosterChangeRequests', constraints: false });
 StaffRosterChangeRequest.belongsTo(OrgAccount, { foreignKey: 'orgAccountId', as: 'orgAccount', constraints: false });
@@ -1243,6 +1250,7 @@ module.exports = {
   OrgAddonSetting,
   AttendancePunch,
   AttendanceRegularization,
+  LatePunchApproval,
   StaffRosterChangeRequest,
   PmsAppraisalCycle,
   PmsKraTemplate,

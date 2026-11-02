@@ -288,6 +288,185 @@ async function computeLatePenaltyMeta({ userId, monthKey, orgAccount, baseSalary
   };
 }
 
+/**
+ * Universal Dynamic Sandwich Rule Evaluator
+ * Handles non-working day clusters (Weekly Offs, Holidays, Clusters) across any day of the week.
+ * Finds immediate preceding & following working days and applies sandwich policy.
+ */
+function evaluateSandwichExclusions({
+  daysInMonth,
+  yy,
+  mm,
+  queryStart,
+  queryEnd,
+  attMap,
+  attObjMap = {},
+  paidLeaveSet = new Set(),
+  unpaidLeaveSet = new Set(),
+  holidaySet = new Set(),
+  rosterWOSet = new Set(),
+  rosterHSet = new Set(),
+  woConfig = [],
+  hasWeeklyOffAssignment = false,
+  isWeeklyOffForDate = (cfg, d) => d.getDay() === 0,
+  sandwichSettings = {},
+}) {
+  const woSandwichExclusions = new Set();
+  const holidaySandwichExclusions = new Set();
+  const sandwichAbsents = new Set();
+  const sandwichUnpaidOffs = new Set();
+
+  if (!sandwichSettings || !sandwichSettings.active) {
+    return { woSandwichExclusions, holidaySandwichExclusions, sandwichAbsents, sandwichUnpaidOffs };
+  }
+
+  const toKey = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+
+  const checkIsWO = (dt, k) => {
+    return rosterWOSet.has(k) || (hasWeeklyOffAssignment ? isWeeklyOffForDate(woConfig, dt) : dt.getDay() === 0);
+  };
+
+  const checkIsH = (dt, k) => {
+    return holidaySet.has(k) || rosterHSet.has(k);
+  };
+
+  const isNonWorkingDay = (dt, k) => {
+    const isWO = checkIsWO(dt, k);
+    const isH = checkIsH(dt, k);
+    if (!isWO && !isH) return false;
+    const s = attMap[k];
+    if (s === 'present' || s === 'overtime' || s === 'work_from_home' || s === 'half_day') {
+      return false;
+    }
+    const attRec = attObjMap[k];
+    if (attRec && (attRec.punchedInAt || (attRec.totalWorkHours && Number(attRec.totalWorkHours) > 0))) {
+      return false;
+    }
+    return true;
+  };
+
+  const getWorkingDayStatus = (dt, k) => {
+    const s = attMap[k];
+    if (paidLeaveSet.has(k) || s === 'leave') return 'paid_leave';
+    if (s === 'present' || s === 'overtime' || s === 'work_from_home') return 'present';
+    if (s === 'half_day') return 'half_day';
+    if (attObjMap[k]?.punchedInAt) return 'present';
+    if (unpaidLeaveSet.has(k)) return 'absent';
+    if (s === 'absent') return 'absent';
+
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const dCopy = new Date(dt);
+    dCopy.setHours(0, 0, 0, 0);
+    if (dCopy <= today) return 'absent';
+    return 'unknown';
+  };
+
+  let i = 1;
+  while (i <= daysInMonth) {
+    const dt = new Date(yy, mm - 1, i);
+    const k = toKey(dt);
+
+    if (!isNonWorkingDay(dt, k)) {
+      i++;
+      continue;
+    }
+
+    const cluster = [];
+    let j = i;
+    while (j <= daysInMonth) {
+      const cDt = new Date(yy, mm - 1, j);
+      const cKey = toKey(cDt);
+      if (isNonWorkingDay(cDt, cKey)) {
+        cluster.push({ date: cDt, key: cKey, isWO: checkIsWO(cDt, cKey), isH: checkIsH(cDt, cKey) });
+        j++;
+      } else {
+        break;
+      }
+    }
+
+    // Look backward for previous working day
+    let prevWorkingDate = new Date(cluster[0].date);
+    prevWorkingDate.setDate(prevWorkingDate.getDate() - 1);
+    let prevFound = false;
+    for (let step = 0; step < 15; step++) {
+      const pk = toKey(prevWorkingDate);
+      if (!isNonWorkingDay(prevWorkingDate, pk)) {
+        prevFound = true;
+        break;
+      }
+      prevWorkingDate.setDate(prevWorkingDate.getDate() - 1);
+    }
+
+    // Look forward for next working day
+    let nextWorkingDate = new Date(cluster[cluster.length - 1].date);
+    nextWorkingDate.setDate(nextWorkingDate.getDate() + 1);
+    let nextFound = false;
+    for (let step = 0; step < 15; step++) {
+      const nk = toKey(nextWorkingDate);
+      if (!isNonWorkingDay(nextWorkingDate, nk)) {
+        nextFound = true;
+        break;
+      }
+      nextWorkingDate.setDate(nextWorkingDate.getDate() + 1);
+    }
+
+    if (prevFound && nextFound) {
+      const prevKey = toKey(prevWorkingDate);
+      const nextKey = toKey(nextWorkingDate);
+      const prevStatus = getWorkingDayStatus(prevWorkingDate, prevKey);
+      const nextStatus = getWorkingDayStatus(nextWorkingDate, nextKey);
+
+      const isBothAbsent = (prevStatus === 'absent' && nextStatus === 'absent');
+      const isBothPaidLeave = (prevStatus === 'paid_leave' && nextStatus === 'paid_leave');
+      const isMixed = ((prevStatus === 'absent' && nextStatus === 'paid_leave') || (prevStatus === 'paid_leave' && nextStatus === 'absent'));
+
+      let targetDays = cluster;
+      if (sandwichSettings.consecutiveOffPolicy === 'deduct_first_only' && cluster.length > 1) {
+        targetDays = [cluster[0]];
+      } else if (sandwichSettings.consecutiveOffPolicy === 'deduct_last_only' && cluster.length > 1) {
+        targetDays = [cluster[cluster.length - 1]];
+      }
+
+      for (const item of targetDays) {
+        if (sandwichSettings.effectiveFrom && item.key < sandwichSettings.effectiveFrom) {
+          continue;
+        }
+
+        if (item.isWO && sandwichSettings.applyToWeeklyOff !== false) {
+          if (isBothAbsent && sandwichSettings.woTriggerAbsent !== false) {
+            woSandwichExclusions.add(item.key);
+            sandwichAbsents.add(item.key);
+          } else if (isBothPaidLeave && sandwichSettings.woTriggerPaidLeave !== false) {
+            woSandwichExclusions.add(item.key);
+            sandwichUnpaidOffs.add(item.key);
+          } else if (isMixed && sandwichSettings.woTriggerMixed !== false) {
+            woSandwichExclusions.add(item.key);
+            sandwichUnpaidOffs.add(item.key);
+          }
+        }
+
+        if (item.isH && sandwichSettings.applyToHoliday !== false) {
+          if (isBothAbsent && sandwichSettings.holidayTriggerAbsent !== false) {
+            holidaySandwichExclusions.add(item.key);
+            sandwichAbsents.add(item.key);
+          } else if (isBothPaidLeave && sandwichSettings.holidayTriggerPaidLeave !== false) {
+            holidaySandwichExclusions.add(item.key);
+            sandwichUnpaidOffs.add(item.key);
+          } else if (isMixed && sandwichSettings.holidayTriggerMixed !== false) {
+            holidaySandwichExclusions.add(item.key);
+            sandwichUnpaidOffs.add(item.key);
+          }
+        }
+      }
+    }
+
+    i = j;
+  }
+
+  return { woSandwichExclusions, holidaySandwichExclusions, sandwichAbsents, sandwichUnpaidOffs };
+}
+
 async function calculateSalary(userId, monthKey, options = {}) {
   const u = await User.findByPk(userId, {
     include: [
@@ -673,6 +852,7 @@ async function calculateSalary(userId, monthKey, options = {}) {
   let excludeWoLimit = 0;
   let excludeWoEffectiveDate = null;
   let salarySettingsObj = null;
+  let sandwichSettings = null;
   try {
     const orgAccountId = u.orgAccountId || u.org_account_id;
     if (orgAccountId) {
@@ -684,9 +864,15 @@ async function calculateSalary(userId, monthKey, options = {}) {
         excludeWoLimit = Number(salarySettingsObj?.excludeWoOnAbsentsLimit || 0);
         excludeWoEffectiveDate = salarySettingsObj?.excludeWoOnAbsentsEffectiveDate || null;
       }
+      const sandwichRow = await AppSetting.findOne({
+        where: { key: 'sandwich_rule_settings', orgAccountId }
+      });
+      if (sandwichRow?.value) {
+        sandwichSettings = JSON.parse(sandwichRow.value);
+      }
     }
   } catch (err) {
-    console.error('[Payroll] Failed to load excludeWoLimit:', err.message);
+    console.error('[Payroll] Failed to load excludeWoLimit / sandwichSettings:', err.message);
   }
 
   // Calculate extended range to cover full calendar weeks overlapping the month
@@ -1046,7 +1232,31 @@ async function calculateSalary(userId, monthKey, options = {}) {
     }
   }
 
-  // Classify calendar days (for current month, only count till today)
+  // Sandwich Rule Pre-calculation
+  const {
+    woSandwichExclusions,
+    holidaySandwichExclusions,
+    sandwichAbsents,
+    sandwichUnpaidOffs,
+  } = evaluateSandwichExclusions({
+    daysInMonth: end.getDate(),
+    yy,
+    mm,
+    queryStart,
+    queryEnd,
+    attMap,
+    attObjMap,
+    paidLeaveSet,
+    unpaidLeaveSet,
+    holidaySet,
+    rosterWOSet,
+    rosterHSet,
+    woConfig,
+    hasWeeklyOffAssignment,
+    isWeeklyOffForDate,
+    sandwichSettings,
+  });
+
   // Classify calendar days (for current month, only count till today)
   let present = 0, actualPresent = 0, half = 0, leave = 0, paidLeaveCount = 0, unpaidLeave = 0, weeklyOffCount = 0, holidaysCount = 0, absent = 0, woHolidayExtraDays = 0;
   let paidLeaveDates = [];
@@ -1070,10 +1280,18 @@ async function calculateSalary(userId, monthKey, options = {}) {
 
       if (isPaidL || s === 'leave') { leave += 1; const w = paidLeaveWeightMap[key] !== undefined ? paidLeaveWeightMap[key] : 1.0; paidLeaveCount += w; paidLeaveDates.push(key); }
       else if (isUnpaidL) { leave += 1; unpaidLeave += 1; }
-      else if (isH || s === 'holiday') { holidaysCount += 1; }
+      else if (isH || s === 'holiday') {
+        if (!holidaySandwichExclusions.has(key)) {
+          holidaysCount += 1;
+        } else if (sandwichAbsents.has(key)) {
+          absent += 1;
+        }
+      }
       else if (isWO || s === 'weekly_off') { 
-        if (!weekExclusions.has(key)) {
+        if (!weekExclusions.has(key) && !woSandwichExclusions.has(key)) {
           weeklyOffCount += 1; 
+        } else if (sandwichAbsents.has(key)) {
+          absent += 1;
         }
       }
       continue;
@@ -1204,21 +1422,39 @@ async function calculateSalary(userId, monthKey, options = {}) {
     }
 
     if (s === 'weekly_off') { 
-      if (!weekExclusions.has(key)) {
+      if (!weekExclusions.has(key) && !woSandwichExclusions.has(key)) {
         weeklyOffCount += 1; 
+      } else if (sandwichAbsents.has(key)) {
+        absent += 1;
       }
       continue; 
     }
-    if (s === 'holiday') { holidaysCount += 1; continue; }
+    if (s === 'holiday') {
+      if (!holidaySandwichExclusions.has(key)) {
+        holidaysCount += 1;
+      } else if (sandwichAbsents.has(key)) {
+        absent += 1;
+      }
+      continue;
+    }
 
     // No explicit attendance or 'absent' marked: check if it's a WO/Holiday first
     const isWO = rosterWOSet.has(key) || (hasWeeklyOffAssignment ? isWeeklyOffForDate(woConfig, dt) : false);
     const isH = holidaySet.has(key) || rosterHSet.has(key);
 
-    if (isH) { holidaysCount += 1; continue; }
+    if (isH) {
+      if (!holidaySandwichExclusions.has(key)) {
+        holidaysCount += 1;
+      } else if (sandwichAbsents.has(key)) {
+        absent += 1;
+      }
+      continue;
+    }
     if (isWO) { 
-      if (!weekExclusions.has(key)) {
+      if (!weekExclusions.has(key) && !woSandwichExclusions.has(key)) {
         weeklyOffCount += 1; 
+      } else if (sandwichAbsents.has(key)) {
+        absent += 1;
       }
       continue; 
     }
@@ -1779,6 +2015,12 @@ async function calculateSalary(userId, monthKey, options = {}) {
       present: actualPresent, half, leave, paidLeave: paidLeaveCount, paidLeaveDates,
       absent, weeklyOff: weeklyOffCount, holidays: holidaysCount, ratio, woHolidayExtraDays,
       excludedWeeklyOffDates: Array.from(weekExclusions),
+      sandwichExclusions: {
+        woSandwichExclusions: Array.from(woSandwichExclusions),
+        holidaySandwichExclusions: Array.from(holidaySandwichExclusions),
+        sandwichAbsents: Array.from(sandwichAbsents),
+        sandwichUnpaidOffs: Array.from(sandwichUnpaidOffs),
+      },
       payableDays: computedPayableUnits, // This is the gross payable days (e.g. 28)
       isRmo,
       rmoTargetHours,
@@ -2221,6 +2463,8 @@ async function generatePayslipPDF(data, savePath = null) {
       const isHolidayDate = holidayMap[dateKey] !== undefined || rosterHSet.has(dateKey) || rawStatus === 'holiday';
       const isWeeklyOffDate = isWeeklyOff(dObj, dateKey) || rawStatus === 'weekly_off';
 
+      const isSandwichExcluded = att?.sandwichExclusions?.sandwichAbsents?.includes(dateKey) || att?.sandwichExclusions?.sandwichUnpaidOffs?.includes(dateKey);
+
       if (isPresentStatus || (hasPunches && !isHalfDayStatus)) {
         badgeClass = 'badge-p';
         badgeText = 'P';
@@ -2230,6 +2474,9 @@ async function generatePayslipPDF(data, savePath = null) {
       } else if (isLeaveStatus) {
         badgeClass = 'badge-l';
         badgeText = 'L';
+      } else if (isSandwichExcluded) {
+        badgeClass = 'badge-a';
+        badgeText = 'A';
       } else if (isHolidayDate) {
         badgeClass = 'badge-h';
         badgeText = 'H';
@@ -2794,6 +3041,7 @@ module.exports = {
   computeEarlyExitMeta,
   computeBreakMeta,
   computeLatePenaltyMeta,
+  evaluateSandwichExclusions,
   generatePayslipPDF,
   generateFnFStatementPDF
 };

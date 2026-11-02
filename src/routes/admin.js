@@ -113,7 +113,9 @@ const {
   ClientAssignment,
   OrgAddonSetting,
   AttendancePunch,
+  LatePunchApproval,
 } = require("../models");
+const lateApprovalService = require("../services/lateApprovalService");
 
 const multer = require("multer");
 const { generateSecureFilename } = require("../utils/fileUploadSecurity");
@@ -141,6 +143,7 @@ const { Op } = require("sequelize");
 const {
   calculateSalary,
   generatePayslipPDF,
+  evaluateSandwichExclusions,
 } = require("../services/payrollService");
 const { calculateOvertime } = require("../services/overtimeService");
 const earlyExitService = require("../services/earlyExitService");
@@ -7072,6 +7075,7 @@ router.get("/staff/:id/salary-compute", async (req, res) => {
     // Classify calendar days (for current month, only count till today)
     let excludeWoLimit = 0;
     let excludeWoEffectiveDate = null;
+    let sandwichSettings = null;
     try {
       const salarySettingsRow = await AppSetting.findOne({
         where: { key: "salary_settings", orgAccountId: u.orgAccountId },
@@ -7080,6 +7084,12 @@ router.get("/staff/:id/salary-compute", async (req, res) => {
         const salarySettings = JSON.parse(salarySettingsRow.value);
         excludeWoLimit = Number(salarySettings?.excludeWoOnAbsentsLimit || 0);
         excludeWoEffectiveDate = salarySettings?.excludeWoOnAbsentsEffectiveDate || null;
+      }
+      const sandwichRow = await AppSetting.findOne({
+        where: { key: "sandwich_rule_settings", orgAccountId: u.orgAccountId },
+      });
+      if (sandwichRow?.value) {
+        sandwichSettings = JSON.parse(sandwichRow.value);
       }
     } catch (_) {}
 
@@ -7094,6 +7104,34 @@ router.get("/staff/:id/salary-compute", async (req, res) => {
       holidaySet,
       orgAccountId: u.orgAccountId,
       excludeWoEffectiveDate
+    });
+
+    const attObjMap = {};
+    for (const a of atts || []) {
+      attObjMap[toDateKey(a.date)] = a;
+    }
+    const {
+      woSandwichExclusions,
+      holidaySandwichExclusions,
+      sandwichAbsents,
+      sandwichUnpaidOffs,
+    } = evaluateSandwichExclusions({
+      daysInMonth: end.getDate(),
+      yy,
+      mm,
+      queryStart: start,
+      queryEnd: endKey,
+      attMap,
+      attObjMap,
+      paidLeaveSet,
+      unpaidLeaveSet,
+      holidaySet: holidaySet || new Set(),
+      rosterWOSet: new Set(),
+      rosterHSet: new Set(),
+      woConfig,
+      hasWeeklyOffAssignment,
+      isWeeklyOffForDate,
+      sandwichSettings,
     });
 
     let present = 0,
@@ -7141,13 +7179,19 @@ router.get("/staff/:id/salary-compute", async (req, res) => {
         continue;
       }
       if (s === "weekly_off") {
-        if (!weekExclusions.has(key)) {
+        if (!weekExclusions.has(key) && !woSandwichExclusions.has(key)) {
           weeklyOff += 1;
+        } else if (sandwichAbsents.has(key)) {
+          absent += 1;
         }
         continue;
       }
       if (s === "holiday") {
-        holidays += 1;
+        if (!holidaySandwichExclusions.has(key)) {
+          holidays += 1;
+        } else if (sandwichAbsents.has(key)) {
+          absent += 1;
+        }
         continue;
       }
 
@@ -7157,12 +7201,18 @@ router.get("/staff/:id/salary-compute", async (req, res) => {
       const isH = holidaySet.has(key);
 
       if (isH) {
-        holidays += 1;
+        if (!holidaySandwichExclusions.has(key)) {
+          holidays += 1;
+        } else if (sandwichAbsents.has(key)) {
+          absent += 1;
+        }
         continue;
       }
       if (isWO) {
-        if (!weekExclusions.has(key)) {
+        if (!weekExclusions.has(key) && !woSandwichExclusions.has(key)) {
           weeklyOff += 1;
+        } else if (sandwichAbsents.has(key)) {
+          absent += 1;
         }
         continue;
       }
@@ -7897,6 +7947,13 @@ router.post("/payroll/:cycleId/compute", async (req, res) => {
       ? JSON.parse(salarySettingsRow.value)
       : getDefaultSalarySettings();
     const settingsPayableDays = computePayableDays(salarySettings, yy, mm);
+
+    const sandwichSettingsRow = await AppSetting.findOne({
+      where: { key: "sandwich_rule_settings", orgAccountId: orgId },
+    });
+    const sandwichSettings = sandwichSettingsRow?.value
+      ? JSON.parse(sandwichSettingsRow.value)
+      : null;
 
     const start = `${monthKey}-01`;
 
@@ -8692,6 +8749,34 @@ router.post("/payroll/:cycleId/compute", async (req, res) => {
         excludeWoEffectiveDate: salarySettings?.excludeWoOnAbsentsEffectiveDate || null
       });
 
+      const attObjMap = {};
+      for (const a of atts || []) {
+        attObjMap[toDateKey(a.date)] = a;
+      }
+      const {
+        woSandwichExclusions,
+        holidaySandwichExclusions,
+        sandwichAbsents,
+        sandwichUnpaidOffs,
+      } = evaluateSandwichExclusions({
+        daysInMonth,
+        yy,
+        mm,
+        queryStart: start,
+        queryEnd: endKey,
+        attMap,
+        attObjMap,
+        paidLeaveSet,
+        unpaidLeaveSet,
+        holidaySet: _holidaySet || new Set(),
+        rosterWOSet,
+        rosterHSet,
+        woConfig,
+        hasWeeklyOffAssignment,
+        isWeeklyOffForDate,
+        sandwichSettings,
+      });
+
       for (let dnum = 1; dnum <= daysInMonth; dnum++) {
         const dt = new Date(yy, mm - 1, dnum);
         const key = `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, "0")}-${String(dnum).padStart(2, "0")}`;
@@ -8836,22 +8921,34 @@ router.post("/payroll/:cycleId/compute", async (req, res) => {
 
         // Handle other statuses with mutual exclusivity (WO/H)
         if (s === "weekly_off") {
-          if (!weekExclusions.has(key)) {
+          if (!weekExclusions.has(key) && !woSandwichExclusions.has(key)) {
             weeklyOff += 1;
+          } else if (sandwichAbsents.has(key)) {
+            absent += 1;
           }
           continue;
         }
         if (s === "holiday") {
-          holidays += 1;
+          if (!holidaySandwichExclusions.has(key)) {
+            holidays += 1;
+          } else if (sandwichAbsents.has(key)) {
+            absent += 1;
+          }
           continue;
         }
         if (isH) {
-          holidays += 1;
+          if (!holidaySandwichExclusions.has(key)) {
+            holidays += 1;
+          } else if (sandwichAbsents.has(key)) {
+            absent += 1;
+          }
           continue;
         }
         if (isWO) {
-          if (!weekExclusions.has(key)) {
+          if (!weekExclusions.has(key) && !woSandwichExclusions.has(key)) {
             weeklyOff += 1;
+          } else if (sandwichAbsents.has(key)) {
+            absent += 1;
           }
           continue;
         }
@@ -9545,6 +9642,12 @@ router.post("/payroll/:cycleId/compute", async (req, res) => {
         woHolidayExtraDays,
         ratio,
         excludedWeeklyOffDates: Array.from(weekExclusions),
+        sandwichExclusions: {
+          woSandwichExclusions: Array.from(woSandwichExclusions),
+          holidaySandwichExclusions: Array.from(holidaySandwichExclusions),
+          sandwichAbsents: Array.from(sandwichAbsents),
+          sandwichUnpaidOffs: Array.from(sandwichUnpaidOffs),
+        },
         payableDays: computedPayableUnits,
         overtimeMinutes: totalOvertimeMinutes,
         overtimeHours: Number(overtimeHours.toFixed(2)),
@@ -18068,6 +18171,202 @@ router.put("/settings/geo-fence", async (req, res) => {
   }
 });
 
+// --- Dynamic Sandwich Rule Settings (Stored in AppSetting: key 'sandwich_rule_settings') ---
+router.get("/settings/sandwich-rule", async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res);
+    if (!orgId) return;
+    const row = await AppSetting.findOne({
+      where: { key: "sandwich_rule_settings", orgAccountId: orgId },
+    });
+    const defaultSettings = {
+      active: false,
+      effectiveFrom: null,
+      applyToWeeklyOff: true,
+      woTriggerAbsent: true,
+      woTriggerPaidLeave: true,
+      woTriggerMixed: true,
+      applyToHoliday: true,
+      holidayTriggerAbsent: true,
+      holidayTriggerPaidLeave: true,
+      holidayTriggerMixed: true,
+      consecutiveOffPolicy: 'deduct_all',
+      applicableStaffType: 'all',
+    };
+    const value = row?.value ? { ...defaultSettings, ...JSON.parse(row.value) } : defaultSettings;
+    return res.json({ success: true, settings: value });
+  } catch (e) {
+    console.error("Error loading sandwich rule settings:", e);
+    return res
+      .status(500)
+      .json({ success: false, message: "Failed to load sandwich rule settings" });
+  }
+});
+
+router.put("/settings/sandwich-rule", async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res);
+    if (!orgId) return;
+    const body = req.body || {};
+    const next = {
+      active: !!body.active,
+      effectiveFrom: body.effectiveFrom || null,
+      applyToWeeklyOff: body.applyToWeeklyOff !== false,
+      woTriggerAbsent: body.woTriggerAbsent !== false,
+      woTriggerPaidLeave: body.woTriggerPaidLeave !== false,
+      woTriggerMixed: body.woTriggerMixed !== false,
+      applyToHoliday: body.applyToHoliday !== false,
+      holidayTriggerAbsent: body.holidayTriggerAbsent !== false,
+      holidayTriggerPaidLeave: body.holidayTriggerPaidLeave !== false,
+      holidayTriggerMixed: body.holidayTriggerMixed !== false,
+      consecutiveOffPolicy: body.consecutiveOffPolicy || 'deduct_all',
+      applicableStaffType: body.applicableStaffType || 'all',
+    };
+    const payload = JSON.stringify(next);
+    const [row] = await AppSetting.findOrCreate({
+      where: { key: "sandwich_rule_settings", orgAccountId: orgId },
+      defaults: { value: payload, orgAccountId: orgId },
+    });
+    if (row.value !== payload) await row.update({ value: payload });
+    return res.json({ success: true, settings: next });
+  } catch (e) {
+    console.error("Error saving sandwich rule settings:", e);
+    return res
+      .status(500)
+      .json({ success: false, message: "Failed to save sandwich rule settings" });
+  }
+});
+
+// --- Late Arrival Attendance Approval Settings & Review ---
+router.get("/settings/late-arrival-approval", async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res);
+    if (!orgId) return;
+    const settings = await lateApprovalService.getSettings(orgId);
+    return res.json({ success: true, settings });
+  } catch (e) {
+    console.error("Error loading late arrival approval settings:", e);
+    return res.status(500).json({ success: false, message: "Failed to load late arrival approval settings" });
+  }
+});
+
+router.put("/settings/late-arrival-approval", async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res);
+    if (!orgId) return;
+    const result = await lateApprovalService.saveSettings(orgId, req.body || {});
+    return res.json(result);
+  } catch (e) {
+    console.error("Error saving late arrival approval settings:", e);
+    return res.status(500).json({ success: false, message: "Failed to save late arrival approval settings" });
+  }
+});
+
+router.get("/late-approval/list", async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res);
+    if (!orgId) return;
+    const { month, status } = req.query;
+    const { Op } = require("sequelize");
+    const where = { orgAccountId: orgId };
+    if (status && status !== "ALL") where.status = status;
+    if (month && /^\d{4}-\d{2}$/.test(month)) {
+      where.date = { [Op.between]: [`${month}-01`, `${month}-31`] };
+    }
+
+    const list = await LatePunchApproval.findAll({
+      where,
+      include: [
+        {
+          model: User,
+          as: "user",
+          attributes: ["id", "phone", "role"],
+          include: [
+            {
+              model: StaffProfile,
+              as: "profile",
+              attributes: ["name", "staffId", "department", "designation"],
+            },
+          ],
+        },
+      ],
+      order: [
+        ["date", "DESC"],
+        ["createdAt", "DESC"],
+      ],
+    });
+
+    return res.json({ success: true, list });
+  } catch (e) {
+    console.error("Error fetching late punch approval list:", e);
+    return res.status(500).json({ success: false, message: "Failed to fetch late punch approval list" });
+  }
+});
+
+router.patch("/late-approval/:id/review", async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res);
+    if (!orgId) return;
+    const { id } = req.params;
+    const { status, adminRemarks } = req.body;
+    if (!["APPROVED", "REJECTED"].includes(status)) {
+      return res.status(400).json({ success: false, message: "Invalid status" });
+    }
+
+    const record = await LatePunchApproval.findOne({
+      where: { id, orgAccountId: orgId },
+    });
+    if (!record) {
+      return res.status(404).json({ success: false, message: "Late punch approval record not found" });
+    }
+
+    await record.update({
+      status,
+      adminRemarks: adminRemarks || null,
+      reviewedBy: req.user?.id || null,
+      reviewedAt: new Date(),
+    });
+
+    if (status === "APPROVED") {
+      let att = await Attendance.findOne({
+        where: { userId: record.userId, date: record.date },
+      });
+      if (att) {
+        await att.update({
+          status: "PRESENT",
+          punchedInAt: record.punchedInAt || att.punchedInAt,
+        });
+      } else {
+        await Attendance.create({
+          userId: record.userId,
+          date: record.date,
+          punchedInAt: record.punchedInAt,
+          orgAccountId: orgId,
+          status: "PRESENT",
+        });
+      }
+    } else if (status === "REJECTED") {
+      let att = await Attendance.findOne({
+        where: { userId: record.userId, date: record.date },
+      });
+      if (att && att.status === "PENDING_APPROVAL") {
+        await att.update({
+          status: "REJECTED",
+        });
+      }
+    }
+
+    return res.json({
+      success: true,
+      message: `Late punch approval ${status.toLowerCase()} successfully`,
+      record,
+    });
+  } catch (e) {
+    console.error("Error reviewing late punch approval:", e);
+    return res.status(500).json({ success: false, message: "Failed to review late punch approval" });
+  }
+});
+
 // --- RMO Configuration Settings ---
 router.get("/rmo-settings", async (req, res) => {
   try {
@@ -22796,7 +23095,8 @@ router.get("/attendance", async (req, res) => {
 
     const data = rows.map((r) => {
       let status = String(r.status || "").toLowerCase();
-      if (Number(r.breakTotalSeconds) === -2) status = "half_day";
+      if (status === "pending_approval") { /* keep status as pending_approval */ }
+      else if (Number(r.breakTotalSeconds) === -2) status = "half_day";
       else if (Number(r.breakTotalSeconds) === -1) status = "leave";
       else if (!status) {
         status = "absent";
@@ -22813,7 +23113,7 @@ router.get("/attendance", async (req, res) => {
       let earlyExitMinutes = 0;
 
       const isPresentLike =
-        status === "present" || status === "half_day" || status === "overtime";
+        status === "present" || status === "half_day" || status === "overtime" || status === "pending_approval";
 
       if (r.punchedInAt && isPresentLike) {
         // 1. Check Roster Override (Highest Priority)
@@ -33530,6 +33830,7 @@ router.get("/reports/labour-wages", async (req, res) => {
       startDate,
       endDate,
       department,
+      salaryTemplateId,
       staffType,
       search,
       defaultHourlyRate,
@@ -33634,6 +33935,11 @@ router.get("/reports/labour-wages", async (req, res) => {
           where: Object.keys(profileWhereClause).length > 0 ? profileWhereClause : undefined,
         },
         {
+          model: SalaryTemplate,
+          as: "salaryTemplate",
+          required: false,
+        },
+        {
           model: StaffSalaryAssignment,
           as: "salaryAssignments",
           required: false,
@@ -33643,11 +33949,22 @@ router.get("/reports/labour-wages", async (req, res) => {
       order: [["id", "ASC"]],
     });
 
-    // Optional Search filter in memory
     let filteredStaff = staffList;
+    if (salaryTemplateId && salaryTemplateId !== "all") {
+      const targetTplId = Number(salaryTemplateId);
+      filteredStaff = staffList.filter((s) => {
+        const directId = s.salaryTemplateId ? Number(s.salaryTemplateId) : null;
+        const asgId = s.salaryAssignments?.[0]?.salaryTemplateId
+          ? Number(s.salaryAssignments[0].salaryTemplateId)
+          : null;
+        return directId === targetTplId || asgId === targetTplId;
+      });
+    }
+
+    // Optional Search filter in memory
     if (search && String(search).trim()) {
       const q = String(search).trim().toLowerCase();
-      filteredStaff = staffList.filter((s) => {
+      filteredStaff = filteredStaff.filter((s) => {
         const name = (s.profile?.name || "").toLowerCase();
         const staffId = (s.profile?.staffId || "").toLowerCase();
         const phone = (s.phone || "").toLowerCase();
@@ -34011,6 +34328,8 @@ router.get("/reports/labour-wages", async (req, res) => {
         department: p.department || "General",
         designation: p.designation || "Worker",
         staffType: p.staffType || "Worker",
+        salaryTemplateId: staff.salaryTemplateId || staff.salaryAssignments?.[0]?.salaryTemplateId || null,
+        salaryTemplateName: staff.salaryTemplate?.name || staff.salaryAssignments?.[0]?.template?.name || "-",
         grossSalary: gross,
         shiftHours: workerShiftHours,
         shiftName: shiftTpl?.name || "Standard",
@@ -34052,6 +34371,7 @@ router.get("/reports/labour-wages", async (req, res) => {
         { header: "Department", key: "department", width: 16 },
         { header: "Designation", key: "designation", width: 16 },
         { header: "Staff Type", key: "staffType", width: 14 },
+        { header: "Salary Template", key: "salaryTemplate", width: 16 },
       ];
 
       for (const d of daysList) {
@@ -34115,6 +34435,7 @@ router.get("/reports/labour-wages", async (req, res) => {
           r.department,
           r.designation,
           r.staffType,
+          r.salaryTemplateName || "-",
         ];
 
         for (const d of daysList) {
@@ -34147,7 +34468,7 @@ router.get("/reports/labour-wages", async (req, res) => {
           cell.font = { name: "Calibri", size: 10 };
           cell.alignment = {
             vertical: "middle",
-            horizontal: colNum > 6 && colNum < rowVals.length ? "right" : "left",
+            horizontal: colNum > 7 && colNum < rowVals.length ? "right" : "left",
           };
           cell.border = {
             top: { style: "thin", color: { argb: "FFE2E8F0" } },
@@ -34164,6 +34485,7 @@ router.get("/reports/labour-wages", async (req, res) => {
         "",
         "",
         `TOTAL (${reportRows.length} Workers)`,
+        "",
         "",
         "",
         "",
@@ -34188,7 +34510,7 @@ router.get("/reports/labour-wages", async (req, res) => {
           left: { style: "thin", color: { argb: "FFBBDDFF" } },
           right: { style: "thin", color: { argb: "FFBBDDFF" } },
         };
-        if (colNum > 6 && colNum < totalVals.length) {
+        if (colNum > 7 && colNum < totalVals.length) {
           cell.alignment = { horizontal: "right", vertical: "middle" };
         }
       });
@@ -34213,9 +34535,16 @@ router.get("/reports/labour-wages", async (req, res) => {
       )
     ).sort();
 
+    const allOrgTemplates = await SalaryTemplate.findAll({
+      where: { orgAccountId: orgId, active: true },
+      attributes: ["id", "name"],
+      order: [["name", "ASC"]],
+    });
+
     return res.json({
       success: true,
       departments: allOrgDepartments,
+      salaryTemplates: allOrgTemplates,
       weekInfo: {
         startDate,
         endDate,

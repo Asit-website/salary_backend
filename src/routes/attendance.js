@@ -800,7 +800,7 @@ router.get('/history', async (req, res) => {
     const userLateAsg = await StaffLatePunchInAssignment.findOne({
       where: {
         userId,
-        orgAccountId: req.user.orgAccountId,
+        orgAccountId: req.user.orgAccountId || (await User.findByPk(req.user.id))?.orgAccountId,
         active: true,
         effectiveFrom: { [Op.lte]: new Date().toISOString().split('T')[0] }
       },
@@ -1203,7 +1203,7 @@ router.post('/punch-in', upload.single('photo'), async (req, res) => {
         master = await Attendance.create({
           userId: req.user.id,
           date: key,
-          orgAccountId: req.user.orgAccountId,
+          orgAccountId: req.user.orgAccountId || (await User.findByPk(req.user.id))?.orgAccountId,
           punchedInAt: now,
           punchInPhotoUrl: photoUrl,
           latitude: lat,
@@ -1231,7 +1231,7 @@ router.post('/punch-in', upload.single('photo'), async (req, res) => {
 
       const punchNumber = punches.length + 1;
       const punchRecord = await AttendancePunch.create({
-        orgAccountId: req.user.orgAccountId,
+        orgAccountId: req.user.orgAccountId || (await User.findByPk(req.user.id))?.orgAccountId,
         userId: req.user.id,
         attendanceId: master.id,
         date: key,
@@ -1281,7 +1281,7 @@ router.post('/punch-in', upload.single('photo'), async (req, res) => {
       ? await existing.update({
         punchedInAt: now,
         punchInPhotoUrl: photoUrl,
-        orgAccountId: req.user.orgAccountId,
+        orgAccountId: req.user.orgAccountId || (await User.findByPk(req.user.id))?.orgAccountId,
         latitude: lat,
         longitude: lng,
         address
@@ -1291,7 +1291,7 @@ router.post('/punch-in', upload.single('photo'), async (req, res) => {
         date: key,
         punchedInAt: now,
         punchInPhotoUrl: photoUrl,
-        orgAccountId: req.user.orgAccountId,
+        orgAccountId: req.user.orgAccountId || (await User.findByPk(req.user.id))?.orgAccountId,
         latitude: lat,
         longitude: lng,
         address
@@ -1303,7 +1303,7 @@ router.post('/punch-in', upload.single('photo'), async (req, res) => {
       const daysInMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
       const eotResult = await earlyOvertimeService.calculateEarlyOvertime({
         userId: req.user.id,
-        orgAccountId: req.user.orgAccountId,
+        orgAccountId: req.user.orgAccountId || (await User.findByPk(req.user.id))?.orgAccountId,
         date: key,
         punchedInAt: now
       }, orgAccount, daysInMonth, now);
@@ -1326,7 +1326,7 @@ router.post('/punch-in', upload.single('photo'), async (req, res) => {
       const daysInMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
       const lpResult = await latePunchInService.calculateLatePenalty({
         userId: req.user.id,
-        orgAccountId: req.user.orgAccountId,
+        orgAccountId: req.user.orgAccountId || (await User.findByPk(req.user.id))?.orgAccountId,
         date: key,
         punchedInAt: now
       }, orgAccount, daysInMonth, now);
@@ -1352,7 +1352,7 @@ router.post('/punch-in', upload.single('photo'), async (req, res) => {
 
           const existingNotif = await Notification.findOne({
             where: {
-              orgAccountId: req.user.orgAccountId,
+              orgAccountId: req.user.orgAccountId || (await User.findByPk(req.user.id))?.orgAccountId,
               type: 'late',
               message: {
                 [Op.and]: [
@@ -1394,7 +1394,7 @@ router.post('/punch-in', upload.single('photo'), async (req, res) => {
             });
           } else {
             await Notification.create({
-              orgAccountId: req.user.orgAccountId,
+              orgAccountId: req.user.orgAccountId || (await User.findByPk(req.user.id))?.orgAccountId,
               title: newTitle,
               message: newMessage,
               type: 'late',
@@ -1407,6 +1407,22 @@ router.post('/punch-in', upload.single('photo'), async (req, res) => {
       }
     } catch (lpErr) {
       console.error('Mobile Late Penalty calculation error:', lpErr);
+    }
+
+    // Late Arrival Approval check if enabled in settings
+    try {
+      const lateApprovalService = require('../services/lateApprovalService');
+      const lateApprRes = await lateApprovalService.checkAndCreateLateApproval({
+        userId: req.user.id,
+        orgAccountId: req.user.orgAccountId || (await User.findByPk(req.user.id))?.orgAccountId,
+        date: key,
+        punchedInAt: now
+      });
+      if (lateApprRes && lateApprRes.isRequired) {
+        await record.update({ status: 'PENDING_APPROVAL' });
+      }
+    } catch (laErr) {
+      console.error('Mobile Late arrival approval check error:', laErr);
     }
 
     logAudit({
@@ -2620,7 +2636,7 @@ router.post('/qr-punch', upload.single('photo'), async (req, res) => {
         const daysInMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
         const eotResult = await earlyOvertimeService.calculateEarlyOvertime({
           userId: req.user.id,
-          orgAccountId: req.user.orgAccountId,
+          orgAccountId: req.user.orgAccountId || (await User.findByPk(req.user.id))?.orgAccountId,
           date: dateKey,
           punchedInAt: now
         }, orgAccount, daysInMonth, now);
@@ -2643,7 +2659,7 @@ router.post('/qr-punch', upload.single('photo'), async (req, res) => {
         const daysInMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
         const lpResult = await latePunchInService.calculateLatePenalty({
           userId: req.user.id,
-          orgAccountId: req.user.orgAccountId,
+          orgAccountId: req.user.orgAccountId || (await User.findByPk(req.user.id))?.orgAccountId,
           date: dateKey,
           punchedInAt: now
         }, orgAccount, daysInMonth, now);
@@ -2669,7 +2685,7 @@ router.post('/qr-punch', upload.single('photo'), async (req, res) => {
 
             const existingNotif = await Notification.findOne({
               where: {
-                orgAccountId: req.user.orgAccountId,
+                orgAccountId: req.user.orgAccountId || (await User.findByPk(req.user.id))?.orgAccountId,
                 type: 'late',
                 message: {
                   [Op.and]: [
@@ -2711,7 +2727,7 @@ router.post('/qr-punch', upload.single('photo'), async (req, res) => {
               });
             } else {
               await Notification.create({
-                orgAccountId: req.user.orgAccountId,
+                orgAccountId: req.user.orgAccountId || (await User.findByPk(req.user.id))?.orgAccountId,
                 title: newTitle,
                 message: newMessage,
                 type: 'late',
@@ -2724,6 +2740,22 @@ router.post('/qr-punch', upload.single('photo'), async (req, res) => {
         }
       } catch (lpErr) {
         console.error('QR Late Penalty error:', lpErr);
+      }
+
+      // Late Arrival Approval check if enabled in settings
+      try {
+        const lateApprovalService = require('../services/lateApprovalService');
+        const lateApprRes = await lateApprovalService.checkAndCreateLateApproval({
+          userId: req.user.id,
+          orgAccountId: req.user.orgAccountId || (await User.findByPk(req.user.id))?.orgAccountId,
+          date: dateKey,
+          punchedInAt: now
+        });
+        if (lateApprRes && lateApprRes.isRequired) {
+          await record.update({ status: 'PENDING_APPROVAL' });
+        }
+      } catch (laErr) {
+        console.error('QR Late arrival approval check error:', laErr);
       }
 
     } else {
@@ -2786,7 +2818,7 @@ router.post('/qr-punch', upload.single('photo'), async (req, res) => {
 
       const otResult = await calculateOvertime({
         userId: req.user.id,
-        orgAccountId: req.user.orgAccountId,
+        orgAccountId: req.user.orgAccountId || (await User.findByPk(req.user.id))?.orgAccountId,
         date: record.date,
         totalWorkHours: totalWorkHours,
         punchedInAt: record.punchedInAt,
@@ -2795,7 +2827,7 @@ router.post('/qr-punch', upload.single('photo'), async (req, res) => {
 
       const eeResult = await earlyExitService.calculateEarlyExit({
         userId: req.user.id,
-        orgAccountId: req.user.orgAccountId,
+        orgAccountId: req.user.orgAccountId || (await User.findByPk(req.user.id))?.orgAccountId,
         date: record.date,
         punchedOutAt: now
       }, orgAccount, daysInMonth, now);
