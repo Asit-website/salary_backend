@@ -9039,7 +9039,7 @@ router.post("/payroll/:cycleId/compute", async (req, res) => {
             // Remove strict orgAccountId check here because older claims might have it null,
             // and we already verified 'u' belongs to 'orgId' in the User.findAll above.
             status: "settled",
-            settledAt: { [Op.gte]: start, [Op.lte]: endKey },
+            expenseDate: { [Op.gte]: start, [Op.lte]: endKey },
           },
         });
 
@@ -16224,6 +16224,42 @@ router.post("/expenses/:claimId/pay", async (req, res) => {
   } catch (e) {
     console.error("Expense direct payment error:", e);
     return res.status(500).json({ success: false, message: "Failed to process expense payment" });
+  }
+});
+
+// Delete expense claim (org-scoped)
+router.delete("/expenses/:claimId", async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res);
+    if (!orgId) return;
+
+    const id = Number(req.params.claimId);
+
+    const orgStaffIds = (
+      await User.findAll({
+        where: { orgAccountId: orgId, role: "staff" },
+        attributes: ["id"],
+      })
+    ).map((u) => u.id);
+
+    const row = await ExpenseClaim.findOne({
+      where: { id, userId: orgStaffIds },
+    });
+
+    if (!row) {
+      return res
+        .status(404)
+        .json({ success: false, message: "Claim not found" });
+    }
+
+    await row.destroy();
+
+    return res.json({ success: true, message: "Expense claim deleted successfully" });
+  } catch (e) {
+    console.error("Delete expense error:", e);
+    return res
+      .status(500)
+      .json({ success: false, message: "Failed to delete expense claim" });
   }
 });
 

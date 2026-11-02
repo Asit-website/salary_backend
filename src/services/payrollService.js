@@ -1572,7 +1572,7 @@ async function calculateSalary(userId, monthKey, options = {}) {
       where: {
         userId: u.id,
         status: 'settled',
-        settledAt: { [Op.gte]: start, [Op.lte]: endKey }
+        expenseDate: { [Op.gte]: start, [Op.lte]: endKey }
       }
     });
 
