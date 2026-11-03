@@ -8801,7 +8801,7 @@ router.post("/payroll/:cycleId/compute", async (req, res) => {
 
         if (s === "present" || s === "overtime" || s === "work_from_home") {
           if (isH) workedHolidayDays += 1;
-          if (isWO) workedWeeklyOffDays += 1;
+          else if (isWO) workedWeeklyOffDays += 1;
           const activeAsg = payRuleAssignments
             .filter(
               (a) =>
@@ -8862,7 +8862,7 @@ router.post("/payroll/:cycleId/compute", async (req, res) => {
 
         if (s === "half_day") {
           if (isH) workedHolidayDays += 0.5;
-          if (isWO) workedWeeklyOffDays += 0.5;
+          else if (isWO) workedWeeklyOffDays += 0.5;
           const activeAsg = payRuleAssignments
             .filter(
               (a) =>
@@ -9037,7 +9037,9 @@ router.post("/payroll/:cycleId/compute", async (req, res) => {
             const hasWorkedHolidayOrWo = (workedHolidayDays > 0 || workedWeeklyOffDays > 0 || (woHolidayExtraDays || 0) > 0);
             if (hasWorkedHolidayOrWo) {
               computedPayableUnits = daysForRate; // Base capped at exactly 30
-              const extraWorkedDays = (workedHolidayDays + workedWeeklyOffDays + (woHolidayExtraDays || 0));
+              const extraWorkedDays = (workedHolidayDays + workedWeeklyOffDays) > 0
+                ? (workedHolidayDays + workedWeeklyOffDays)
+                : (woHolidayExtraDays || 0);
               extraHolidayWoBenefit = Math.round(extraWorkedDays * dailySalary);
               if (extraWorkedDays > 0) {
                 woHolidayExtraDays = extraWorkedDays;
@@ -16373,13 +16375,27 @@ router.get("/expenses", async (req, res) => {
       where.expenseDate = { [Op.lte]: endDate };
     }
 
-    const offset = (Number(page) - 1) * Number(limit);
-    const { count, rows } = await ExpenseClaim.findAndCountAll({
+    let pageNum = Math.max(1, Number(page) || 1);
+    const limitNum = Math.max(1, Number(limit) || 15);
+    let offset = (pageNum - 1) * limitNum;
+    let { count, rows } = await ExpenseClaim.findAndCountAll({
       where,
       order: [["createdAt", "DESC"]],
-      limit: Number(limit),
+      limit: limitNum,
       offset,
     });
+
+    // Auto-fallback to page 1 if current page offset is out of bounds for the filtered result
+    if (rows.length === 0 && count > 0 && pageNum > 1) {
+      pageNum = 1;
+      const fallbackResult = await ExpenseClaim.findAndCountAll({
+        where,
+        order: [["createdAt", "DESC"]],
+        limit: limitNum,
+        offset: 0,
+      });
+      rows = fallbackResult.rows;
+    }
 
     // Stats for this org
     const allClaims = await ExpenseClaim.findAll({
@@ -16407,7 +16423,7 @@ router.get("/expenses", async (req, res) => {
       department: staffMap[r.userId]?.department || "-",
     }));
 
-    return res.json({ success: true, data, total: count, stats });
+    return res.json({ success: true, data, total: count, page: pageNum, stats });
   } catch (e) {
     console.error("Expense list error:", e);
     return res

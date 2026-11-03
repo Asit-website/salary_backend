@@ -1495,7 +1495,9 @@ async function calculateSalary(userId, monthKey, options = {}) {
         const hasWorkedHolidayOrWo = (workedHolidayDays > 0 || workedWeeklyOffDays > 0 || (woHolidayExtraDays || 0) > 0);
         if (hasWorkedHolidayOrWo) {
           computedPayableUnits = daysForRate; // Base capped at exactly 30
-          const extraWorkedDays = (workedHolidayDays + workedWeeklyOffDays + (woHolidayExtraDays || 0));
+          const extraWorkedDays = (workedHolidayDays + workedWeeklyOffDays) > 0
+            ? (workedHolidayDays + workedWeeklyOffDays)
+            : (woHolidayExtraDays || 0);
           extraHolidayWoBenefit = Math.round(extraWorkedDays * dailySalary);
           if (extraWorkedDays > 0) {
             woHolidayExtraDays = extraWorkedDays;
