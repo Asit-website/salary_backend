@@ -60,7 +60,7 @@ function coerceSalarySettings(input) {
     ? input.esiEffectiveDate
     : null;
   const fixedDaysCalcRuleInput = input?.fixedDaysCalcRule || input?.thirtyDaysCalcRule;
-  const fixedDaysCalcRule = ["deduct_extra_days", "actual_earned_days"].includes(String(fixedDaysCalcRuleInput))
+  const fixedDaysCalcRule = ["deduct_extra_days", "actual_earned_days", "capped_30_benefit"].includes(String(fixedDaysCalcRuleInput))
     ? String(fixedDaysCalcRuleInput)
     : "deduct_extra_days";
   const pfCapEnabled = input?.pfCapEnabled === true;

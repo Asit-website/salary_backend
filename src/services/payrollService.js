@@ -1258,7 +1258,7 @@ async function calculateSalary(userId, monthKey, options = {}) {
   });
 
   // Classify calendar days (for current month, only count till today)
-  let present = 0, actualPresent = 0, half = 0, leave = 0, paidLeaveCount = 0, unpaidLeave = 0, weeklyOffCount = 0, holidaysCount = 0, absent = 0, woHolidayExtraDays = 0;
+  let present = 0, actualPresent = 0, half = 0, leave = 0, paidLeaveCount = 0, unpaidLeave = 0, weeklyOffCount = 0, holidaysCount = 0, absent = 0, woHolidayExtraDays = 0, workedHolidayDays = 0, workedWeeklyOffDays = 0;
   let paidLeaveDates = [];
   const daysInMonth = end.getDate();
   const daysForRate = settingsPayableDays > 0 ? settingsPayableDays : daysInMonth;
@@ -1318,6 +1318,7 @@ async function calculateSalary(userId, monthKey, options = {}) {
       const meetsMinHours = minWorkHours <= 0 ? true : (workedHours >= minWorkHours || (attRec?.punchedInAt && !attRec?.punchedOutAt));
 
       if (isH) {
+        workedHolidayDays += 1;
         if (extraObj.woHolidayAsExtraDay && meetsMinHours) {
           holidaysCount += 1;
           present += 1;
@@ -1333,6 +1334,7 @@ async function calculateSalary(userId, monthKey, options = {}) {
         }
       }
       else if (isWO) {
+        workedWeeklyOffDays += 1;
         if (extraObj.woHolidayAsExtraDay && meetsMinHours) {
           weeklyOffCount += 1;
           present += 1;
@@ -1374,6 +1376,7 @@ async function calculateSalary(userId, monthKey, options = {}) {
       const meetsMinHours = minWorkHours <= 0 ? true : (workedHours >= minWorkHours || (attRec?.punchedInAt && !attRec?.punchedOutAt));
 
       if (isH) {
+        workedHolidayDays += 0.5;
         if (extraObj.woHolidayAsExtraDay && meetsMinHours) {
           holidaysCount += 1;
           present += 0.5;
@@ -1388,6 +1391,7 @@ async function calculateSalary(userId, monthKey, options = {}) {
         }
       }
       else if (isWO) {
+        workedWeeklyOffDays += 0.5;
         if (extraObj.woHolidayAsExtraDay && meetsMinHours) {
           weeklyOffCount += 1;
           present += 0.5;
@@ -1470,11 +1474,45 @@ async function calculateSalary(userId, monthKey, options = {}) {
   let payableUnits = present + paidLeaveCount + weeklyOffCount + holidaysCount;
   const coercedSettings = coerceSalarySettings(salarySettingsObj);
   const isFixedDaysMode = ['every_30', 'every_28', 'every_26'].includes(coercedSettings.payableDaysMode);
-  const useActualEarned = isFixedDaysMode && (coercedSettings.fixedDaysCalcRule === 'actual_earned_days' || coercedSettings.thirtyDaysCalcRule === 'actual_earned_days');
+  const fixedCalcRule = coercedSettings.fixedDaysCalcRule || coercedSettings.thirtyDaysCalcRule || 'deduct_extra_days';
 
-  const computedPayableUnits = useActualEarned
-    ? payableUnits
-    : Math.max(0, payableUnits - (daysInMonth - daysForRate));
+  let computedPayableUnits = payableUnits;
+  let extraHolidayWoBenefit = 0;
+  const totalBaseEarnings = Object.values(earnings || {}).reduce((s, v) => s + (Number(v) || 0), 0);
+  const baseGross = Number(u.grossSalary) > 0 ? Number(u.grossSalary) : (Number(sd.grossSalary) > 0 ? Number(sd.grossSalary) : totalBaseEarnings);
+  const dailySalary = daysForRate > 0 ? (baseGross / daysForRate) : (baseGross / 30);
+
+  if (isFixedDaysMode) {
+    if (fixedCalcRule === 'actual_earned_days') {
+      computedPayableUnits = payableUnits;
+    } else if (fixedCalcRule === 'capped_30_benefit') {
+      if (payableUnits <= daysForRate) {
+        // Earned <= 30 (e.g. 29 earned days): Pay exact earned days without -1 deduction
+        computedPayableUnits = payableUnits;
+      } else {
+        // Earned > 30:
+        // Extra benefit applies ONLY if staff was present/worked on Holiday or Weekly Off
+        const hasWorkedHolidayOrWo = (workedHolidayDays > 0 || workedWeeklyOffDays > 0 || (woHolidayExtraDays || 0) > 0);
+        if (hasWorkedHolidayOrWo) {
+          computedPayableUnits = daysForRate; // Base capped at exactly 30
+          const extraWorkedDays = (workedHolidayDays + workedWeeklyOffDays + (woHolidayExtraDays || 0));
+          extraHolidayWoBenefit = Math.round(extraWorkedDays * dailySalary);
+          if (extraWorkedDays > 0) {
+            woHolidayExtraDays = extraWorkedDays;
+          }
+        } else {
+          // Normal staff who didn't work on holiday/WO: Exactly 30 days, no extra benefit
+          computedPayableUnits = daysForRate;
+        }
+      }
+    } else {
+      // Rule 1: Fixed Base Days (deduct extra calendar days)
+      computedPayableUnits = Math.max(0, payableUnits - (daysInMonth - daysForRate));
+    }
+  } else {
+    computedPayableUnits = payableUnits;
+  }
+
   let ratio = daysForRate > 0 ? Math.max(0, computedPayableUnits / daysForRate) : 0;
 
 
@@ -1628,6 +1666,9 @@ async function calculateSalary(userId, monthKey, options = {}) {
       finalEarnings[k] = Math.round(Number(finalEarnings[k] || 0) * ratio);
     }
   });
+  if (extraHolidayWoBenefit > 0) {
+    finalEarnings.OT_PAYABLE_DAYS = (finalEarnings.OT_PAYABLE_DAYS || 0) + extraHolidayWoBenefit;
+  }
 
   // FETCH APPROVED LEAVE ENCASHMENTS (Not pro-rated)
   try {

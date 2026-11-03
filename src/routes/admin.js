@@ -5056,6 +5056,9 @@ router.get("/payroll/monthly-summary-excel", async (req, res) => {
       overtimePay: "OT PAY",
       earlyOvertimePay: "EARLY OT",
       special_allowance: "SPECIAL ALLOW.",
+      OT_PAYABLE_DAYS: "OT PAYABLE DAYS",
+      ot_payable_days: "OT PAYABLE DAYS",
+      holiday_wo_benefit: "OT PAYABLE DAYS",
       travel_allowance: "TRAVEL ALLOW.",
       no_absent_pay: "NO ABSENT PAY",
       pf: "P.F.",
@@ -5598,6 +5601,8 @@ router.get("/payroll/:cycleId/salary-register-excel", async (req, res) => {
       earlyOvertimePay: "EARLY OT",
       fooding: "FOODING",
       special_allowance: "SPECIAL ALLOW.",
+      ot_payable_days: "OT PAYABLE DAYS",
+      holiday_wo_benefit: "OT PAYABLE DAYS",
       travel_allowance: "TRAVEL ALLOW.",
       no_absent_pay: "NO ABSENT PAY",
       pf: "P.F.",
@@ -6285,6 +6290,8 @@ router.get("/payroll/salary-register-template-wise-excel", async (req, res) => {
         earlyOvertimePay: "EARLY OT",
         fooding: "FOODING",
         special_allowance: "SPECIAL ALLOW.",
+      ot_payable_days: "OT PAYABLE DAYS",
+      holiday_wo_benefit: "OT PAYABLE DAYS",
         travel_allowance: "TRAVEL ALLOW.",
         no_absent_pay: "NO ABSENT PAY",
         pf: "P.F.",
@@ -8722,11 +8729,14 @@ router.post("/payroll/:cycleId/compute", async (req, res) => {
       weeklyOff = 0;
       holidays = 0;
       let woHolidayExtraDays = 0;
+      let workedHolidayDays = 0;
+      let workedWeeklyOffDays = 0;
       let multiplierBreakdown = [];
       let paidLeaveDates = [];
       const daysInMonth = end.getDate();
       const daysForRate = settingsPayableDays > 0 ? settingsPayableDays : daysInMonth;
-      const dailySalary = sd.grossSalary / daysForRate;
+      const baseGrossForRate = Number(sd.grossSalary) > 0 ? Number(sd.grossSalary) : Object.values(baseE || {}).reduce((s, v) => s + (Number(v) || 0), 0);
+      const dailySalary = daysForRate > 0 ? (baseGrossForRate / daysForRate) : 0;
       const now = new Date();
       const todayStart = new Date(
         now.getFullYear(),
@@ -8790,6 +8800,8 @@ router.post("/payroll/:cycleId/compute", async (req, res) => {
           rosterHSet.has(key);
 
         if (s === "present" || s === "overtime" || s === "work_from_home") {
+          if (isH) workedHolidayDays += 1;
+          if (isWO) workedWeeklyOffDays += 1;
           const activeAsg = payRuleAssignments
             .filter(
               (a) =>
@@ -8849,6 +8861,8 @@ router.post("/payroll/:cycleId/compute", async (req, res) => {
         }
 
         if (s === "half_day") {
+          if (isH) workedHolidayDays += 0.5;
+          if (isWO) workedWeeklyOffDays += 0.5;
           const activeAsg = payRuleAssignments
             .filter(
               (a) =>
@@ -9005,10 +9019,42 @@ router.post("/payroll/:cycleId/compute", async (req, res) => {
         present + half * 0.5 + weeklyOff + holidays + paidLeave;
       const coercedSettings = coerceSalarySettings(salarySettings);
       const isFixedDaysMode = ['every_30', 'every_28', 'every_26'].includes(coercedSettings.payableDaysMode);
-      const useActualEarned = isFixedDaysMode && (coercedSettings.fixedDaysCalcRule === 'actual_earned_days' || coercedSettings.thirtyDaysCalcRule === 'actual_earned_days');
-      const computedPayableUnits = useActualEarned
-        ? payableUnitsGross
-        : Math.max(0, payableUnitsGross - (daysInMonth - daysForRate));
+      const fixedCalcRule = coercedSettings.fixedDaysCalcRule || coercedSettings.thirtyDaysCalcRule || 'deduct_extra_days';
+
+      let computedPayableUnits = payableUnitsGross;
+      let extraHolidayWoBenefit = 0;
+
+      if (isFixedDaysMode) {
+        if (fixedCalcRule === 'actual_earned_days') {
+          computedPayableUnits = payableUnitsGross;
+        } else if (fixedCalcRule === 'capped_30_benefit') {
+          if (payableUnitsGross <= daysForRate) {
+            // Earned <= 30 (e.g. 29 earned days): Pay exact earned days without -1 deduction
+            computedPayableUnits = payableUnitsGross;
+          } else {
+            // Earned > 30:
+            // Extra benefit applies ONLY if staff was present/worked on Holiday or Weekly Off
+            const hasWorkedHolidayOrWo = (workedHolidayDays > 0 || workedWeeklyOffDays > 0 || (woHolidayExtraDays || 0) > 0);
+            if (hasWorkedHolidayOrWo) {
+              computedPayableUnits = daysForRate; // Base capped at exactly 30
+              const extraWorkedDays = (workedHolidayDays + workedWeeklyOffDays + (woHolidayExtraDays || 0));
+              extraHolidayWoBenefit = Math.round(extraWorkedDays * dailySalary);
+              if (extraWorkedDays > 0) {
+                woHolidayExtraDays = extraWorkedDays;
+              }
+            } else {
+              // Normal staff who didn't work on holiday/WO: Exactly 30 days, no extra benefit
+              computedPayableUnits = daysForRate;
+            }
+          }
+        } else {
+          // Rule 1: Fixed Base Days (deduct extra calendar days)
+          computedPayableUnits = Math.max(0, payableUnitsGross - (daysInMonth - daysForRate));
+        }
+      } else {
+        computedPayableUnits = payableUnitsGross;
+      }
+
       const ratio =
         daysForRate > 0
           ? Math.max(0, computedPayableUnits / daysForRate)
@@ -9030,6 +9076,9 @@ router.post("/payroll/:cycleId/compute", async (req, res) => {
       };
 
       const finalE = prorate(e, ratio);
+      if (extraHolidayWoBenefit > 0) {
+        finalE.OT_PAYABLE_DAYS = (finalE.OT_PAYABLE_DAYS || 0) + extraHolidayWoBenefit;
+      }
 
       // Fetch approved and settled expenses for this month (NOT pro-rated)
       try {
@@ -17219,7 +17268,7 @@ function coerceSalarySettings(input) {
     ? input.esiEffectiveDate
     : null;
   const fixedDaysCalcRuleInput = input?.fixedDaysCalcRule || input?.thirtyDaysCalcRule;
-  const fixedDaysCalcRule = ["deduct_extra_days", "actual_earned_days"].includes(String(fixedDaysCalcRuleInput))
+  const fixedDaysCalcRule = ["deduct_extra_days", "actual_earned_days", "capped_30_benefit"].includes(String(fixedDaysCalcRuleInput))
     ? String(fixedDaysCalcRuleInput)
     : "deduct_extra_days";
   const pfCapEnabled = input?.pfCapEnabled === true;
