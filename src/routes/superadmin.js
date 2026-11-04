@@ -3,7 +3,7 @@ const router = express.Router();
 const jwt = require('jsonwebtoken');
 
 const { sequelize } = require('../sequelize');
-const { Plan, OrgAccount, Subscription, User, Permission, Role, StaffProfile, ChannelPartner, Lead, LeadConfig, HolidayTemplate, HolidayDate } = require('../models');
+const { Plan, OrgAccount, Subscription, User, Permission, Role, StaffProfile, ChannelPartner, Lead, LeadConfig, HolidayTemplate, HolidayDate, AttendanceAutomationRule, AppSetting } = require('../models');
 const bcrypt = require('bcryptjs');
 const { DEFAULT_USER_PASSWORD, hashPassword, hashDefaultPassword, validateNewPassword } = require('../utils/password');
 const { authRequired } = require('../middleware/auth');
@@ -58,7 +58,8 @@ router.use((req, res, next) => {
     '/client/',
     '/channel-partners',
     '/dashboard',
-    '/plans'
+    '/plans',
+    '/zkteco'
   ];
 
   if (superAllowedPaths.some(p => req.path.startsWith(p))) {
@@ -2395,4 +2396,205 @@ router.delete('/holidays/:id', async (req, res) => {
   }
 });
 
+
+// ==========================================
+// ZKTeco Biometric Central Management
+// ==========================================
+
+// Helper: Get master ZKTeco config
+async function getMasterZktecoConfig() {
+  const DEFAULT_MASTER = {
+    url: 'http://15.206.144.225:8081/',
+    username: 'admin',
+    password: 'Admin@12345',
+    companyId: ''
+  };
+  try {
+    const setting = await AppSetting.findOne({ where: { key: 'master_zkteco_config', orgAccountId: null } });
+    if (!setting || !setting.value) return DEFAULT_MASTER;
+    const parsed = typeof setting.value === 'string' ? JSON.parse(setting.value) : setting.value;
+    return { ...DEFAULT_MASTER, ...parsed };
+  } catch (_) {
+    return DEFAULT_MASTER;
+  }
+}
+
+// 1. GET /superadmin/zkteco/overview
+router.get('/zkteco/overview', async (_req, res) => {
+  try {
+    const master = await getMasterZktecoConfig();
+    
+    // Mask master password for frontend display
+    const maskedMaster = {
+      ...master,
+      password: master.password ? '••••••••' : ''
+    };
+
+    // Fetch all active organizations
+    const orgs = await OrgAccount.findAll({
+      where: { status: 'ACTIVE' },
+      attributes: ['id', 'name', 'phone', 'businessEmail', 'status', 'createdAt'],
+      order: [['name', 'ASC']]
+    });
+
+    // Fetch all existing ZKTeco rules
+    const rules = await AttendanceAutomationRule.findAll({
+      where: { key: 'zkteco_integration' }
+    });
+    const rulesByOrg = new Map(rules.map(r => [r.orgAccountId, r]));
+
+    const orgList = orgs.map(org => {
+      const rule = rulesByOrg.get(org.id);
+      let cfg = {};
+      if (rule && rule.config) {
+        try {
+          cfg = typeof rule.config === 'string' ? JSON.parse(rule.config) : rule.config;
+        } catch (_) {}
+      }
+
+      return {
+        id: org.id,
+        name: org.name,
+        phone: org.phone,
+        active: !!rule?.active,
+        configuredUrl: cfg?.url || '',
+        username: cfg?.username || '',
+        hasConfig: !!rule
+      };
+    });
+
+    return res.json({
+      success: true,
+      masterConfig: maskedMaster,
+      organizations: orgList
+    });
+  } catch (e) {
+    return res.status(500).json({ success: false, message: 'Failed to load ZKTeco overview: ' + e.message });
+  }
+});
+
+// 2. PUT /superadmin/zkteco/master-config
+router.put('/zkteco/master-config', async (req, res) => {
+  try {
+    const { url, username, password, companyId } = req.body || {};
+    const current = await getMasterZktecoConfig();
+
+    let finalPassword = current.password;
+    if (password && password !== '••••••••' && password !== '******' && password !== '********') {
+      finalPassword = password;
+    }
+
+    const updated = {
+      url: url || current.url,
+      username: username || current.username,
+      password: finalPassword,
+      companyId: companyId !== undefined ? companyId : current.companyId
+    };
+
+    await AppSetting.upsert({
+      key: 'master_zkteco_config',
+      orgAccountId: null,
+      value: JSON.stringify(updated)
+    });
+
+    return res.json({
+      success: true,
+      message: 'Master ZKTeco configuration saved successfully',
+      masterConfig: { ...updated, password: '••••••••' }
+    });
+  } catch (e) {
+    return res.status(500).json({ success: false, message: 'Failed to save master configuration' });
+  }
+});
+
+// 3. POST /superadmin/zkteco/bulk-update
+router.post('/zkteco/bulk-update', async (req, res) => {
+  try {
+    const { orgIds, active, applyMasterCredentials } = req.body || {};
+    if (!Array.isArray(orgIds) || orgIds.length === 0) {
+      return res.status(400).json({ success: false, message: 'Please select at least one organization' });
+    }
+
+    const master = await getMasterZktecoConfig();
+
+    for (const orgId of orgIds) {
+      const [rule, created] = await AttendanceAutomationRule.findOrCreate({
+        where: { key: 'zkteco_integration', orgAccountId: orgId },
+        defaults: {
+          config: JSON.stringify(master),
+          active: active !== undefined ? !!active : true,
+          orgAccountId: orgId
+        }
+      });
+
+      const updatePayload = {};
+      if (active !== undefined) {
+        updatePayload.active = !!active;
+      }
+      if (applyMasterCredentials) {
+        updatePayload.config = JSON.stringify(master);
+      }
+
+      if (!created && Object.keys(updatePayload).length > 0) {
+        await rule.update(updatePayload);
+      }
+    }
+
+    return res.json({
+      success: true,
+      message: `Updated ZKTeco settings for ${orgIds.length} organization(s)`
+    });
+  } catch (e) {
+    return res.status(500).json({ success: false, message: 'Failed to perform bulk update: ' + e.message });
+  }
+});
+
+// 4. PUT /superadmin/zkteco/toggle/:orgId
+router.put('/zkteco/toggle/:orgId', async (req, res) => {
+  try {
+    const orgId = Number(req.params.orgId);
+    const { active } = req.body;
+    if (!orgId) return res.status(400).json({ success: false, message: 'Invalid org ID' });
+
+    const master = await getMasterZktecoConfig();
+    const [rule, created] = await AttendanceAutomationRule.findOrCreate({
+      where: { key: 'zkteco_integration', orgAccountId: orgId },
+      defaults: {
+        config: JSON.stringify(master),
+        active: !!active,
+        orgAccountId: orgId
+      }
+    });
+
+    if (!created) {
+      await rule.update({ active: !!active });
+    }
+
+    return res.json({
+      success: true,
+      message: `ZKTeco sync ${active ? 'enabled' : 'disabled'} for organization`,
+      active: !!active
+    });
+  } catch (e) {
+    return res.status(500).json({ success: false, message: 'Failed to toggle status: ' + e.message });
+  }
+});
+
+// 5. POST /superadmin/zkteco/reveal-password (Superadmin only)
+router.post('/zkteco/reveal-password', async (req, res) => {
+  try {
+    if (req.user.role !== 'superadmin' && !req.user.permissions?.superadmin_access) {
+      return res.status(403).json({ success: false, message: 'Forbidden' });
+    }
+    const master = await getMasterZktecoConfig();
+    return res.json({
+      success: true,
+      password: master.password || ''
+    });
+  } catch (e) {
+    return res.status(500).json({ success: false, message: 'Failed to retrieve password' });
+  }
+});
+
 module.exports = router;
+

@@ -216,6 +216,61 @@ async function requireSettingsAccess(req, res, next) {
   }
 }
 
+async function checkStaffPermissionByKey(req, permissionKey) {
+  if (req.user?.role === "admin" || req.user?.role === "superadmin")
+    return true;
+  if (req.user?.role !== "staff") return false;
+
+  const orgId = req.tenantOrgAccountId || req.user?.orgAccountId;
+  if (!orgId) return false;
+
+  const user = await User.findOne({
+    where: { id: req.user.id, orgAccountId: orgId },
+    include: [
+      {
+        model: Badge,
+        as: "badges",
+        where: { isActive: true },
+        required: false,
+        through: { where: { isActive: true }, attributes: [] },
+        include: [
+          {
+            model: BadgePermission,
+            as: "permissions",
+          },
+        ],
+      },
+    ],
+  });
+
+  const needed = Array.isArray(permissionKey) ? permissionKey : [permissionKey];
+  const hasPerm = (user?.badges || []).some((b) =>
+    (b.permissions || []).some((p) => needed.includes(p.permissionKey))
+  );
+  return hasPerm;
+}
+
+function requireStaffTabAccess(permissionKey) {
+  return async (req, res, next) => {
+    try {
+      const hasAccess = await checkStaffPermissionByKey(req, permissionKey);
+      if (!hasAccess) {
+        return res.status(403).json({
+          success: false,
+          message: "Access denied: You do not have permission to access this module",
+        });
+      }
+      return next();
+    } catch (err) {
+      console.error("Staff tab permission check error:", err);
+      return res.status(500).json({
+        success: false,
+        message: "Internal server error during authorization",
+      });
+    }
+  };
+}
+
 // --- ORG ADD-ON SETTINGS (Multiple Punches / Feature Flags) ---
 router.get("/addon-settings", authRequired, tenantEnforce, async (req, res) => {
   try {
@@ -9049,6 +9104,11 @@ router.post("/payroll/:cycleId/compute", async (req, res) => {
               computedPayableUnits = daysForRate;
             }
           }
+
+          // Rule 3 Cap: In 31-day months, Payable Days + Absent must not exceed daysForRate (e.g. 30)
+          if (daysInMonth > daysForRate && (computedPayableUnits + absent) > daysForRate) {
+            computedPayableUnits = Math.max(0, daysForRate - absent);
+          }
         } else {
           // Rule 1: Fixed Base Days (deduct extra calendar days)
           computedPayableUnits = Math.max(0, payableUnitsGross - (daysInMonth - daysForRate));
@@ -13747,7 +13807,7 @@ router.delete("/holidays/assign/:id", async (req, res) => {
 
 // Staff stats: total, active, newHires (last 7 days), onLeave (today overlaps) (org-scoped)
 
-router.get("/staff/stats", async (req, res) => {
+router.get("/staff/stats", requireStaffTabAccess("staff_management_tab"), async (req, res) => {
   try {
     const orgId = requireOrg(req, res);
     if (!orgId) return;
@@ -14177,6 +14237,16 @@ router.get("/staff", requireRole(["admin", "staff"]), async (req, res) => {
     if (!orgId) return;
     const { module } = req.query || {};
 
+    if (req.user?.role === "staff" && module !== "attendance") {
+      const hasStaffMgmt = await checkStaffPermissionByKey(req, "staff_management_tab");
+      if (!hasStaffMgmt) {
+        return res.status(403).json({
+          success: false,
+          message: "Access denied: You do not have permission to access Staff Management",
+        });
+      }
+    }
+
     let where = { role: "staff", orgAccountId: orgId };
 
     if (module === "attendance") {
@@ -14338,7 +14408,7 @@ router.post(
   },
 );
 
-router.get("/staff/import-template", async (req, res) => {
+router.get("/staff/import-template", requireStaffTabAccess("staff_management_tab"), async (req, res) => {
   try {
     const orgId = requireOrg(req, res);
     if (!orgId) return;
@@ -14488,7 +14558,7 @@ router.get("/staff/import-template", async (req, res) => {
 
 const uploadMemory = multer({ storage: multer.memoryStorage() });
 
-router.post("/staff/import", uploadMemory.single("file"), async (req, res) => {
+router.post("/staff/import", requireStaffTabAccess("staff_management_tab"), uploadMemory.single("file"), async (req, res) => {
   try {
     const orgId = requireOrg(req, res);
     if (!orgId) return;
@@ -14895,7 +14965,12 @@ router.post("/staff/import", uploadMemory.single("file"), async (req, res) => {
           }
         }
 
-        const passwordHash = await hashDefaultPassword();
+        let orgDefaultPwd = DEFAULT_USER_PASSWORD;
+        try {
+          const orgPassRow = await AppSetting.findOne({ where: { key: "org_default_password", orgAccountId: orgId } });
+          if (orgPassRow?.value) orgDefaultPwd = orgPassRow.value;
+        } catch (_) {}
+        const passwordHash = await hashPassword(orgDefaultPwd);
         const user = await User.create({
           role: "staff",
           phone,
@@ -14940,7 +15015,7 @@ router.post("/staff/import", uploadMemory.single("file"), async (req, res) => {
   }
 });
 
-router.get("/staff/export", async (req, res) => {
+router.get("/staff/export", requireStaffTabAccess("staff_management_tab"), async (req, res) => {
   try {
     const orgId = requireOrg(req, res);
     if (!orgId) return;
@@ -18272,6 +18347,83 @@ router.put("/settings/geo-fence", async (req, res) => {
   }
 });
 
+// --- Organization Default Password Settings (Stored in AppSetting: key 'org_default_password') ---
+router.get("/settings/default-password", requireSettingsAccess, async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res);
+    if (!orgId) return;
+    const row = await AppSetting.findOne({
+      where: { key: "org_default_password", orgAccountId: orgId },
+    });
+    return res.json({
+      success: true,
+      defaultPassword: row ? row.value : DEFAULT_USER_PASSWORD,
+      isCustom: !!row,
+    });
+  } catch (e) {
+    console.error("Failed to load default password setting:", e);
+    return res.status(500).json({ success: false, message: "Failed to load default password setting" });
+  }
+});
+
+router.put("/settings/default-password", requireSettingsAccess, async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res);
+    if (!orgId) return;
+    const { defaultPassword, resetExistingStaff } = req.body || {};
+    const cleanPwd = String(defaultPassword || "").trim();
+
+    if (!cleanPwd) {
+      return res.status(400).json({ success: false, message: "Default password is required" });
+    }
+    if (cleanPwd.length < 6) {
+      return res.status(400).json({ success: false, message: "Default password must be at least 6 characters" });
+    }
+
+    const [row] = await AppSetting.findOrCreate({
+      where: { key: "org_default_password", orgAccountId: orgId },
+      defaults: { value: cleanPwd, orgAccountId: orgId },
+    });
+    if (row.value !== cleanPwd) {
+      await row.update({ value: cleanPwd });
+    }
+
+    let affectedCount = 0;
+    if (resetExistingStaff) {
+      const hashed = await hashPassword(cleanPwd);
+      const [count] = await User.update(
+        { passwordHash: hashed },
+        { where: { orgAccountId: orgId, role: "staff", active: true } }
+      );
+      affectedCount = count;
+    }
+
+    try {
+      logAudit({
+        req,
+        action: "ORG_DEFAULT_PASSWORD_UPDATED",
+        remarks: `Default password updated for org ${orgId}. Reset existing staff: ${!!resetExistingStaff} (count: ${affectedCount})`,
+        overrides: {
+          orgAccountId: orgId,
+          performedBy: req.user?.id,
+        },
+      });
+    } catch (_) {}
+
+    return res.json({
+      success: true,
+      message: resetExistingStaff
+        ? `Default password updated and applied to ${affectedCount} active staff member(s)`
+        : "Default password updated successfully",
+      defaultPassword: cleanPwd,
+      affectedCount,
+    });
+  } catch (e) {
+    console.error("Failed to save default password setting:", e);
+    return res.status(500).json({ success: false, message: "Failed to save default password setting" });
+  }
+});
+
 // --- Dynamic Sandwich Rule Settings (Stored in AppSetting: key 'sandwich_rule_settings') ---
 router.get("/settings/sandwich-rule", async (req, res) => {
   try {
@@ -21249,7 +21401,23 @@ router.get("/settings/automation-rules", async (req, res) => {
     const rules = await AttendanceAutomationRule.findAll({
       where: { orgAccountId: orgId },
     });
-    return res.json({ success: true, rules });
+
+    // Security: Mask sensitive credentials (e.g. ZKTeco server password) so inspect/network tab never reveals plain text
+    const sanitizedRules = rules.map((r) => {
+      const plain = r.toJSON();
+      if (plain.key === "zkteco_integration" && plain.config) {
+        try {
+          const cfg = typeof plain.config === "string" ? JSON.parse(plain.config) : { ...plain.config };
+          if (cfg.password) {
+            cfg.password = "••••••••";
+          }
+          plain.config = JSON.stringify(cfg);
+        } catch (_) {}
+      }
+      return plain;
+    });
+
+    return res.json({ success: true, rules: sanitizedRules });
   } catch (e) {
     return res
       .status(500)
@@ -21267,10 +21435,39 @@ router.put("/settings/automation-rules", async (req, res) => {
         .status(400)
         .json({ success: false, message: "rule key required" });
 
+    let finalConfig = typeof config === "object" ? { ...config } : {};
+    if (typeof config === "string") {
+      try { finalConfig = JSON.parse(config); } catch (_) { finalConfig = config; }
+    }
+
+    // Security: If updating zkteco_integration and password is empty or masked, keep the existing saved password from DB
+    if (key === "zkteco_integration") {
+      const existingRule = await AttendanceAutomationRule.findOne({
+        where: { key, orgAccountId: orgId },
+      });
+      if (existingRule && existingRule.config) {
+        try {
+          const existingCfg = typeof existingRule.config === "string"
+            ? JSON.parse(existingRule.config)
+            : existingRule.config;
+          if (
+            !finalConfig.password ||
+            finalConfig.password === "••••••••" ||
+            finalConfig.password === "******" ||
+            finalConfig.password === "********"
+          ) {
+            finalConfig.password = existingCfg.password;
+          }
+        } catch (_) {}
+      }
+    }
+
+    const configStringToSave = typeof finalConfig === "object" ? JSON.stringify(finalConfig) : finalConfig;
+
     const [rule, created] = await AttendanceAutomationRule.findOrCreate({
       where: { key, orgAccountId: orgId },
       defaults: {
-        config: typeof config === "object" ? JSON.stringify(config) : config,
+        config: configStringToSave,
         active: active ?? true,
         orgAccountId: orgId,
       },
@@ -21278,7 +21475,7 @@ router.put("/settings/automation-rules", async (req, res) => {
 
     if (!created) {
       await rule.update({
-        config: typeof config === "object" ? JSON.stringify(config) : config,
+        config: configStringToSave,
         active: active ?? rule.active,
       });
     }
@@ -21287,10 +21484,22 @@ router.put("/settings/automation-rules", async (req, res) => {
       req,
       action: "AUTOMATION_RULE_UPDATE",
       remarks: `Updated Attendance Automation Rule: ${key}`,
-      details: { key, active: active ?? rule.active, config },
+      details: { key, active: active ?? rule.active, config: typeof finalConfig === "object" ? { ...finalConfig, password: '***' } : '***' },
     });
 
-    return res.json({ success: true, rule });
+    // Mask password in response as well
+    const resRule = rule.toJSON();
+    if (key === "zkteco_integration" && resRule.config) {
+      try {
+        const cfg = typeof resRule.config === "string" ? JSON.parse(resRule.config) : { ...resRule.config };
+        if (cfg.password) {
+          cfg.password = "••••••••";
+        }
+        resRule.config = JSON.stringify(cfg);
+      } catch (_) {}
+    }
+
+    return res.json({ success: true, rule: resRule });
   } catch (e) {
     return res
       .status(500)
@@ -25617,7 +25826,7 @@ If you receive this email, the email system is working properly!`,
   }
 });
 
-router.post("/staff", requireRole(["admin", "staff"]), async (req, res) => {
+router.post("/staff", requireRole(["admin", "staff"]), requireStaffTabAccess("staff_management_tab"), async (req, res) => {
   try {
     const orgId = requireOrg(req, res);
     if (!orgId) return;
@@ -25769,7 +25978,16 @@ router.post("/staff", requireRole(["admin", "staff"]), async (req, res) => {
       });
     }
 
-    const passwordHash = await hashPassword(String(password || DEFAULT_USER_PASSWORD));
+    let defaultPwd = DEFAULT_USER_PASSWORD;
+    try {
+      const orgDefaultPassRow = await AppSetting.findOne({
+        where: { key: "org_default_password", orgAccountId: orgId },
+      });
+      if (orgDefaultPassRow?.value) {
+        defaultPwd = orgDefaultPassRow.value;
+      }
+    } catch (_) {}
+    const passwordHash = await hashPassword(String(password || defaultPwd));
 
     // Helper to map request keys to User model attributes
 
@@ -26462,7 +26680,7 @@ router.put("/staff/bulk-refresh", requireRole(["admin"]), async (req, res) => {
 });
 
 // Update staff (org-scoped)
-router.put("/staff/:id", requireRole(["admin", "staff"]), async (req, res) => {
+router.put("/staff/:id", requireRole(["admin", "staff"]), requireStaffTabAccess("staff_management_tab"), async (req, res) => {
   try {
     const orgId = requireOrg(req, res);
     if (!orgId) return;

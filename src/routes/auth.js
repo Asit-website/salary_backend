@@ -10,6 +10,7 @@ const { REFRESH_TOKEN_MS, getRefreshTokenExpiresAt } = require('../utils/refresh
 const { consumeImpersonationCode } = require('../utils/impersonationStore');
 const { hashPassword, verifyPassword, validateNewPassword } = require('../utils/password');
 const { sendPasswordResetOtpEmail } = require('../services/emailService');
+const { authRequired } = require('../middleware/auth');
 
 // Minimal SMS sender using the provided HTTP API
 async function sendSmsViaGateway({ phoneE164, code, purpose }) {
@@ -1549,7 +1550,10 @@ router.post('/login', authLimiter, async (req, res) => {
     }
     if (!user) {
       await recordFailedAttempt(allUsers);
-      return res.status(401).json({ success: false, message: 'Invalid credentials' });
+      const msg = (!allUsers || allUsers.length === 0)
+        ? 'Invalid phone number or user not registered'
+        : 'Incorrect password. Please try again.';
+      return res.status(401).json({ success: false, message: msg });
     }
 
     // Success: clear failed attempts
@@ -2205,6 +2209,70 @@ router.post('/logout-mobile', async (req, res) => {
     return res.json({ success: true, message: 'Logged out successfully' });
   } catch (error) {
     return res.status(500).json({ success: false, message: 'Logout failed' });
+  }
+});
+
+
+// --- Authenticated Change Password Endpoint (Employee, Admin, Superadmin) ---
+router.post('/change-password', authRequired, async (req, res) => {
+  try {
+    const userId = req.user?.id;
+    if (!userId) {
+      return res.status(401).json({ success: false, message: 'Unauthenticated' });
+    }
+
+    const { currentPassword, newPassword, confirmPassword } = req.body || {};
+
+    if (!currentPassword) {
+      return res.status(400).json({ success: false, message: 'Current password is required' });
+    }
+    if (!newPassword) {
+      return res.status(400).json({ success: false, message: 'New password is required' });
+    }
+    if (newPassword.length < 6) {
+      return res.status(400).json({ success: false, message: 'New password must be at least 6 characters' });
+    }
+    if (newPassword !== confirmPassword) {
+      return res.status(400).json({ success: false, message: 'New password and confirm password do not match' });
+    }
+    if (currentPassword === newPassword) {
+      return res.status(400).json({ success: false, message: 'New password cannot be the same as current password' });
+    }
+
+    const user = await User.findByPk(userId);
+    if (!user) {
+      return res.status(404).json({ success: false, message: 'User not found' });
+    }
+
+    const isMatch = await verifyPassword(currentPassword, user.passwordHash || user.password);
+    if (!isMatch) {
+      return res.status(400).json({ success: false, message: 'Current password is incorrect' });
+    }
+
+    const hashedPassword = await hashPassword(newPassword);
+    await user.update({ passwordHash: hashedPassword });
+
+    try {
+      logAudit({
+        req,
+        action: 'PASSWORD_CHANGE_SUCCESS',
+        remarks: `User ${user.phone || user.id} changed their password successfully.`,
+        overrides: {
+          userId: user.id,
+          orgAccountId: user.orgAccountId,
+          userPhone: user.phone,
+          performedBy: user.id
+        }
+      });
+    } catch (_) {}
+
+    return res.json({
+      success: true,
+      message: 'Password changed successfully'
+    });
+  } catch (error) {
+    console.error('[change-password] Error:', error);
+    return res.status(500).json({ success: false, message: 'Failed to change password. Please try again.' });
   }
 });
 

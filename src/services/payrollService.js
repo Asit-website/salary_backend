@@ -1507,6 +1507,11 @@ async function calculateSalary(userId, monthKey, options = {}) {
           computedPayableUnits = daysForRate;
         }
       }
+
+      // Rule 3 Cap: In 31-day months, Payable Days + Absent must not exceed daysForRate (e.g. 30)
+      if (daysInMonth > daysForRate && (computedPayableUnits + absent) > daysForRate) {
+        computedPayableUnits = Math.max(0, daysForRate - absent);
+      }
     } else {
       // Rule 1: Fixed Base Days (deduct extra calendar days)
       computedPayableUnits = Math.max(0, payableUnits - (daysInMonth - daysForRate));
