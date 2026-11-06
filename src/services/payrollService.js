@@ -140,7 +140,30 @@ async function computeOvertimeMeta({ userId, monthKey, overtimeBaseSalary, orgAc
     totalOvertimePay += otAmount;
   }
 
-  const hourlyRate = daysForRate > 0 ? (Number(overtimeBaseSalary || 0) / (daysForRate * 8)) : 0;
+  let shiftHours = 8;
+  try {
+    const shiftService = require('./shiftService');
+    const tpl = await shiftService.getEffectiveShiftTemplate(userId, endKey || start);
+    if (tpl) {
+      const unpaidBreak = Number(tpl.unpaidBreakMinutes || 0);
+      let mins = 0;
+      if (tpl.shiftType === 'open' && tpl.workMinutes) {
+        mins = Number(tpl.workMinutes);
+      } else if (tpl.startTime && tpl.endTime) {
+        const [sh, sm] = tpl.startTime.split(':').map(Number);
+        const [eh, em] = tpl.endTime.split(':').map(Number);
+        let startMin = sh * 60 + sm;
+        let endMin = eh * 60 + em;
+        if (endMin <= startMin) endMin += 1440;
+        mins = endMin - startMin;
+      } else if (tpl.workMinutes) {
+        mins = Number(tpl.workMinutes);
+      }
+      if (unpaidBreak > 0 && mins > unpaidBreak) mins -= unpaidBreak;
+      if (mins > 0) shiftHours = mins / 60;
+    }
+  } catch (_) {}
+  const hourlyRate = daysForRate > 0 ? (Number(overtimeBaseSalary || 0) / (daysForRate * shiftHours)) : 0;
 
   return {
     overtimeMinutes: totalOvertimeMinutes,

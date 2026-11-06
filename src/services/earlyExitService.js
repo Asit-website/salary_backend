@@ -68,6 +68,14 @@ class EarlyExitService {
       if (outAtLocal.isBefore(shiftEndLocal)) {
         earlyExitMinutes = shiftEndLocal.diff(outAtLocal, 'minute');
       }
+    } else if (shift && (shift.shiftType === 'open' || (!shift.startTime && !shift.endTime)) && attendance.punchedInAt) {
+      const grossWorkMins = Number(shift.workMinutes) || 480;
+      const inAtLocal = dayjs(attendance.punchedInAt).second(0).millisecond(0);
+      const outAtLocal = dayjs(punchedOutAt).second(0).millisecond(0);
+      const dynamicEnd = inAtLocal.add(grossWorkMins, 'minute');
+      if (outAtLocal.isBefore(dynamicEnd)) {
+        earlyExitMinutes = dynamicEnd.diff(outAtLocal, 'minute');
+      }
     }
 
     // 2. Resolve applicable Rule for penalty calculation
@@ -160,6 +168,10 @@ class EarlyExitService {
             let endMin = eh * 60 + em;
             if (endMin <= startMin) endMin += 1440;
             shiftWorkMins = endMin - startMin;
+          }
+          const unpaidBreak = Number(shift?.unpaidBreakMinutes || 0);
+          if (unpaidBreak > 0 && shiftWorkMins > unpaidBreak) {
+            shiftWorkMins = shiftWorkMins - unpaidBreak;
           }
           const shiftHours = (shiftWorkMins || 480) / 60;
           const hourlySalary = dailySalary / shiftHours;

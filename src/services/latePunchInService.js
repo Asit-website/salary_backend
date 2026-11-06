@@ -55,6 +55,10 @@ class LatePunchInService {
       if (endMin <= startMin) endMin += 1440;
       shiftWorkMins = endMin - startMin;
     }
+    const unpaidBreak = Number(shift?.unpaidBreakMinutes || 0);
+    if (unpaidBreak > 0 && shiftWorkMins > unpaidBreak) {
+      shiftWorkMins = shiftWorkMins - unpaidBreak;
+    }
     const shiftHours = (shiftWorkMins || 480) / 60;
     let latePunchInMinutes = 0;
 

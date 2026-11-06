@@ -41,6 +41,8 @@ module.exports = (sequelize) => {
       // Special Flags
       giveHalfDayOvertime: { type: DataTypes.BOOLEAN, defaultValue: false },
       halfDayThresholdMinutes: { type: DataTypes.INTEGER, allowNull: true },
+      giveExtraHalfDayBonus: { type: DataTypes.BOOLEAN, defaultValue: false, field: 'give_extra_half_day_bonus' },
+      extraHalfDayBonusAmount: { type: DataTypes.INTEGER, defaultValue: 25, field: 'extra_half_day_bonus_amount' },
       
       giveFullDayOvertime: { type: DataTypes.BOOLEAN, defaultValue: false },
       fullDayThresholdMinutes: { type: DataTypes.INTEGER, allowNull: true },

@@ -118,14 +118,23 @@ async function getOvertimeMinutes(attendance, rule, shiftTemplate) {
   const isOpenShift = shiftTemplate && (shiftTemplate.shiftType === 'open' || (!shiftTemplate.startTime && !shiftTemplate.endTime && shiftTemplate.workMinutes > 0));
 
   if (isOpenShift) {
-    const shiftWorkMins = Number(shiftTemplate.workMinutes) || 510;
+    const unpaidBreak = Number(shiftTemplate?.unpaidBreakMinutes || 0);
+    const grossShiftWorkMins = Number(shiftTemplate.workMinutes) || 510;
+    let netShiftWorkMins = grossShiftWorkMins;
+    if (unpaidBreak > 0 && netShiftWorkMins > unpaidBreak) {
+      netShiftWorkMins = netShiftWorkMins - unpaidBreak;
+    }
     const ruleMinMins = (rule.thresholds && rule.thresholds.length > 0) ? Number(rule.thresholds[0].minMinutes) || 0 : 0;
 
+    const netWorkedMinutes = (unpaidBreak > 0 && totalWorkMinutes > unpaidBreak)
+      ? (totalWorkMinutes - unpaidBreak)
+      : totalWorkMinutes;
+
     let overtimeByPeriod = 0;
-    if (ruleMinMins >= shiftWorkMins) {
-      overtimeByPeriod = Math.max(0, totalWorkMinutes - ruleMinMins);
+    if (ruleMinMins >= netShiftWorkMins) {
+      overtimeByPeriod = Math.max(0, netWorkedMinutes - ruleMinMins);
     } else {
-      const extraMins = Math.max(0, totalWorkMinutes - shiftWorkMins);
+      const extraMins = Math.max(0, netWorkedMinutes - netShiftWorkMins);
       if (extraMins >= ruleMinMins) {
         overtimeByPeriod = extraMins;
       }
@@ -136,12 +145,11 @@ async function getOvertimeMinutes(attendance, rule, shiftTemplate) {
       const punchInLocal = dayjs(attendance.punchedInAt).second(0).millisecond(0);
       const punchOutLocal = dayjs(attendance.punchedOutAt).second(0).millisecond(0);
 
-      // Dynamic shift end for open shift = punchedInAt + shiftWorkMins
-      const dynamicShiftEnd = punchInLocal.add(shiftWorkMins, 'minute');
+      const dynamicShiftEnd = punchInLocal.add(grossShiftWorkMins, 'minute');
       if (punchOutLocal.isAfter(dynamicShiftEnd)) {
         const diffMins = punchOutLocal.diff(dynamicShiftEnd, 'minute');
-        if (ruleMinMins >= shiftWorkMins) {
-          overtimeByShift = Math.max(0, totalWorkMinutes - ruleMinMins);
+        if (ruleMinMins >= netShiftWorkMins) {
+          overtimeByShift = Math.max(0, netWorkedMinutes - ruleMinMins);
         } else if (diffMins >= ruleMinMins) {
           overtimeByShift = diffMins;
         }
@@ -219,6 +227,11 @@ async function getOvertimeMinutes(attendance, rule, shiftTemplate) {
       shiftWorkMins = endMin - startMin;
     }
 
+    const unpaidBreak = Number(shiftTemplate?.unpaidBreakMinutes || 0);
+    if (unpaidBreak > 0 && shiftWorkMins > unpaidBreak) {
+      shiftWorkMins = shiftWorkMins - unpaidBreak;
+    }
+
     // If the rule threshold is missing OR smaller than the shift duration,
     // we use the shift duration as the baseline payability threshold.
     if (!baseThreshold || (shiftWorkMins > 0 && baseThreshold < shiftWorkMins)) {
@@ -226,10 +239,15 @@ async function getOvertimeMinutes(attendance, rule, shiftTemplate) {
     }
   }
 
+  const unpaidBreakFixed = Number(shiftTemplate?.unpaidBreakMinutes || 0);
+  const netWorkedMinutesFixed = (unpaidBreakFixed > 0 && totalWorkMinutes > unpaidBreakFixed)
+    ? (totalWorkMinutes - unpaidBreakFixed)
+    : totalWorkMinutes;
+
   let overtimeByPeriod = 0;
   let overtimeByShift = 0;
 
-  overtimeByPeriod = Math.max(0, totalWorkMinutes - baseThreshold);
+  overtimeByPeriod = Math.max(0, netWorkedMinutesFixed - baseThreshold);
 
   if (attendance.punchedOutAt && shiftTemplate && shiftTemplate.endTime) {
     const [sh, sm] = (shiftTemplate.startTime || '00:00').split(':').map(Number);
@@ -486,6 +504,10 @@ async function calculateOvertime(params, orgAccountArg, daysInMonthArg = 30, now
       if (endMin <= startMin) endMin += 1440;
       shiftWorkMins = endMin - startMin;
     }
+    const unpaidBreak = Number(shiftTemplate?.unpaidBreakMinutes || 0);
+    if (unpaidBreak > 0 && shiftWorkMins > unpaidBreak) {
+      shiftWorkMins = shiftWorkMins - unpaidBreak;
+    }
     const shiftHours = (shiftWorkMins || 480) / 60;
     let hourlySalary = daysInMonth > 0 ? (baseSalary / (daysInMonth * shiftHours)) : 0;
 
@@ -504,6 +526,17 @@ async function calculateOvertime(params, orgAccountArg, daysInMonthArg = 30, now
     } else {
       const multiplier = Number(activeRewardValue) || Number(finalRule.multiplier) || 1;
       overtimeAmount = (hourlySalary * multiplier) * (overtimeMinutes / 60);
+    }
+  }
+
+  // Handle extra bonus on matched threshold tier (if configured)
+  let thresholdExtraBonusApplied = false;
+  let thresholdExtraBonusAmount = 0;
+  if (tier && Boolean(tier.giveExtraBonus) && Number(tier.extraBonusAmount) > 0) {
+    thresholdExtraBonusAmount = Number(tier.extraBonusAmount || 0);
+    if (thresholdExtraBonusAmount > 0) {
+      overtimeAmount += thresholdExtraBonusAmount;
+      thresholdExtraBonusApplied = true;
     }
   }
 
@@ -530,13 +563,30 @@ async function calculateOvertime(params, orgAccountArg, daysInMonthArg = 30, now
       } else if (finalRule.giveHalfDayOvertime && finalRule.halfDayThresholdMinutes) {
         if (overtimeMinutes >= finalRule.halfDayThresholdMinutes) {
           overtimeAmount = Math.max(overtimeAmount, dailyRate / 2);
+          if (finalRule.giveExtraHalfDayBonus) {
+            const extraHalfDayBonus = Number(finalRule.extraHalfDayBonusAmount || 25);
+            overtimeAmount += extraHalfDayBonus;
+            extraFullDayBonusAmount += extraHalfDayBonus;
+            extraFullDayBonusApplied = true;
+          }
         }
       }
     } else if (finalRule.giveHalfDayOvertime && finalRule.halfDayThresholdMinutes) {
       if (overtimeMinutes >= finalRule.halfDayThresholdMinutes) {
         overtimeAmount = Math.max(overtimeAmount, dailyRate / 2);
+        if (finalRule.giveExtraHalfDayBonus) {
+          const extraHalfDayBonus = Number(finalRule.extraHalfDayBonusAmount || 25);
+          overtimeAmount += extraHalfDayBonus;
+          extraFullDayBonusAmount += extraHalfDayBonus;
+          extraFullDayBonusApplied = true;
+        }
       }
     }
+  }
+
+  if (thresholdExtraBonusApplied) {
+    extraFullDayBonusAmount += thresholdExtraBonusAmount;
+    extraFullDayBonusApplied = true;
   }
 
   return {

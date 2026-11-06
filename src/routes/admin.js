@@ -13053,7 +13053,7 @@ router.post("/leave/templates", async (req, res) => {
       },
     });
 
-    return res.json({ success: true, template: created });
+    return res.json({ success: true, template: row });
   } catch (e) {
     return res
       .status(500)
@@ -13496,7 +13496,7 @@ router.post("/holidays/templates", async (req, res) => {
       },
     });
 
-    return res.json({ success: true, template: created });
+    return res.json({ success: true, template: row });
   } catch (e) {
     return res
       .status(500)
@@ -21796,6 +21796,8 @@ router.get("/shifts/templates", async (req, res) => {
         halfDayThresholdMinutes: t.halfDayThresholdMinutes,
         overtimeStartMinutes: t.overtimeStartMinutes,
         autoPunchoutAfterShiftEnd: t.autoPunchoutAfterShiftEnd,
+        unpaidBreakMinutes: t.unpaidBreakMinutes != null ? Number(t.unpaidBreakMinutes) : 0,
+        timeSlots: t.timeSlots,
         active: t.active !== false,
         assignedCount: countMap[t.id] || 0,
         breaks: (t.breaks || []).map((b) => ({
@@ -21910,6 +21912,7 @@ router.post("/shifts/templates", async (req, res) => {
       halfDayThresholdMinutes,
       overtimeStartMinutes,
       autoPunchoutAfterShiftEnd,
+      unpaidBreakMinutes,
       active,
       breaks,
     } = req.body || {};
@@ -22004,6 +22007,8 @@ router.post("/shifts/templates", async (req, res) => {
         autoPunchoutAfterShiftEnd != null
           ? Number(autoPunchoutAfterShiftEnd)
           : null,
+      unpaidBreakMinutes:
+        unpaidBreakMinutes != null ? Number(unpaidBreakMinutes) : 0,
       active: active === undefined ? true : !!active,
       orgAccountId: orgId,
     });
@@ -22041,7 +22046,7 @@ router.post("/shifts/templates", async (req, res) => {
       },
     });
 
-    return res.json({ success: true, template: created });
+    return res.json({ success: true, template: row });
   } catch (e) {
     return res
       .status(500)
@@ -22075,6 +22080,7 @@ router.put("/shifts/templates/:id", async (req, res) => {
       halfDayThresholdMinutes,
       overtimeStartMinutes,
       autoPunchoutAfterShiftEnd,
+      unpaidBreakMinutes,
       active,
       breaks,
     } = req.body || {};
@@ -22186,6 +22192,12 @@ router.put("/shifts/templates/:id", async (req, res) => {
             ? null
             : Number(autoPunchoutAfterShiftEnd)
           : row.autoPunchoutAfterShiftEnd,
+      unpaidBreakMinutes:
+        unpaidBreakMinutes !== undefined
+          ? unpaidBreakMinutes == null
+            ? 0
+            : Number(unpaidBreakMinutes)
+          : row.unpaidBreakMinutes,
       active: active !== undefined ? !!active : row.active,
     });
 
@@ -26774,8 +26786,21 @@ router.put("/staff/:id", requireRole(["admin", "staff"]), requireStaffTabAccess(
 
     const patchUser = {};
     if (phone) patchUser.phone = String(phone);
-    if (password)
-      patchUser.passwordHash = await bcrypt.hash(String(password), 10);
+    if (password && String(password).trim()) {
+      const trimmedPass = String(password).trim();
+      if (trimmedPass.length < 6) {
+        return res.status(400).json({ success: false, message: "Password must be at least 6 characters" });
+      }
+      patchUser.passwordHash = await hashPassword(trimmedPass);
+      try {
+        logAudit({
+          req,
+          action: "STAFF_PASSWORD_RESET_BY_ADMIN",
+          remarks: `Admin updated password for staff #${staff.id} (${staff.phone})`,
+          details: { staffUserId: staff.id, phone: staff.phone }
+        });
+      } catch (_) {}
+    }
 
     // RESTRICTION: Check limit if toggling from Inactive to Active
     if (active === true && staff.active === false) {
@@ -28651,7 +28676,7 @@ router.post("/geofence/templates", async (req, res) => {
       },
     });
 
-    return res.json({ success: true, template: created });
+    return res.json({ success: true, template: row });
   } catch (e) {
     return res
       .status(500)
@@ -34411,8 +34436,11 @@ router.get("/reports/labour-wages", async (req, res) => {
 
     const getShiftHours = (shiftTemplate, defaultHp = 8) => {
       if (!shiftTemplate) return defaultHp;
+      const unpaidBreak = Number(shiftTemplate.unpaidBreakMinutes || 0);
       if (shiftTemplate.workMinutes && Number(shiftTemplate.workMinutes) > 0) {
-        return Number((Number(shiftTemplate.workMinutes) / 60).toFixed(2));
+        let mins = Number(shiftTemplate.workMinutes);
+        if (unpaidBreak > 0 && mins > unpaidBreak) mins -= unpaidBreak;
+        return Number((mins / 60).toFixed(2));
       }
       if (shiftTemplate.startTime && shiftTemplate.endTime) {
         const [sh, sm] = shiftTemplate.startTime.split(":").map(Number);
@@ -34421,6 +34449,7 @@ router.get("/reports/labour-wages", async (req, res) => {
         let endMin = eh * 60 + (em || 0);
         if (endMin <= startMin) endMin += 1440;
         let diffMin = endMin - startMin;
+        if (unpaidBreak > 0 && diffMin > unpaidBreak) diffMin -= unpaidBreak;
         const hrs = Number((diffMin / 60).toFixed(2));
         if (hrs > 0) return hrs;
       }
@@ -34486,10 +34515,13 @@ router.get("/reports/labour-wages", async (req, res) => {
       const workerShiftHours = getShiftHours(shiftTpl, hp);
 
       let workerHourlyRate = 0;
+      let workerDailyRate = 0;
       if (rateNum !== null && rateNum > 0) {
         workerHourlyRate = rateNum;
+        workerDailyRate = Number((workerHourlyRate * workerShiftHours).toFixed(2));
       } else if (gross > 0) {
-        workerHourlyRate = Number((gross / (daysForRate * workerShiftHours)).toFixed(2));
+        workerDailyRate = Number((gross / daysForRate).toFixed(2));
+        workerHourlyRate = Number((workerDailyRate / workerShiftHours).toFixed(2));
       }
 
       let totalWorkHours = 0;
@@ -34652,7 +34684,9 @@ router.get("/reports/labour-wages", async (req, res) => {
         grossSalary: gross,
         shiftHours: workerShiftHours,
         shiftName: shiftTpl?.name || "Standard",
+        unpaidBreakMinutes: shiftTpl?.unpaidBreakMinutes != null ? Number(shiftTpl.unpaidBreakMinutes) : 0,
         hourlyRate: workerHourlyRate,
+        dailyRate: workerDailyRate,
         days: dailyBreakdown,
         daysWorked,
         totalWorkHours,
@@ -34704,6 +34738,7 @@ router.get("/reports/labour-wages", async (req, res) => {
       headers.push(
         { header: "Total Work\nHours", key: "totalWorkHours", width: 14 },
         { header: "Hourly Rate\n(₹/h)", key: "hourlyRate", width: 14 },
+        { header: "Per Day Rate\n(₹/d)", key: "dailyRate", width: 14 },
         { header: "Total Wages\n(₹)", key: "totalWages", width: 16 },
         { header: "Worker Signature / Remarks", key: "signature", width: 25 }
       );
@@ -34776,6 +34811,7 @@ router.get("/reports/labour-wages", async (req, res) => {
         rowVals.push(
           r.totalWorkHours,
           r.hourlyRate,
+          r.dailyRate,
           r.totalWages,
           ""
         );
@@ -34816,7 +34852,7 @@ router.get("/reports/labour-wages", async (req, res) => {
         );
         totalVals.push(Number(daySum.toFixed(2)));
       }
-      totalVals.push(grandTotalHours, "", grandTotalWages, "");
+      totalVals.push(grandTotalHours, "", "", grandTotalWages, "");
 
       const totalRow = sheet.addRow(totalVals);
       totalRow.height = 26;
@@ -39391,6 +39427,8 @@ router.post("/settings/overtime-rules", async (req, res) => {
       thresholds,
       giveHalfDayOvertime,
       halfDayThresholdMinutes,
+      giveExtraHalfDayBonus,
+      extraHalfDayBonusAmount,
       giveFullDayOvertime,
       fullDayThresholdMinutes,
       includeEarlyArrival,
@@ -39414,6 +39452,8 @@ router.post("/settings/overtime-rules", async (req, res) => {
       thresholds,
       giveHalfDayOvertime,
       halfDayThresholdMinutes,
+      giveExtraHalfDayBonus,
+      extraHalfDayBonusAmount,
       giveFullDayOvertime,
       fullDayThresholdMinutes,
       includeEarlyArrival,

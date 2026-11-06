@@ -141,12 +141,12 @@ async function sendAuthResponse(user, req, res, extraJson = {}) {
   const isSuperadminPanel = !!req.body.isSuperadminPanel || user.role === 'superadmin';
   const orgAccountId = isSuperadminPanel ? null : user.orgAccountId;
   const isMobile = req.headers['x-app-platform'] === 'mobile-apk' || req.headers['x-app-platform'] === 'admin-apk';
-  const isStaffPortal = !!req.body.isStaffPortal || req.body.portal === 'staff' || !!extraJson.isStaffPortal || String(req.body.orgId || '').startsWith('staff-');
+  let isStaffPortal = !!req.body.isStaffPortal || req.body.portal === 'staff' || !!extraJson.isStaffPortal || String(req.body.orgId || '').startsWith('staff-');
 
   // WEB ACCESS CHECK FOR STAFF ROLE:
   // Restrict admin portal entry for staff (user role) if staff has NO assigned badges in that organization
   // Note: Staff portal is ALWAYS allowed for active staff members.
-  if (!isMobile && !isSuperadminPanel && !isStaffPortal && user.role === 'staff' && user.orgAccountId) {
+  if (!isMobile && !isSuperadminPanel && user.role === 'staff' && user.orgAccountId) {
     try {
       const { StaffBadge, Badge } = require('../models');
       const badgeCount = await StaffBadge.count({
@@ -154,11 +154,22 @@ async function sendAuthResponse(user, req, res, extraJson = {}) {
         include: [{ model: Badge, as: 'badge', where: { isActive: true }, required: true }]
       });
 
-      if (badgeCount === 0) {
-        return res.status(403).json({
-          success: false,
-          message: "You don't have access to login"
-        });
+      if (!isStaffPortal) {
+        if (req.body.portal === 'admin') {
+          // Explicitly tried to enter Admin Management Portal without badges
+          if (badgeCount === 0) {
+            return res.status(403).json({
+              success: false,
+              message: "You don't have access to login"
+            });
+          }
+        } else {
+          // Direct login or unspecified portal:
+          // If staff has no admin badges, default them to Staff Portal so they can access their dashboard
+          if (badgeCount === 0) {
+            isStaffPortal = true;
+          }
+        }
       }
     } catch (badgeErr) {
       console.error('[sendAuthResponse] Error checking staff web access badge:', badgeErr.message);
@@ -1585,19 +1596,69 @@ router.post('/login', authLimiter, async (req, res) => {
 
     const secret = getJwtSecret();
 
-    if (user.role === 'admin' || allUsers.length > 1) {
+    const isMobile = req.headers['x-app-platform'] === 'mobile-apk' || req.headers['x-app-platform'] === 'admin-apk';
+
+    if (!isMobile) {
       const orgMap = new Map();
-      allUsers.forEach(u => {
-        if (!u.orgAccountId) return;
-        const key = `${u.orgAccountId}-${u.role}`;
-        if (!orgMap.has(key)) {
-          orgMap.set(key, {
-            id: u.orgAccountId,
-            name: u.orgAccount?.name || `Organization ${u.orgAccountId}`,
-            role: u.role
-          });
+      for (const u of allUsers) {
+        if (!u.orgAccountId) continue;
+
+        if (u.role === 'staff') {
+          let hasSidebarAccess = false;
+          try {
+            const { StaffBadge, Badge } = require('../models');
+            const badgeCount = await StaffBadge.count({
+              where: { userId: u.id, orgAccountId: u.orgAccountId, isActive: true },
+              include: [{ model: Badge, as: 'badge', where: { isActive: true }, required: true }]
+            });
+            hasSidebarAccess = badgeCount > 0;
+          } catch (_) {}
+
+          const baseName = u.orgAccount?.name || `Organization ${u.orgAccountId}`;
+
+          // If staff has sidebar permissions, provide Admin Management Portal card
+          if (hasSidebarAccess) {
+            const adminKey = `admin-${u.orgAccountId}`;
+            if (!orgMap.has(adminKey)) {
+              orgMap.set(adminKey, {
+                id: u.orgAccountId,
+                orgAccountId: u.orgAccountId,
+                name: `${baseName} (Management Portal)`,
+                role: 'staff',
+                portal: 'admin',
+                isStaffPortal: false,
+                hasSidebarAccess: true
+              });
+            }
+          }
+
+          // Always provide Staff Portal card for staff
+          const staffKey = `staff-${u.orgAccountId}`;
+          if (!orgMap.has(staffKey)) {
+            orgMap.set(staffKey, {
+              id: `staff-${u.orgAccountId}`,
+              orgAccountId: u.orgAccountId,
+              name: `${baseName} (Staff Portal)`,
+              role: 'staff',
+              portal: 'staff',
+              isStaffPortal: true,
+              hasSidebarAccess
+            });
+          }
+        } else {
+          const key = `${u.orgAccountId}-${u.role}`;
+          if (!orgMap.has(key)) {
+            orgMap.set(key, {
+              id: u.orgAccountId,
+              orgAccountId: u.orgAccountId,
+              name: u.orgAccount?.name || `Organization ${u.orgAccountId}`,
+              role: u.role,
+              portal: 'admin',
+              isStaffPortal: false
+            });
+          }
         }
-      });
+      }
 
       const selectableOrgs = Array.from(orgMap.values());
       const others = allUsers.filter(u => {

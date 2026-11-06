@@ -11,6 +11,7 @@ module.exports = (sequelize) => {
       startTime: { type: DataTypes.TIME, allowNull: true },
       endTime: { type: DataTypes.TIME, allowNull: true },
       workMinutes: { type: DataTypes.INTEGER, allowNull: true },
+      unpaidBreakMinutes: { type: DataTypes.INTEGER, allowNull: true, defaultValue: 0, field: 'unpaid_break_minutes' },
       bufferMinutes: { type: DataTypes.INTEGER, allowNull: false, defaultValue: 0 },
       earliestPunchInTime: { type: DataTypes.TIME, allowNull: true },
       latestPunchOutTime: { type: DataTypes.TIME, allowNull: true },
