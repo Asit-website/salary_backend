@@ -477,9 +477,18 @@ router.get('/status', async (req, res) => {
   const mobilePunchRestricted = mobilePunchAccess?.restricted ?? false;
   const qrPunchRestricted = qrPunchAccess?.restricted ?? false;
 
+  let parsedShiftSlots = [];
+  if (assignedShift?.timeSlots) {
+    try { parsedShiftSlots = Array.isArray(assignedShift.timeSlots) ? assignedShift.timeSlots : JSON.parse(assignedShift.timeSlots); } catch (_) { parsedShiftSlots = []; }
+  } else if (assignedShift?.time_slots) {
+    try { parsedShiftSlots = Array.isArray(assignedShift.time_slots) ? assignedShift.time_slots : JSON.parse(assignedShift.time_slots); } catch (_) { parsedShiftSlots = []; }
+  }
+  const isMultiSlotShift = (assignedShift?.enableMultipleShifts === true || parsedShiftSlots.length > 1);
+  const effectiveMultiPunch = multiPunchActive || isMultiSlotShift;
+
   let activePunch = null;
   let todayPunches = [];
-  if (multiPunchActive) {
+  if (effectiveMultiPunch) {
     const [ap, tp] = await Promise.all([
       AttendancePunch.findOne({ where: { userId, date: effectiveKey, status: 'ACTIVE' } }),
       AttendancePunch.findAll({ where: { userId, date: effectiveKey }, order: [['punchNumber', 'ASC']] })
@@ -699,13 +708,15 @@ router.get('/status', async (req, res) => {
         id: assignedShift.id, name: assignedShift.name, shiftType: assignedShift.shiftType,
         startTime: assignedShift.startTime, endTime: assignedShift.endTime,
         workMinutes: assignedShift.workMinutes, bufferMinutes: assignedShift.bufferMinutes,
+        timeSlots: parsedShiftSlots,
+        enableMultipleShifts: isMultiSlotShift,
         earliestPunchInTime: assignedShift.earliestPunchInTime, latestPunchOutTime: assignedShift.latestPunchOutTime,
         minPunchOutAfterMinutes: assignedShift.minPunchOutAfterMinutes, maxPunchOutAfterMinutes: assignedShift.maxPunchOutAfterMinutes,
       } : null,
       mobilePunchRestricted,
       qrPunchRestricted,
       isQrZoneAssigned,
-      multiPunchActive,
+      multiPunchActive: effectiveMultiPunch,
       activePunch: activePunch ? {
         id: activePunch.id,
         punchNumber: activePunch.punchNumber,
@@ -1196,14 +1207,23 @@ router.post('/punch-in', upload.single('photo'), async (req, res) => {
     const photoUrl = req.file ? `/uploads/${req.file.filename}` : null;
     const address = req.body?.address ? String(req.body.address) : null;
 
-    const multiPunchActive = await isMultiPunchEnabled(req.user.orgAccountId);
+    const userOrgId = req.user.orgAccountId || (await User.findByPk(req.user.id))?.orgAccountId;
+    let rawSlots = [];
+    if (shiftTpl?.timeSlots) {
+      try { rawSlots = Array.isArray(shiftTpl.timeSlots) ? shiftTpl.timeSlots : JSON.parse(shiftTpl.timeSlots); } catch (_) { rawSlots = []; }
+    } else if (shiftTpl?.time_slots) {
+      try { rawSlots = Array.isArray(shiftTpl.time_slots) ? shiftTpl.time_slots : JSON.parse(shiftTpl.time_slots); } catch (_) { rawSlots = []; }
+    }
+    const isMultiSlotShift = (shiftTpl?.enableMultipleShifts === true || rawSlots.length > 1);
+    const multiPunchActive = (await isMultiPunchEnabled(userOrgId)) || isMultiSlotShift;
+
     if (multiPunchActive) {
       let master = await Attendance.findOne({ where: { userId: req.user.id, date: key } });
       if (!master) {
         master = await Attendance.create({
           userId: req.user.id,
           date: key,
-          orgAccountId: req.user.orgAccountId || (await User.findByPk(req.user.id))?.orgAccountId,
+          orgAccountId: userOrgId,
           punchedInAt: now,
           punchInPhotoUrl: photoUrl,
           latitude: lat,
@@ -1222,7 +1242,6 @@ router.post('/punch-in', upload.single('photo'), async (req, res) => {
       }
 
       const punches = await AttendancePunch.findAll({ where: { userId: req.user.id, date: key } });
-      const rawSlots = Array.isArray(shiftTpl?.timeSlots) ? shiftTpl.timeSlots : (Array.isArray(shiftTpl?.time_slots) ? shiftTpl.time_slots : []);
       const maxSlots = rawSlots.length > 0 ? rawSlots.length : 99;
 
       if (punches.length >= maxSlots) {
@@ -1231,12 +1250,15 @@ router.post('/punch-in', upload.single('photo'), async (req, res) => {
 
       const punchNumber = punches.length + 1;
       const punchRecord = await AttendancePunch.create({
-        orgAccountId: req.user.orgAccountId || (await User.findByPk(req.user.id))?.orgAccountId,
+        orgAccountId: userOrgId,
         userId: req.user.id,
         attendanceId: master.id,
+        shiftId: shiftTpl?.id || null,
         date: key,
         punchNumber,
+        slotNumber: punchNumber,
         punchedInAt: now,
+        punchInAt: now,
         punchInPhotoUrl: photoUrl,
         latitude: lat,
         longitude: lng,
@@ -1244,11 +1266,35 @@ router.post('/punch-in', upload.single('photo'), async (req, res) => {
         status: 'ACTIVE'
       });
 
+      // Recalculate late punch in if applicable
+      let lateMinutes = master.latePunchInMinutes || 0;
+      let lateAmount = master.latePunchInAmount || 0;
+      let lateRuleId = master.latePunchInRuleId || null;
+      let isLate = master.isLate || false;
+      try {
+        const lateService = require('../services/latePunchInService');
+        const orgAccount = await OrgAccount.findByPk(userOrgId);
+        const daysInMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
+        const lateRes = await lateService.calculateLatePenalty(master, orgAccount, daysInMonth, now);
+        if (lateRes) {
+          lateMinutes = lateRes.latePunchInMinutes || 0;
+          lateAmount = lateRes.latePunchInAmount || 0;
+          lateRuleId = lateRes.latePunchInRuleId || null;
+          isLate = lateRes.isLate || false;
+        }
+      } catch (e) {
+        console.error('[PunchIn] Multi-slot late calculation error:', e);
+      }
+
       await master.update({
         punchedInAt: master.punchedInAt || now,
         punchInPhotoUrl: master.punchInPhotoUrl || photoUrl,
         punchedOutAt: null,
         status: 'PRESENT',
+        latePunchInMinutes: lateMinutes,
+        latePunchInAmount: lateAmount,
+        latePunchInRuleId: lateRuleId,
+        isLate,
         latitude: lat,
         longitude: lng,
         address
@@ -1504,7 +1550,16 @@ router.post('/punch-out', upload.single('photo'), async (req, res) => {
         geofence: geoCheck.nearest || null,
       });
     }
-    const multiPunchActive = await isMultiPunchEnabled(req.user.orgAccountId);
+    const userOrgId = req.user.orgAccountId || (await User.findByPk(req.user.id))?.orgAccountId;
+    let rawSlots = [];
+    if (shiftTpl?.timeSlots) {
+      try { rawSlots = Array.isArray(shiftTpl.timeSlots) ? shiftTpl.timeSlots : JSON.parse(shiftTpl.timeSlots); } catch (_) { rawSlots = []; }
+    } else if (shiftTpl?.time_slots) {
+      try { rawSlots = Array.isArray(shiftTpl.time_slots) ? shiftTpl.time_slots : JSON.parse(shiftTpl.time_slots); } catch (_) { rawSlots = []; }
+    }
+    const isMultiSlotShift = (shiftTpl?.enableMultipleShifts === true || rawSlots.length > 1);
+    const multiPunchActive = (await isMultiPunchEnabled(userOrgId)) || isMultiSlotShift;
+
     if (multiPunchActive) {
       const now = new Date();
       const photoUrl = req.file ? `/uploads/${req.file.filename}` : null;
@@ -1519,6 +1574,7 @@ router.post('/punch-out', upload.single('photo'), async (req, res) => {
       const sessionMins = Math.max(0, Math.floor((now.getTime() - new Date(activePunch.punchedInAt).getTime()) / 60000));
       await activePunch.update({
         punchedOutAt: now,
+        punchOutAt: now,
         punchOutPhotoUrl: photoUrl,
         workMinutes: sessionMins,
         status: 'COMPLETED'
@@ -1532,11 +1588,46 @@ router.post('/punch-out', upload.single('photo'), async (req, res) => {
 
       let master = await Attendance.findOne({ where: { userId: req.user.id, date: key } });
       if (master) {
+        // Run aggregated calculations: Overtime, Early Exit, Late Punch In, and Break Deduction
+        const { calculateOvertime } = require('../services/overtimeService');
+        const earlyExitService = require('../services/earlyExitService');
+        const lateService = require('../services/latePunchInService');
+        const breakService = require('../services/breakService');
+        const orgAccount = await OrgAccount.findByPk(userOrgId);
+        const daysInMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
+
+        const [otResult, eeResult, lateResult, breakResult] = await Promise.all([
+          calculateOvertime({
+            ...master.toJSON(),
+            totalWorkHours: totalHours,
+            punchedOutAt: now
+          }, orgAccount, daysInMonth, now).catch(err => ({ overtimeMinutes: 0, overtimeAmount: 0, overtimeRuleId: null, status: 'PRESENT' })),
+          earlyExitService.calculateEarlyExit({
+            ...master.toJSON(),
+            punchedOutAt: now
+          }, orgAccount, daysInMonth, now).catch(err => ({ earlyExitMinutes: 0, earlyExitAmount: 0, earlyExitRuleId: null })),
+          lateService.calculateLatePenalty(master, orgAccount, daysInMonth, now).catch(err => ({ latePunchInMinutes: 0, latePunchInAmount: 0, latePunchInRuleId: null, isLate: false })),
+          breakService.calculateBreakDeduction(master, orgAccount, daysInMonth, now).catch(err => ({ breakDeductionAmount: 0, excessBreakMinutes: 0, breakRuleId: null }))
+        ]);
+
         await master.update({
           punchedOutAt: now,
           punchOutPhotoUrl: photoUrl || master.punchOutPhotoUrl,
           totalWorkHours: totalHours,
-          status: 'PRESENT'
+          status: otResult?.status || 'PRESENT',
+          overtimeMinutes: otResult?.overtimeMinutes || 0,
+          overtimeAmount: otResult?.overtimeAmount || 0,
+          overtimeRuleId: otResult?.overtimeRuleId || null,
+          earlyExitMinutes: eeResult?.earlyExitMinutes || 0,
+          earlyExitAmount: eeResult?.earlyExitAmount || 0,
+          earlyExitRuleId: eeResult?.earlyExitRuleId || null,
+          latePunchInMinutes: lateResult?.latePunchInMinutes || 0,
+          latePunchInAmount: lateResult?.latePunchInAmount || 0,
+          latePunchInRuleId: lateResult?.latePunchInRuleId || null,
+          isLate: lateResult?.isLate || false,
+          breakDeductionAmount: breakResult?.breakDeductionAmount || 0,
+          excessBreakMinutes: breakResult?.excessBreakMinutes || 0,
+          breakRuleId: breakResult?.breakRuleId || null
         });
       }
 

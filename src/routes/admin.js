@@ -21797,7 +21797,7 @@ router.get("/shifts/templates", async (req, res) => {
         overtimeStartMinutes: t.overtimeStartMinutes,
         autoPunchoutAfterShiftEnd: t.autoPunchoutAfterShiftEnd,
         unpaidBreakMinutes: t.unpaidBreakMinutes != null ? Number(t.unpaidBreakMinutes) : 0,
-        timeSlots: t.timeSlots,
+        timeSlots: typeof t.timeSlots === 'string' ? JSON.parse(t.timeSlots) : (t.timeSlots || null),
         active: t.active !== false,
         assignedCount: countMap[t.id] || 0,
         breaks: (t.breaks || []).map((b) => ({
@@ -21913,6 +21913,8 @@ router.post("/shifts/templates", async (req, res) => {
       overtimeStartMinutes,
       autoPunchoutAfterShiftEnd,
       unpaidBreakMinutes,
+      timeSlots,
+      enableMultipleShifts,
       active,
       breaks,
     } = req.body || {};
@@ -22009,6 +22011,8 @@ router.post("/shifts/templates", async (req, res) => {
           : null,
       unpaidBreakMinutes:
         unpaidBreakMinutes != null ? Number(unpaidBreakMinutes) : 0,
+      timeSlots: Array.isArray(timeSlots) && timeSlots.length > 0 ? timeSlots : null,
+      enableMultipleShifts: Array.isArray(timeSlots) && timeSlots.length > 1 ? true : (enableMultipleShifts !== undefined ? !!enableMultipleShifts : false),
       active: active === undefined ? true : !!active,
       orgAccountId: orgId,
     });
@@ -22081,6 +22085,8 @@ router.put("/shifts/templates/:id", async (req, res) => {
       overtimeStartMinutes,
       autoPunchoutAfterShiftEnd,
       unpaidBreakMinutes,
+      timeSlots,
+      enableMultipleShifts,
       active,
       breaks,
     } = req.body || {};
@@ -22198,6 +22204,14 @@ router.put("/shifts/templates/:id", async (req, res) => {
             ? 0
             : Number(unpaidBreakMinutes)
           : row.unpaidBreakMinutes,
+      timeSlots:
+        timeSlots !== undefined
+          ? (Array.isArray(timeSlots) && timeSlots.length > 0 ? timeSlots : null)
+          : row.timeSlots,
+      enableMultipleShifts:
+        timeSlots !== undefined
+          ? (Array.isArray(timeSlots) && timeSlots.length > 1)
+          : (enableMultipleShifts !== undefined ? !!enableMultipleShifts : row.enableMultipleShifts),
       active: active !== undefined ? !!active : row.active,
     });
 
@@ -23468,10 +23482,36 @@ router.get("/attendance", async (req, res) => {
         }
 
         if (shiftTpl && !r.isRmoIntermediate) {
-          // Late Calculation (Unconditional)
-          if (shiftTpl.startTime) {
+          let rawSlots = [];
+          if (shiftTpl?.timeSlots) {
+            try { rawSlots = Array.isArray(shiftTpl.timeSlots) ? shiftTpl.timeSlots : JSON.parse(shiftTpl.timeSlots); } catch (_) { rawSlots = []; }
+          } else if (shiftTpl?.time_slots) {
+            try { rawSlots = Array.isArray(shiftTpl.time_slots) ? shiftTpl.time_slots : JSON.parse(shiftTpl.time_slots); } catch (_) { rawSlots = []; }
+          }
+
+          // Late Calculation
+          if (r.latePunchInMinutes !== null && r.latePunchInMinutes !== undefined) {
+            latePunchInMinutes = Number(r.latePunchInMinutes);
+          } else if (rawSlots.length > 1 && r.punchedInAt) {
             const punchIn = new Date(r.punchedInAt);
-            // Adjust for potential timezone shift if needed, but here we assume r.punchedInAt is already correct
+            const punchInSec = punchIn.getHours() * 3600 + punchIn.getMinutes() * 60 + punchIn.getSeconds();
+            let matchedSlot = rawSlots[0];
+            for (let i = rawSlots.length - 1; i >= 0; i--) {
+              const slot = rawSlots[i];
+              const [sh, sm, ss] = (slot.startTime || "00:00").split(":").map(Number);
+              const sStartSec = sh * 3600 + sm * 60 + (ss || 0);
+              if (punchInSec >= sStartSec - 1800) {
+                matchedSlot = slot;
+                break;
+              }
+            }
+            const [sh, sm, ss] = (matchedSlot.startTime || "00:00").split(":").map(Number);
+            const shiftStartSec = sh * 3600 + sm * 60 + (ss || 0);
+            if (punchInSec > shiftStartSec) {
+              latePunchInMinutes = Math.floor((punchInSec - shiftStartSec) / 60);
+            }
+          } else if (shiftTpl.startTime && r.punchedInAt) {
+            const punchIn = new Date(r.punchedInAt);
             const punchInSec =
               punchIn.getHours() * 3600 +
               punchIn.getMinutes() * 60 +
@@ -23486,8 +23526,27 @@ router.get("/attendance", async (req, res) => {
             }
           }
 
-          // Early Exit Calculation (Unconditional, on the fly for reporting)
-          if (shiftTpl.endTime && r.punchedOutAt) {
+          // Early Exit Calculation
+          if (r.earlyExitMinutes !== null && r.earlyExitMinutes !== undefined) {
+            earlyExitMinutes = Number(r.earlyExitMinutes);
+          } else if (rawSlots.length > 1 && r.punchedOutAt) {
+            const punchOut = new Date(r.punchedOutAt);
+            const punchOutSec = punchOut.getHours() * 3600 + punchOut.getMinutes() * 60 + punchOut.getSeconds();
+            let matchedSlot = rawSlots[0];
+            for (const slot of rawSlots) {
+              const [eh, em, es] = (slot.endTime || "00:00").split(":").map(Number);
+              const sEndSec = eh * 3600 + em * 60 + (es || 0);
+              if (punchOutSec <= sEndSec + 3600) {
+                matchedSlot = slot;
+                break;
+              }
+            }
+            const [eh, em, es] = (matchedSlot.endTime || "00:00").split(":").map(Number);
+            const shiftEndSec = eh * 3600 + em * 60 + (es || 0);
+            if (punchOutSec < shiftEndSec) {
+              earlyExitMinutes = Math.floor((shiftEndSec - punchOutSec) / 60);
+            }
+          } else if (shiftTpl.endTime && r.punchedOutAt) {
             const punchOut = new Date(r.punchedOutAt);
             const punchOutSec =
               punchOut.getHours() * 3600 +
@@ -23610,7 +23669,7 @@ router.get("/attendance", async (req, res) => {
 
         status,
         isLate,
-        latePunchInMinutes,
+        latePunchInMinutes: (r.latePunchInMinutes !== null && r.latePunchInMinutes !== undefined) ? Number(r.latePunchInMinutes) : Number(latePunchInMinutes || 0),
         bufferMinutes: r.bufferMinutes || 0,
         latePenaltyText,
         source: r.source,
@@ -23637,7 +23696,7 @@ router.get("/attendance", async (req, res) => {
         punchOutAddress: r.punchOutAddress,
         punchInPhotoUrl: r.punchInPhotoUrl,
         punchOutPhotoUrl: r.punchOutPhotoUrl,
-        earlyExitMinutes: Number(earlyExitMinutes || r.earlyExitMinutes || 0),
+        earlyExitMinutes: (r.earlyExitMinutes !== null && r.earlyExitMinutes !== undefined) ? Number(r.earlyExitMinutes) : Number(earlyExitMinutes || 0),
         earlyExitAmount: Number(r.earlyExitAmount || 0),
         earlyOvertimeMinutes: Number(r.earlyOvertimeMinutes || 0),
         earlyOvertimeAmount: Number(r.earlyOvertimeAmount || 0),

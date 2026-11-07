@@ -45,9 +45,48 @@ class EarlyExitService {
 
     // 1. Identify Shift End Time (Always identify shift to get raw minutes)
     const shift = await shiftService.getEffectiveShiftTemplate(userId, dateKey);
+    let rawSlots = [];
+    if (shift?.timeSlots) {
+      try { rawSlots = Array.isArray(shift.timeSlots) ? shift.timeSlots : JSON.parse(shift.timeSlots); } catch (_) { rawSlots = []; }
+    } else if (shift?.time_slots) {
+      try { rawSlots = Array.isArray(shift.time_slots) ? shift.time_slots : JSON.parse(shift.time_slots); } catch (_) { rawSlots = []; }
+    }
+
     let earlyExitMinutes = 0;
 
-    if (shift && shift.shiftType !== 'open' && shift.endTime) {
+    if (rawSlots.length > 1) {
+      // Multi-slot / Split shift: calculate early exit for each completed slot and sum up
+      try {
+        const { AttendancePunch } = require('../models');
+        const punches = await AttendancePunch.findAll({
+          where: { userId, date: dateKey },
+          order: [['punchNumber', 'ASC']]
+        });
+        const shiftDate = dayjs(dateKey);
+        for (let i = 0; i < rawSlots.length; i++) {
+          const slot = rawSlots[i];
+          const punch = punches[i];
+          if (slot && slot.endTime && punch && punch.punchedOutAt) {
+            const [sh, sm] = (slot.startTime || '00:00').split(':').map(Number);
+            const [eh, em, es] = slot.endTime.split(':').map(Number);
+            const outAtLocal = dayjs(punch.punchedOutAt).second(0).millisecond(0);
+            let slotStartLocal = shiftDate.hour(sh).minute(sm).second(0).millisecond(0);
+            let slotEndLocal = shiftDate.hour(eh).minute(em).second(es || 0).millisecond(0);
+            if (slotEndLocal.isBefore(slotStartLocal)) {
+              slotEndLocal = slotEndLocal.add(1, 'day');
+            }
+            if (outAtLocal.isBefore(slotEndLocal)) {
+              const diffMins = slotEndLocal.diff(outAtLocal, 'minute');
+              if (diffMins > 0) {
+                earlyExitMinutes += diffMins;
+              }
+            }
+          }
+        }
+      } catch (err) {
+        console.error('[EarlyExitService] Error calculating multi-slot early exit:', err);
+      }
+    } else if (shift && shift.shiftType !== 'open' && shift.endTime) {
       const [sh, sm] = (shift.startTime || '00:00').split(':').map(Number);
       const [eh, em, es] = shift.endTime.split(':').map(Number);
       

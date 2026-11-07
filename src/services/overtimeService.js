@@ -214,9 +214,27 @@ async function getOvertimeMinutes(attendance, rule, shiftTemplate) {
   // FALLBACK: If rule threshold is 0/missing, use Shift Template's required work minutes
   // REINFORCEMENT: For calculation types that depend on shift boundaries,
   // ensure the threshold is at least the shift duration to avoid "ghost" overtime.
+  let rawSlots = [];
+  if (shiftTemplate?.timeSlots) {
+    try { rawSlots = Array.isArray(shiftTemplate.timeSlots) ? shiftTemplate.timeSlots : JSON.parse(shiftTemplate.timeSlots); } catch (_) { rawSlots = []; }
+  } else if (shiftTemplate?.time_slots) {
+    try { rawSlots = Array.isArray(shiftTemplate.time_slots) ? shiftTemplate.time_slots : JSON.parse(shiftTemplate.time_slots); } catch (_) { rawSlots = []; }
+  }
+
   if (shiftTemplate) {
     let shiftWorkMins = 0;
-    if (shiftTemplate.workMinutes) {
+    if (rawSlots.length > 1) {
+      for (const s of rawSlots) {
+        if (s.startTime && s.endTime) {
+          const [sh, sm] = s.startTime.split(':').map(Number);
+          const [eh, em] = s.endTime.split(':').map(Number);
+          let sMin = sh * 60 + sm;
+          let eMin = eh * 60 + em;
+          if (eMin <= sMin) eMin += 1440;
+          shiftWorkMins += (eMin - sMin);
+        }
+      }
+    } else if (shiftTemplate.workMinutes) {
       shiftWorkMins = shiftTemplate.workMinutes;
     } else if (shiftTemplate.startTime && shiftTemplate.endTime) {
       const [sh, sm] = shiftTemplate.startTime.split(':').map(Number);
@@ -249,9 +267,12 @@ async function getOvertimeMinutes(attendance, rule, shiftTemplate) {
 
   overtimeByPeriod = Math.max(0, netWorkedMinutesFixed - baseThreshold);
 
-  if (attendance.punchedOutAt && shiftTemplate && shiftTemplate.endTime) {
-    const [sh, sm] = (shiftTemplate.startTime || '00:00').split(':').map(Number);
-    const [eh, em, es] = shiftTemplate.endTime.split(':').map(Number);
+  if (attendance.punchedOutAt && shiftTemplate && (shiftTemplate.endTime || rawSlots.length > 1)) {
+    const firstSlotStart = (rawSlots.length > 0 && rawSlots[0].startTime) ? rawSlots[0].startTime : (shiftTemplate.startTime || '00:00');
+    const lastSlotEnd = (rawSlots.length > 0 && rawSlots[rawSlots.length - 1].endTime) ? rawSlots[rawSlots.length - 1].endTime : (shiftTemplate.endTime || '00:00');
+
+    const [sh, sm] = firstSlotStart.split(':').map(Number);
+    const [eh, em, es] = lastSlotEnd.split(':').map(Number);
 
     const punchInLocal = dayjs(attendance.punchedInAt).second(0).millisecond(0);
     const punchOutLocal = dayjs(attendance.punchedOutAt).second(0).millisecond(0);

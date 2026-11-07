@@ -46,8 +46,28 @@ class LatePunchInService {
 
     // 1. Identify Shift Start Time (Always identify shift to get raw minutes)
     const shift = await shiftService.getEffectiveShiftTemplate(userId, dateKey);
-    let shiftWorkMins = shift?.workMinutes || 0;
-    if (!shiftWorkMins && shift?.startTime && shift?.endTime) {
+    let rawSlots = [];
+    if (shift?.timeSlots) {
+      try { rawSlots = Array.isArray(shift.timeSlots) ? shift.timeSlots : JSON.parse(shift.timeSlots); } catch (_) { rawSlots = []; }
+    } else if (shift?.time_slots) {
+      try { rawSlots = Array.isArray(shift.time_slots) ? shift.time_slots : JSON.parse(shift.time_slots); } catch (_) { rawSlots = []; }
+    }
+
+    let shiftWorkMins = 0;
+    if (rawSlots.length > 1) {
+      for (const s of rawSlots) {
+        if (s.startTime && s.endTime) {
+          const [sh, sm] = s.startTime.split(':').map(Number);
+          const [eh, em] = s.endTime.split(':').map(Number);
+          let sMin = sh * 60 + sm;
+          let eMin = eh * 60 + em;
+          if (eMin <= sMin) eMin += 1440;
+          shiftWorkMins += (eMin - sMin);
+        }
+      }
+    } else if (shift?.workMinutes) {
+      shiftWorkMins = shift.workMinutes;
+    } else if (shift?.startTime && shift?.endTime) {
       const [sh, sm] = shift.startTime.split(':').map(Number);
       const [eh, em] = shift.endTime.split(':').map(Number);
       let startMin = sh * 60 + sm;
@@ -62,7 +82,32 @@ class LatePunchInService {
     const shiftHours = (shiftWorkMins || 480) / 60;
     let latePunchInMinutes = 0;
 
-    if (shift && shift.shiftType !== 'open' && shift.startTime) {
+    if (rawSlots.length > 1) {
+      // Multi-slot / Split shift: calculate late for each slot and sum up
+      try {
+        const { AttendancePunch } = require('../models');
+        const punches = await AttendancePunch.findAll({
+          where: { userId, date: dateKey },
+          order: [['punchNumber', 'ASC']]
+        });
+        const shiftDate = dayjs(dateKey);
+        for (let i = 0; i < rawSlots.length; i++) {
+          const slot = rawSlots[i];
+          const punch = punches[i];
+          if (slot && slot.startTime && punch && punch.punchedInAt) {
+            const [sh, sm, ss] = slot.startTime.split(':').map(Number);
+            const inAtLocal = dayjs(punch.punchedInAt).second(0).millisecond(0);
+            const slotStartLocal = shiftDate.hour(sh).minute(sm).second(ss || 0).millisecond(0);
+            const slotDiff = inAtLocal.diff(slotStartLocal, 'minute');
+            if (slotDiff > 0) {
+              latePunchInMinutes += slotDiff;
+            }
+          }
+        }
+      } catch (err) {
+        console.error('[LatePunchInService] Error calculating multi-slot late:', err);
+      }
+    } else if (shift && shift.shiftType !== 'open' && shift.startTime) {
       const [sh, sm, ss] = shift.startTime.split(':').map(Number);
       
       // Robust Time Comparison:

@@ -43,8 +43,28 @@ async function calculateBreakDeduction(attendance, orgAccount, daysInMonth = 30,
     // 1.5 Fetch Shift Template to get dynamic work hours
     const shiftService = require('./shiftService');
     const shiftTemplate = await shiftService.getEffectiveShiftTemplate(userId, dateStr);
-    let shiftWorkMins = shiftTemplate?.workMinutes || 0;
-    if (!shiftWorkMins && shiftTemplate?.startTime && shiftTemplate?.endTime) {
+    let rawSlots = [];
+    if (shiftTemplate?.timeSlots) {
+      try { rawSlots = Array.isArray(shiftTemplate.timeSlots) ? shiftTemplate.timeSlots : JSON.parse(shiftTemplate.timeSlots); } catch (_) { rawSlots = []; }
+    } else if (shiftTemplate?.time_slots) {
+      try { rawSlots = Array.isArray(shiftTemplate.time_slots) ? shiftTemplate.time_slots : JSON.parse(shiftTemplate.time_slots); } catch (_) { rawSlots = []; }
+    }
+
+    let shiftWorkMins = 0;
+    if (rawSlots.length > 1) {
+      for (const s of rawSlots) {
+        if (s.startTime && s.endTime) {
+          const [sh, sm] = s.startTime.split(':').map(Number);
+          const [eh, em] = s.endTime.split(':').map(Number);
+          let sMin = sh * 60 + sm;
+          let eMin = eh * 60 + em;
+          if (eMin <= sMin) eMin += 1440;
+          shiftWorkMins += (eMin - sMin);
+        }
+      }
+    } else if (shiftTemplate?.workMinutes) {
+      shiftWorkMins = shiftTemplate.workMinutes;
+    } else if (shiftTemplate?.startTime && shiftTemplate?.endTime) {
       const [sh, sm] = shiftTemplate.startTime.split(':').map(Number);
       const [eh, em] = shiftTemplate.endTime.split(':').map(Number);
       let startMin = sh * 60 + sm;
