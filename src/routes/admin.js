@@ -38738,24 +38738,12 @@ router.post("/payroll/generate-payslip", async (req, res) => {
         .status(400)
         .json({ success: false, message: "userId and monthKey required" });
 
-    // Calculate data (forceRecalculate: true ensures latest holiday, attendance and weekly off rules are applied)
-    const data = await calculateSalary(userId, monthKey, { forceRecalculate: true });
-
-    // Path: uploads/payslips/YYYY-MM/
-    const uploadsDir = path.join(__dirname, "../../uploads/payslips", monthKey);
-    if (!fs.existsSync(uploadsDir))
-      fs.mkdirSync(uploadsDir, { recursive: true });
-
-    const filename = `payslip-${userId}-${monthKey}-${Date.now()}.pdf`;
-    const absolutePath = path.join(uploadsDir, filename);
-    const relativePath = `/uploads/payslips/${monthKey}/${filename}`;
-
-    // Generate and save PDF
-    await generatePayslipPDF(data, absolutePath);
-
     // Get user to determine organization
     const user = await User.findByPk(userId, {
-      include: [{ model: StaffProfile, as: "profile" }],
+      include: [
+        { model: StaffProfile, as: "profile" },
+        { model: OrgAccount, as: "orgAccount" }
+      ],
     });
     if (!user)
       return res
@@ -38782,6 +38770,43 @@ router.post("/payroll/generate-payslip", async (req, res) => {
     const line = await PayrollLine.findOne({
       where: { cycleId: cycle.id, userId: Number(userId) },
     });
+
+    // Use saved PayrollLine snapshot if available so payslip exactly matches the payroll screen
+    let data;
+    if (line && line.totals) {
+      let totals = typeof line.totals === "string" ? JSON.parse(line.totals) : line.totals;
+      let earnings = typeof line.earnings === "string" ? JSON.parse(line.earnings) : line.earnings;
+      let incentives = typeof line.incentives === "string" ? JSON.parse(line.incentives) : line.incentives;
+      let deductions = typeof line.deductions === "string" ? JSON.parse(line.deductions) : line.deductions;
+      let attendanceSummary = typeof line.attendanceSummary === "string" ? JSON.parse(line.attendanceSummary) : line.attendanceSummary;
+
+      data = {
+        user,
+        monthKey,
+        earnings: earnings || {},
+        incentives: incentives || {},
+        deductions: deductions || {},
+        totals: totals || {},
+        attendanceSummary: attendanceSummary || {},
+        generatedAt: line.updatedAt || new Date(),
+        isPaid: !!(line.paidAt || line.paidMode),
+        paymentStatus: (line.paidAt || line.paidMode) ? "PAID" : (cycle.status || "DUE"),
+      };
+    } else {
+      data = await calculateSalary(userId, monthKey, { forceRecalculate: true });
+    }
+
+    // Path: uploads/payslips/YYYY-MM/
+    const uploadsDir = path.join(__dirname, "../../uploads/payslips", monthKey);
+    if (!fs.existsSync(uploadsDir))
+      fs.mkdirSync(uploadsDir, { recursive: true });
+
+    const filename = `payslip-${userId}-${monthKey}-${Date.now()}.pdf`;
+    const absolutePath = path.join(uploadsDir, filename);
+    const relativePath = `/uploads/payslips/${monthKey}/${filename}`;
+
+    // Generate and save PDF
+    await generatePayslipPDF(data, absolutePath);
 
     if (!line) {
       console.warn(
