@@ -450,24 +450,43 @@ class ZktecoService {
     /**
      * Sync transactions for a specific organization
      */
-    async syncTransactionsForOrg(orgId, targetDate = null) {
+    async syncTransactionsForOrg(orgId, targetDate = null, force = false) {
         console.log(`[ZktecoSync] Starting sync for Org: ${orgId}`);
 
-        const rule = await AttendanceAutomationRule.findOne({
-            where: { key: 'zkteco_integration', orgAccountId: orgId, active: true }
+        let rule = await AttendanceAutomationRule.findOne({
+            where: force
+                ? { key: 'zkteco_integration', orgAccountId: orgId }
+                : { key: 'zkteco_integration', orgAccountId: orgId, active: true }
         });
 
-        if (!rule) {
+        if (!rule && !force) {
             console.log(`[ZktecoSync] No active zkteco_integration rule for Org: ${orgId}`);
-            return;
+            return { success: false, message: 'No active zkteco_integration rule for this organization' };
         }
 
-        let config;
-        try {
-            config = typeof rule.config === 'string' ? JSON.parse(rule.config) : rule.config;
-        } catch (e) {
-            console.error(`[ZktecoSync] Invalid config JSON for Org: ${orgId}`, e.message);
-            return;
+        let config = null;
+        if (rule && rule.config) {
+            try {
+                config = typeof rule.config === 'string' ? JSON.parse(rule.config) : rule.config;
+            } catch (e) {
+                console.error(`[ZktecoSync] Invalid config JSON for Org: ${orgId}`, e.message);
+            }
+        }
+
+        // If no config found on org level, fall back to master config in AppSetting
+        if (!config || !config.url) {
+            try {
+                const { AppSetting } = require('../models');
+                const masterSetting = await AppSetting.findOne({ where: { key: 'master_zkteco_config' } });
+                if (masterSetting && masterSetting.value) {
+                    config = JSON.parse(masterSetting.value);
+                }
+            } catch (_) {}
+        }
+
+        if (!config || !config.url) {
+            console.log(`[ZktecoSync] No valid zkteco configuration found for Org: ${orgId}`);
+            return { success: false, message: 'No valid ZKTeco configuration found' };
         }
 
         console.log(`[ZktecoSync] Config loaded:`, JSON.stringify({ ...config, password: '***' }));
@@ -491,7 +510,11 @@ class ZktecoService {
             const nowIST = dayjs().add(5.5, 'hour');
             const datesToSync = [];
             if (targetDate) {
-                datesToSync.push(targetDate);
+                if (Array.isArray(targetDate)) {
+                    datesToSync.push(...targetDate);
+                } else {
+                    datesToSync.push(targetDate);
+                }
             } else {
                 // Sync last 2 days as requested
                 for (let i = 0; i <= 1; i++) {

@@ -20,6 +20,7 @@ module.exports = (sequelize) => {
       maxPunchOutAfterMinutes: { type: DataTypes.INTEGER, allowNull: true },
       // Half-day and overtime rules
       halfDayThresholdMinutes: { type: DataTypes.INTEGER, allowNull: true, comment: 'Minutes below which attendance is marked as half-day' },
+      calculateHalfDayFromShiftStart: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: false, field: 'calculate_half_day_from_shift_start' },
       overtimeStartMinutes: { type: DataTypes.INTEGER, allowNull: true, comment: 'Minutes after which overtime starts' },
       // Auto-punchout rule
       autoPunchoutAfterShiftEnd: { type: DataTypes.DECIMAL(4, 1), allowNull: true, comment: 'Hours after shift end when auto-punchout should occur' },

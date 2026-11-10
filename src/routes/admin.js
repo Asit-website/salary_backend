@@ -21743,7 +21743,7 @@ router.get("/shifts/templates", async (req, res) => {
     const orgId = requireOrg(req, res);
     if (!orgId) return;
     const rows = await ShiftTemplate.findAll({
-      where: { orgAccountId: orgId },
+      where: { orgAccountId: orgId, active: { [Op.ne]: false } },
       order: [["createdAt", "DESC"]],
       include: [{ model: ShiftBreak, as: "breaks" }],
     });
@@ -21794,6 +21794,7 @@ router.get("/shifts/templates", async (req, res) => {
         minPunchOutAfterMinutes: t.minPunchOutAfterMinutes,
         maxPunchOutAfterMinutes: t.maxPunchOutAfterMinutes,
         halfDayThresholdMinutes: t.halfDayThresholdMinutes,
+        calculateHalfDayFromShiftStart: !!t.calculateHalfDayFromShiftStart,
         overtimeStartMinutes: t.overtimeStartMinutes,
         autoPunchoutAfterShiftEnd: t.autoPunchoutAfterShiftEnd,
         unpaidBreakMinutes: t.unpaidBreakMinutes != null ? Number(t.unpaidBreakMinutes) : 0,
@@ -21910,6 +21911,7 @@ router.post("/shifts/templates", async (req, res) => {
       minPunchOutAfterMinutes,
       maxPunchOutAfterMinutes,
       halfDayThresholdMinutes,
+      calculateHalfDayFromShiftStart,
       overtimeStartMinutes,
       autoPunchoutAfterShiftEnd,
       unpaidBreakMinutes,
@@ -22003,6 +22005,7 @@ router.post("/shifts/templates", async (req, res) => {
         halfDayThresholdMinutes != null
           ? Number(halfDayThresholdMinutes)
           : null,
+      calculateHalfDayFromShiftStart: !!calculateHalfDayFromShiftStart,
       overtimeStartMinutes:
         overtimeStartMinutes != null ? Number(overtimeStartMinutes) : null,
       autoPunchoutAfterShiftEnd:
@@ -22082,6 +22085,7 @@ router.put("/shifts/templates/:id", async (req, res) => {
       minPunchOutAfterMinutes,
       maxPunchOutAfterMinutes,
       halfDayThresholdMinutes,
+      calculateHalfDayFromShiftStart,
       overtimeStartMinutes,
       autoPunchoutAfterShiftEnd,
       unpaidBreakMinutes,
@@ -22186,6 +22190,10 @@ router.put("/shifts/templates/:id", async (req, res) => {
             ? null
             : Number(halfDayThresholdMinutes)
           : row.halfDayThresholdMinutes,
+      calculateHalfDayFromShiftStart:
+        calculateHalfDayFromShiftStart !== undefined
+          ? !!calculateHalfDayFromShiftStart
+          : row.calculateHalfDayFromShiftStart,
       overtimeStartMinutes:
         overtimeStartMinutes !== undefined
           ? overtimeStartMinutes == null
@@ -22265,10 +22273,40 @@ router.delete("/shifts/templates/:id", async (req, res) => {
     if (!orgId) return;
     const id = Number(req.params.id);
     const row = await ShiftTemplate.findOne({
-      where: { id, orgAccountId: orgId },
+      where: { id, orgAccountId: orgId, active: { [Op.ne]: false } },
     });
     if (!row)
-      return res.status(404).json({ success: false, message: "Not found" });
+      return res.status(404).json({ success: false, message: "Shift template not found" });
+
+    // Condition check: Only delete if NO staff is assigned to this shift
+    const staffUsers = await User.findAll({
+      where: { orgAccountId: orgId, role: "staff", active: true },
+      include: [{ model: StaffProfile, as: "profile" }],
+    });
+
+    const todayStr = toIsoDateOnly(new Date());
+    const activeAssignments = await StaffShiftAssignment.findAll({
+      where: {
+        shiftTemplateId: id,
+        effectiveFrom: { [Op.lte]: todayStr },
+        [Op.or]: [{ effectiveTo: null }, { effectiveTo: { [Op.gte]: todayStr } }]
+      }
+    });
+
+    const assignedUserIds = new Set(activeAssignments.map(a => a.userId));
+    for (const u of staffUsers) {
+      if (Number(u.shiftTemplateId) === id || Number(u.profile?.shiftSelection) === id) {
+        assignedUserIds.add(u.id);
+      }
+    }
+
+    if (assignedUserIds.size > 0) {
+      return res.status(400).json({
+        success: false,
+        message: `Cannot delete shift "${row.name}". There are ${assignedUserIds.size} staff member(s) currently assigned to this shift. Please unassign all staff before deleting.`
+      });
+    }
+
     await row.update({ active: false });
 
     logAudit({
@@ -22284,7 +22322,7 @@ router.delete("/shifts/templates/:id", async (req, res) => {
       },
     });
 
-    return res.json({ success: true });
+    return res.json({ success: true, message: `Shift template "${row.name}" deleted successfully` });
   } catch (e) {
     return res
       .status(500)

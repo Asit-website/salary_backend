@@ -314,6 +314,39 @@ async function getOvertimeMinutes(attendance, rule, shiftTemplate) {
   }
 }
 
+function isHalfDayThresholdTriggered(attendance, shiftTemplate, totalWorkMinutes) {
+  if (!attendance || !attendance.punchedOutAt) return false;
+  if (!shiftTemplate || !shiftTemplate.halfDayThresholdMinutes) return false;
+
+  let effectiveMins = totalWorkMinutes;
+
+  if (
+    shiftTemplate.calculateHalfDayFromShiftStart &&
+    shiftTemplate.startTime &&
+    attendance.punchedInAt &&
+    attendance.punchedOutAt
+  ) {
+    try {
+      const [sh, sm] = shiftTemplate.startTime.split(':').map(Number);
+      const inDate = attendance.date ? dayjs(attendance.date) : dayjs(attendance.punchedInAt);
+      const shiftStartTs = inDate.hour(sh).minute(sm).second(0).millisecond(0).valueOf();
+      const inTs = new Date(attendance.punchedInAt).getTime();
+      const outTs = new Date(attendance.punchedOutAt).getTime();
+
+      // If punched in after official shift start time (late punch-in)
+      if (inTs > shiftStartTs) {
+        const rawSpanMinutes = Math.max(0, Math.floor((outTs - shiftStartTs) / 60000));
+        const breakMins = Math.floor((attendance.breakTotalSeconds || 0) / 60);
+        effectiveMins = Math.max(0, rawSpanMinutes - breakMins);
+      }
+    } catch (e) {
+      console.error('[OvertimeService] Error calculating half-day from shift start:', e.message);
+    }
+  }
+
+  return effectiveMins < shiftTemplate.halfDayThresholdMinutes;
+}
+
 async function calculateOvertime(params, orgAccountArg, daysInMonthArg = 30, nowArg = null) {
   const attendance = (params.toJSON ? params.toJSON() : params);
 
@@ -369,7 +402,7 @@ async function calculateOvertime(params, orgAccountArg, daysInMonthArg = 30, now
       overtimeMinutes: 0,
       overtimeAmount: 0,
       overtimeRuleId: null,
-      status: (!attendance.punchedOutAt) ? 'present' : (shiftTemplate?.halfDayThresholdMinutes && totalWorkMinutes < shiftTemplate.halfDayThresholdMinutes ? 'half_day' : 'present')
+      status: (!attendance.punchedOutAt) ? 'present' : (isHalfDayThresholdTriggered(attendance, shiftTemplate, totalWorkMinutes) ? 'half_day' : 'present')
     };
   } else {
     // Parse thresholds from the actual rule
@@ -456,7 +489,7 @@ async function calculateOvertime(params, orgAccountArg, daysInMonthArg = 30, now
       overtimeMinutes: 0,
       overtimeAmount: 0,
       overtimeRuleId: (finalRule && finalRule.id) || null,
-      status: (!attendance.punchedOutAt) ? 'present' : (shiftTemplate?.halfDayThresholdMinutes && (attendance.totalWorkHours * 60) < shiftTemplate.halfDayThresholdMinutes ? 'half_day' : 'present')
+      status: (!attendance.punchedOutAt) ? 'present' : (isHalfDayThresholdTriggered(attendance, shiftTemplate, Math.round((Number(attendance.totalWorkHours) || 0) * 60)) ? 'half_day' : 'present')
     };
   }
 
@@ -617,7 +650,7 @@ async function calculateOvertime(params, orgAccountArg, daysInMonthArg = 30, now
     fullDayOvertimeApplied,
     extraFullDayBonusApplied,
     extraFullDayBonusAmount: extraFullDayBonusApplied ? extraFullDayBonusAmount : 0,
-    status: overtimeMinutes > 0 ? 'overtime' : ((!attendance.punchedOutAt) ? 'present' : (shiftTemplate?.halfDayThresholdMinutes && totalWorkMinutes < shiftTemplate.halfDayThresholdMinutes ? 'half_day' : 'present'))
+    status: overtimeMinutes > 0 ? 'overtime' : ((!attendance.punchedOutAt) ? 'present' : (isHalfDayThresholdTriggered(attendance, shiftTemplate, totalWorkMinutes) ? 'half_day' : 'present'))
   };
 }
 

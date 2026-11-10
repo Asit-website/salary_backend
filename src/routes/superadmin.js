@@ -2596,5 +2596,60 @@ router.post('/zkteco/reveal-password', async (req, res) => {
   }
 });
 
+// 6. POST /superadmin/zkteco/manual-sync (Manual / Emergency Biometric Sync)
+router.post('/zkteco/manual-sync', async (req, res) => {
+  try {
+    const { orgId, orgIds, targetDate, startDate, endDate } = req.body || {};
+    const zktecoService = require('../services/zktecoService');
+    const dayjs = require('dayjs');
+
+    let targets = [];
+    if (Array.isArray(orgIds) && orgIds.length > 0) {
+      targets = orgIds.map(Number).filter(Boolean);
+    } else if (orgId) {
+      targets = [Number(orgId)];
+    }
+
+    if (targets.length === 0) {
+      return res.status(400).json({ success: false, message: 'Please select at least one organization to sync' });
+    }
+
+    // Determine target dates
+    let dates = null;
+    if (startDate && endDate) {
+      dates = [];
+      let cur = dayjs(startDate);
+      const stop = dayjs(endDate);
+      while (cur.isBefore(stop) || cur.isSame(stop, 'day')) {
+        dates.push(cur.format('YYYY-MM-DD'));
+        cur = cur.add(1, 'day');
+      }
+    } else if (targetDate) {
+      dates = Array.isArray(targetDate) ? targetDate : [targetDate];
+    }
+
+    const results = [];
+    for (const id of targets) {
+      try {
+        const syncRes = await zktecoService.syncTransactionsForOrg(id, dates, true);
+        results.push({ orgId: id, success: true, detail: syncRes });
+      } catch (err) {
+        console.error(`[ManualSync] Error for org ${id}:`, err.message);
+        results.push({ orgId: id, success: false, error: err.message });
+      }
+    }
+
+    const successCount = results.filter(r => r.success).length;
+    return res.json({
+      success: true,
+      message: `Manual biometric sync completed for ${successCount} of ${targets.length} organization(s)`,
+      results
+    });
+  } catch (e) {
+    console.error('[ManualSync] Fatal error:', e);
+    return res.status(500).json({ success: false, message: 'Manual sync failed: ' + e.message });
+  }
+});
+
 module.exports = router;
 

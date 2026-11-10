@@ -632,7 +632,21 @@ router.get('/status', async (req, res) => {
   if (!record?.status && record?.punchedInAt) {
     const totalWorkMinutes = Math.floor(workSeconds / 60);
     if (assignedShift) {
-      if (Number.isFinite(Number(assignedShift.halfDayThresholdMinutes)) && totalWorkMinutes < assignedShift.halfDayThresholdMinutes) {
+      let effectiveHalfDayMins = totalWorkMinutes;
+      if (assignedShift.calculateHalfDayFromShiftStart && assignedShift.startTime && record.punchedInAt && record.punchedOutAt) {
+        try {
+          const [sh, sm] = assignedShift.startTime.split(':').map(Number);
+          const shiftStartMs = dayjs(record.date || record.punchedInAt).hour(sh).minute(sm).second(0).valueOf();
+          const inMs = new Date(record.punchedInAt).getTime();
+          const outMs = new Date(record.punchedOutAt).getTime();
+          if (inMs > shiftStartMs) {
+            const spanMinutes = Math.max(0, Math.floor((outMs - shiftStartMs) / 60000));
+            const breakMins = Math.floor((record.breakTotalSeconds || 0) / 60);
+            effectiveHalfDayMins = Math.max(0, spanMinutes - breakMins);
+          }
+        } catch (_) {}
+      }
+      if (Number.isFinite(Number(assignedShift.halfDayThresholdMinutes)) && effectiveHalfDayMins < assignedShift.halfDayThresholdMinutes) {
         dayStatus = !record.punchedOutAt ? 'PRESENT' : 'HALF_DAY';
       } else {
         dayStatus = 'PRESENT';
@@ -940,7 +954,21 @@ router.get('/history', async (req, res) => {
         } else {
           // Calculate status based on shift rules for history consistency
           if (shiftTpl) {
-            if (Number.isFinite(Number(shiftTpl.halfDayThresholdMinutes)) && totalWorkMinutes < shiftTpl.halfDayThresholdMinutes) {
+            let effectiveHalfDayMins = totalWorkMinutes;
+            if (shiftTpl.calculateHalfDayFromShiftStart && shiftTpl.startTime && record.punchedInAt && record.punchedOutAt) {
+              try {
+                const [sh, sm] = shiftTpl.startTime.split(':').map(Number);
+                const shiftStartMs = dayjs(record.date || record.punchedInAt).hour(sh).minute(sm).second(0).valueOf();
+                const inMs = new Date(record.punchedInAt).getTime();
+                const outMs = new Date(record.punchedOutAt).getTime();
+                if (inMs > shiftStartMs) {
+                  const spanMinutes = Math.max(0, Math.floor((outMs - shiftStartMs) / 60000));
+                  const breakMins = Math.floor((record.breakTotalSeconds || 0) / 60);
+                  effectiveHalfDayMins = Math.max(0, spanMinutes - breakMins);
+                }
+              } catch (_) {}
+            }
+            if (Number.isFinite(Number(shiftTpl.halfDayThresholdMinutes)) && effectiveHalfDayMins < shiftTpl.halfDayThresholdMinutes) {
               dayStatus = !record.punchedOutAt ? 'PRESENT' : 'HALF_DAY';
             } else {
               dayStatus = 'PRESENT';
@@ -2504,7 +2532,20 @@ async function processAutoPunchouts() {
         let overtimeMinutes = 0;
 
         // Use shift template rules for attendance calculation
-        if (shiftTemplate.halfDayThresholdMinutes && totalWorkMinutes < shiftTemplate.halfDayThresholdMinutes) {
+        let effectiveHalfDayMins = totalWorkMinutes;
+        if (shiftTemplate.calculateHalfDayFromShiftStart && shiftTemplate.startTime && attendance.punchedInAt) {
+          try {
+            const [sh, sm] = shiftTemplate.startTime.split(':').map(Number);
+            const shiftStartMs = dayjs(attendance.date || attendance.punchedInAt).hour(sh).minute(sm).second(0).valueOf();
+            const inMs = new Date(attendance.punchedInAt).getTime();
+            const outMs = now.getTime();
+            if (inMs > shiftStartMs) {
+              const spanMinutes = Math.max(0, Math.floor((outMs - shiftStartMs) / 60000));
+              effectiveHalfDayMins = spanMinutes;
+            }
+          } catch (_) {}
+        }
+        if (shiftTemplate.halfDayThresholdMinutes && effectiveHalfDayMins < shiftTemplate.halfDayThresholdMinutes) {
           status = 'half_day';
         } else if (totalWorkMinutes < 60) { // Less than 1 hour
           status = 'absent';
