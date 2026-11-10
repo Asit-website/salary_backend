@@ -156,7 +156,7 @@ async function getOvertimeMinutes(attendance, rule, shiftTemplate) {
       }
     }
 
-    console.log(`[OvertimeService] Open Shift OT Calculation - totalWorkMinutes: ${totalWorkMinutes}, shiftWorkMins: ${shiftWorkMins}, ruleMinMins: ${ruleMinMins}, OTPeriod: ${overtimeByPeriod}, OTShift: ${overtimeByShift}, calcType: ${rule.calculationType}`);
+    console.log(`[OvertimeService] Open Shift OT Calculation - totalWorkMinutes: ${totalWorkMinutes}, shiftWorkMins: ${netShiftWorkMins}, ruleMinMins: ${ruleMinMins}, OTPeriod: ${overtimeByPeriod}, OTShift: ${overtimeByShift}, calcType: ${rule.calculationType}`);
 
     switch (rule.calculationType) {
       case 'SHIFT_END':
