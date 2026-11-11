@@ -142,6 +142,8 @@ mountSecureUploads(app, uploadsDir);
 
 app.use('/health', (_req, res) => res.json({ ok: true }));
 app.use('/api/webhook/essl', require('./src/routes/esslWebhook'));
+app.use('/api/webhook/zkteco', require('./src/routes/zktecoWebhook'));
+app.use('/api/biometric/zkteco/webhook', require('./src/routes/zktecoWebhook'));
 app.use('/auth', authRoutes);
 app.use('/kiosk', kioskRoutes);
 
