@@ -1673,9 +1673,10 @@ router.post('/login', authLimiter, async (req, res) => {
           try { perms = JSON.parse(perms); } catch (e) { }
         }
         const isSuper = u.role === 'superadmin' || (perms && perms.superadmin_access === true);
+        const isPartner = u.role === 'channel_partner';
         return {
-          id: u.orgAccountId || null,
-          name: isSuper ? 'Super Admin Panel' : 'Channel Partner Panel',
+          id: isSuper ? `superadmin-${u.id}` : (isPartner ? `partner-${u.id}` : (u.orgAccountId ? u.orgAccountId : `panel-${u.id}`)),
+          name: isSuper ? 'Super Admin Permissions' : (isPartner ? 'Channel Partner Panel' : `Panel (${u.role})`),
           role: u.role,
           isSuperadminPanel: isSuper
         };

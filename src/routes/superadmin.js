@@ -984,6 +984,75 @@ router.put('/clients/:id', async (req, res) => {
   }
 });
 
+// Change client/organization admin password
+router.post('/clients/:id/change-password', async (req, res) => {
+  try {
+    const orgAccountId = Number(req.params.id);
+    const org = await OrgAccount.findByPk(orgAccountId);
+    if (!org) return res.status(404).json({ success: false, message: 'Organization not found' });
+
+    // Permission check
+    if (req.user.role !== 'superadmin') {
+      const perms = req.user.permissions || {};
+      if (perms.clients === 'manage_own' && org.createdBy !== req.user.id) {
+        return res.status(403).json({ success: false, message: 'Permission denied' });
+      }
+      if (perms.clients === 'manage_selected') {
+        const selectedIds = Array.isArray(perms.selectedClients) ? perms.selectedClients.map(id => Number(id)) : [];
+        if (!selectedIds.includes(Number(org.id))) {
+          return res.status(403).json({ success: false, message: 'Permission denied' });
+        }
+      }
+    }
+
+    const { password } = req.body || {};
+    const pwdRaw = password !== undefined && password !== null ? String(password).trim() : '';
+    if (!pwdRaw) {
+      return res.status(400).json({ success: false, message: 'Password is required' });
+    }
+
+    const passwordHash = await hashPassword(pwdRaw);
+
+    // Find admin user(s) for this organization
+    const admins = await User.findAll({
+      where: { orgAccountId: org.id, role: 'admin' },
+      order: [['id', 'ASC']]
+    });
+
+    if (admins && admins.length > 0) {
+      for (const a of admins) {
+        await a.update({ passwordHash });
+      }
+    } else {
+      const adminPhone = normalizePhone(org.phone);
+      if (adminPhone) {
+        let existingUser = await User.findOne({ where: { phone: String(adminPhone) } });
+        if (existingUser) {
+          await existingUser.update({ passwordHash, orgAccountId: org.id, role: 'admin' });
+        } else {
+          await User.create({
+            role: 'admin',
+            orgAccountId: org.id,
+            phone: String(adminPhone),
+            passwordHash,
+            active: true
+          });
+        }
+      } else {
+        return res.status(400).json({ success: false, message: 'No admin user or valid phone number found for this client' });
+      }
+    }
+
+    return res.json({
+      success: true,
+      message: `Password changed successfully for ${org.name}`
+    });
+  } catch (e) {
+    console.error('[CHANGE CLIENT PASSWORD] Error:', e);
+    return res.status(500).json({ success: false, message: e.message || 'Failed to change client password' });
+  }
+});
+
 // Assign/Renew subscription
 router.post('/clients/:id/subscription', async (req, res) => {
   try {
