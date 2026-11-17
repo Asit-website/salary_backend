@@ -161,6 +161,7 @@ app.use(rosterRoutes);
 app.use('/admin/shift-rotation', shiftRotationRoutes);
 app.use('/admin/ai', aiRoutes);
 app.use('/admin/payroll-inspection', require('./src/routes/payrollInspection'));
+app.use(require('./src/routes/teamLeader'));
 app.use('/admin', adminRoutes);
 app.use('/admin/tally', require('./src/routes/tally'));
 app.use('/superadmin/mail', superadminMailRoutes);

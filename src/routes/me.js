@@ -669,10 +669,14 @@ router.post('/expenses', upload.any(), async (req, res) => {
     let transportMode = mode || null;
 
     if (req.body.items) {
-      try {
-        itemsArray = JSON.parse(req.body.items);
-      } catch (e) {
-        itemsArray = [];
+      if (typeof req.body.items === 'string') {
+        try {
+          itemsArray = JSON.parse(req.body.items);
+        } catch (e) {
+          itemsArray = [];
+        }
+      } else if (Array.isArray(req.body.items)) {
+        itemsArray = req.body.items;
       }
     }
 
@@ -764,10 +768,14 @@ router.put('/expenses/:id', upload.any(), async (req, res) => {
     let transportMode = mode || null;
 
     if (req.body.items) {
-      try {
-        itemsArray = JSON.parse(req.body.items);
-      } catch (e) {
-        itemsArray = [];
+      if (typeof req.body.items === 'string') {
+        try {
+          itemsArray = JSON.parse(req.body.items);
+        } catch (e) {
+          itemsArray = [];
+        }
+      } else if (Array.isArray(req.body.items)) {
+        itemsArray = req.body.items;
       }
     }
 

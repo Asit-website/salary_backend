@@ -144,6 +144,7 @@ const definePmsSelfAppraisal = require('./PmsSelfAppraisal');
 const definePmsCompetency = require('./PmsCompetency');
 const definePmsCompetencyAssessment = require('./PmsCompetencyAssessment');
 const definePmsSalaryRevision = require('./PmsSalaryRevision');
+const defineTeamAssignment = require('./TeamAssignment');
 
 
 
@@ -294,6 +295,16 @@ const PmsSelfAppraisal = definePmsSelfAppraisal(sequelize);
 const PmsCompetency = definePmsCompetency(sequelize);
 const PmsCompetencyAssessment = definePmsCompetencyAssessment(sequelize);
 const PmsSalaryRevision = definePmsSalaryRevision(sequelize);
+const TeamAssignment = defineTeamAssignment(sequelize);
+
+OrgAccount.hasMany(TeamAssignment, { foreignKey: 'orgAccountId', as: 'teamAssignments' });
+TeamAssignment.belongsTo(OrgAccount, { foreignKey: 'orgAccountId', as: 'orgAccount' });
+
+User.hasMany(TeamAssignment, { foreignKey: 'leaderUserId', as: 'ledTeamAssignments' });
+TeamAssignment.belongsTo(User, { foreignKey: 'leaderUserId', as: 'leader' });
+
+User.hasMany(TeamAssignment, { foreignKey: 'memberUserId', as: 'memberTeamAssignments' });
+TeamAssignment.belongsTo(User, { foreignKey: 'memberUserId', as: 'member' });
 
 OrgAccount.hasMany(PmsSalaryRevision, { foreignKey: 'orgAccountId', as: 'pmsSalaryRevisions' });
 PmsSalaryRevision.belongsTo(OrgAccount, { foreignKey: 'orgAccountId', as: 'orgAccount' });
@@ -1261,4 +1272,5 @@ module.exports = {
   PmsCompetency,
   PmsCompetencyAssessment,
   PmsSalaryRevision,
+  TeamAssignment,
 };
