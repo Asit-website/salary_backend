@@ -121,6 +121,46 @@ async function initDb() {
     console.log('Note on qr_punch_enabled column (might already exist):', err.message);
   }
 
+  // Ensure is_waived and is_late_waived columns exist
+  try {
+    await sequelize.query('ALTER TABLE late_punch_approvals ADD COLUMN is_waived BOOLEAN NOT NULL DEFAULT FALSE');
+  } catch (_) {}
+  try {
+    await sequelize.query('ALTER TABLE attendance ADD COLUMN is_late_waived BOOLEAN NOT NULL DEFAULT FALSE');
+  } catch (_) {}
+  try {
+    await sequelize.query('ALTER TABLE attendance ADD COLUMN is_outdoor BOOLEAN NOT NULL DEFAULT FALSE');
+  } catch (_) {}
+  try {
+    await sequelize.query('ALTER TABLE attendance ADD COLUMN outdoor_duty_id INT NULL');
+  } catch (_) {}
+  try {
+    await sequelize.query(`
+      CREATE TABLE IF NOT EXISTS outdoor_duty_requests (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        org_account_id INT NOT NULL,
+        user_id INT NOT NULL,
+        group_id VARCHAR(64) NOT NULL,
+        date DATE NOT NULL,
+        from_time VARCHAR(20) NULL,
+        to_time VARCHAR(20) NULL,
+        reason VARCHAR(255) NOT NULL,
+        visit_location VARCHAR(255) NOT NULL,
+        client_name VARCHAR(255) NULL,
+        remarks TEXT NULL,
+        attachment_url VARCHAR(500) NULL,
+        status ENUM('PENDING', 'APPROVED', 'REJECTED') NOT NULL DEFAULT 'PENDING',
+        reviewed_by INT NULL,
+        reviewed_at DATETIME NULL,
+        rejection_reason TEXT NULL,
+        created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        INDEX idx_od_user_date (user_id, date),
+        INDEX idx_od_org_status (org_account_id, status)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+    `);
+  } catch (_) {}
+
   // Ensure pardon_limit column exists in late_punchin_rules
   try {
     await sequelize.query('ALTER TABLE late_punchin_rules ADD COLUMN pardon_limit INT NOT NULL DEFAULT 0');

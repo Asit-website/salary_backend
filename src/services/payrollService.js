@@ -290,7 +290,7 @@ async function computeLatePenaltyMeta({ userId, monthKey, orgAccount, baseSalary
   // 1. Fetch all attendance records for the month
   const rows = await Attendance.findAll({
     where: { userId, date: { [Op.gte]: start, [Op.lte]: endKey } },
-    attributes: ['id', 'userId', 'orgAccountId', 'latePunchInMinutes', 'latePunchInAmount', 'latePunchInRuleId', 'isLate', 'date', 'status', 'punchedInAt'],
+    attributes: ['id', 'userId', 'orgAccountId', 'latePunchInMinutes', 'latePunchInAmount', 'latePunchInRuleId', 'isLate', 'isLateWaived', 'date', 'status', 'punchedInAt'],
     order: [['date', 'ASC']]
   });
 
@@ -674,8 +674,12 @@ async function calculateSalary(userId, monthKey, options = {}) {
         deductions = { ...(deductions || {}), break_penalty: br.breakPenalty };
       }
 
-      if (lp.latePunchInPenalty > 0 && !Number(deductions?.late_punchin_penalty || 0)) {
+      if (lp.latePunchInPenalty > 0) {
         deductions = { ...(deductions || {}), late_punchin_penalty: lp.latePunchInPenalty };
+      } else {
+        if (deductions && 'late_punchin_penalty' in deductions) {
+          delete deductions.late_punchin_penalty;
+        }
       }
 
       if (ot.overtimePay > 0 && !Number(earnings?.overtime_pay || 0)) {
@@ -692,6 +696,7 @@ async function calculateSalary(userId, monthKey, options = {}) {
         earlyOvertimePay: Number(eot.earlyOvertimePay || 0),
         latePunchInMinutes: Number(lp.latePunchInMinutes || 0),
         latePunchInPenalty: Number(lp.latePunchInPenalty || 0),
+        latePenalty: Number(lp.latePunchInPenalty || 0),
         latePenaltyDays: Number(lp.latePenaltyDays || 0),
         lateCount: Number(lp.lateCount || 0),
         overtimeMinutes: Number(ot.overtimeMinutes || 0),
@@ -748,6 +753,16 @@ async function calculateSalary(userId, monthKey, options = {}) {
           grossSalary: te + ti,
           netSalary: te + ti - td,
         };
+      }
+
+      if (cycle && cycle.status === 'DRAFT' && line) {
+        try {
+          await line.update({
+            deductions: deductions,
+            attendanceSummary: attendanceSummary,
+            totals: totalsObj
+          });
+        } catch (_) {}
       }
     } catch (_) { /* non-fatal */ }
 
@@ -1633,10 +1648,28 @@ async function calculateSalary(userId, monthKey, options = {}) {
   const finalIncentives = incentives;
   const finalDeductions = liveDeductions;
 
-  // FETCH SETTLED EXPENSES
+  // FETCH SETTLED EXPENSES & ADVANCE AGAINST EXPENSE RECONCILIATION
   try {
-    const { ExpenseClaim } = require('../models');
-    const settledExpenses = await ExpenseClaim.findAll({
+    const { ExpenseClaim, StaffAdvance } = require('../models');
+
+    // 1. Fetch Advance Against Expense for this employee in current cycle
+    const expenseAdvances = await StaffAdvance.findAll({
+      where: {
+        staffId: u.id,
+        orgAccountId: u.orgAccountId,
+        advanceCategory: 'expense',
+        status: { [Op.ne]: 'cancelled' },
+        [Op.or]: [
+          { deductionMonth: monthKey },
+          { advanceDate: { [Op.gte]: start, [Op.lte]: endKey } }
+        ]
+      }
+    });
+    const totalExpenseAdvance = expenseAdvances.reduce((sum, a) => sum + (Number(a.amount) || 0), 0);
+
+    // 2. Fetch ONLY SETTLED expenses for this staff in this payroll cycle
+    // (Only claims that are approved and marked as settled will be adjusted against advance in payroll)
+    const settledClaims = await ExpenseClaim.findAll({
       where: {
         userId: u.id,
         status: 'settled',
@@ -1644,24 +1677,46 @@ async function calculateSalary(userId, monthKey, options = {}) {
       }
     });
 
-    for (const exp of settledExpenses) {
-      const label = `EXPENSE: ${exp.expenseType || 'Claim'}`;
+    let totalSettledExpense = 0;
+    for (const exp of settledClaims) {
       const baseAmt = Number(exp.approvedAmount !== null && exp.approvedAmount !== undefined ? exp.approvedAmount : (exp.amount || 0));
       const paidAmt = Number(exp.paidAmount || 0);
       const remainingAmt = Math.max(0, baseAmt - paidAmt);
-      if (remainingAmt > 0) {
-        finalEarnings[label] = (finalEarnings[label] || 0) + remainingAmt;
+      totalSettledExpense += remainingAmt;
+    }
+
+    // ONLY reconcile with payroll if there are SETTLED claims for this staff!
+    // Until claims are approved and marked as settled, do NOT deduct or adjust advance against expense in payroll!
+    if (totalExpenseAdvance > 0 && settledClaims.length > 0) {
+      const diff = totalSettledExpense - totalExpenseAdvance;
+      if (diff < 0) {
+        // Advance > Settled Expense => Deduct remaining advance from salary
+        finalDeductions['advance_against_expense'] = Math.round(Math.abs(diff) * 100) / 100;
+      } else if (diff > 0) {
+        // Settled Expense > Advance => Add extra reimbursement to salary
+        finalEarnings['expense_reimbursement'] = Math.round(diff * 100) / 100;
+      }
+    } else if (totalExpenseAdvance === 0) {
+      // Normal flow when NO advance against expense was taken:
+      for (const exp of settledClaims) {
+        const label = `EXPENSE: ${exp.expenseType || 'Claim'}`;
+        const baseAmt = Number(exp.approvedAmount !== null && exp.approvedAmount !== undefined ? exp.approvedAmount : (exp.amount || 0));
+        const paidAmt = Number(exp.paidAmount || 0);
+        const remainingAmt = Math.max(0, baseAmt - paidAmt);
+        if (remainingAmt > 0) {
+          finalEarnings[label] = (finalEarnings[label] || 0) + remainingAmt;
+        }
       }
     }
   } catch (e) {
-    console.error('Error fetching expenses for payroll:', e);
+    console.error('Error reconciling expenses with advances for payroll:', e);
   }
 
   const sumObj = (o) => Object.values(o || {}).reduce((s, v) => s + (Number(v) || 0), 0);
 
   // Pro-rate deductions (Except LOAN_EMI and ADVANCE_DEDUCTION)
   Object.keys(finalDeductions).forEach(k => {
-    if (k !== 'loan_emi' && k !== 'advance_deduction') {
+    if (k !== 'loan_emi' && k !== 'advance_deduction' && k !== 'advance_against_expense') {
       finalDeductions[k] = Math.round(Number(finalDeductions[k] || 0) * ratio);
     }
   });
@@ -1692,7 +1747,7 @@ async function calculateSalary(userId, monthKey, options = {}) {
 
   // Pro-rate standard earnings, keep Expenses as is
   Object.keys(finalEarnings).forEach(k => {
-    if (!k.startsWith('EXPENSE:')) {
+    if (!k.startsWith('EXPENSE:') && k !== 'expense_reimbursement') {
       finalEarnings[k] = Math.round(Number(finalEarnings[k] || 0) * ratio);
     }
   });

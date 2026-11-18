@@ -3,7 +3,7 @@ const { Op } = require('sequelize');
 
 const fs = require('fs');
 const path = require('path');
-const { User, StaffProfile, StaffShiftAssignment, ShiftTemplate, SalaryAccess, StaffAttendanceAssignment, AttendanceTemplate, StaffSalaryAssignment, SalaryTemplate, PayrollCycle, PayrollLine, ExpenseClaim, LeaveRequest, AttendanceRegularization, StaffAdvance } = require('../models');
+const { User, StaffProfile, OutdoorDutyRequest, StaffShiftAssignment, ShiftTemplate, SalaryAccess, StaffAttendanceAssignment, AttendanceTemplate, StaffSalaryAssignment, SalaryTemplate, PayrollCycle, PayrollLine, ExpenseClaim, LeaveRequest, AttendanceRegularization, StaffAdvance } = require('../models');
 const { authRequired } = require('../middleware/auth');
 const { hashPassword, verifyPassword, validateNewPassword } = require('../utils/password');
 const { logAudit } = require('../utils/auditLogger');
@@ -836,6 +836,66 @@ router.put('/expenses/:id', upload.any(), async (req, res) => {
   }
 });
 
+// Download or view Consolidated Expense Summary Report PDF (Filtered by Date Range and Status)
+router.get('/expenses/report/pdf', async (req, res) => {
+  try {
+    const { startDate, endDate, status, category } = req.query || {};
+    const { generateExpenseReportPDF } = require('../services/expensePdfService');
+
+    const result = await generateExpenseReportPDF({
+      userId: req.user.id,
+      startDate: startDate || null,
+      endDate: endDate || null,
+      status: status || null,
+      category: category || null
+    });
+
+    if (!result) {
+      return res.status(404).json({ success: false, message: 'Failed to generate report' });
+    }
+
+    const isDownload = req.query.download === '1' || req.query.download === 'true';
+    const disposition = isDownload ? 'attachment' : 'inline';
+    const filename = `Expense_Report_${new Date().toISOString().slice(0, 10)}.pdf`;
+
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `${disposition}; filename="${filename}"`);
+    res.setHeader('Content-Length', result.pdfBuffer.length);
+    return res.end(result.pdfBuffer);
+  } catch (err) {
+    console.error('Error generating expense report PDF:', err);
+    return res.status(500).json({ success: false, message: 'Failed to generate expense report PDF' });
+  }
+});
+
+// Download or view Expense Claim PDF
+router.get('/expenses/:id/pdf', async (req, res) => {
+  try {
+    const claimId = Number(req.params.id);
+    if (!claimId) {
+      return res.status(400).json({ success: false, message: 'Invalid claim ID' });
+    }
+
+    const { generateExpenseClaimPDF } = require('../services/expensePdfService');
+    const result = await generateExpenseClaimPDF(claimId, req.user.id);
+    if (!result) {
+      return res.status(404).json({ success: false, message: 'Expense claim not found' });
+    }
+
+    const isDownload = req.query.download === '1' || req.query.download === 'true';
+    const disposition = isDownload ? 'attachment' : 'inline';
+    const filename = `Expense_Claim_${result.claimId}.pdf`;
+
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `${disposition}; filename="${filename}"`);
+    res.setHeader('Content-Length', result.pdfBuffer.length);
+    return res.end(result.pdfBuffer);
+  } catch (err) {
+    console.error('Error serving expense PDF:', err);
+    return res.status(500).json({ success: false, message: 'Failed to generate expense PDF' });
+  }
+});
+
 // Get earliest salary month for navigation limit
 router.get('/salary-history-range', async (req, res) => {
   try {
@@ -994,7 +1054,7 @@ router.get('/advances', async (req, res) => {
   try {
     const dayjs = require('dayjs');
     const staffId = req.user.id;
-    const orgId = req.tenantOrgAccountId;
+    const orgId = req.tenantOrgAccountId || req.user.orgAccountId || (await User.findByPk(req.user.id))?.orgAccountId;
 
     const rows = await StaffAdvance.findAll({
       where: { staffId, orgAccountId: orgId },
@@ -1089,40 +1149,55 @@ router.post('/advances', async (req, res) => {
   try {
     const dayjs = require('dayjs');
     const staffId = req.user.id;
-    const orgId = req.tenantOrgAccountId;
-    const { advanceType, amount, advanceDate, reason, deductionMonth, installmentsCount } = req.body;
+    const orgId = req.tenantOrgAccountId || req.user.orgAccountId || (await User.findByPk(req.user.id))?.orgAccountId;
+    const { advanceType, amount, advanceDate, reason, deductionMonth, installmentsCount, advanceCategory } = req.body;
 
     const numAmount = Number(amount);
     if (!numAmount || numAmount <= 0) {
       return res.status(400).json({ success: false, message: 'Please enter a valid advance amount greater than 0' });
     }
 
+    const finalCategory = advanceCategory === 'expense' ? 'expense' : 'salary';
     const todayStr = dayjs().format('YYYY-MM-DD');
     const finalAdvanceDate = advanceDate ? dayjs(advanceDate).format('YYYY-MM-DD') : todayStr;
-    const typeLabel = advanceType ? String(advanceType).trim() : 'Salary Advance';
-    const noteContent = reason ? `[${typeLabel}] ${String(reason).trim()}` : `[${typeLabel}] Advance request`;
+    const noteContent = reason ? String(reason).trim() : (req.body.notes ? String(req.body.notes).trim() : 'Advance request');
 
     let finalDeductions = null;
-    let finalDeductionMonth = deductionMonth ? String(deductionMonth).slice(0, 7) : dayjs().add(1, 'month').format('YYYY-MM');
+    let finalDeductionMonth = deductionMonth ? String(deductionMonth).slice(0, 7) : dayjs(finalAdvanceDate).format('YYYY-MM');
 
-    // Build installment plan if installmentsCount > 1
-    const count = parseInt(installmentsCount, 10);
-    if (count && count > 1) {
-      finalDeductions = [];
-      const installmentAmt = Math.round((numAmount / count) * 100) / 100;
-      let startMonth = dayjs(finalDeductionMonth, 'YYYY-MM');
-      if (!startMonth.isValid()) startMonth = dayjs().add(1, 'month');
+    if (finalCategory === 'salary') {
+      if (Array.isArray(req.body.deductions) && req.body.deductions.length > 0) {
+        finalDeductions = req.body.deductions
+          .filter(d => d && d.month && Number(d.amount) > 0)
+          .map(d => ({
+            month: String(d.month).slice(0, 7),
+            amount: Number(d.amount),
+            status: 'pending'
+          }));
+        if (finalDeductions.length > 0) {
+          finalDeductionMonth = finalDeductions[0].month;
+        }
+      } else {
+        // Build installment plan if installmentsCount > 1
+        const count = parseInt(installmentsCount, 10);
+        if (count && count > 1) {
+          finalDeductions = [];
+          const installmentAmt = Math.round((numAmount / count) * 100) / 100;
+          let startMonth = dayjs(finalDeductionMonth, 'YYYY-MM');
+          if (!startMonth.isValid()) startMonth = dayjs().add(1, 'month');
 
-      let accumulated = 0;
-      for (let i = 0; i < count; i++) {
-        const mKey = startMonth.add(i, 'month').format('YYYY-MM');
-        const amt = i === count - 1 ? Math.round((numAmount - accumulated) * 100) / 100 : installmentAmt;
-        accumulated += amt;
-        finalDeductions.push({
-          month: mKey,
-          amount: amt,
-          status: 'pending'
-        });
+          let accumulated = 0;
+          for (let i = 0; i < count; i++) {
+            const mKey = startMonth.add(i, 'month').format('YYYY-MM');
+            const amt = i === count - 1 ? Math.round((numAmount - accumulated) * 100) / 100 : installmentAmt;
+            accumulated += amt;
+            finalDeductions.push({
+              month: mKey,
+              amount: amt,
+              status: 'pending'
+            });
+          }
+        }
       }
     }
 
@@ -1132,7 +1207,8 @@ router.post('/advances', async (req, res) => {
       amount: numAmount,
       advanceDate: finalAdvanceDate,
       deductionMonth: finalDeductionMonth,
-      status: 'pending',
+      status: 'approved',
+      advanceCategory: finalCategory,
       notes: noteContent,
       deductions: finalDeductions,
       createdBy: staffId
@@ -1153,7 +1229,7 @@ router.post('/advances', async (req, res) => {
 router.delete('/advances/:id', async (req, res) => {
   try {
     const staffId = req.user.id;
-    const orgId = req.tenantOrgAccountId;
+    const orgId = req.tenantOrgAccountId || req.user.orgAccountId || (await User.findByPk(req.user.id))?.orgAccountId;
     const { id } = req.params;
 
     const row = await StaffAdvance.findOne({
@@ -1174,6 +1250,129 @@ router.delete('/advances/:id', async (req, res) => {
   } catch (error) {
     console.error('Error cancelling advance request:', error);
     return res.status(500).json({ success: false, message: 'Failed to cancel advance request' });
+  }
+});
+
+
+// =========================================================================
+// OUTDOOR DUTY ENDPOINTS FOR STAFF
+// =========================================================================
+
+// POST /me/outdoor-requests
+router.post('/outdoor-requests', upload.single('document'), async (req, res) => {
+  try {
+    const orgId = req.user.orgAccountId || req.tenantOrgAccountId;
+    const userId = req.user.id;
+    let { dates, fromTime, toTime, reason, visitLocation, clientName, remarks } = req.body;
+
+    if (!visitLocation || !visitLocation.trim()) {
+      return res.status(400).json({ success: false, message: 'Visit location is required' });
+    }
+    if (!reason || !reason.trim()) {
+      return res.status(400).json({ success: false, message: 'Reason is required' });
+    }
+
+    let datesArr = [];
+    if (typeof dates === 'string') {
+      try {
+        const parsed = JSON.parse(dates);
+        datesArr = Array.isArray(parsed) ? parsed : [dates];
+      } catch (_) {
+        datesArr = dates.split(',').map(d => d.trim()).filter(Boolean);
+      }
+    } else if (Array.isArray(dates)) {
+      datesArr = dates;
+    }
+
+    if (!datesArr || datesArr.length === 0) {
+      return res.status(400).json({ success: false, message: 'At least one date is required' });
+    }
+
+    const groupId = 'OD_' + Date.now() + '_' + Math.random().toString(36).substring(2, 7);
+    const attachmentUrl = req.file ? `/uploads/${req.file.filename}` : null;
+
+    const records = [];
+    for (const d of datesArr) {
+      const dateStr = typeof d === 'string' ? d.trim().slice(0, 10) : new Date(d).toISOString().slice(0, 10);
+      const rec = await OutdoorDutyRequest.create({
+        orgAccountId: orgId,
+        userId,
+        groupId,
+        date: dateStr,
+        fromTime: fromTime ? String(fromTime).trim() : null,
+        toTime: toTime ? String(toTime).trim() : null,
+        reason: reason.trim(),
+        visitLocation: visitLocation.trim(),
+        clientName: clientName ? String(clientName).trim() : null,
+        remarks: remarks ? String(remarks).trim() : null,
+        attachmentUrl,
+        status: 'PENDING'
+      });
+      records.push(rec);
+    }
+
+    return res.status(201).json({
+      success: true,
+      message: 'Outdoor duty request(s) submitted successfully',
+      count: records.length,
+      groupId
+    });
+  } catch (err) {
+    console.error('[MeRoutes] Outdoor Duty submit error:', err);
+    return res.status(500).json({ success: false, message: 'Failed to submit outdoor duty request' });
+  }
+});
+
+// GET /me/outdoor-requests
+router.get('/outdoor-requests', async (req, res) => {
+  try {
+    const orgId = req.user.orgAccountId || req.tenantOrgAccountId;
+    const userId = req.user.id;
+    const { month, status } = req.query;
+
+    const where = { orgAccountId: orgId, userId };
+    if (status && status !== 'ALL') {
+      where.status = status;
+    }
+    if (month && /^\d{4}-\d{2}$/.test(month)) {
+      where.date = { [Op.like]: `${month}%` };
+    }
+
+    const list = await OutdoorDutyRequest.findAll({
+      where,
+      order: [['date', 'DESC'], ['id', 'DESC']]
+    });
+
+    return res.json({ success: true, list });
+  } catch (err) {
+    console.error('[MeRoutes] Get my outdoor requests error:', err);
+    return res.status(500).json({ success: false, message: 'Failed to fetch outdoor duty requests' });
+  }
+});
+
+// DELETE /me/outdoor-requests/:id
+router.delete('/outdoor-requests/:id', async (req, res) => {
+  try {
+    const orgId = req.user.orgAccountId || req.tenantOrgAccountId;
+    const userId = req.user.id;
+    const { id } = req.params;
+
+    const record = await OutdoorDutyRequest.findOne({
+      where: { id, userId, orgAccountId: orgId }
+    });
+
+    if (!record) {
+      return res.status(404).json({ success: false, message: 'Outdoor duty request not found' });
+    }
+    if (record.status !== 'PENDING') {
+      return res.status(400).json({ success: false, message: 'Only pending requests can be cancelled' });
+    }
+
+    await record.destroy();
+    return res.json({ success: true, message: 'Outdoor duty request cancelled successfully' });
+  } catch (err) {
+    console.error('[MeRoutes] Cancel outdoor request error:', err);
+    return res.status(500).json({ success: false, message: 'Failed to cancel outdoor duty request' });
   }
 });
 

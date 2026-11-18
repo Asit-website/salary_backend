@@ -58,6 +58,7 @@ const {
   AIAnomaly,
   ReliabilityScore,
   SalaryForecast,
+  OutdoorDutyRequest,
   Attendance,
   Client,
   AssignedJob,
@@ -4963,6 +4964,118 @@ router.get("/payroll/:cycleId/export", async (req, res) => {
       col.width = Math.min(30, Math.max(12, maxLen));
     });
 
+    if (staffAdvances.length > 0) {
+      const reconSheet = workbook.addWorksheet("Advance Reconciliation");
+      reconSheet.mergeCells("A1:H1");
+      const rTitle = reconSheet.getRow(1);
+      rTitle.height = 36;
+      for (let i = 1; i <= 8; i++) {
+        const cell = rTitle.getCell(i);
+        cell.font = { name: "Arial", size: 13, bold: true, color: { argb: "FFFFFFFF" } };
+        cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF0F3B8C" } };
+        cell.alignment = { horizontal: "center", vertical: "middle" };
+      }
+      rTitle.getCell(1).value = `${companyName} - ADVANCE AGAINST EXPENSE & PAYROLL RECONCILIATION`;
+
+      const rHeader = reconSheet.getRow(3);
+      rHeader.values = [
+        "Staff Name",
+        "Department",
+        "Advance Taken (₹)",
+        "Approved Claims (₹)",
+        "Direct Paid (₹)",
+        "Net Claims for Payroll (₹)",
+        "Payroll Settlement Result",
+        "Advance Details & Notes"
+      ];
+      rHeader.height = 26;
+      rHeader.eachCell((cell) => {
+        cell.font = { name: "Arial", size: 11, bold: true, color: { argb: "FFFFFFFF" } };
+        cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF1E293B" } };
+        cell.alignment = { horizontal: "center", vertical: "middle" };
+      });
+
+      reconSheet.columns = [
+        { key: "staffName", width: 25 },
+        { key: "department", width: 18 },
+        { key: "advanceTaken", width: 20 },
+        { key: "approvedClaims", width: 20 },
+        { key: "directPaid", width: 18 },
+        { key: "netClaims", width: 22 },
+        { key: "payrollResult", width: 34 },
+        { key: "advanceDetails", width: 35 }
+      ];
+
+      const staffClaimsMap = {};
+      rows.forEach(r => {
+        if (!staffClaimsMap[r.userId]) staffClaimsMap[r.userId] = [];
+        staffClaimsMap[r.userId].push(r);
+      });
+
+      const uniqueStaffWithAdvance = Object.keys(advanceMap);
+      uniqueStaffWithAdvance.forEach(sId => {
+        const uId = Number(sId);
+        const uAdvs = advanceMap[uId] || [];
+        const uClaims = staffClaimsMap[uId] || [];
+        const totalAdv = uAdvs.reduce((sum, a) => sum + Number(a.amount || 0), 0);
+        const totalApproved = uClaims.reduce((sum, c) => {
+          if (c.status === 'approved' || c.status === 'settled') {
+            return sum + (c.approvedAmount !== null && c.approvedAmount !== undefined ? Number(c.approvedAmount) : Number(c.amount || 0));
+          }
+          return sum;
+        }, 0);
+        const totalDirectPaid = uClaims.reduce((sum, c) => sum + Number(c.paidAmount || 0), 0);
+        const netToSettle = Math.max(0, totalApproved - totalDirectPaid);
+        const diff = netToSettle - totalAdv;
+
+        let resultText = "";
+        if (diff < 0) {
+          resultText = `- ₹${Math.abs(diff).toLocaleString('en-IN', { minimumFractionDigits: 2 })} (DEDUCTED FROM SALARY)`;
+        } else if (diff > 0) {
+          resultText = `+ ₹${diff.toLocaleString('en-IN', { minimumFractionDigits: 2 })} (REIMBURSED IN SALARY)`;
+        } else {
+          resultText = "₹0.00 (FULLY BALANCED / MATCHED)";
+        }
+
+        const advDetailsStr = uAdvs.map(a => `ADV-${a.id} (${dayjs(a.advanceDate).format('YYYY-MM-DD')}): ₹${Number(a.amount).toFixed(2)}${a.notes ? ` - ${a.notes}` : ''}`).join('; ');
+
+        const addedRow = reconSheet.addRow({
+          staffName: staffMap[uId]?.staffName || `Staff #${uId}`,
+          department: staffMap[uId]?.department || "-",
+          advanceTaken: totalAdv,
+          approvedClaims: totalApproved,
+          directPaid: totalDirectPaid,
+          netClaims: netToSettle,
+          payrollResult: resultText,
+          advanceDetails: advDetailsStr
+        });
+
+        addedRow.eachCell((cell, colNum) => {
+          cell.font = { name: "Arial", size: 10 };
+          cell.border = {
+            top: { style: "thin", color: { argb: "FFCBD5E1" } },
+            bottom: { style: "thin", color: { argb: "FFCBD5E1" } },
+            left: { style: "thin", color: { argb: "FFCBD5E1" } },
+            right: { style: "thin", color: { argb: "FFCBD5E1" } }
+          };
+          if ([3, 4, 5, 6].includes(colNum)) {
+            cell.alignment = { horizontal: "right", vertical: "middle" };
+            cell.numFmt = '"₹"#,##0.00';
+          } else if (colNum === 7) {
+            cell.alignment = { horizontal: "center", vertical: "middle" };
+            cell.font = {
+              name: "Arial",
+              size: 10,
+              bold: true,
+              color: { argb: diff < 0 ? "FFDC2626" : diff > 0 ? "FF16A34A" : "FF2563EB" }
+            };
+          } else {
+            cell.alignment = { horizontal: "left", vertical: "middle" };
+          }
+        });
+      });
+    }
+
     res.setHeader(
       "Content-Type",
       "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -7409,6 +7522,7 @@ router.post("/payroll/:cycleId/lock", async (req, res) => {
         });
 
         for (const adv of pendingAdvances) {
+          if (adv.advanceCategory === 'expense') continue;
           let deductionsList = null;
           if (adv.deductions) {
             let parsed = adv.deductions;
@@ -8386,6 +8500,7 @@ router.post("/payroll/:cycleId/compute", async (req, res) => {
         });
 
         for (const adv of staffAdvances) {
+          if (adv.advanceCategory === 'expense') continue;
           // Parse deductions robustly
           let deductionsList = null;
           if (adv.deductions) {
@@ -8490,6 +8605,10 @@ router.post("/payroll/:cycleId/compute", async (req, res) => {
           "late_punchin_rule_id",
           "overtimeRuleId",
           "overtime_rule_id",
+          "isLateWaived",
+          "is_late_waived",
+          "isLate",
+          "is_late",
         ],
       });
 
@@ -9142,25 +9261,63 @@ router.post("/payroll/:cycleId/compute", async (req, res) => {
         finalE.OT_PAYABLE_DAYS = (finalE.OT_PAYABLE_DAYS || 0) + extraHolidayWoBenefit;
       }
 
-      // Fetch approved and settled expenses for this month (NOT pro-rated)
+      // Fetch approved and settled expenses & advance against expense reconciliation
       try {
-        const settledExpenses = await ExpenseClaim.findAll({
+        // 1. Fetch Advance Against Expense for this employee in current cycle
+        const expenseAdvances = await StaffAdvance.findAll({
+          where: {
+            staffId: u.id,
+            orgAccountId: orgId,
+            advanceCategory: 'expense',
+            status: { [Op.ne]: 'cancelled' },
+            [Op.or]: [
+              { deductionMonth: monthKey },
+              { advanceDate: { [Op.gte]: start, [Op.lte]: endKey } }
+            ]
+          }
+        });
+        const totalExpenseAdvance = expenseAdvances.reduce((sum, a) => sum + (Number(a.amount) || 0), 0);
+
+        // 2. Fetch ONLY SETTLED expenses for this staff in this payroll cycle
+        // (Only claims that are approved and marked as settled will be adjusted against advance in payroll)
+        const settledClaims = await ExpenseClaim.findAll({
           where: {
             userId: u.id,
-            // Remove strict orgAccountId check here because older claims might have it null,
-            // and we already verified 'u' belongs to 'orgId' in the User.findAll above.
-            status: "settled",
-            expenseDate: { [Op.gte]: start, [Op.lte]: endKey },
-          },
+            status: 'settled',
+            expenseDate: { [Op.gte]: start, [Op.lte]: endKey }
+          }
         });
 
-        for (const exp of settledExpenses) {
-          const label = `EXPENSE: ${exp.expenseType || "Claim"}`;
+        let totalSettledExpense = 0;
+        for (const exp of settledClaims) {
           const baseAmt = Number(exp.approvedAmount !== null && exp.approvedAmount !== undefined ? exp.approvedAmount : (exp.amount || 0));
           const paidAmt = Number(exp.paidAmount || 0);
           const remainingAmt = Math.max(0, baseAmt - paidAmt);
-          if (remainingAmt > 0) {
-            finalE[label] = (finalE[label] || 0) + remainingAmt;
+          totalSettledExpense += remainingAmt;
+        }
+
+        // ONLY reconcile with payroll if there are SETTLED claims for this staff!
+        // Until claims are approved and marked as settled, do NOT deduct or adjust advance against expense in payroll!
+        if (totalExpenseAdvance > 0 && settledClaims.length > 0) {
+          // Reconcile Advance Against Expense with Settled Claims: Diff = Expenses - Advance
+          const diff = totalSettledExpense - totalExpenseAdvance;
+          if (diff < 0) {
+            // Scenario 1: Advance > Expense => Deduct remaining advance from salary
+            finalDeductions['advance_against_expense'] = Math.round(Math.abs(diff) * 100) / 100;
+          } else if (diff > 0) {
+            // Scenario 2: Expense > Advance => Add extra reimbursement to salary
+            finalE['expense_reimbursement'] = Math.round(diff * 100) / 100;
+          }
+        } else if (totalExpenseAdvance === 0) {
+          // Normal flow when NO advance against expense was taken:
+          for (const exp of settledClaims) {
+            const label = `EXPENSE: ${exp.expenseType || "Claim"}`;
+            const baseAmt = Number(exp.approvedAmount !== null && exp.approvedAmount !== undefined ? exp.approvedAmount : (exp.amount || 0));
+            const paidAmt = Number(exp.paidAmount || 0);
+            const remainingAmt = Math.max(0, baseAmt - paidAmt);
+            if (remainingAmt > 0) {
+              finalE[label] = (finalE[label] || 0) + remainingAmt;
+            }
           }
         }
       } catch (err) {
@@ -9195,6 +9352,7 @@ router.post("/payroll/:cycleId/compute", async (req, res) => {
       const finalD = prorate(finalDeductions, ratio, [
         "loan_emi",
         "advance_deduction",
+        "advance_against_expense",
       ]);
       if (latePenaltyAmount > 0) {
         finalD.late_punchin_penalty =
@@ -15375,7 +15533,7 @@ router.post("/advances", async (req, res) => {
   try {
     const orgId = requireOrg(req, res);
     if (!orgId) return;
-    const { staffId, amount, advanceDate, notes, deductionMonth, status, deductions } =
+    const { staffId, amount, advanceDate, notes, deductionMonth, status, deductions, advanceCategory } =
       req.body;
 
     if (!staffId || !amount || !advanceDate) {
@@ -15383,6 +15541,8 @@ router.post("/advances", async (req, res) => {
         .status(400)
         .json({ success: false, message: "Missing required fields" });
     }
+
+    const finalCategory = advanceCategory === 'expense' ? 'expense' : 'salary';
 
     // deductionMonth derived from payload or from advanceDate
     let finalDeductionMonth = deductionMonth;
@@ -15392,7 +15552,7 @@ router.post("/advances", async (req, res) => {
     }
 
     let finalDeductions = null;
-    if (Array.isArray(deductions)) {
+    if (finalCategory === 'salary' && Array.isArray(deductions)) {
       finalDeductions = deductions.map(d => ({
         month: d.month,
         amount: Number(d.amount),
@@ -15407,6 +15567,7 @@ router.post("/advances", async (req, res) => {
       advanceDate,
       deductionMonth: finalDeductionMonth,
       status: status || 'pending',
+      advanceCategory: finalCategory,
       deductions: finalDeductions,
       notes,
       createdBy: req.user.id,
@@ -15427,7 +15588,7 @@ router.put("/advances/:id", async (req, res) => {
     const orgId = requireOrg(req, res);
     if (!orgId) return;
     const { id } = req.params;
-    const { staffId, amount, advanceDate, notes, deductionMonth, status, deductions } =
+    const { staffId, amount, advanceDate, notes, deductionMonth, status, deductions, advanceCategory } =
       req.body;
 
     const row = await StaffAdvance.findOne({
@@ -15444,6 +15605,7 @@ router.put("/advances/:id", async (req, res) => {
       advanceDate: advanceDate ?? row.advanceDate,
       notes: notes ?? row.notes,
       status: status ?? row.status,
+      advanceCategory: advanceCategory ?? row.advanceCategory,
       updatedBy: req.user.id,
     };
 
@@ -16055,6 +16217,73 @@ router.post(
   },
 );
 
+// Download or view Consolidated Expense Summary Report PDF by Admin
+router.get("/expenses/report/pdf", async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res);
+    if (!orgId) return;
+
+    const { startDate, endDate, status, category, userId } = req.query || {};
+    const { generateExpenseReportPDF } = require("../services/expensePdfService");
+
+    const result = await generateExpenseReportPDF({
+      userId: userId ? Number(userId) : null,
+      orgAccountId: orgId,
+      startDate: startDate || null,
+      endDate: endDate || null,
+      status: status || null,
+      category: category || null
+    });
+
+    if (!result) {
+      return res.status(404).json({ success: false, message: "Failed to generate report" });
+    }
+
+    const isDownload = req.query.download === "1" || req.query.download === "true";
+    const disposition = isDownload ? "attachment" : "inline";
+    const filename = `Expense_Report_${new Date().toISOString().slice(0, 10)}.pdf`;
+
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader("Content-Disposition", `${disposition}; filename="${filename}"`);
+    res.setHeader("Content-Length", result.pdfBuffer.length);
+    return res.end(result.pdfBuffer);
+  } catch (err) {
+    console.error("Error generating admin expense report PDF:", err);
+    return res.status(500).json({ success: false, message: "Failed to generate expense report PDF" });
+  }
+});
+
+// Download or view Expense Claim PDF by Admin
+router.get("/expenses/:claimId/pdf", async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res);
+    if (!orgId) return;
+
+    const id = Number(req.params.claimId);
+    if (!id) {
+      return res.status(400).json({ success: false, message: "Invalid claim ID" });
+    }
+
+    const { generateExpenseClaimPDF } = require("../services/expensePdfService");
+    const result = await generateExpenseClaimPDF(id, null, orgId);
+    if (!result) {
+      return res.status(404).json({ success: false, message: "Expense claim not found" });
+    }
+
+    const isDownload = req.query.download === "1" || req.query.download === "true";
+    const disposition = isDownload ? "attachment" : "inline";
+    const filename = `Expense_Claim_${result.claimId}.pdf`;
+
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader("Content-Disposition", `${disposition}; filename="${filename}"`);
+    res.setHeader("Content-Length", result.pdfBuffer.length);
+    return res.end(result.pdfBuffer);
+  } catch (err) {
+    console.error("Error serving admin expense PDF:", err);
+    return res.status(500).json({ success: false, message: "Failed to generate expense PDF" });
+  }
+});
+
 // Update expense claim details by admin (org-scoped, any status)
 router.put(
   "/expenses/:claimId",
@@ -16562,6 +16791,26 @@ router.get("/expenses/export", async (req, res) => {
       order: [["expenseDate", "DESC"]],
     });
 
+    const StaffAdvance = sequelize.models.StaffAdvance;
+    let staffAdvances = [];
+    if (StaffAdvance) {
+      staffAdvances = await StaffAdvance.findAll({
+        where: {
+          orgAccountId: orgId,
+          staffId: orgStaffIds,
+          advanceCategory: "expense",
+          status: { [Op.ne]: "cancelled" }
+        },
+        raw: true
+      });
+    }
+
+    const advanceMap = {};
+    staffAdvances.forEach((adv) => {
+      if (!advanceMap[adv.staffId]) advanceMap[adv.staffId] = [];
+      advanceMap[adv.staffId].push(adv);
+    });
+
     let companyName = "THINKTECH SOFTWARE";
     if (orgId) {
       const org = await OrgAccount.findOne({ where: { id: orgId } });
@@ -16575,10 +16824,10 @@ router.get("/expenses/export", async (req, res) => {
     const worksheet = workbook.addWorksheet("Expenses");
 
     // Add Title Row
-    worksheet.mergeCells("A1:P1");
+    worksheet.mergeCells("A1:R1");
     const titleRow = worksheet.getRow(1);
     titleRow.height = 40;
-    for (let i = 1; i <= 16; i++) {
+    for (let i = 1; i <= 18; i++) {
       const cell = titleRow.getCell(i);
       cell.font = { name: "Arial", size: 16, bold: true, color: { argb: "FFFFFFFF" } };
       cell.fill = {
@@ -16597,7 +16846,7 @@ router.get("/expenses/export", async (req, res) => {
     titleRow.getCell(1).value = `${companyName} - EXPENSE CLAIMS REPORT`;
 
     // Add Subtitle Row
-    worksheet.mergeCells("A2:P2");
+    worksheet.mergeCells("A2:R2");
     const subtitleRow = worksheet.getRow(2);
     subtitleRow.height = 24;
     for (let i = 1; i <= 16; i++) {
@@ -16632,6 +16881,8 @@ router.get("/expenses/export", async (req, res) => {
       "Amount",
       "Approved Amt",
       "Paid Amt",
+      "Advance on File",
+      "Payroll Net Adjustment",
       "Payment Date",
       "Balance",
       "Status",
@@ -16652,6 +16903,8 @@ router.get("/expenses/export", async (req, res) => {
       { key: "amount", width: 14 },
       { key: "approvedAmount", width: 14 },
       { key: "paidAmount", width: 14 },
+      { key: "advanceOnFile", width: 18 },
+      { key: "payrollAdjustment", width: 32 },
       { key: "paymentDate", width: 18 },
       { key: "balance", width: 14 },
       { key: "status", width: 12 },
@@ -16730,6 +16983,28 @@ router.get("/expenses/export", async (req, res) => {
         paymentDateCellVal = paymentsList.map(p => dayjs(p.date).format("YYYY-MM-DD HH:mm")).join("\n");
       }
 
+      // Calculate Advance Against Expense & Payroll Adjustment
+      const userAdvs = advanceMap[r.userId] || [];
+      const totalStaffAdv = userAdvs.reduce((sum, a) => sum + Number(a.amount || 0), 0);
+      let advanceOnFileCellVal = totalStaffAdv > 0 ? totalStaffAdv : "-";
+      let payrollAdjCellVal = "-";
+
+      if (totalStaffAdv > 0) {
+        const netToSettle = Math.max(0, totalAllowed - paidAmt);
+        const diff = netToSettle - totalStaffAdv;
+        if (diff < 0) {
+          payrollAdjCellVal = `-₹${Math.abs(diff).toFixed(2)} (Deducted from Salary)`;
+        } else if (diff > 0) {
+          payrollAdjCellVal = `+₹${diff.toFixed(2)} (Reimbursed in Salary)`;
+        } else {
+          payrollAdjCellVal = "₹0.00 (Fully Settled)";
+        }
+      } else if (r.status === "settled") {
+        payrollAdjCellVal = "Settled in Payroll";
+      } else if (balanceAmt > 0) {
+        payrollAdjCellVal = `₹${balanceAmt.toFixed(2)} Pending`;
+      }
+
       if (items.length > 0) {
         const startRow = currentDataRow;
         const N = items.length;
@@ -16743,6 +17018,8 @@ router.get("/expenses/export", async (req, res) => {
             amount: Number(item.amount || 0),
             approvedAmount: r.approvedAmount !== null && r.approvedAmount !== undefined ? Number(r.approvedAmount) : "-",
             paidAmount: paidAmountCellVal,
+            advanceOnFile: advanceOnFileCellVal,
+            payrollAdjustment: payrollAdjCellVal,
             paymentDate: paymentDateCellVal,
             balance: balanceAmt,
             status: (r.status || "").toUpperCase(),
@@ -16762,9 +17039,11 @@ router.get("/expenses/export", async (req, res) => {
           worksheet.mergeCells(`E${startRow}:E${startRow + N - 1}`); // Date
           worksheet.mergeCells(`G${startRow}:G${startRow + N - 1}`); // Approved Amt
           worksheet.mergeCells(`H${startRow}:H${startRow + N - 1}`); // Paid Amt
-          worksheet.mergeCells(`I${startRow}:I${startRow + N - 1}`); // Payment Date
-          worksheet.mergeCells(`J${startRow}:J${startRow + N - 1}`); // Balance
-          worksheet.mergeCells(`K${startRow}:K${startRow + N - 1}`); // Status
+          worksheet.mergeCells(`I${startRow}:I${startRow + N - 1}`); // Advance on File
+          worksheet.mergeCells(`J${startRow}:J${startRow + N - 1}`); // Payroll Net Adjustment
+          worksheet.mergeCells(`K${startRow}:K${startRow + N - 1}`); // Payment Date
+          worksheet.mergeCells(`L${startRow}:L${startRow + N - 1}`); // Balance
+          worksheet.mergeCells(`M${startRow}:M${startRow + N - 1}`); // Status
         }
       } else {
         worksheet.addRow({
@@ -16776,6 +17055,8 @@ router.get("/expenses/export", async (req, res) => {
           amount: Number(r.amount || 0),
           approvedAmount: r.approvedAmount !== null && r.approvedAmount !== undefined ? Number(r.approvedAmount) : "-",
           paidAmount: paidAmountCellVal,
+          advanceOnFile: advanceOnFileCellVal,
+          payrollAdjustment: payrollAdjCellVal,
           paymentDate: paymentDateCellVal,
           balance: balanceAmt,
           status: (r.status || "").toUpperCase(),
@@ -16827,7 +17108,7 @@ router.get("/expenses/export", async (req, res) => {
         const colKey = headers[colNumber - 1]?.key;
         const hasNewlines = typeof cell.value === "string" && cell.value.includes("\n");
 
-        if (["amount", "approvedAmount", "paidAmount", "balance"].includes(colKey)) {
+        if (["amount", "approvedAmount", "paidAmount", "balance", "advanceOnFile"].includes(colKey)) {
           cell.alignment = { horizontal: "right", vertical: "middle", wrapText: hasNewlines };
           if (typeof cell.value === "number") {
             cell.numFmt = '"₹"#,##0.00';
@@ -16836,6 +17117,17 @@ router.get("/expenses/export", async (req, res) => {
           cell.alignment = { horizontal: "center", vertical: "middle", wrapText: hasNewlines };
         } else {
           cell.alignment = { horizontal: "left", vertical: "middle", wrapText: hasNewlines };
+        }
+
+        // Highlight Payroll Adjustment
+        if (colKey === "payrollAdjustment" && typeof cell.value === "string") {
+          if (cell.value.includes("Deducted from Salary")) {
+            cell.font = { name: "Arial", size: 10, bold: true, color: { argb: "FFDC2626" } };
+          } else if (cell.value.includes("Reimbursed in Salary")) {
+            cell.font = { name: "Arial", size: 10, bold: true, color: { argb: "FF16A34A" } };
+          } else {
+            cell.font = { name: "Arial", size: 10, color: { argb: "FF2563EB" } };
+          }
         }
 
         // Highlight Status
@@ -18524,7 +18816,9 @@ router.get("/late-approval/list", async (req, res) => {
     const where = { orgAccountId: orgId };
     if (status && status !== "ALL") where.status = status;
     if (month && /^\d{4}-\d{2}$/.test(month)) {
-      where.date = { [Op.between]: [`${month}-01`, `${month}-31`] };
+      const [y, m] = month.split("-").map(Number);
+      const lastDay = new Date(y, m, 0).getDate();
+      where.date = { [Op.between]: [`${month}-01`, `${month}-${String(lastDay).padStart(2, "0")}`] };
     }
 
     const list = await LatePunchApproval.findAll({
@@ -18561,7 +18855,7 @@ router.patch("/late-approval/:id/review", async (req, res) => {
     const orgId = requireOrg(req, res);
     if (!orgId) return;
     const { id } = req.params;
-    const { status, adminRemarks } = req.body;
+    const { status, adminRemarks, waiveOff } = req.body;
     if (!["APPROVED", "REJECTED"].includes(status)) {
       return res.status(400).json({ success: false, message: "Invalid status" });
     }
@@ -18573,29 +18867,50 @@ router.patch("/late-approval/:id/review", async (req, res) => {
       return res.status(404).json({ success: false, message: "Late punch approval record not found" });
     }
 
+    const isWaived = status === "APPROVED" ? !!waiveOff : false;
+
     await record.update({
       status,
       adminRemarks: adminRemarks || null,
       reviewedBy: req.user?.id || null,
       reviewedAt: new Date(),
+      isWaived,
     });
 
     if (status === "APPROVED") {
       let att = await Attendance.findOne({
         where: { userId: record.userId, date: record.date },
       });
+
+      // Preserve exact actual check-in time (e.g. 11:25 AM) without ever resetting to shift start time!
+      const actualPunchIn = att?.punchedInAt || record.punchedInAt;
+
       if (att) {
-        await att.update({
+        const updateData = {
           status: "PRESENT",
-          punchedInAt: record.punchedInAt || att.punchedInAt,
-        });
+          punchedInAt: actualPunchIn,
+        };
+        if (isWaived) {
+          updateData.isLate = false;
+          updateData.latePunchInMinutes = 0;
+          updateData.latePunchInAmount = 0;
+          updateData.isLateWaived = true;
+        } else {
+          updateData.isLate = true;
+          updateData.isLateWaived = false;
+        }
+        await att.update(updateData);
       } else {
         await Attendance.create({
           userId: record.userId,
           date: record.date,
-          punchedInAt: record.punchedInAt,
+          punchedInAt: actualPunchIn,
           orgAccountId: orgId,
           status: "PRESENT",
+          isLate: !isWaived,
+          latePunchInMinutes: isWaived ? 0 : (record.lateMinutes || 0),
+          latePunchInAmount: 0,
+          isLateWaived: isWaived,
         });
       }
     } else if (status === "REJECTED") {
@@ -18611,12 +18926,116 @@ router.patch("/late-approval/:id/review", async (req, res) => {
 
     return res.json({
       success: true,
-      message: `Late punch approval ${status.toLowerCase()} successfully`,
+      message: `Late punch approval ${status.toLowerCase()} successfully${isWaived ? ' (Late Waived Off)' : ''}`,
       record,
     });
   } catch (e) {
     console.error("Error reviewing late punch approval:", e);
     return res.status(500).json({ success: false, message: "Failed to review late punch approval" });
+  }
+});
+
+// =========================================================================
+// OUTDOOR DUTY ENDPOINTS FOR ADMIN (Phase 2, Section 2 of Plan)
+// =========================================================================
+
+// GET /admin/outdoor-requests/list
+router.get("/outdoor-requests/list", async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res);
+    if (!orgId) return;
+
+    const { status, userId, startDate, endDate } = req.query;
+    const where = { orgAccountId: orgId };
+
+    if (status && status !== "ALL") {
+      where.status = status;
+    }
+    if (userId) {
+      where.userId = Number(userId);
+    }
+    if (startDate && endDate) {
+      where.date = { [Op.between]: [startDate, endDate] };
+    } else if (startDate) {
+      where.date = { [Op.gte]: startDate };
+    } else if (endDate) {
+      where.date = { [Op.lte]: endDate };
+    }
+
+    const list = await OutdoorDutyRequest.findAll({
+      where,
+      include: [
+        {
+          model: User,
+          as: 'user',
+          attributes: ['id', 'username', 'email', 'phone', 'role'],
+          include: [
+            {
+              model: StaffProfile,
+              as: 'profile',
+              attributes: ['name', 'staffId', 'department', 'designation']
+            }
+          ]
+        }
+      ],
+      order: [["date", "DESC"], ["id", "DESC"]]
+    });
+
+    return res.json({ success: true, list });
+  } catch (e) {
+    console.error("Error fetching outdoor requests list:", e);
+    return res.status(500).json({ success: false, message: "Failed to fetch outdoor requests list" });
+  }
+});
+
+// PATCH /admin/outdoor-requests/:id/review
+router.patch("/outdoor-requests/:id/review", async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res);
+    if (!orgId) return;
+
+    const { id } = req.params;
+    const { status, rejectionReason } = req.body;
+
+    if (!["APPROVED", "REJECTED"].includes(status)) {
+      return res.status(400).json({ success: false, message: "Invalid status" });
+    }
+
+    const record = await OutdoorDutyRequest.findOne({
+      where: { id, orgAccountId: orgId }
+    });
+
+    if (!record) {
+      return res.status(404).json({ success: false, message: "Outdoor duty request not found" });
+    }
+
+    await record.update({
+      status,
+      rejectionReason: rejectionReason || null,
+      reviewedBy: req.user?.id || null,
+      reviewedAt: new Date()
+    });
+
+    if (status === "APPROVED") {
+      const todayAtt = await Attendance.findOne({
+        where: { userId: record.userId, date: record.date, orgAccountId: orgId }
+      });
+      if (todayAtt) {
+        await todayAtt.update({
+          isOutdoor: true,
+          outdoorDutyId: record.id
+        });
+      }
+    }
+
+    return res.json({
+      success: true,
+      message: `Outdoor duty request ${status.toLowerCase()} successfully`,
+      record
+    });
+  } catch (e) {
+    console.error("Error reviewing outdoor duty request:", e);
+    return res.status(500).json({ success: false, message: "Failed to review outdoor duty request" });
   }
 });
 
@@ -23528,7 +23947,11 @@ router.get("/attendance", async (req, res) => {
           }
 
           // Late Calculation
-          if (r.latePunchInMinutes !== null && r.latePunchInMinutes !== undefined) {
+          if (r.isLateWaived) {
+            isLate = false;
+            latePunchInMinutes = 0;
+            latePenaltyText = null;
+          } else if (r.latePunchInMinutes !== null && r.latePunchInMinutes !== undefined) {
             latePunchInMinutes = Number(r.latePunchInMinutes);
           } else if (rawSlots.length > 1 && r.punchedInAt) {
             const punchIn = new Date(r.punchedInAt);
@@ -23706,10 +24129,11 @@ router.get("/attendance", async (req, res) => {
         breakMinutes: Math.round((r.breakTotalSeconds || 0) / 60),
 
         status,
-        isLate,
-        latePunchInMinutes: (r.latePunchInMinutes !== null && r.latePunchInMinutes !== undefined) ? Number(r.latePunchInMinutes) : Number(latePunchInMinutes || 0),
+        isLate: r.isLateWaived ? false : isLate,
+        isLateWaived: Boolean(r.isLateWaived),
+        latePunchInMinutes: r.isLateWaived ? 0 : ((r.latePunchInMinutes !== null && r.latePunchInMinutes !== undefined) ? Number(r.latePunchInMinutes) : Number(latePunchInMinutes || 0)),
         bufferMinutes: r.bufferMinutes || 0,
-        latePenaltyText,
+        latePenaltyText: r.isLateWaived ? null : latePenaltyText,
         source: r.source,
 
         user: {

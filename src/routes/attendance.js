@@ -4,7 +4,7 @@ const { Op } = require('sequelize');
 const puppeteer = require('puppeteer');
 const dayjs = require('dayjs');
 
-const { User, StaffProfile, Attendance, LeaveRequest, AppSetting, AttendanceTemplate, StaffAttendanceAssignment, StaffShiftAssignment, ShiftTemplate, StaffHolidayAssignment, HolidayTemplate, HolidayDate, StaffGeofenceAssignment, GeofenceTemplate, GeofenceSite, LocationPing, DeviceInfo, WeeklyOffTemplate, StaffWeeklyOffAssignment, AttendanceAutomationRule, OrgAccount, StaffRoster, StaffLatePunchInAssignment, LatePunchInRule, OrgAddonSetting, AttendancePunch, AttendanceRegularization } = require('../models');
+const { User, StaffProfile, Attendance, LeaveRequest, AppSetting, AttendanceTemplate, StaffAttendanceAssignment, StaffShiftAssignment, ShiftTemplate, StaffHolidayAssignment, HolidayTemplate, HolidayDate, StaffGeofenceAssignment, GeofenceTemplate, GeofenceSite, LocationPing, DeviceInfo, WeeklyOffTemplate, StaffWeeklyOffAssignment, AttendanceAutomationRule, OrgAccount, StaffRoster, StaffLatePunchInAssignment, LatePunchInRule, OrgAddonSetting, AttendancePunch, AttendanceRegularization, OutdoorDutyRequest } = require('../models');
 const { authRequired } = require('../middleware/auth');
 const { requireRole } = require('../middleware/roles');
 const { tenantEnforce } = require('../middleware/tenant');
@@ -21,6 +21,12 @@ const router = express.Router();
 router.use(authRequired);
 router.use(tenantEnforce);
 router.use(requireRole(['staff', 'admin', 'superadmin']));
+router.use(async (req, res, next) => {
+  if (req.user && !req.user.orgAccountId) {
+    req.user.orgAccountId = req.tenantOrgAccountId || (await User.findByPk(req.user.id))?.orgAccountId;
+  }
+  next();
+});
 
 async function isMultiPunchEnabled(orgAccountId) {
   try {
@@ -1034,8 +1040,8 @@ router.get('/history', async (req, res) => {
       let lateAmt = Number(record?.latePunchInAmount || 0);
       let lateMins = Number(record?.latePunchInMinutes || 0);
 
-      // Robustness: If lateMins is 0 but we have a shift and a punch-in, calculate it on-the-fly
-      if (lateMins === 0 && record?.punchedInAt && shiftTpl?.startTime && !isAdminLeave && !isAdminHalf) {
+      // Robustness: If lateMins is 0 but we have a shift and a punch-in, calculate it on-the-fly (skip if waived)
+      if (!record?.isLateWaived && lateMins === 0 && record?.punchedInAt && shiftTpl?.startTime && !isAdminLeave && !isAdminHalf) {
         try {
           const [sh, sm, ss] = shiftTpl.startTime.split(':').map(Number);
           const inAtLocal = dayjs(record.punchedInAt);
@@ -1180,6 +1186,18 @@ router.post('/end-break', async (req, res) => {
 router.post('/punch-in', upload.single('photo'), async (req, res) => {
   try {
     const dateKey = todayKey();
+
+    // Check Outdoor Duty request for today
+    const odReq = await OutdoorDutyRequest.findOne({
+      where: { userId: req.user.id, date: dateKey, orgAccountId: req.user.orgAccountId }
+    });
+    if (odReq && odReq.status !== 'APPROVED') {
+      return res.status(403).json({
+        success: false,
+        message: 'Outdoor request not approved.. please contact administrator'
+      });
+    }
+
     if (!await enforceMobilePunchAllowed(req, res)) return;
 
     const isH = await isPaidHoliday(req.user.id, dateKey);
@@ -1548,6 +1566,19 @@ router.post('/location/ping', async (req, res) => {
 
 router.post('/punch-out', upload.single('photo'), async (req, res) => {
   try {
+    const dateKey = todayKey();
+
+    // Check Outdoor Duty request for today
+    const odReq = await OutdoorDutyRequest.findOne({
+      where: { userId: req.user.id, date: dateKey, orgAccountId: req.user.orgAccountId }
+    });
+    if (odReq && odReq.status !== 'APPROVED') {
+      return res.status(403).json({
+        success: false,
+        message: 'Outdoor request not approved.. please contact administrator'
+      });
+    }
+
     if (!await enforceMobilePunchAllowed(req, res)) return;
 
     // Enforce template rules
@@ -2614,6 +2645,19 @@ router.post('/auto-punchout', async (req, res) => {
 
 router.post('/qr-punch', upload.single('photo'), async (req, res) => {
   try {
+    const dateKey = todayKey();
+
+    // Check Outdoor Duty request for today
+    const odReq = await OutdoorDutyRequest.findOne({
+      where: { userId: req.user.id, date: dateKey, orgAccountId: req.user.orgAccountId }
+    });
+    if (odReq && odReq.status !== 'APPROVED') {
+      return res.status(403).json({
+        success: false,
+        message: 'Outdoor request not approved.. please contact administrator'
+      });
+    }
+
     const access = await getQrPunchRestriction(req.user.id, req.user.orgAccountId);
     if (access.restricted) {
       return res.status(403).json({ success: false, message: access.message });
@@ -2691,7 +2735,6 @@ router.post('/qr-punch', upload.single('photo'), async (req, res) => {
       }
     }
 
-    const dateKey = todayKey();
     let record = await Attendance.findOne({ where: { userId: req.user.id, date: dateKey } });
     let action = 'PUNCH_IN';
 
@@ -3040,7 +3083,9 @@ router.get('/regularization/my', authRequired, tenantEnforce, async (req, res) =
     const { Op } = require('sequelize');
     const where = { userId: req.user.id, orgAccountId: req.user.orgAccountId };
     if (month && /^\d{4}-\d{2}$/.test(month)) {
-      where.date = { [Op.between]: [`${month}-01`, `${month}-31`] };
+      const [y, m] = month.split('-').map(Number);
+      const lastDay = new Date(y, m, 0).getDate();
+      where.date = { [Op.between]: [`${month}-01`, `${month}-${String(lastDay).padStart(2, '0')}`] };
     }
     const list = await AttendanceRegularization.findAll({
       where,
@@ -3060,7 +3105,9 @@ router.get('/regularization/list', authRequired, tenantEnforce, async (req, res)
     const where = { orgAccountId: req.user.orgAccountId };
     if (status) where.status = status;
     if (month && /^\d{4}-\d{2}$/.test(month)) {
-      where.date = { [Op.between]: [`${month}-01`, `${month}-31`] };
+      const [y, m] = month.split('-').map(Number);
+      const lastDay = new Date(y, m, 0).getDate();
+      where.date = { [Op.between]: [`${month}-01`, `${month}-${String(lastDay).padStart(2, '0')}`] };
     }
 
     const list = await AttendanceRegularization.findAll({
@@ -3141,6 +3188,264 @@ router.patch('/regularization/:id', authRequired, tenantEnforce, async (req, res
   } catch (err) {
     console.error('Error reviewing regularization:', err);
     return res.status(500).json({ success: false, message: 'Failed to review regularization request' });
+  }
+});
+
+// ==================== OUTDOOR DUTY (OD) ATTENDANCE ====================
+// 1. Staff submits Outdoor Duty Request (Single or Multi-date)
+router.post('/outdoor-duty', authRequired, tenantEnforce, upload.single('attachment'), async (req, res) => {
+  try {
+    const orgAccountId = req.user?.orgAccountId || req.tenantOrgAccountId || (await User.findByPk(req.user.id))?.orgAccountId;
+    if (!orgAccountId) {
+      return res.status(400).json({ success: false, message: 'Organization ID not found' });
+    }
+    if (req.user && !req.user.orgAccountId) {
+      req.user.orgAccountId = orgAccountId;
+    }
+
+    let { dates, fromTime, toTime, reason, visitLocation, clientName, remarks } = req.body;
+
+    if (!reason || !visitLocation) {
+      return res.status(400).json({ success: false, message: 'Reason and Visit Location are required' });
+    }
+
+    // Parse dates array
+    let dateList = [];
+    if (Array.isArray(dates)) {
+      dateList = dates;
+    } else if (typeof dates === 'string') {
+      try {
+        const parsed = JSON.parse(dates);
+        if (Array.isArray(parsed)) dateList = parsed;
+        else dateList = [dates];
+      } catch (_) {
+        dateList = dates.split(',').map(d => d.trim()).filter(Boolean);
+      }
+    }
+
+    if (!dateList || dateList.length === 0) {
+      return res.status(400).json({ success: false, message: 'At least one date is required' });
+    }
+
+    const attachmentUrl = req.file ? `/uploads/${req.file.filename}` : (req.body.attachmentUrl || null);
+    const groupId = 'OD-' + Date.now() + '-' + Math.random().toString(36).substr(2, 6);
+
+    const createdRequests = [];
+    for (const d of dateList) {
+      const trimmedDate = String(d).slice(0, 10);
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(trimmedDate)) continue;
+
+      // Check if request already exists for this date and user
+      const existing = await OutdoorDutyRequest.findOne({
+        where: {
+          orgAccountId,
+          userId: req.user.id,
+          date: trimmedDate
+        }
+      });
+
+      if (existing) {
+        // Update if existing is PENDING or REJECTED
+        await existing.update({
+          groupId,
+          fromTime: fromTime || null,
+          toTime: toTime || null,
+          reason,
+          visitLocation,
+          clientName: clientName || null,
+          remarks: remarks || null,
+          attachmentUrl: attachmentUrl || existing.attachmentUrl,
+          status: 'PENDING',
+          rejectionReason: null
+        });
+        createdRequests.push(existing);
+      } else {
+        const od = await OutdoorDutyRequest.create({
+          orgAccountId,
+          userId: req.user.id,
+          groupId,
+          date: trimmedDate,
+          fromTime: fromTime || null,
+          toTime: toTime || null,
+          reason,
+          visitLocation,
+          clientName: clientName || null,
+          remarks: remarks || null,
+          attachmentUrl,
+          status: 'PENDING'
+        });
+        createdRequests.push(od);
+      }
+    }
+
+    return res.json({
+      success: true,
+      message: `Outdoor duty request submitted successfully for ${createdRequests.length} date(s)`,
+      count: createdRequests.length,
+      groupId,
+      requests: createdRequests
+    });
+  } catch (err) {
+    console.error('Error submitting outdoor duty request:', err);
+    return res.status(500).json({ success: false, message: 'Failed to submit outdoor duty request' });
+  }
+});
+
+// 2. Staff views their own Outdoor Duty Requests
+router.get('/outdoor-duty/my', authRequired, tenantEnforce, async (req, res) => {
+  try {
+    const orgAccountId = req.user?.orgAccountId || req.tenantOrgAccountId || (await User.findByPk(req.user.id))?.orgAccountId;
+    const { month, status } = req.query;
+    const where = {
+      userId: req.user.id,
+      orgAccountId
+    };
+
+    if (status && status !== 'ALL') where.status = status;
+    if (month && /^\d{4}-\d{2}$/.test(month)) {
+      const [y, m] = month.split('-').map(Number);
+      const lastDay = new Date(y, m, 0).getDate();
+      where.date = { [Op.between]: [`${month}-01`, `${month}-${String(lastDay).padStart(2, '0')}`] };
+    }
+
+    const list = await OutdoorDutyRequest.findAll({
+      where,
+      include: [
+        {
+          model: User,
+          as: 'reviewer',
+          attributes: ['id', 'phone', 'role'],
+          include: [{ model: StaffProfile, as: 'profile', attributes: ['name', 'staffId'] }]
+        }
+      ],
+      order: [['date', 'DESC'], ['createdAt', 'DESC']]
+    });
+
+    return res.json({ success: true, list });
+  } catch (err) {
+    console.error('Error fetching my outdoor duty requests:', err);
+    return res.status(500).json({ success: false, message: 'Failed to fetch outdoor duty requests' });
+  }
+});
+
+// 3. Staff cancels/deletes their own PENDING Outdoor Duty Request
+router.delete('/outdoor-duty/:id', authRequired, tenantEnforce, async (req, res) => {
+  try {
+    const orgAccountId = req.user?.orgAccountId || req.tenantOrgAccountId || (await User.findByPk(req.user.id))?.orgAccountId;
+    const { id } = req.params;
+    const record = await OutdoorDutyRequest.findOne({
+      where: {
+        id,
+        userId: req.user.id,
+        orgAccountId
+      }
+    });
+
+    if (!record) {
+      return res.status(404).json({ success: false, message: 'Request not found' });
+    }
+
+    if (record.status !== 'PENDING') {
+      return res.status(400).json({ success: false, message: 'Only pending requests can be cancelled' });
+    }
+
+    await record.destroy();
+    return res.json({ success: true, message: 'Outdoor duty request cancelled successfully' });
+  } catch (err) {
+    console.error('Error cancelling outdoor duty request:', err);
+    return res.status(500).json({ success: false, message: 'Failed to cancel outdoor duty request' });
+  }
+});
+
+// 4. Admin lists all Outdoor Duty Requests
+router.get('/outdoor-duty/list', authRequired, tenantEnforce, async (req, res) => {
+  try {
+    const orgAccountId = req.user?.orgAccountId || req.tenantOrgAccountId || (await User.findByPk(req.user.id))?.orgAccountId;
+    const { month, status, userId } = req.query;
+    const where = { orgAccountId };
+
+    if (status && status !== 'ALL') where.status = status;
+    if (userId) where.userId = userId;
+    if (month && /^\d{4}-\d{2}$/.test(month)) {
+      const [y, m] = month.split('-').map(Number);
+      const lastDay = new Date(y, m, 0).getDate();
+      where.date = { [Op.between]: [`${month}-01`, `${month}-${String(lastDay).padStart(2, '0')}`] };
+    }
+
+    const list = await OutdoorDutyRequest.findAll({
+      where,
+      include: [
+        {
+          model: User,
+          as: 'user',
+          attributes: ['id', 'phone', 'role'],
+          include: [
+            {
+              model: StaffProfile,
+              as: 'profile',
+              attributes: ['name', 'staffId', 'department', 'designation']
+            }
+          ]
+        },
+        {
+          model: User,
+          as: 'reviewer',
+          attributes: ['id', 'phone'],
+          include: [{ model: StaffProfile, as: 'profile', attributes: ['name', 'staffId'] }]
+        }
+      ],
+      order: [['date', 'DESC'], ['createdAt', 'DESC']]
+    });
+
+    return res.json({ success: true, list });
+  } catch (err) {
+    console.error('Error listing outdoor duty requests:', err);
+    return res.status(500).json({ success: false, message: 'Failed to list outdoor duty requests' });
+  }
+});
+
+// 5. Admin reviews Outdoor Duty Request (Approve / Reject)
+router.patch('/outdoor-duty/:id', authRequired, tenantEnforce, async (req, res) => {
+  try {
+    const orgAccountId = req.user?.orgAccountId || req.tenantOrgAccountId || (await User.findByPk(req.user.id))?.orgAccountId;
+    const { id } = req.params;
+    const { status, rejectionReason, applyToGroup } = req.body;
+
+    if (!['APPROVED', 'REJECTED'].includes(status)) {
+      return res.status(400).json({ success: false, message: 'Invalid status. Must be APPROVED or REJECTED' });
+    }
+
+    const record = await OutdoorDutyRequest.findOne({
+      where: { id, orgAccountId }
+    });
+
+    if (!record) {
+      return res.status(404).json({ success: false, message: 'Outdoor duty request not found' });
+    }
+
+    const updatePayload = {
+      status,
+      reviewedBy: req.user.id,
+      reviewedAt: new Date(),
+      rejectionReason: rejectionReason || null
+    };
+
+    if (applyToGroup && record.groupId) {
+      await OutdoorDutyRequest.update(updatePayload, {
+        where: { groupId: record.groupId, orgAccountId }
+      });
+    } else {
+      await record.update(updatePayload);
+    }
+
+    return res.json({
+      success: true,
+      message: `Outdoor duty request ${status.toLowerCase()} successfully`,
+      record
+    });
+  } catch (err) {
+    console.error('Error reviewing outdoor duty request:', err);
+    return res.status(500).json({ success: false, message: 'Failed to review outdoor duty request' });
   }
 });
 

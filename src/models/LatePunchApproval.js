@@ -57,6 +57,12 @@ module.exports = (sequelize) => {
       allowNull: true,
       field: 'reviewed_at',
     },
+    isWaived: {
+      type: DataTypes.BOOLEAN,
+      allowNull: false,
+      defaultValue: false,
+      field: 'is_waived',
+    },
   }, {
     tableName: 'late_punch_approvals',
     timestamps: true,

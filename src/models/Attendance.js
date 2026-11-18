@@ -129,6 +129,23 @@ module.exports = (sequelize) => {
         defaultValue: false,
         field: 'is_late'
       },
+      isLateWaived: {
+        type: DataTypes.BOOLEAN,
+        allowNull: false,
+        defaultValue: false,
+        field: 'is_late_waived'
+      },
+      isOutdoor: {
+        type: DataTypes.BOOLEAN,
+        allowNull: false,
+        defaultValue: false,
+        field: 'is_outdoor'
+      },
+      outdoorDutyId: {
+        type: DataTypes.INTEGER,
+        allowNull: true,
+        field: 'outdoor_duty_id'
+      },
     },
     {
       tableName: 'attendance', // SINGULAR table

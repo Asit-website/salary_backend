@@ -50,6 +50,7 @@ function computeStaffAdvancePayroll(staffAdvances, monthKey, generatedMonths = n
 
   for (const adv of staffAdvances || []) {
     if (adv.status === 'cancelled') continue;
+    if (adv.advanceCategory === 'expense') continue;
 
     const deductionsList = parseDeductionsList(adv);
     const advAmount = Number(adv.amount || 0);

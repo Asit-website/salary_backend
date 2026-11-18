@@ -14,7 +14,10 @@ const {
   OrgAccount,
   AttendanceRegularization,
   LatePunchApproval,
-  SalaryTemplate
+  OutdoorDutyRequest,
+  SalaryTemplate,
+  ExpenseClaim,
+  StaffAdvance
 } = require('../models');
 
 const router = express.Router();
@@ -633,9 +636,10 @@ router.get('/staff/team/attendance', async (req, res) => {
     };
 
     const formatted = records.map(r => {
-      const lateMins = (r.latePunchInMinutes !== null && r.latePunchInMinutes !== undefined)
+      const isWaived = Boolean(r.isLateWaived);
+      const lateMins = isWaived ? 0 : ((r.latePunchInMinutes !== null && r.latePunchInMinutes !== undefined)
         ? Number(r.latePunchInMinutes)
-        : Number(r.lateMinutes || 0);
+        : Number(r.lateMinutes || 0));
 
       return {
         id: r.id,
@@ -657,7 +661,8 @@ router.get('/staff/team/attendance', async (req, res) => {
         breakTotalSeconds: r.breakTotalSeconds || 0,
         lateMinutes: lateMins,
         latePunchInMinutes: lateMins,
-        isLate: Boolean(r.isLate || lateMins > 0),
+        isLate: isWaived ? false : Boolean(r.isLate || lateMins > 0),
+        isLateWaived: isWaived,
         earlyExitMinutes: Number(r.earlyExitMinutes || 0),
         latitude: r.latitude || null,
         longitude: r.longitude || null,
@@ -697,7 +702,9 @@ router.get('/staff/team/regularizations', async (req, res) => {
     };
     if (status && status !== 'ALL') where.status = status;
     if (month && /^\d{4}-\d{2}$/.test(month)) {
-      where.date = { [Op.between]: [`${month}-01`, `${month}-31`] };
+      const [y, m] = month.split('-').map(Number);
+      const lastDay = new Date(y, m, 0).getDate();
+      where.date = { [Op.between]: [`${month}-01`, `${month}-${String(lastDay).padStart(2, '0')}`] };
     }
 
     const list = await AttendanceRegularization.findAll({
@@ -830,7 +837,9 @@ router.get('/staff/team/late-approvals', async (req, res) => {
     };
     if (status && status !== 'ALL') where.status = status;
     if (month && /^\d{4}-\d{2}$/.test(month)) {
-      where.date = { [Op.between]: [`${month}-01`, `${month}-31`] };
+      const [y, m] = month.split('-').map(Number);
+      const lastDay = new Date(y, m, 0).getDate();
+      where.date = { [Op.between]: [`${month}-01`, `${month}-${String(lastDay).padStart(2, '0')}`] };
     }
 
     const list = await LatePunchApproval.findAll({
@@ -866,7 +875,7 @@ router.patch('/staff/team/late-approval/:id/review', async (req, res) => {
     if (!orgId) return;
 
     const { id } = req.params;
-    const { status, adminRemarks } = req.body || {};
+    const { status, adminRemarks, waiveOff } = req.body || {};
     if (!['APPROVED', 'REJECTED'].includes(status)) {
       return res.status(400).json({ success: false, message: 'Invalid status. Must be APPROVED or REJECTED' });
     }
@@ -887,29 +896,50 @@ router.patch('/staff/team/late-approval/:id/review', async (req, res) => {
       });
     }
 
+    const isWaived = status === 'APPROVED' ? !!waiveOff : false;
+
     await record.update({
       status,
       adminRemarks: adminRemarks || `Reviewed by Team Leader (${req.user.name || req.user.id})`,
       reviewedBy: req.user.id,
-      reviewedAt: new Date()
+      reviewedAt: new Date(),
+      isWaived
     });
 
     if (status === 'APPROVED') {
       let att = await Attendance.findOne({
         where: { userId: record.userId, date: record.date, orgAccountId: orgId }
       });
+
+      // Preserve exact actual check-in time (e.g. 11:25 AM) without ever resetting to shift start time!
+      const actualPunchIn = att?.punchedInAt || record.punchedInAt;
+
       if (att) {
-        await att.update({
+        const updateData = {
           status: 'PRESENT',
-          punchedInAt: record.punchedInAt || att.punchedInAt
-        });
+          punchedInAt: actualPunchIn
+        };
+        if (isWaived) {
+          updateData.isLate = false;
+          updateData.latePunchInMinutes = 0;
+          updateData.latePunchInAmount = 0;
+          updateData.isLateWaived = true;
+        } else {
+          updateData.isLate = true;
+          updateData.isLateWaived = false;
+        }
+        await att.update(updateData);
       } else {
         await Attendance.create({
           userId: record.userId,
           date: record.date,
-          punchedInAt: record.punchedInAt,
+          punchedInAt: actualPunchIn,
           orgAccountId: orgId,
-          status: 'PRESENT'
+          status: 'PRESENT',
+          isLate: !isWaived,
+          latePunchInMinutes: isWaived ? 0 : (record.lateMinutes || 0),
+          latePunchInAmount: 0,
+          isLateWaived: isWaived
         });
       }
     } else if (status === 'REJECTED') {
@@ -923,12 +953,443 @@ router.patch('/staff/team/late-approval/:id/review', async (req, res) => {
 
     return res.json({
       success: true,
-      message: `Late check-in ${status.toLowerCase()} successfully`,
+      message: `Late punch approval ${status.toLowerCase()} successfully${isWaived ? ' (Late Waived Off)' : ''}`,
       record
     });
   } catch (err) {
     console.error('[TeamLeaderStaff] Late punch review error:', err);
     return res.status(500).json({ success: false, message: 'Failed to update late approval' });
+  }
+});
+
+// 13. GET /staff/team/outdoor-requests - List team members' outdoor duty requests
+router.get('/staff/team/outdoor-requests', async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res);
+    if (!orgId) return;
+
+    const { status, month } = req.query || {};
+    const { memberIds } = await getAssignedMemberIds(req.user.id, orgId);
+
+    if (memberIds.length === 0) {
+      return res.json({ success: true, list: [] });
+    }
+
+    const where = {
+      orgAccountId: orgId,
+      userId: { [Op.in]: memberIds }
+    };
+
+    if (status && status !== 'ALL') where.status = status;
+    if (month && /^\d{4}-\d{2}$/.test(month)) {
+      const [y, m] = month.split('-').map(Number);
+      const lastDay = new Date(y, m, 0).getDate();
+      where.date = { [Op.between]: [`${month}-01`, `${month}-${String(lastDay).padStart(2, '0')}`] };
+    }
+
+    const list = await OutdoorDutyRequest.findAll({
+      where,
+      include: [
+        {
+          model: User,
+          as: 'user',
+          attributes: ['id', 'phone', 'role'],
+          include: [
+            {
+              model: StaffProfile,
+              as: 'profile',
+              attributes: ['name', 'staffId', 'department', 'designation']
+            }
+          ]
+        },
+        {
+          model: User,
+          as: 'reviewer',
+          attributes: ['id', 'phone'],
+          include: [{ model: StaffProfile, as: 'profile', attributes: ['name', 'staffId'] }]
+        }
+      ],
+      order: [['date', 'DESC'], ['createdAt', 'DESC']]
+    });
+
+    return res.json({ success: true, list });
+  } catch (err) {
+    console.error('[TeamLeaderStaff] Get outdoor duty requests error:', err);
+    return res.status(500).json({ success: false, message: 'Failed to fetch team outdoor duty requests' });
+  }
+});
+
+// 14. PATCH /staff/team/outdoor-request/:id/review - Team Leader approves/rejects OD request
+router.patch('/staff/team/outdoor-request/:id/review', async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res);
+    if (!orgId) return;
+
+    const { id } = req.params;
+    const { status, rejectionReason, applyToGroup } = req.body || {};
+
+    if (!['APPROVED', 'REJECTED'].includes(status)) {
+      return res.status(400).json({ success: false, message: 'Invalid status. Must be APPROVED or REJECTED' });
+    }
+
+    const { memberIds } = await getAssignedMemberIds(req.user.id, orgId);
+    const record = await OutdoorDutyRequest.findOne({
+      where: { id, orgAccountId: orgId }
+    });
+
+    if (!record) {
+      return res.status(404).json({ success: false, message: 'Outdoor duty request not found' });
+    }
+
+    if (!memberIds.includes(Number(record.userId))) {
+      return res.status(403).json({
+        success: false,
+        message: 'Access denied. You can only review requests for your assigned team members.'
+      });
+    }
+
+    const updatePayload = {
+      status,
+      reviewedBy: req.user.id,
+      reviewedAt: new Date(),
+      rejectionReason: rejectionReason || `Reviewed by Team Leader (${req.user.name || req.user.id})`
+    };
+
+    if (applyToGroup && record.groupId) {
+      await OutdoorDutyRequest.update(updatePayload, {
+        where: { groupId: record.groupId, orgAccountId: orgId }
+      });
+    } else {
+      await record.update(updatePayload);
+    }
+
+    return res.json({
+      success: true,
+      message: `Outdoor duty request ${status.toLowerCase()} successfully`,
+      record
+    });
+  } catch (err) {
+    console.error('[TeamLeaderStaff] Outdoor duty review error:', err);
+    return res.status(500).json({ success: false, message: 'Failed to update outdoor duty request' });
+  }
+});
+
+// =========================================================================
+// TEAM LEADER: EXPENSES & ADVANCES (VIEW ONLY, PDF EXPORT)
+// =========================================================================
+
+// 15. GET /staff/team/expenses - List expense claims for assigned team members
+router.get('/staff/team/expenses', async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res);
+    if (!orgId) return;
+
+    const { memberIds, teamName } = await getAssignedMemberIds(req.user.id, orgId);
+    if (memberIds.length === 0) {
+      return res.json({
+        success: true,
+        data: [],
+        total: 0,
+        page: 1,
+        teamName: '',
+        stats: { total: 0, pending: 0, approved: 0, rejected: 0, settled: 0, totalAmount: 0, approvedAmount: 0, pendingAmount: 0 },
+        members: []
+      });
+    }
+
+    const { status, staffId, expenseType, startDate, endDate, page = 1, limit = 15 } = req.query || {};
+
+    let targetMemberIds = memberIds;
+    if (staffId && memberIds.includes(Number(staffId))) {
+      targetMemberIds = [Number(staffId)];
+    }
+
+    const orgUsers = await User.findAll({
+      where: { id: memberIds },
+      attributes: ['id', 'phone'],
+      raw: true
+    });
+    const profiles = await StaffProfile.findAll({
+      where: { userId: memberIds },
+      attributes: ['userId', 'name', 'department', 'staffId', 'photoUrl'],
+      raw: true
+    });
+
+    const staffMap = {};
+    orgUsers.forEach(u => {
+      staffMap[u.id] = { staffName: u.phone || 'Unknown', department: '-', staffCode: `USR-${u.id}` };
+    });
+    profiles.forEach(p => {
+      if (staffMap[p.userId]) {
+        if (p.name) staffMap[p.userId].staffName = p.name;
+        if (p.department) staffMap[p.userId].department = p.department;
+        if (p.staffId) staffMap[p.userId].staffCode = p.staffId;
+        staffMap[p.userId].avatar = p.photoUrl || null;
+      }
+    });
+
+    const where = { userId: targetMemberIds };
+    if (status && status !== 'all') where.status = status;
+    if (expenseType && expenseType !== 'all') where.expenseType = expenseType;
+    if (startDate && endDate) {
+      where.expenseDate = { [Op.between]: [startDate, endDate] };
+    } else if (startDate) {
+      where.expenseDate = { [Op.gte]: startDate };
+    } else if (endDate) {
+      where.expenseDate = { [Op.lte]: endDate };
+    }
+
+    const pageNum = Math.max(1, Number(page) || 1);
+    const limitNum = Math.max(1, Number(limit) || 15);
+    const offset = (pageNum - 1) * limitNum;
+
+    const { count, rows } = await ExpenseClaim.findAndCountAll({
+      where,
+      order: [['expenseDate', 'DESC'], ['id', 'DESC']],
+      limit: limitNum,
+      offset
+    });
+
+    // Team stats across all assigned members
+    const allTeamClaims = await ExpenseClaim.findAll({
+      where: { userId: memberIds },
+      attributes: ['status', 'amount', 'approvedAmount']
+    });
+
+    const stats = {
+      total: allTeamClaims.length,
+      pending: allTeamClaims.filter(c => c.status === 'pending').length,
+      approved: allTeamClaims.filter(c => c.status === 'approved').length,
+      rejected: allTeamClaims.filter(c => c.status === 'rejected').length,
+      settled: allTeamClaims.filter(c => c.status === 'settled').length,
+      totalAmount: allTeamClaims.reduce((s, c) => s + Number(c.amount || 0), 0),
+      approvedAmount: allTeamClaims
+        .filter(c => c.status === 'approved' || c.status === 'settled')
+        .reduce((s, c) => s + Number(c.approvedAmount || c.amount || 0), 0),
+      pendingAmount: allTeamClaims
+        .filter(c => c.status === 'pending')
+        .reduce((s, c) => s + Number(c.amount || 0), 0)
+    };
+
+    const data = rows.map(r => ({
+      ...r.toJSON(),
+      staffName: staffMap[r.userId]?.staffName || 'Unknown',
+      department: staffMap[r.userId]?.department || '-',
+      staffCode: staffMap[r.userId]?.staffCode || '-'
+    }));
+
+    const teamMembersList = memberIds.map(mId => ({
+      id: mId,
+      name: staffMap[mId]?.staffName || `Member #${mId}`,
+      department: staffMap[mId]?.department || '-'
+    }));
+
+    return res.json({
+      success: true,
+      data,
+      total: count,
+      page: pageNum,
+      stats,
+      teamName,
+      members: teamMembersList
+    });
+  } catch (err) {
+    console.error('[TeamLeaderStaff] Get team expenses error:', err);
+    return res.status(500).json({ success: false, message: 'Failed to load team expenses' });
+  }
+});
+
+// 16. GET /staff/team/expenses/report/pdf - Consolidated Expense Summary PDF for Team
+router.get('/staff/team/expenses/report/pdf', async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res);
+    if (!orgId) return;
+
+    const { memberIds } = await getAssignedMemberIds(req.user.id, orgId);
+    if (memberIds.length === 0) {
+      return res.status(404).json({ success: false, message: 'No team members found' });
+    }
+
+    const { startDate, endDate, status, category, userId } = req.query || {};
+    const { generateExpenseReportPDF } = require('../services/expensePdfService');
+
+    let targetUserId = null;
+    let allowedUserIds = memberIds;
+    if (userId && memberIds.includes(Number(userId))) {
+      targetUserId = Number(userId);
+      allowedUserIds = [targetUserId];
+    }
+
+    const result = await generateExpenseReportPDF({
+      userId: targetUserId,
+      orgAccountId: orgId,
+      allowedUserIds,
+      startDate: startDate || null,
+      endDate: endDate || null,
+      status: status || null,
+      category: category || null
+    });
+
+    if (!result) {
+      return res.status(404).json({ success: false, message: 'Failed to generate summary PDF' });
+    }
+
+    const isDownload = req.query.download === '1' || req.query.download === 'true';
+    const disposition = isDownload ? 'attachment' : 'inline';
+    const filename = `Team_Expense_Report_${new Date().toISOString().slice(0, 10)}.pdf`;
+
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `${disposition}; filename="${filename}"`);
+    res.setHeader('Content-Length', result.pdfBuffer.length);
+    return res.end(result.pdfBuffer);
+  } catch (err) {
+    console.error('[TeamLeaderStaff] Team expense report PDF error:', err);
+    return res.status(500).json({ success: false, message: 'Failed to generate team expense report PDF' });
+  }
+});
+
+// 17. GET /staff/team/expenses/:id/pdf - Individual Claim PDF for Team Member
+router.get('/staff/team/expenses/:id/pdf', async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res);
+    if (!orgId) return;
+
+    const { id } = req.params;
+    const { memberIds } = await getAssignedMemberIds(req.user.id, orgId);
+
+    const claim = await ExpenseClaim.findByPk(id);
+    if (!claim || !memberIds.includes(Number(claim.userId))) {
+      return res.status(403).json({ success: false, message: 'Access denied. Claim does not belong to your team.' });
+    }
+
+    const { generateExpenseClaimPDF } = require('../services/expensePdfService');
+    const result = await generateExpenseClaimPDF(claim.id, claim.userId, orgId);
+
+    if (!result) {
+      return res.status(404).json({ success: false, message: 'Failed to generate claim PDF' });
+    }
+
+    const isDownload = req.query.download === '1' || req.query.download === 'true';
+    const disposition = isDownload ? 'attachment' : 'inline';
+    const filename = `Expense_Claim_${claim.claimId || claim.id}.pdf`;
+
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `${disposition}; filename="${filename}"`);
+    res.setHeader('Content-Length', result.pdfBuffer.length);
+    return res.end(result.pdfBuffer);
+  } catch (err) {
+    console.error('[TeamLeaderStaff] Team claim PDF error:', err);
+    return res.status(500).json({ success: false, message: 'Failed to generate claim PDF' });
+  }
+});
+
+// 18. GET /staff/team/advances - List advances for assigned team members (View Only)
+router.get('/staff/team/advances', async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res);
+    if (!orgId) return;
+
+    const { memberIds, teamName } = await getAssignedMemberIds(req.user.id, orgId);
+    if (memberIds.length === 0) {
+      return res.json({
+        success: true,
+        data: [],
+        total: 0,
+        teamName: '',
+        stats: { totalCount: 0, totalAmount: 0, pendingAmount: 0, deductedAmount: 0 },
+        members: []
+      });
+    }
+
+    const { staffId, status, advanceCategory } = req.query || {};
+
+    let targetMemberIds = memberIds;
+    if (staffId && memberIds.includes(Number(staffId))) {
+      targetMemberIds = [Number(staffId)];
+    }
+
+    const orgUsers = await User.findAll({
+      where: { id: memberIds },
+      attributes: ['id', 'phone'],
+      raw: true
+    });
+    const profiles = await StaffProfile.findAll({
+      where: { userId: memberIds },
+      attributes: ['userId', 'name', 'department', 'staffId', 'photoUrl'],
+      raw: true
+    });
+
+    const staffMap = {};
+    orgUsers.forEach(u => {
+      staffMap[u.id] = { staffName: u.phone || 'Unknown', department: '-', staffCode: `USR-${u.id}` };
+    });
+    profiles.forEach(p => {
+      if (staffMap[p.userId]) {
+        if (p.name) staffMap[p.userId].staffName = p.name;
+        if (p.department) staffMap[p.userId].department = p.department;
+        if (p.staffId) staffMap[p.userId].staffCode = p.staffId;
+        staffMap[p.userId].avatar = p.photoUrl || null;
+      }
+    });
+
+    const where = {
+      orgAccountId: orgId,
+      staffId: { [Op.in]: targetMemberIds }
+    };
+    if (status && status !== 'all') where.status = status;
+    if (advanceCategory && advanceCategory !== 'all') where.advanceCategory = advanceCategory;
+
+    const rows = await StaffAdvance.findAll({
+      where,
+      order: [['advanceDate', 'DESC'], ['id', 'DESC']]
+    });
+
+    const allTeamAdvances = await StaffAdvance.findAll({
+      where: {
+        orgAccountId: orgId,
+        staffId: { [Op.in]: memberIds },
+        status: { [Op.ne]: 'cancelled' }
+      }
+    });
+
+    const stats = {
+      totalCount: allTeamAdvances.length,
+      totalAmount: allTeamAdvances.reduce((s, a) => s + Number(a.amount || 0), 0),
+      pendingAmount: allTeamAdvances
+        .filter(a => a.status === 'pending')
+        .reduce((s, a) => s + Number(a.amount || 0), 0),
+      deductedAmount: allTeamAdvances
+        .filter(a => a.status === 'deducted')
+        .reduce((s, a) => s + Number(a.amount || 0), 0)
+    };
+
+    const data = rows.map(r => {
+      const adv = r.toJSON();
+      return {
+        ...adv,
+        staffName: staffMap[adv.staffId]?.staffName || 'Unknown',
+        department: staffMap[adv.staffId]?.department || '-',
+        staffCode: staffMap[adv.staffId]?.staffCode || '-'
+      };
+    });
+
+    const teamMembersList = memberIds.map(mId => ({
+      id: mId,
+      name: staffMap[mId]?.staffName || `Member #${mId}`,
+      department: staffMap[mId]?.department || '-'
+    }));
+
+    return res.json({
+      success: true,
+      data,
+      total: data.length,
+      stats,
+      teamName,
+      members: teamMembersList
+    });
+  } catch (err) {
+    console.error('[TeamLeaderStaff] Get team advances error:', err);
+    return res.status(500).json({ success: false, message: 'Failed to load team advances' });
   }
 });
 

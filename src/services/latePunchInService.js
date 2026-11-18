@@ -12,8 +12,20 @@ class LatePunchInService {
    * Main calculation logic for Late Punch-In penalty
    */
   async calculateLatePenalty(attendance, orgAccount, daysInMonth = 30, now = new Date(), dailySalaryArg = null) {
-    const { userId, orgAccountId, date: dateKey, punchedInAt } = attendance;
+    const { userId, orgAccountId, date: dateKey, punchedInAt, isLateWaived } = attendance;
     if (!punchedInAt) return { latePunchInMinutes: 0, latePunchInAmount: 0, latePunchInRuleId: null };
+
+    // If late has been waived off by Admin/Team Leader, do not count as late
+    const isWaived = isLateWaived || attendance.is_late_waived;
+    if (isWaived) {
+      return {
+        latePunchInMinutes: 0,
+        latePunchInAmount: 0,
+        latePunchInRuleId: null,
+        isLate: false,
+        isLateWaived: true
+      };
+    }
 
     // Check if woHolidayAsOt is enabled for this employee and it is a WO/Holiday
     let woHolidayAsOtEnabled = false;

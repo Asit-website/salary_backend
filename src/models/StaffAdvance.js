@@ -13,6 +13,11 @@ module.exports = (sequelize) => {
       allowNull: false, 
       defaultValue: 'pending' 
     },
+    advanceCategory: {
+      type: DataTypes.STRING(20),
+      allowNull: false,
+      defaultValue: 'salary'
+    },
     deductions: { type: DataTypes.JSON, allowNull: true },
     notes: { type: DataTypes.TEXT, allowNull: true },
     createdBy: { type: DataTypes.INTEGER, allowNull: true },
