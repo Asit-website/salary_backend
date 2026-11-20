@@ -18836,6 +18836,12 @@ router.get("/late-approval/list", async (req, res) => {
             },
           ],
         },
+        {
+          model: User,
+          as: "reviewer",
+          attributes: ["id", "phone"],
+          include: [{ model: StaffProfile, as: "profile", attributes: ["name", "staffId"] }],
+        },
       ],
       order: [
         ["date", "DESC"],
@@ -18917,7 +18923,7 @@ router.patch("/late-approval/:id/review", async (req, res) => {
       let att = await Attendance.findOne({
         where: { userId: record.userId, date: record.date },
       });
-      if (att && att.status === "PENDING_APPROVAL") {
+      if (att) {
         await att.update({
           status: "REJECTED",
         });
@@ -23886,9 +23892,33 @@ router.get("/attendance", async (req, res) => {
       }
     };
 
+    const lateApprovals = await LatePunchApproval.findAll({
+      where: {
+        userId: userIds,
+        date: month
+          ? {
+              [Op.between]: [
+                startDate.toISOString().split("T")[0],
+                endDate.toISOString().split("T")[0],
+              ],
+            }
+          : String(date),
+      },
+    });
+    const lateApprovalMap = new Map();
+    lateApprovals.forEach((la) => {
+      lateApprovalMap.set(`${la.userId}_${la.date}`, la.status);
+    });
+
     const data = rows.map((r) => {
       let status = String(r.status || "").toLowerCase();
-      if (status === "pending_approval") { /* keep status as pending_approval */ }
+      const lateStatus = lateApprovalMap.get(`${r.userId}_${r.date}`);
+      if (lateStatus === "REJECTED") {
+        status = "rejected";
+      } else if (lateStatus === "PENDING") {
+        status = "pending_approval";
+      } else if (status === "pending_approval") { /* keep status as pending_approval */ }
+      else if (status === "rejected") { /* keep status as rejected */ }
       else if (Number(r.breakTotalSeconds) === -2) status = "half_day";
       else if (Number(r.breakTotalSeconds) === -1) status = "leave";
       else if (!status) {

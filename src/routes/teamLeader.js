@@ -26,7 +26,7 @@ router.use(authRequired);
 router.use(tenantEnforce);
 
 function requireOrg(req, res) {
-  const orgId = req.orgAccountId || (req.user && req.user.orgAccountId);
+  const orgId = req.orgAccountId || req.tenantOrgAccountId || (req.user && req.user.orgAccountId);
   if (!orgId) {
     res.status(400).json({ success: false, message: 'Organization account required' });
     return null;
@@ -635,8 +635,27 @@ router.get('/staff/team/attendance', async (req, res) => {
       }
     };
 
+    const { LatePunchApproval } = require('../models');
+    const lateApprovals = await LatePunchApproval.findAll({
+      where: {
+        userId: targetIds,
+        date: { [Op.between]: [startDate, endDate] }
+      }
+    });
+    const lateApprovalMap = new Map();
+    lateApprovals.forEach(la => {
+      lateApprovalMap.set(`${la.userId}_${la.date}`, la.status);
+    });
+
     const formatted = records.map(r => {
       const isWaived = Boolean(r.isLateWaived);
+      let recordStatus = r.status;
+      const lateStatus = lateApprovalMap.get(`${r.userId}_${r.date}`);
+      if (lateStatus === 'REJECTED') {
+        recordStatus = 'REJECTED';
+      } else if (lateStatus === 'PENDING') {
+        recordStatus = 'PENDING_APPROVAL';
+      }
       const lateMins = isWaived ? 0 : ((r.latePunchInMinutes !== null && r.latePunchInMinutes !== undefined)
         ? Number(r.latePunchInMinutes)
         : Number(r.lateMinutes || 0));
@@ -651,7 +670,7 @@ router.get('/staff/team/attendance', async (req, res) => {
         avatar: r.user?.profile?.photoUrl || null,
         photoUrl: r.user?.profile?.photoUrl || null,
         date: r.date,
-        status: r.status,
+        status: recordStatus,
         checkIn: toTime(r.punchedInAt) || (r.checkIn ? String(r.checkIn).slice(0, 5) : null),
         checkOut: toTime(r.punchedOutAt) || (r.checkOut ? String(r.checkOut).slice(0, 5) : null),
         punchedInAt: r.punchedInAt,
@@ -721,6 +740,12 @@ router.get('/staff/team/regularizations', async (req, res) => {
               attributes: ['name', 'staffId', 'department', 'designation']
             }
           ]
+        },
+        {
+          model: User,
+          as: 'reviewer',
+          attributes: ['id', 'phone'],
+          include: [{ model: StaffProfile, as: 'profile', attributes: ['name', 'staffId'] }]
         }
       ],
       order: [['date', 'DESC'], ['createdAt', 'DESC']]
@@ -856,6 +881,12 @@ router.get('/staff/team/late-approvals', async (req, res) => {
               attributes: ['name', 'staffId', 'department', 'designation']
             }
           ]
+        },
+        {
+          model: User,
+          as: 'reviewer',
+          attributes: ['id', 'phone'],
+          include: [{ model: StaffProfile, as: 'profile', attributes: ['name', 'staffId'] }]
         }
       ],
       order: [['date', 'DESC'], ['createdAt', 'DESC']]
@@ -946,7 +977,7 @@ router.patch('/staff/team/late-approval/:id/review', async (req, res) => {
       let att = await Attendance.findOne({
         where: { userId: record.userId, date: record.date, orgAccountId: orgId }
       });
-      if (att && att.status === 'PENDING_APPROVAL') {
+      if (att) {
         await att.update({ status: 'REJECTED' });
       }
     }
@@ -1026,7 +1057,13 @@ router.patch('/staff/team/outdoor-request/:id/review', async (req, res) => {
     if (!orgId) return;
 
     const { id } = req.params;
-    const { status, rejectionReason, applyToGroup } = req.body || {};
+    let { status, rejectionReason, applyToGroup } = req.body || {};
+
+    if (typeof status === 'object' && status !== null) {
+      if (status.rejectionReason && !rejectionReason) rejectionReason = status.rejectionReason;
+      if (status.status) status = status.status;
+    }
+    if (typeof status === 'string') status = status.toUpperCase();
 
     if (!['APPROVED', 'REJECTED'].includes(status)) {
       return res.status(400).json({ success: false, message: 'Invalid status. Must be APPROVED or REJECTED' });

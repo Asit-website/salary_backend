@@ -1669,11 +1669,24 @@ router.post('/punch-out', upload.single('photo'), async (req, res) => {
           breakService.calculateBreakDeduction(master, orgAccount, daysInMonth, now).catch(err => ({ breakDeductionAmount: 0, excessBreakMinutes: 0, breakRuleId: null }))
         ]);
 
+        // Check late punch approval status
+        let targetPunchStatus = otResult?.status || 'PRESENT';
+        try {
+          const { LatePunchApproval } = require('../models');
+          const lateAppr = await LatePunchApproval.findOne({ where: { userId: req.user.id, date: key } });
+          if (lateAppr) {
+            if (lateAppr.status === 'REJECTED') targetPunchStatus = 'REJECTED';
+            else if (lateAppr.status === 'PENDING') targetPunchStatus = 'PENDING_APPROVAL';
+          } else if (master.status === 'REJECTED' || master.status === 'PENDING_APPROVAL') {
+            targetPunchStatus = master.status;
+          }
+        } catch (_) {}
+
         await master.update({
           punchedOutAt: now,
           punchOutPhotoUrl: photoUrl || master.punchOutPhotoUrl,
           totalWorkHours: totalHours,
-          status: otResult?.status || 'PRESENT',
+          status: targetPunchStatus,
           overtimeMinutes: otResult?.overtimeMinutes || 0,
           overtimeAmount: otResult?.overtimeAmount || 0,
           overtimeRuleId: otResult?.overtimeRuleId || null,
@@ -1803,6 +1816,18 @@ router.post('/punch-out', upload.single('photo'), async (req, res) => {
       status = 'overtime';
     }
 
+    let finalPunchStatus = status.toUpperCase();
+    try {
+      const { LatePunchApproval } = require('../models');
+      const lateAppr = await LatePunchApproval.findOne({ where: { userId: req.user.id, date: key } });
+      if (lateAppr) {
+        if (lateAppr.status === 'REJECTED') finalPunchStatus = 'REJECTED';
+        else if (lateAppr.status === 'PENDING') finalPunchStatus = 'PENDING_APPROVAL';
+      } else if (record.status === 'REJECTED' || record.status === 'PENDING_APPROVAL') {
+        finalPunchStatus = record.status;
+      }
+    } catch (_) {}
+
     const address = req.body?.address ? String(req.body.address) : null;
     const newSource = (record.source && record.source !== 'mobile') ? 'hybrid' : (record.source || 'mobile');
 
@@ -1812,7 +1837,7 @@ router.post('/punch-out', upload.single('photo'), async (req, res) => {
       isOnBreak: false,
       breakStartedAt: null,
       breakTotalSeconds,
-      status: status.toUpperCase(),
+      status: finalPunchStatus,
       totalWorkHours: totalWorkHours,
       overtimeMinutes: otResult.overtimeMinutes || 0,
       overtimeAmount: otResult.overtimeAmount || 0,
@@ -3077,6 +3102,51 @@ router.post('/regularization', authRequired, tenantEnforce, async (req, res) => 
   }
 });
 
+// Staff checks if Late Arrival Approval is enabled for their organization
+router.get('/late-arrival-settings', authRequired, tenantEnforce, async (req, res) => {
+  try {
+    const orgAccountId = req.user?.orgAccountId || req.tenantOrgAccountId || (await User.findByPk(req.user.id))?.orgAccountId;
+    const lateApprovalService = require('../services/lateApprovalService');
+    const settings = await lateApprovalService.getSettings(orgAccountId);
+    return res.json({ success: true, settings, enabled: Boolean(settings?.enabled) });
+  } catch (err) {
+    console.error('Error fetching late arrival settings:', err);
+    return res.json({ success: true, settings: { enabled: false }, enabled: false });
+  }
+});
+
+// Staff lists their own Late Punch-In Approval requests
+router.get('/late-approval/my', authRequired, tenantEnforce, async (req, res) => {
+  try {
+    const orgAccountId = req.user?.orgAccountId || req.tenantOrgAccountId || (await User.findByPk(req.user.id))?.orgAccountId;
+    const { month, status } = req.query;
+    const { Op } = require('sequelize');
+    const where = { userId: req.user.id, orgAccountId };
+    if (status && status !== 'ALL') where.status = status;
+    if (month && /^\d{4}-\d{2}$/.test(month)) {
+      const [y, m] = month.split('-').map(Number);
+      const lastDay = new Date(y, m, 0).getDate();
+      where.date = { [Op.between]: [`${month}-01`, `${month}-${String(lastDay).padStart(2, '0')}`] };
+    }
+    const list = await LatePunchApproval.findAll({
+      where,
+      include: [
+        {
+          model: User,
+          as: 'reviewer',
+          attributes: ['id', 'phone', 'role'],
+          include: [{ model: StaffProfile, as: 'profile', attributes: ['name', 'staffId'] }]
+        }
+      ],
+      order: [['date', 'DESC'], ['createdAt', 'DESC']]
+    });
+    return res.json({ success: true, list });
+  } catch (err) {
+    console.error('Error fetching my late punch requests:', err);
+    return res.status(500).json({ success: false, message: 'Failed to fetch late punch requests' });
+  }
+});
+
 router.get('/regularization/my', authRequired, tenantEnforce, async (req, res) => {
   try {
     const { month } = req.query;
@@ -3112,16 +3182,24 @@ router.get('/regularization/list', authRequired, tenantEnforce, async (req, res)
 
     const list = await AttendanceRegularization.findAll({
       where,
-      include: [{
-        model: User,
-        as: 'user',
-        attributes: ['id', 'phone', 'role'],
-        include: [{
-          model: StaffProfile,
-          as: 'profile',
-          attributes: ['name', 'staffId', 'department', 'designation']
-        }]
-      }],
+      include: [
+        {
+          model: User,
+          as: 'user',
+          attributes: ['id', 'phone', 'role'],
+          include: [{
+            model: StaffProfile,
+            as: 'profile',
+            attributes: ['name', 'staffId', 'department', 'designation']
+          }]
+        },
+        {
+          model: User,
+          as: 'reviewer',
+          attributes: ['id', 'phone'],
+          include: [{ model: StaffProfile, as: 'profile', attributes: ['name', 'staffId'] }]
+        }
+      ],
       order: [['date', 'DESC'], ['createdAt', 'DESC']]
     });
     return res.json({ success: true, regularizations: list });
@@ -3225,6 +3303,40 @@ router.post('/outdoor-duty', authRequired, tenantEnforce, upload.single('attachm
 
     if (!dateList || dateList.length === 0) {
       return res.status(400).json({ success: false, message: 'At least one date is required' });
+    }
+
+    // Validation: Block submission if user has already punched in/out or marked attendance on any requested date
+    for (const d of dateList) {
+      const trimmedDate = String(d).slice(0, 10);
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(trimmedDate)) continue;
+
+      const existingAtt = await Attendance.findOne({
+        where: {
+          orgAccountId,
+          userId: req.user.id,
+          date: trimmedDate
+        }
+      });
+      const existingPunch = await AttendancePunch.findOne({
+        where: {
+          orgAccountId,
+          userId: req.user.id,
+          date: trimmedDate
+        }
+      });
+
+      const hasAttendancePunch = (existingAtt && (
+        existingAtt.punchedInAt ||
+        existingAtt.punchedOutAt ||
+        ['PRESENT', 'HALF_DAY', 'OVERTIME'].includes(String(existingAtt.status || '').toUpperCase())
+      )) || !!existingPunch;
+
+      if (hasAttendancePunch) {
+        return res.status(400).json({
+          success: false,
+          message: `Attendance already marked for ${trimmedDate}. Attendance Pre-Approval cannot be submitted for a date where punch is already recorded.`
+        });
+      }
     }
 
     const attachmentUrl = req.file ? `/uploads/${req.file.filename}` : (req.body.attachmentUrl || null);
@@ -3409,7 +3521,13 @@ router.patch('/outdoor-duty/:id', authRequired, tenantEnforce, async (req, res) 
   try {
     const orgAccountId = req.user?.orgAccountId || req.tenantOrgAccountId || (await User.findByPk(req.user.id))?.orgAccountId;
     const { id } = req.params;
-    const { status, rejectionReason, applyToGroup } = req.body;
+    let { status, rejectionReason, applyToGroup } = req.body || {};
+
+    if (typeof status === 'object' && status !== null) {
+      if (status.rejectionReason && !rejectionReason) rejectionReason = status.rejectionReason;
+      if (status.status) status = status.status;
+    }
+    if (typeof status === 'string') status = status.toUpperCase();
 
     if (!['APPROVED', 'REJECTED'].includes(status)) {
       return res.status(400).json({ success: false, message: 'Invalid status. Must be APPROVED or REJECTED' });

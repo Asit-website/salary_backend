@@ -377,11 +377,13 @@ OrgAccount.hasMany(AttendanceRegularization, { foreignKey: 'orgAccountId', as: '
 AttendanceRegularization.belongsTo(OrgAccount, { foreignKey: 'orgAccountId', as: 'orgAccount', constraints: false });
 User.hasMany(AttendanceRegularization, { foreignKey: 'userId', as: 'regularizations', constraints: false });
 AttendanceRegularization.belongsTo(User, { foreignKey: 'userId', as: 'user', constraints: false });
+AttendanceRegularization.belongsTo(User, { foreignKey: 'reviewedBy', as: 'reviewer', constraints: false });
 
 OrgAccount.hasMany(LatePunchApproval, { foreignKey: 'orgAccountId', as: 'latePunchApprovals', constraints: false });
 LatePunchApproval.belongsTo(OrgAccount, { foreignKey: 'orgAccountId', as: 'orgAccount', constraints: false });
 User.hasMany(LatePunchApproval, { foreignKey: 'userId', as: 'latePunchApprovals', constraints: false });
 LatePunchApproval.belongsTo(User, { foreignKey: 'userId', as: 'user', constraints: false });
+LatePunchApproval.belongsTo(User, { foreignKey: 'reviewedBy', as: 'reviewer', constraints: false });
 
 OrgAccount.hasMany(OutdoorDutyRequest, { foreignKey: 'orgAccountId', as: 'outdoorDutyRequests', constraints: false });
 OutdoorDutyRequest.belongsTo(OrgAccount, { foreignKey: 'orgAccountId', as: 'orgAccount', constraints: false });

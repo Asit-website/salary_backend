@@ -2212,7 +2212,7 @@ async function generatePayslipPDF(data, savePath = null) {
 
   const { user, monthKey, earnings, incentives, deductions, totals, attendanceSummary, generatedAt } = data;
 
-  const { OrgBusinessInfo, StaffAdvance, Attendance, HolidayDate, HolidayTemplate, StaffHolidayAssignment, StaffWeeklyOffAssignment, WeeklyOffTemplate, LeaveRequest, StaffRoster } = require('../models');
+  const { OrgBusinessInfo, StaffAdvance, Attendance, HolidayDate, HolidayTemplate, StaffHolidayAssignment, StaffWeeklyOffAssignment, WeeklyOffTemplate, LeaveRequest, StaffRoster, LeaveBalance, StaffLeaveAssignment, LeaveTemplate, LeaveTemplateCategory } = require('../models');
   const { computeStaffAdvancePayroll, loadGeneratedPayrollMonths, parseDeductionsList } = require('./staffAdvancePayroll');
   const { Op } = require('sequelize');
 
@@ -2649,6 +2649,115 @@ async function generatePayslipPDF(data, savePath = null) {
     console.error('Error generating calendar grid for payslip:', err);
   }
 
+  // Leave Summary for Page 2
+  let leaveRowsHtml = '';
+  try {
+    const leaveCategoryNames = {
+      'cl': 'Casual Leave',
+      'sl': 'Sick Leave',
+      'el': 'Earned Leave',
+      'pl': 'Privilege Leave',
+      'ml': 'Maternity Leave',
+      'pt': 'Paternity Leave',
+      'co': 'Compensatory Off'
+    };
+
+    const assignment = await StaffLeaveAssignment.findOne({
+      where: { userId: user.id },
+      order: [['effectiveFrom', 'DESC'], ['id', 'DESC']],
+      include: [{
+        model: LeaveTemplate,
+        as: 'template',
+        include: [{ model: LeaveTemplateCategory, as: 'categories' }]
+      }]
+    });
+
+    const balances = await LeaveBalance.findAll({ where: { userId: user.id } });
+    const balanceMap = new Map();
+    balances.forEach(b => {
+      balanceMap.set(String(b.categoryKey || '').trim().toLowerCase(), b);
+    });
+
+    const leaveItems = [];
+    const handledKeys = new Set();
+
+    const categories = assignment?.template?.categories || [];
+    for (const cat of categories) {
+      const rawKey = String(cat.key || '').trim().toLowerCase();
+      handledKeys.add(rawKey);
+      const b = balanceMap.get(rawKey);
+      let displayName = (cat.name || leaveCategoryNames[rawKey] || rawKey.toUpperCase()).trim();
+      displayName = displayName.replace(/\b\w/g, c => c.toUpperCase());
+      if (cat.key && !displayName.toLowerCase().includes('(' + String(cat.key).toLowerCase() + ')')) {
+        displayName += ` (${String(cat.key).toUpperCase()})`;
+      }
+
+      const allocated = b ? Number(b.allocated || 0) : Number(cat.leaveCount || 0);
+      const used = b ? Number(b.used || 0) : 0;
+      const remaining = b ? Number(b.remaining || 0) : allocated;
+
+      leaveItems.push({
+        name: displayName,
+        allocated,
+        used,
+        remaining
+      });
+    }
+
+    // Also include any balances not defined in assigned template
+    for (const [rawKey, b] of balanceMap.entries()) {
+      if (!handledKeys.has(rawKey)) {
+        handledKeys.add(rawKey);
+        let displayName = (leaveCategoryNames[rawKey] || rawKey.toUpperCase()).trim();
+        displayName = displayName.replace(/\b\w/g, c => c.toUpperCase());
+        if (b.categoryKey && !displayName.toLowerCase().includes('(' + String(b.categoryKey).toLowerCase() + ')')) {
+          displayName += ` (${String(b.categoryKey).toUpperCase()})`;
+        }
+        const allocated = Number(b.allocated || 0);
+        const used = Number(b.used || 0);
+        const remaining = Number(b.remaining || 0);
+        leaveItems.push({
+          name: displayName,
+          allocated,
+          used,
+          remaining
+        });
+      }
+    }
+
+    if (leaveItems.length > 0) {
+      leaveRowsHtml = leaveItems.map(item => `
+        <tr>
+          <td style="font-weight: 600; color: #1f2937;">${item.name}</td>
+          <td style="text-align: center; color: #4b5563;">${item.allocated} days</td>
+          <td style="text-align: center; color: ${item.used > 0 ? '#d97706' : '#6b7280'}; font-weight: ${item.used > 0 ? '700' : 'normal'};">${item.used} days</td>
+          <td style="text-align: center;">
+            <span class="status-badge" style="background: #ecfdf5; color: #047857; font-size: 10px; padding: 2px 8px;">
+              ${item.remaining} days
+            </span>
+          </td>
+        </tr>
+      `).join('');
+    } else {
+      leaveRowsHtml = `
+        <tr>
+          <td colspan="4" style="text-align: center; color: #9ca3af; font-style: italic; padding: 8px;">
+            No leave policy assigned for this employee.
+          </td>
+        </tr>
+      `;
+    }
+  } catch (err) {
+    console.error('Error fetching leave summary for payslip:', err);
+    leaveRowsHtml = `
+      <tr>
+        <td colspan="4" style="text-align: center; color: #9ca3af; font-style: italic; padding: 8px;">
+          Leave details not available
+        </td>
+      </tr>
+    `;
+  }
+
   const html = `
     <!DOCTYPE html>
     <html>
@@ -2718,9 +2827,14 @@ async function generatePayslipPDF(data, savePath = null) {
         .badge-l { background: #ffedd5; color: #9a3412; }
         .cal-timing { font-size: 8.5px; color: #4b5563; margin-top: 3px; font-family: monospace; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
         
-        .legend-container { display: flex; justify-content: center; gap: 16px; margin-top: 16px; background: #f9fafb; border: 1px solid #e5e7eb; border-radius: 6px; padding: 8px 12px; }
+        .legend-container { display: flex; justify-content: center; gap: 16px; margin-top: 14px; background: #f9fafb; border: 1px solid #e5e7eb; border-radius: 6px; padding: 7px 12px; }
         .legend-item { display: flex; align-items: center; gap: 6px; font-size: 10px; font-weight: 600; color: #374151; }
         .legend-badge { display: inline-block; width: 18px; height: 18px; line-height: 18px; text-align: center; border-radius: 50%; font-size: 9px; font-weight: 700; }
+
+        .leave-summary-table { width: 100%; border-collapse: collapse; }
+        .leave-summary-table th { background: #f9fafb; font-size: 10px; font-weight: 700; color: #4b5563; padding: 6px 10px; border-bottom: 1px solid #e5e7eb; }
+        .leave-summary-table td { padding: 6px 10px; border-bottom: 1px solid #f3f4f6; font-size: 10.5px; }
+        .leave-summary-table tr:last-child td { border-bottom: none; }
       </style>
     </head>
     <body>
@@ -2896,7 +3010,28 @@ async function generatePayslipPDF(data, savePath = null) {
           <div class="legend-item"><span class="legend-badge badge-l">L</span> Leave</div>
         </div>
 
-        <div class="signatures" style="margin-top: 40px;">
+        <!-- LEAVE SUMMARY TABLE -->
+        <div class="section-box" style="margin-top: 14px; margin-bottom: 0;">
+          <div class="section-header" style="display: flex; justify-content: space-between; align-items: center;">
+            <span>LEAVE BALANCE & USAGE SUMMARY</span>
+            <span style="font-weight: 500; font-size: 9.5px; color: #6b7280; text-transform: none;">Period: ${monthName} ${year}</span>
+          </div>
+          <table class="leave-summary-table">
+            <thead>
+              <tr>
+                <th style="width: 40%;">Leave Type</th>
+                <th style="width: 20%; text-align: center;">Total Assigned</th>
+                <th style="width: 20%; text-align: center;">Used</th>
+                <th style="width: 20%; text-align: center;">Balance Available</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${leaveRowsHtml}
+            </tbody>
+          </table>
+        </div>
+
+        <div class="signatures" style="margin-top: 22px;">
           <div class="sig-box">
             <div class="sig-line">Employee Signature</div>
           </div>
