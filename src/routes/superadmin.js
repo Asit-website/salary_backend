@@ -984,6 +984,271 @@ router.put('/clients/:id', async (req, res) => {
   }
 });
 
+// Permanently delete a client and all cascading data
+router.delete('/clients/:id', async (req, res) => {
+  try {
+    if (req.user.role !== 'superadmin') {
+      return res.status(403).json({ success: false, message: 'Only superadmin can delete a client' });
+    }
+
+    const clientId = Number(req.params.id);
+    if (!clientId) {
+      return res.status(400).json({ success: false, message: 'Invalid client ID' });
+    }
+
+    const org = await OrgAccount.findByPk(clientId);
+    if (!org) {
+      return res.status(404).json({ success: false, message: 'Client not found' });
+    }
+
+    const { confirmName } = req.body || {};
+    const expectedName = String(org.name || '').trim().toLowerCase();
+    const providedName = String(confirmName || '').trim().toLowerCase();
+
+    if (!providedName || providedName !== expectedName) {
+      return res.status(400).json({
+        success: false,
+        message: `Please type the exact client name "${org.name}" to confirm deletion.`
+      });
+    }
+
+    const allModels = require('../models');
+
+    // 1. Gather all users belonging to this client
+    const clientUsers = await User.findAll({
+      where: { orgAccountId: clientId },
+      attributes: ['id', 'phone']
+    });
+    const userIds = clientUsers.map(u => u.id);
+
+    // 2. Gather child template and parent IDs before deleting
+    let leaveTemplateIds = [];
+    if (allModels.LeaveTemplate) {
+      const templates = await allModels.LeaveTemplate.findAll({ where: { orgAccountId: clientId }, attributes: ['id'] });
+      leaveTemplateIds = templates.map(t => t.id);
+    }
+
+    let shiftTemplateIds = [];
+    if (allModels.ShiftTemplate) {
+      const shifts = await allModels.ShiftTemplate.findAll({ where: { orgAccountId: clientId }, attributes: ['id'] });
+      shiftTemplateIds = shifts.map(s => s.id);
+    }
+
+    let holidayTemplateIds = [];
+    if (allModels.HolidayTemplate) {
+      const holidays = await allModels.HolidayTemplate.findAll({ where: { orgAccountId: clientId }, attributes: ['id'] });
+      holidayTemplateIds = holidays.map(h => h.id);
+    }
+
+    let geofenceTemplateIds = [];
+    if (allModels.GeofenceTemplate) {
+      const geos = await allModels.GeofenceTemplate.findAll({ where: { orgAccountId: clientId }, attributes: ['id'] });
+      geofenceTemplateIds = geos.map(g => g.id);
+    }
+
+    let businessFunctionIds = [];
+    if (allModels.BusinessFunction) {
+      const funcs = await allModels.BusinessFunction.findAll({ where: { orgAccountId: clientId }, attributes: ['id'] });
+      businessFunctionIds = funcs.map(f => f.id);
+    }
+
+    let siteIds = [];
+    if (allModels.Site) {
+      const sites = await allModels.Site.findAll({ where: { orgAccountId: clientId }, attributes: ['id'] });
+      siteIds = sites.map(s => s.id);
+    }
+
+    let routeIds = [];
+    if (allModels.Route) {
+      const routes = await allModels.Route.findAll({ where: { orgAccountId: clientId }, attributes: ['id'] });
+      routeIds = routes.map(r => r.id);
+    }
+
+    let orderIds = [];
+    if (allModels.Order) {
+      const orders = await allModels.Order.findAll({
+        where: { [Op.or]: [{ orgAccountId: clientId }, { clientId }] },
+        attributes: ['id']
+      });
+      orderIds = orders.map(o => o.id);
+    }
+
+    let ticketIds = [];
+    if (allModels.Ticket) {
+      const tickets = await allModels.Ticket.findAll({ where: { orgAccountId: clientId }, attributes: ['id'] });
+      ticketIds = tickets.map(t => t.id);
+    }
+
+    let activityIds = [];
+    if (allModels.Activity) {
+      const acts = await allModels.Activity.findAll({ where: { orgAccountId: clientId }, attributes: ['id'] });
+      activityIds = acts.map(a => a.id);
+    }
+
+    let meetingIds = [];
+    if (allModels.Meeting) {
+      const meets = await allModels.Meeting.findAll({ where: { orgAccountId: clientId }, attributes: ['id'] });
+      meetingIds = meets.map(m => m.id);
+    }
+
+    let assetIds = [];
+    if (allModels.Asset) {
+      const assets = await allModels.Asset.findAll({ where: { orgId: clientId }, attributes: ['id'] });
+      assetIds = assets.map(a => a.id);
+    }
+
+    let salesVisitIds = [];
+    if (allModels.SalesVisit) {
+      const visits = await allModels.SalesVisit.findAll({ where: { orgAccountId: clientId }, attributes: ['id'] });
+      salesVisitIds = visits.map(v => v.id);
+    }
+
+    // 3. Gather physical files to purge
+    const filesToPurge = [];
+    try {
+      if (allModels.StaffDocument && userIds.length > 0) {
+        const docs = await allModels.StaffDocument.findAll({
+          where: { userId: { [Op.in]: userIds } },
+          attributes: ['fileUrl']
+        });
+        docs.forEach(d => { if (d.fileUrl) filesToPurge.push(d.fileUrl); });
+      }
+      if (allModels.ExpenseClaim) {
+        const claims = await allModels.ExpenseClaim.findAll({
+          where: { orgAccountId: clientId },
+          attributes: ['receiptUrl']
+        });
+        claims.forEach(c => { if (c.receiptUrl) filesToPurge.push(c.receiptUrl); });
+      }
+    } catch (_) {}
+
+    // 4. Atomic transaction deletion
+    const transaction = await sequelize.transaction();
+    try {
+      await sequelize.query('SET FOREIGN_KEY_CHECKS = 0', { transaction });
+
+      // Delete child templates data
+      if (leaveTemplateIds.length > 0 && allModels.LeaveTemplateCategory) {
+        await allModels.LeaveTemplateCategory.destroy({ where: { leaveTemplateId: { [Op.in]: leaveTemplateIds } }, transaction, force: true }).catch(() => {});
+      }
+      if (shiftTemplateIds.length > 0) {
+        if (allModels.ShiftBreak) await allModels.ShiftBreak.destroy({ where: { shiftTemplateId: { [Op.in]: shiftTemplateIds } }, transaction, force: true }).catch(() => {});
+        if (allModels.ShiftRotationalSlot) await allModels.ShiftRotationalSlot.destroy({ where: { shiftTemplateId: { [Op.in]: shiftTemplateIds } }, transaction, force: true }).catch(() => {});
+      }
+      if (holidayTemplateIds.length > 0 && allModels.HolidayDate) {
+        await allModels.HolidayDate.destroy({ where: { holidayTemplateId: { [Op.in]: holidayTemplateIds } }, transaction, force: true }).catch(() => {});
+      }
+      if (geofenceTemplateIds.length > 0 && allModels.GeofenceSite) {
+        await allModels.GeofenceSite.destroy({ where: { geofenceTemplateId: { [Op.in]: geofenceTemplateIds } }, transaction, force: true }).catch(() => {});
+      }
+      if (businessFunctionIds.length > 0 && allModels.BusinessFunctionValue) {
+        await allModels.BusinessFunctionValue.destroy({ where: { businessFunctionId: { [Op.in]: businessFunctionIds } }, transaction, force: true }).catch(() => {});
+      }
+      if (siteIds.length > 0 && allModels.SiteCheckpoint) {
+        await allModels.SiteCheckpoint.destroy({ where: { siteId: { [Op.in]: siteIds } }, transaction, force: true }).catch(() => {});
+      }
+      if (routeIds.length > 0 && allModels.RouteStop) {
+        await allModels.RouteStop.destroy({ where: { routeId: { [Op.in]: routeIds } }, transaction, force: true }).catch(() => {});
+      }
+      if (orderIds.length > 0 && allModels.OrderItem) {
+        await allModels.OrderItem.destroy({ where: { orderId: { [Op.in]: orderIds } }, transaction, force: true }).catch(() => {});
+      }
+      if (ticketIds.length > 0 && allModels.TicketHistory) {
+        await allModels.TicketHistory.destroy({ where: { ticketId: { [Op.in]: ticketIds } }, transaction, force: true }).catch(() => {});
+      }
+      if (activityIds.length > 0 && allModels.ActivityHistory) {
+        await allModels.ActivityHistory.destroy({ where: { activityId: { [Op.in]: activityIds } }, transaction, force: true }).catch(() => {});
+      }
+      if (meetingIds.length > 0) {
+        if (allModels.MeetingHistory) await allModels.MeetingHistory.destroy({ where: { meetingId: { [Op.in]: meetingIds } }, transaction, force: true }).catch(() => {});
+        if (allModels.MeetingAttendee) await allModels.MeetingAttendee.destroy({ where: { meetingId: { [Op.in]: meetingIds } }, transaction, force: true }).catch(() => {});
+      }
+      if (assetIds.length > 0) {
+        if (allModels.AssetAssignment) await allModels.AssetAssignment.destroy({ where: { assetId: { [Op.in]: assetIds } }, transaction, force: true }).catch(() => {});
+        if (allModels.AssetMaintenance) await allModels.AssetMaintenance.destroy({ where: { assetId: { [Op.in]: assetIds } }, transaction, force: true }).catch(() => {});
+      }
+      if (salesVisitIds.length > 0 && allModels.SalesVisitAttachment) {
+        await allModels.SalesVisitAttachment.destroy({ where: { visitId: { [Op.in]: salesVisitIds } }, transaction, force: true }).catch(() => {});
+      }
+
+      // Delete by orgAccountId across all models
+      for (const [name, model] of Object.entries(allModels)) {
+        if (model && model.rawAttributes && name !== 'OrgAccount' && name !== 'User') {
+          if (model.rawAttributes.orgAccountId) {
+            await model.destroy({ where: { orgAccountId: clientId }, transaction, force: true }).catch(err => {
+              console.warn(`[delete-client] Warning deleting ${name} by orgAccountId:`, err.message);
+            });
+          }
+          if (model.rawAttributes.orgId) {
+            await model.destroy({ where: { orgId: clientId }, transaction, force: true }).catch(err => {
+              console.warn(`[delete-client] Warning deleting ${name} by orgId:`, err.message);
+            });
+          }
+          if (model.rawAttributes.clientId && name !== 'Client') {
+            await model.destroy({ where: { clientId }, transaction, force: true }).catch(err => {
+              console.warn(`[delete-client] Warning deleting ${name} by clientId:`, err.message);
+            });
+          }
+        }
+      }
+
+      // Delete by userId across all models
+      if (userIds.length > 0) {
+        for (const [name, model] of Object.entries(allModels)) {
+          if (model && model.rawAttributes && model.rawAttributes.userId && name !== 'User' && name !== 'OrgAccount') {
+            await model.destroy({ where: { userId: { [Op.in]: userIds } }, transaction, force: true }).catch(err => {
+              console.warn(`[delete-client] Warning deleting ${name} by userId:`, err.message);
+            });
+          }
+        }
+      }
+
+      // Delete User rows for this organization
+      await User.destroy({ where: { orgAccountId: clientId }, transaction, force: true });
+
+      // Delete OrgAccount itself
+      await OrgAccount.destroy({ where: { id: clientId }, transaction, force: true });
+
+      // Re-enable foreign key checks
+      await sequelize.query('SET FOREIGN_KEY_CHECKS = 1', { transaction });
+
+      await transaction.commit();
+    } catch (txErr) {
+      try {
+        await sequelize.query('SET FOREIGN_KEY_CHECKS = 1', { transaction });
+      } catch (_) {}
+      await transaction.rollback();
+      throw txErr;
+    }
+
+    // Physical file purge (best effort)
+    try {
+      const fs = require('fs');
+      const path = require('path');
+      const uploadsDir = path.resolve(__dirname, '../../uploads');
+      for (const fileUrl of filesToPurge) {
+        if (typeof fileUrl === 'string' && fileUrl.trim()) {
+          const fileName = path.basename(fileUrl);
+          const fullPath = path.join(uploadsDir, fileName);
+          if (fs.existsSync(fullPath)) {
+            fs.unlinkSync(fullPath);
+          }
+        }
+      }
+    } catch (fErr) {
+      console.warn('[delete-client] Disk cleanup warning:', fErr.message);
+    }
+
+    return res.json({
+      success: true,
+      message: `Client "${org.name}" and all associated data have been permanently deleted.`
+    });
+  } catch (e) {
+    console.error('[DELETE CLIENT] Error:', e);
+    return res.status(500).json({ success: false, message: e.message || 'Failed to delete client' });
+  }
+});
+
 // Change client/organization admin password
 router.post('/clients/:id/change-password', async (req, res) => {
   try {

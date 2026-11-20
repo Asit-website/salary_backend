@@ -2283,11 +2283,8 @@ router.post('/change-password', authRequired, async (req, res) => {
       return res.status(401).json({ success: false, message: 'Unauthenticated' });
     }
 
-    const { currentPassword, newPassword, confirmPassword } = req.body || {};
+    const { newPassword, confirmPassword } = req.body || {};
 
-    if (!currentPassword) {
-      return res.status(400).json({ success: false, message: 'Current password is required' });
-    }
     if (!newPassword) {
       return res.status(400).json({ success: false, message: 'New password is required' });
     }
@@ -2297,22 +2294,28 @@ router.post('/change-password', authRequired, async (req, res) => {
     if (newPassword !== confirmPassword) {
       return res.status(400).json({ success: false, message: 'New password and confirm password do not match' });
     }
-    if (currentPassword === newPassword) {
-      return res.status(400).json({ success: false, message: 'New password cannot be the same as current password' });
-    }
 
     const user = await User.findByPk(userId);
     if (!user) {
       return res.status(404).json({ success: false, message: 'User not found' });
     }
 
-    const isMatch = await verifyPassword(currentPassword, user.passwordHash || user.password);
-    if (!isMatch) {
-      return res.status(400).json({ success: false, message: 'Current password is incorrect' });
-    }
-
     const hashedPassword = await hashPassword(newPassword);
     await user.update({ passwordHash: hashedPassword });
+
+    const normalizedPhone = String(user.phone || '').replace(/[^0-9]/g, '').slice(-10) || user.phone;
+    if (user.phone) {
+      await User.update(
+        { passwordHash: hashedPassword, failedLoginAttempts: 0, lockoutUntil: null },
+        { where: { phone: String(user.phone) } }
+      ).catch(() => {});
+    }
+    if (normalizedPhone && String(normalizedPhone) !== String(user.phone)) {
+      await User.update(
+        { passwordHash: hashedPassword, failedLoginAttempts: 0, lockoutUntil: null },
+        { where: { phone: String(normalizedPhone) } }
+      ).catch(() => {});
+    }
 
     try {
       logAudit({

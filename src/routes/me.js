@@ -167,9 +167,9 @@ router.put('/phone', async (req, res) => {
 
 router.put('/password', async (req, res) => {
   try {
-    const { currentPassword, newPassword } = req.body || {};
-    if (!currentPassword || !newPassword) {
-      return res.status(400).json({ success: false, message: 'currentPassword and newPassword required' });
+    const { newPassword } = req.body || {};
+    if (!newPassword) {
+      return res.status(400).json({ success: false, message: 'newPassword required' });
     }
 
     const passwordError = validateNewPassword(newPassword);
@@ -179,11 +179,6 @@ router.put('/password', async (req, res) => {
 
     const me = await User.findByPk(req.user.id);
     if (!me) return res.status(404).json({ success: false, message: 'User not found' });
-
-    const ok = await verifyPassword(currentPassword, me.passwordHash);
-    if (!ok) {
-      return res.status(401).json({ success: false, message: 'Current password is incorrect' });
-    }
 
     const passwordHash = await hashPassword(newPassword);
     const normalizedPhone = String(me.phone || '').replace(/[^0-9]/g, '').slice(-10) || me.phone;
