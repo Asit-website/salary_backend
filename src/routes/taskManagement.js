@@ -1,5 +1,5 @@
 const express = require('express');
-const { Activity, Meeting, MeetingAttendee, Ticket, TicketHistory, ActivityHistory, MeetingHistory, User, StaffProfile, sequelize, TaskObserverMapping } = require('../models');
+const { Activity, Meeting, MeetingAttendee, Ticket, TicketHistory, ActivityHistory, MeetingHistory, User, StaffProfile, sequelize, TaskObserverMapping, ActivityTitle } = require('../models');
 const { authRequired } = require('../middleware/auth');
 const { tenantEnforce } = require('../middleware/tenant');
 const { upload } = require('../upload');
@@ -57,6 +57,16 @@ router.get('/activities', async (req, res) => {
                 as: 'allocatedBy',
                 attributes: ['id'],
                 include: [{ model: StaffProfile, as: 'profile', attributes: ['name'] }]
+            }, {
+                model: ActivityHistory,
+                as: 'history',
+                required: false,
+                include: [{
+                    model: User,
+                    as: 'updater',
+                    attributes: ['id'],
+                    include: [{ model: StaffProfile, as: 'profile', attributes: ['name'] }]
+                }]
             }],
             order: [['createdAt', 'DESC']]
         });
@@ -66,9 +76,327 @@ router.get('/activities', async (req, res) => {
     }
 });
 
+// Bulk Assign Activities across Months
+function isDateMatchingDayRule(curDate, dayRule, excludeSundays = true) {
+    const dayOfWeek = curDate.day(); // 0 = Sun, 1 = Mon, ..., 6 = Sat
+    if (excludeSundays && dayOfWeek === 0) return false;
+
+    if (!dayRule || dayRule === 'ALL_DAYS') return true;
+    if (dayRule === 'MON_TO_FRI') return dayOfWeek >= 1 && dayOfWeek <= 5;
+    if (dayRule === 'MON_ONLY') return dayOfWeek === 1;
+    if (dayRule === 'TUE_ONLY') return dayOfWeek === 2;
+    if (dayRule === 'WED_ONLY') return dayOfWeek === 3;
+    if (dayRule === 'THU_ONLY') return dayOfWeek === 4;
+    if (dayRule === 'FRI_ONLY') return dayOfWeek === 5;
+    if (dayRule === 'SAT_ONLY') return dayOfWeek === 6;
+    if (String(dayRule).startsWith('DATE_')) {
+        const dom = parseInt(String(dayRule).replace('DATE_', ''), 10);
+        return curDate.date() === dom;
+    }
+    return true;
+}
+
+router.post('/activities/bulk', async (req, res) => {
+    try {
+        const {
+            userId,
+            userIds,
+            months, // e.g. ["2026-01", "2026-02"]
+            excludeSundays = true,
+            activities // array of { title, description, turnAroundTime, dayRule, jobType }
+        } = req.body;
+
+        const targetUserIds = Array.isArray(userIds) && userIds.length > 0 
+            ? userIds 
+            : (userId ? [Number(userId)] : []);
+
+        if (targetUserIds.length === 0) {
+            return res.status(400).json({ success: false, message: 'Please select at least one staff member.' });
+        }
+
+        if (!Array.isArray(months) || months.length === 0) {
+            return res.status(400).json({ success: false, message: 'Please select at least one month.' });
+        }
+
+        if (!Array.isArray(activities) || activities.length === 0) {
+            return res.status(400).json({ success: false, message: 'Please add at least one activity.' });
+        }
+
+        for (const act of activities) {
+            if (!act.title || !String(act.title).trim()) {
+                return res.status(400).json({ success: false, message: 'All activities must have a title.' });
+            }
+        }
+
+        const batchId = 'batch_' + Date.now() + '_' + Math.random().toString(36).substring(2, 7);
+        const dayjs = require('dayjs');
+
+        // Generate all dates for the chosen months
+        const allDates = [];
+        months.forEach(m => {
+            const start = dayjs(m + '-01');
+            const daysInMonth = start.daysInMonth();
+            for (let d = 1; d <= daysInMonth; d++) {
+                const curDate = start.date(d);
+                const dayOfWeek = curDate.day(); // 0 is Sunday, 6 is Saturday
+                if (excludeSundays && dayOfWeek === 0) continue;
+                allDates.push(curDate);
+            }
+        });
+
+        const recordsToInsert = [];
+
+        for (const targetUserId of targetUserIds) {
+            for (const d of allDates) {
+                const dateStr = d.format('YYYY-MM-DD');
+                const dayOfWeek = d.day(); // 1 = Mon, ..., 6 = Sat
+
+                for (const act of activities) {
+                    const dayRule = act.dayRule || 'ALL_DAYS';
+                    const jobType = act.jobType || 'ROUTINE';
+
+                    if (!isDateMatchingDayRule(d, dayRule, excludeSundays)) continue;
+
+                    recordsToInsert.push({
+                        orgAccountId: req.tenantOrgAccountId,
+                        userId: targetUserId,
+                        title: String(act.title).trim(),
+                        description: act.description ? String(act.description).trim() : null,
+                        date: dateStr,
+                        turnAroundTime: act.turnAroundTime || null,
+                        turnAroundDate: dateStr,
+                        status: 'SCHEDULE',
+                        jobType,
+                        dayRule,
+                        batchId,
+                        allocatedById: req.user.id
+                    });
+                }
+            }
+        }
+
+        if (recordsToInsert.length === 0) {
+            return res.status(400).json({ success: false, message: 'No dates matched the day rules for the selected months.' });
+        }
+
+        const result = await Activity.bulkCreate(recordsToInsert);
+
+        return res.status(201).json({
+            success: true,
+            message: `Successfully scheduled ${result.length} activities across ${months.length} month(s).`,
+            count: result.length,
+            batchId
+        });
+    } catch (error) {
+        console.error('[activities/bulk] Error:', error);
+        res.status(500).json({ success: false, message: error.message });
+    }
+});
+
+// Get Details of a Monthly Routine Batch
+router.get('/activities/batch/:batchId', async (req, res) => {
+    try {
+        const { batchId } = req.params;
+        const activities = await Activity.findAll({
+            where: { batchId, orgAccountId: req.tenantOrgAccountId },
+            include: [{
+                model: User,
+                as: 'user',
+                attributes: ['id'],
+                include: [{ model: StaffProfile, as: 'profile', attributes: ['name', 'department'] }]
+            }],
+            order: [['date', 'ASC']]
+        });
+
+        if (activities.length === 0) {
+            return res.status(404).json({ success: false, message: 'Batch not found' });
+        }
+
+        const userId = activities[0].userId;
+        const user = activities[0].user;
+
+        const monthsSet = new Set();
+        activities.forEach(a => {
+            if (a.date) {
+                monthsSet.add(a.date.substring(0, 7));
+            }
+        });
+
+        const templateMap = new Map();
+        activities.forEach(a => {
+            const key = `${a.title}||${a.dayRule}||${a.turnAroundTime || ''}`;
+            if (!templateMap.has(key)) {
+                let dayRuleType = a.dayRule || 'ALL_DAYS';
+                let dayOfMonth = 1;
+                if (String(a.dayRule).startsWith('DATE_')) {
+                    dayRuleType = 'DATE_OF_MONTH';
+                    dayOfMonth = parseInt(String(a.dayRule).replace('DATE_', ''), 10) || 1;
+                }
+
+                templateMap.set(key, {
+                    id: String(a.id),
+                    title: a.title,
+                    description: a.description || '',
+                    turnAroundTime: a.turnAroundTime || '',
+                    dayRule: a.dayRule || 'ALL_DAYS',
+                    dayRuleType,
+                    dayOfMonth,
+                    jobType: a.jobType || 'ROUTINE'
+                });
+            }
+        });
+
+        const templateActivities = Array.from(templateMap.values());
+        const totalCount = activities.length;
+        const doneCount = activities.filter(a => a.status === 'DONE').length;
+        const scheduleCount = activities.filter(a => a.status === 'SCHEDULE').length;
+
+        res.json({
+            success: true,
+            batch: {
+                batchId,
+                userId,
+                user,
+                months: Array.from(monthsSet),
+                activities: templateActivities,
+                totalCount,
+                doneCount,
+                scheduleCount
+            }
+        });
+    } catch (error) {
+        console.error('[activities/batch/:batchId GET] Error:', error);
+        res.status(500).json({ success: false, message: error.message });
+    }
+});
+
+// Update an Entire Monthly Routine Batch
+router.put('/activities/batch/:batchId', async (req, res) => {
+    try {
+        const { batchId } = req.params;
+        const {
+            userId,
+            months,
+            excludeSundays = true,
+            activities
+        } = req.body;
+
+        if (!Array.isArray(months) || months.length === 0) {
+            return res.status(400).json({ success: false, message: 'Please select at least one month.' });
+        }
+        if (!Array.isArray(activities) || activities.length === 0) {
+            return res.status(400).json({ success: false, message: 'Please provide at least one activity.' });
+        }
+
+        const existingBatch = await Activity.findAll({
+            where: { batchId, orgAccountId: req.tenantOrgAccountId }
+        });
+
+        if (existingBatch.length === 0) {
+            return res.status(404).json({ success: false, message: 'Batch not found' });
+        }
+
+        const targetUserId = userId || existingBatch[0].userId;
+
+        // Delete pending SCHEDULE activities of this batch
+        const scheduledToDel = existingBatch.filter(a => a.status === 'SCHEDULE').map(a => a.id);
+        if (scheduledToDel.length > 0) {
+            await ActivityHistory.destroy({ where: { activityId: scheduledToDel } });
+            await Activity.destroy({ where: { id: scheduledToDel } });
+        }
+
+        const dayjs = require('dayjs');
+        const allDates = [];
+        months.forEach(m => {
+            const start = dayjs(m + '-01');
+            const daysInMonth = start.daysInMonth();
+            for (let d = 1; d <= daysInMonth; d++) {
+                const curDate = start.date(d);
+                const dayOfWeek = curDate.day();
+                if (excludeSundays && dayOfWeek === 0) continue;
+                allDates.push(curDate);
+            }
+        });
+
+        const preserved = await Activity.findAll({
+            where: { batchId, orgAccountId: req.tenantOrgAccountId },
+            attributes: ['date', 'title']
+        });
+        const preservedKeys = new Set(preserved.map(p => `${p.date}_${p.title}`));
+
+        const recordsToInsert = [];
+        for (const d of allDates) {
+            const dateStr = d.format('YYYY-MM-DD');
+
+            for (const act of activities) {
+                const dayRule = act.dayRule || 'ALL_DAYS';
+                const jobType = act.jobType || 'ROUTINE';
+
+                if (!isDateMatchingDayRule(d, dayRule, excludeSundays)) continue;
+
+                if (preservedKeys.has(`${dateStr}_${String(act.title).trim()}`)) {
+                    continue;
+                }
+
+                recordsToInsert.push({
+                    orgAccountId: req.tenantOrgAccountId,
+                    userId: targetUserId,
+                    title: String(act.title).trim(),
+                    description: act.description ? String(act.description).trim() : null,
+                    date: dateStr,
+                    turnAroundTime: act.turnAroundTime || null,
+                    turnAroundDate: dateStr,
+                    status: 'SCHEDULE',
+                    jobType,
+                    dayRule,
+                    batchId,
+                    allocatedById: req.user.id
+                });
+            }
+        }
+
+        let newRecords = [];
+        if (recordsToInsert.length > 0) {
+            newRecords = await Activity.bulkCreate(recordsToInsert);
+        }
+
+        return res.json({
+            success: true,
+            message: `Monthly schedule updated successfully (${newRecords.length} activities scheduled).`,
+            count: newRecords.length,
+            batchId
+        });
+    } catch (error) {
+        console.error('[activities/batch/:batchId PUT] Error:', error);
+        res.status(500).json({ success: false, message: error.message });
+    }
+});
+
+// Delete an Entire Monthly Routine Batch
+router.delete('/activities/batch/:batchId', async (req, res) => {
+    try {
+        const { batchId } = req.params;
+        const activities = await Activity.findAll({
+            where: { batchId, orgAccountId: req.tenantOrgAccountId }
+        });
+        if (activities.length === 0) {
+            return res.status(404).json({ success: false, message: 'Batch not found' });
+        }
+        const ids = activities.map(a => a.id);
+        await ActivityHistory.destroy({ where: { activityId: ids } });
+        await Activity.destroy({ where: { id: ids } });
+
+        return res.json({ success: true, message: 'Monthly schedule deleted successfully.' });
+    } catch (error) {
+        console.error('[activities/batch/:batchId DELETE] Error:', error);
+        res.status(500).json({ success: false, message: error.message });
+    }
+});
+
+
 router.post('/activities', async (req, res) => {
     try {
-        const { userId, title, description, date, turnAroundTime, turnAroundDate } = req.body;
+        const { userId, title, description, date, turnAroundTime, turnAroundDate, jobType, dayRule } = req.body;
         
         if (!userId || !title || !date) {
             return res.status(400).json({ success: false, message: 'Staff, Title and Date are required' });
@@ -83,6 +411,8 @@ router.post('/activities', async (req, res) => {
             turnAroundTime,
             turnAroundDate,
             status: 'SCHEDULE',
+            jobType: jobType || 'ROUTINE',
+            dayRule: dayRule || 'ALL_DAYS',
             allocatedById: req.user.id
         });
 
@@ -103,12 +433,15 @@ router.post('/activities', async (req, res) => {
 // Admin: Update Activity
 router.patch('/activities/:id', async (req, res) => {
     try {
-        const { userId, title, description, date, turnAroundTime, turnAroundDate } = req.body;
+        const { userId, title, description, date, turnAroundTime, turnAroundDate, jobType, dayRule } = req.body;
         const activity = await Activity.findOne({ where: { id: req.params.id, orgAccountId: req.tenantOrgAccountId } });
         if (!activity) return res.status(404).json({ success: false, message: 'Activity not found' });
 
         const oldStatus = activity.status;
-        await activity.update({ userId, title, description, date, turnAroundTime, turnAroundDate });
+        const updates = { userId, title, description, date, turnAroundTime, turnAroundDate };
+        if (jobType) updates.jobType = jobType;
+        if (dayRule) updates.dayRule = dayRule;
+        await activity.update(updates);
 
         await ActivityHistory.create({
             activityId: activity.id,
@@ -152,6 +485,17 @@ router.get('/meetings', async (req, res) => {
                     as: 'closedBy',
                     attributes: ['id'],
                     include: [{ model: StaffProfile, as: 'profile', attributes: ['name'] }]
+                },
+                {
+                    model: MeetingHistory,
+                    as: 'history',
+                    required: false,
+                    include: [{
+                        model: User,
+                        as: 'updater',
+                        attributes: ['id'],
+                        include: [{ model: StaffProfile, as: 'profile', attributes: ['name'] }]
+                    }]
                 }
             ],
             order: [['scheduledAt', 'DESC']]
@@ -374,6 +718,17 @@ router.get('/tickets', async (req, res) => {
                     as: 'closedBy',
                     attributes: ['id'],
                     include: [{ model: StaffProfile, as: 'profile', attributes: ['name'] }]
+                },
+                {
+                    model: TicketHistory,
+                    as: 'history',
+                    required: false,
+                    include: [{
+                        model: User,
+                        as: 'updater',
+                        attributes: ['id'],
+                        include: [{ model: StaffProfile, as: 'profile', attributes: ['name'] }]
+                    }]
                 }
             ],
             order: [['createdAt', 'DESC']]
@@ -673,4 +1028,96 @@ router.post('/observers/:id/mappings', async (req, res) => {
     }
 });
 
+
+// Activity Titles Master Endpoints
+router.get('/activity-titles', async (req, res) => {
+    try {
+        const titles = await ActivityTitle.findAll({
+            where: { orgAccountId: req.tenantOrgAccountId },
+            order: [['title', 'ASC']]
+        });
+        res.json({ success: true, titles });
+    } catch (error) {
+        res.status(500).json({ success: false, message: error.message });
+    }
+});
+
+router.post('/activity-titles', async (req, res) => {
+    try {
+        const { title, description, defaultTAT } = req.body;
+        if (!title || !title.trim()) {
+            return res.status(400).json({ success: false, message: 'Title is required' });
+        }
+        const trimmedTitle = title.trim();
+        let existing = await ActivityTitle.findOne({
+            where: {
+                orgAccountId: req.tenantOrgAccountId,
+                title: trimmedTitle
+            }
+        });
+        if (existing) {
+            return res.json({ success: true, title: existing, message: 'Title already exists' });
+        }
+        const newTitle = await ActivityTitle.create({
+            orgAccountId: req.tenantOrgAccountId,
+            title: trimmedTitle,
+            description: description || null,
+            defaultTAT: defaultTAT || null,
+            createdBy: req.user.id
+        });
+        res.json({ success: true, title: newTitle });
+    } catch (error) {
+        res.status(500).json({ success: false, message: error.message });
+    }
+});
+
+router.delete('/activity-titles/:id', async (req, res) => {
+    try {
+        await ActivityTitle.destroy({
+            where: {
+                id: req.params.id,
+                orgAccountId: req.tenantOrgAccountId
+            }
+        });
+        res.json({ success: true, message: 'Title deleted successfully' });
+    } catch (error) {
+        res.status(500).json({ success: false, message: error.message });
+    }
+});
+
+
+// Admin endpoint to download or view Activity & Task Performance Report PDF
+router.get('/activities/report/pdf', async (req, res) => {
+  try {
+    const { startDate, endDate, status, jobType, userId } = req.query || {};
+    const { generateActivityReportPDF } = require('../services/activityPdfService');
+
+    const result = await generateActivityReportPDF({
+      orgAccountId: req.tenantOrgAccountId,
+      userId: userId ? Number(userId) : null,
+      startDate: startDate || null,
+      endDate: endDate || null,
+      status: status || null,
+      jobType: jobType || null
+    });
+
+    if (!result || !result.pdfBuffer) {
+      return res.status(404).json({ success: false, message: 'Failed to generate PDF' });
+    }
+
+    const isDownload = req.query.download === '1' || req.query.download === 'true';
+    const disposition = isDownload ? 'attachment' : 'inline';
+    const filename = `Activity_Report_${new Date().toISOString().slice(0, 10)}.pdf`;
+
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `${disposition}; filename="${filename}"`);
+    res.setHeader('Content-Length', result.pdfBuffer.length);
+    return res.end(result.pdfBuffer);
+  } catch (err) {
+    console.error('Error generating admin activity PDF report:', err);
+    return res.status(500).json({ success: false, message: 'Failed to generate activity report PDF' });
+  }
+});
+
 module.exports = router;
+

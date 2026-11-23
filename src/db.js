@@ -135,6 +135,12 @@ async function initDb() {
     await sequelize.query('ALTER TABLE attendance ADD COLUMN outdoor_duty_id INT NULL');
   } catch (_) {}
   try {
+    await sequelize.query('ALTER TABLE assigned_jobs ADD COLUMN is_self_assigned BOOLEAN NOT NULL DEFAULT FALSE');
+  } catch (_) {}
+  try {
+    await sequelize.query('ALTER TABLE assigned_jobs ADD COLUMN created_by_user_id BIGINT UNSIGNED NULL');
+  } catch (_) {}
+  try {
     await sequelize.query(`
       CREATE TABLE IF NOT EXISTS outdoor_duty_requests (
         id INT AUTO_INCREMENT PRIMARY KEY,

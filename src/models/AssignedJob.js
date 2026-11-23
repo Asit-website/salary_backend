@@ -23,6 +23,8 @@ module.exports = (sequelize) => {
       clientAddress: { type: DataTypes.STRING(255), allowNull: true },
       clientLat: { type: DataTypes.DOUBLE, allowNull: true },
       clientLng: { type: DataTypes.DOUBLE, allowNull: true },
+      isSelfAssigned: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: false, field: 'is_self_assigned' },
+      createdByUserId: { type: DataTypes.BIGINT.UNSIGNED, allowNull: true, field: 'created_by_user_id' },
       orgAccountId: { type: DataTypes.BIGINT.UNSIGNED, allowNull: true, field: 'org_account_id' },
     },
     { tableName: 'assigned_jobs', underscored: true }

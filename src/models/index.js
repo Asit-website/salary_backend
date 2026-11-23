@@ -91,6 +91,7 @@ const defineStaffSalesIncentive = require('./StaffSalesIncentive');
 const defineLeaveEncashment = require('./LeaveEncashment');
 const defineAttendanceAutomationRule = require('./AttendanceAutomationRule');
 const defineActivity = require('./Activity');
+const defineActivityTitle = require('./ActivityTitle');
 const defineMeeting = require('./Meeting');
 const defineMeetingAttendee = require('./MeetingAttendee');
 const defineTicket = require('./Ticket');
@@ -243,6 +244,7 @@ const StaffSalesIncentive = defineStaffSalesIncentive(sequelize);
 const AttendanceAutomationRule = defineAttendanceAutomationRule(sequelize);
 const LeaveEncashment = defineLeaveEncashment(sequelize);
 const Activity = defineActivity(sequelize);
+const ActivityTitle = defineActivityTitle(sequelize);
 const Meeting = defineMeeting(sequelize);
 const MeetingAttendee = defineMeetingAttendee(sequelize);
 const Ticket = defineTicket(sequelize);
@@ -1229,6 +1231,7 @@ module.exports = {
   AttendanceAutomationRule,
   LeaveEncashment,
   Activity,
+  ActivityTitle,
   Meeting,
   MeetingAttendee,
   Ticket,

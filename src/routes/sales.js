@@ -58,11 +58,79 @@ async function sendSmsViaGateway({ phoneE164, code, text }) {
   }
 }
 
+
+function haversineMeters(lat1, lon1, lat2, lon2) {
+  const toRad = (d) => (d * Math.PI) / 180;
+  const R = 6371000;
+  const dLat = toRad(lat2 - lat1);
+  const dLon = toRad(lon2 - lon1);
+  const a = Math.sin(dLat / 2) ** 2 + Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) ** 2;
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  return R * c;
+}
+
+async function resolveJobCoordinates(job) {
+  if (job.clientLat !== null && job.clientLat !== undefined && Number.isFinite(Number(job.clientLat)) &&
+      job.clientLng !== null && job.clientLng !== undefined && Number.isFinite(Number(job.clientLng))) {
+    return { lat: Number(job.clientLat), lng: Number(job.clientLng) };
+  }
+  const address = job.clientAddress || job.client?.location;
+  if (!address) return null;
+  try {
+    const GOOGLE_MAPS_API_KEY = 'AIzaSyBukqAGI9NioKWUOgzVs0vXrBOg9DnbwLo';
+    const url = 'https://maps.googleapis.com/maps/api/geocode/json?address=' + encodeURIComponent(String(address).trim()) + '&key=' + GOOGLE_MAPS_API_KEY;
+    const resp = await fetch(url);
+    const data = await resp.json();
+    const loc = data?.results?.[0]?.geometry?.location;
+    if (loc && Number.isFinite(loc.lat) && Number.isFinite(loc.lng)) {
+      try {
+        await job.update({ clientLat: loc.lat, clientLng: loc.lng });
+      } catch (_) {}
+      return { lat: loc.lat, lng: loc.lng };
+    }
+  } catch (e) {
+    console.error('resolveJobCoordinates error:', e);
+  }
+  return null;
+}
+
 function normalizePhone(phone) {
   const digits = String(phone || '').replace(/[^0-9]/g, '');
   if (!digits) return '';
   return digits.length > 10 ? digits.slice(-10) : digits;
 }
+
+// Google Places Autocomplete Proxy (bypasses CORS in mobile web/app)
+router.get('/places-autocomplete', async (req, res) => {
+  try {
+    const input = req.query.input || '';
+    if (!input || String(input).trim().length < 2) {
+      return res.json({ success: true, predictions: [] });
+    }
+    const GOOGLE_MAPS_API_KEY = 'AIzaSyBukqAGI9NioKWUOgzVs0vXrBOg9DnbwLo';
+    const url = `https://maps.googleapis.com/maps/api/place/autocomplete/json?input=${encodeURIComponent(String(input).trim())}&key=${GOOGLE_MAPS_API_KEY}`;
+    const response = await fetch(url);
+    const data = await response.json();
+    return res.json({ success: true, status: data.status, predictions: data.predictions || [] });
+  } catch (e) {
+    return res.status(500).json({ success: false, message: e.message });
+  }
+});
+
+// Google Place Details Proxy
+router.get('/place-details', async (req, res) => {
+  try {
+    const placeId = req.query.placeId || '';
+    if (!placeId) return res.status(400).json({ success: false, message: 'placeId is required' });
+    const GOOGLE_MAPS_API_KEY = 'AIzaSyBukqAGI9NioKWUOgzVs0vXrBOg9DnbwLo';
+    const url = `https://maps.googleapis.com/maps/api/place/details/json?place_id=${encodeURIComponent(String(placeId))}&fields=formatted_address,geometry&key=${GOOGLE_MAPS_API_KEY}`;
+    const response = await fetch(url);
+    const data = await response.json();
+    return res.json({ success: true, status: data.status, result: data.result || null });
+  } catch (e) {
+    return res.status(500).json({ success: false, message: e.message });
+  }
+});
 
 router.use(authRequired);
 router.use(tenantEnforce);
@@ -194,6 +262,45 @@ router.post('/visit', upload.single('clientSignature'), async (req, res) => {
       checkInAddress,
       assignedJobId,
     } = req.body || {};
+
+    
+    // EMPLOYEE CAN ONLY SUBMIT THE FORM TO HIS ASSIGNED LOCATION
+    // If submitting from an assigned job, enforce client location geofence
+    if (assignedJobId) {
+      const aid = Number(assignedJobId);
+      if (Number.isFinite(aid)) {
+        const job = await AssignedJob.findByPk(aid, {
+          include: [{ model: Client, as: 'client' }],
+          transaction: t
+        });
+        if (job) {
+          const targetCoords = await resolveJobCoordinates(job);
+          if (targetCoords) {
+            const curLat = Number(checkInLat);
+            const curLng = Number(checkInLng);
+            if (!Number.isFinite(curLat) || !Number.isFinite(curLng)) {
+              await t.rollback();
+              return res.status(400).json({
+                success: false,
+                message: 'GPS location is required to verify you are at the assigned client location. Please enable location access.'
+              });
+            }
+            const distMeters = haversineMeters(curLat, curLng, targetCoords.lat, targetCoords.lng);
+            const allowedRadius = 300; // 300 meters
+            if (distMeters > allowedRadius) {
+              await t.rollback();
+              const distText = distMeters >= 1000 ? (distMeters / 1000).toFixed(2) + ' km' : Math.round(distMeters) + ' m';
+              return res.status(403).json({
+                success: false,
+                message: 'You are outside the assigned client location (' + distText + ' away). Form can only be submitted at the assigned client location.',
+                distanceMeters: Math.round(distMeters),
+                allowedRadiusMeters: allowedRadius
+              });
+            }
+          }
+        }
+      }
+    }
 
     // If OTP is provided, validate it
     if (clientOtp && phone) {
@@ -524,6 +631,132 @@ router.get('/assigned_jobs', async (req, res) => {
     return res.status(500).json({ success: false, message: 'Failed to load assigned jobs' });
   }
 });
+
+// Self-assigned job by logged-in staff
+const handleCreateSelfAssignedJob = async (req, res) => {
+  try {
+    const orgId = req.tenantOrgAccountId || req.user?.orgAccountId || null;
+    const {
+      clientId,
+      title,
+      description,
+      status,
+      assignedOn,
+      dueDate,
+      clientAddress,
+      clientLat,
+      clientLng,
+    } = req.body || {};
+
+    const normalizedClientId = Number(clientId) || null;
+    const staffUserId = req.user.id;
+    const normalizedDueDate = dueDate ? new Date(dueDate) : null;
+    const now = new Date();
+
+    if (!normalizedClientId) {
+      return res.status(400).json({ success: false, message: 'Client is required' });
+    }
+
+    const duplicateWhere = {
+      clientId: normalizedClientId,
+      staffUserId,
+      status: { [Op.ne]: 'complete' },
+      [Op.or]: [{ dueDate: null }, { dueDate: { [Op.gte]: now } }],
+    };
+    if (orgId) duplicateWhere.orgAccountId = orgId;
+
+    const existing = await AssignedJob.findOne({
+      where: duplicateWhere,
+      order: [['id', 'DESC']],
+    });
+    if (existing) {
+      return res.status(409).json({
+        success: false,
+        message: 'You are already assigned to this client until due date. You can reassign after due date expires or complete current assignment.',
+      });
+    }
+
+    const payload = {
+      clientId: normalizedClientId,
+      staffUserId,
+      title: title ? String(title) : null,
+      description: description ? String(description) : null,
+      status: status && ['pending', 'inprogress', 'complete'].includes(String(status).toLowerCase()) ? String(status).toLowerCase() : 'pending',
+      assignedOn: assignedOn ? new Date(assignedOn) : new Date(),
+      dueDate: normalizedDueDate,
+      clientAddress: clientAddress ? String(clientAddress).slice(0, 255) : null,
+      clientLat: clientLat !== undefined && clientLat !== null ? Number(clientLat) : null,
+      clientLng: clientLng !== undefined && clientLng !== null ? Number(clientLng) : null,
+      isSelfAssigned: true,
+      createdByUserId: staffUserId,
+      orgAccountId: orgId,
+    };
+
+    const row = await AssignedJob.create(payload);
+    const createdWithClient = await AssignedJob.findByPk(row.id, {
+      include: [{ model: Client, as: 'client' }]
+    });
+
+    return res.json({ success: true, assignment: createdWithClient, job: createdWithClient });
+  } catch (e) {
+    console.error('Create self-assigned job error:', e);
+    return res.status(500).json({ success: false, message: 'Failed to create self assigned job' });
+  }
+};
+
+// Update self-assigned job by logged-in staff
+const handleUpdateSelfAssignedJob = async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    const job = await AssignedJob.findByPk(id, { include: [{ model: Client, as: 'client' }] });
+    if (!job || job.staffUserId !== req.user.id) {
+      return res.status(404).json({ success: false, message: 'Job not found' });
+    }
+
+    // Permission check: only self-assigned jobs can be edited by staff
+    if (!job.isSelfAssigned) {
+      return res.status(403).json({
+        success: false,
+        message: 'Admin-assigned jobs cannot be edited. You can only edit self-assigned jobs.',
+      });
+    }
+
+    const {
+      clientId,
+      title,
+      description,
+      status,
+      dueDate,
+      clientAddress,
+      clientLat,
+      clientLng,
+    } = req.body || {};
+
+    const patch = {};
+    if (clientId) patch.clientId = Number(clientId);
+    if (title !== undefined) patch.title = title ? String(title).trim() : null;
+    if (description !== undefined) patch.description = description ? String(description).trim() : null;
+    if (status && ['pending', 'inprogress', 'complete'].includes(String(status).toLowerCase())) {
+      patch.status = String(status).toLowerCase();
+    }
+    if (dueDate !== undefined) patch.dueDate = dueDate ? new Date(dueDate) : null;
+    if (clientAddress !== undefined) patch.clientAddress = clientAddress ? String(clientAddress).slice(0, 255) : null;
+    if (clientLat !== undefined) patch.clientLat = clientLat !== null ? Number(clientLat) : null;
+    if (clientLng !== undefined) patch.clientLng = clientLng !== null ? Number(clientLng) : null;
+
+    await job.update(patch);
+    const updated = await AssignedJob.findByPk(id, { include: [{ model: Client, as: 'client' }] });
+    return res.json({ success: true, job: updated, assignment: updated });
+  } catch (e) {
+    console.error('Update self-assigned job error:', e);
+    return res.status(500).json({ success: false, message: 'Failed to update assigned job' });
+  }
+};
+
+router.post('/assigned-jobs', handleCreateSelfAssignedJob);
+router.post('/assigned_jobs', handleCreateSelfAssignedJob);
+router.put('/assigned-jobs/:id', handleUpdateSelfAssignedJob);
+router.put('/assigned_jobs/:id', handleUpdateSelfAssignedJob);
 
 // Assigned job detail
 router.get('/assigned-jobs/:id', async (req, res) => {

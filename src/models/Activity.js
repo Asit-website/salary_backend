@@ -20,6 +20,9 @@ module.exports = (sequelize) => {
     closedById: { type: DataTypes.BIGINT.UNSIGNED, allowNull: true, field: 'closed_by_id' },
     transferredToId: { type: DataTypes.BIGINT.UNSIGNED, allowNull: true, field: 'transferred_to_id' },
     allocatedById: { type: DataTypes.BIGINT.UNSIGNED, allowNull: true, field: 'allocated_by_id' },
+    jobType: { type: DataTypes.STRING(50), defaultValue: 'ROUTINE', field: 'job_type' },
+    dayRule: { type: DataTypes.STRING(50), defaultValue: 'ALL_DAYS', field: 'day_rule' },
+    batchId: { type: DataTypes.STRING(100), allowNull: true, field: 'batch_id' },
   }, {
     tableName: 'activities',
     underscored: true,

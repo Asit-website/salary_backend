@@ -146,6 +146,7 @@ app.use('/api/webhook/zkteco', require('./src/routes/zktecoWebhook'));
 app.use('/api/biometric/zkteco/webhook', require('./src/routes/zktecoWebhook'));
 app.use('/auth', authRoutes);
 app.use('/kiosk', kioskRoutes);
+app.use('/sales', salesRoutes);
 
 app.use('/admin/letters', letterRoutes);
 app.use('/admin/sales-incentives', salesIncentiveRoutes);
@@ -167,7 +168,6 @@ app.use('/admin/tally', require('./src/routes/tally'));
 app.use('/superadmin/mail', superadminMailRoutes);
 app.use('/superadmin', superadminRoutes);
 app.use('/attendance', attendanceRoutes);
-app.use('/sales', salesRoutes);
 app.use('/leave', leaveRoutes);
 app.use('/leave/weekly-off', weeklyOffRoutes.router);
 app.use('/me', meRoutes);
