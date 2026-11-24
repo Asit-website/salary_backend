@@ -22478,7 +22478,7 @@ router.post("/shifts/templates", async (req, res) => {
       },
     });
 
-    return res.json({ success: true, template: row });
+    return res.json({ success: true, template: created });
   } catch (e) {
     return res
       .status(500)
@@ -29227,7 +29227,7 @@ router.post("/geofence/templates", async (req, res) => {
       },
     });
 
-    return res.json({ success: true, template: row });
+    return res.json({ success: true, template: created });
   } catch (e) {
     return res
       .status(500)
