@@ -16,11 +16,54 @@ module.exports = (sequelize) => {
       hoursPerDay: { type: DataTypes.INTEGER, allowNull: false, defaultValue: 8 },
       // Structured compensation blocks
       // Each is an array of items: { key, label, type: 'fixed'|'percent', valueNumber, meta? }
-      earnings: { type: DataTypes.JSON, allowNull: true, defaultValue: [] },
-      incentives: { type: DataTypes.JSON, allowNull: true, defaultValue: [] },
-      deductions: { type: DataTypes.JSON, allowNull: true, defaultValue: [] },
+      earnings: {
+        type: DataTypes.JSON,
+        allowNull: true,
+        defaultValue: [],
+        get() {
+          const raw = this.getDataValue('earnings');
+          if (typeof raw === 'string') {
+            try { return JSON.parse(raw); } catch (e) { return []; }
+          }
+          return raw || [];
+        }
+      },
+      incentives: {
+        type: DataTypes.JSON,
+        allowNull: true,
+        defaultValue: [],
+        get() {
+          const raw = this.getDataValue('incentives');
+          if (typeof raw === 'string') {
+            try { return JSON.parse(raw); } catch (e) { return []; }
+          }
+          return raw || [];
+        }
+      },
+      deductions: {
+        type: DataTypes.JSON,
+        allowNull: true,
+        defaultValue: [],
+        get() {
+          const raw = this.getDataValue('deductions');
+          if (typeof raw === 'string') {
+            try { return JSON.parse(raw); } catch (e) { return []; }
+          }
+          return raw || [];
+        }
+      },
       // Additional metadata: currency, rounding preferences, notes
-      metadata: { type: DataTypes.JSON, allowNull: true },
+      metadata: {
+        type: DataTypes.JSON,
+        allowNull: true,
+        get() {
+          const raw = this.getDataValue('metadata');
+          if (typeof raw === 'string') {
+            try { return JSON.parse(raw); } catch (e) { return {}; }
+          }
+          return raw || {};
+        }
+      },
       active: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: true },
       orgAccountId: { type: DataTypes.BIGINT.UNSIGNED, allowNull: true, field: 'org_account_id' },
     },

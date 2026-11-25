@@ -202,7 +202,7 @@ async function verifyZktecoWebhookAuth(req) {
   }
 
   try {
-    const masterSetting = await AppSetting.findOne({ where: { key: 'master_zkteco_config' } });
+    const masterSetting = await AppSetting.findOne({ where: { key: 'master_zkteco_config' }, order: [['id', 'DESC']] });
     if (masterSetting && masterSetting.value) {
       const cfg = JSON.parse(masterSetting.value);
       if (cfg.username && cfg.password) {

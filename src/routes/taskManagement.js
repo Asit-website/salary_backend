@@ -1092,8 +1092,12 @@ router.get('/activities/report/pdf', async (req, res) => {
     const { startDate, endDate, status, jobType, userId } = req.query || {};
     const { generateActivityReportPDF } = require('../services/activityPdfService');
 
+    let effectiveOrgId = req.tenantOrgAccountId;
+    if (!effectiveOrgId && req.query.orgId) effectiveOrgId = Number(req.query.orgId);
+    if (!effectiveOrgId && req.headers['x-org-id']) effectiveOrgId = Number(req.headers['x-org-id']);
+
     const result = await generateActivityReportPDF({
-      orgAccountId: req.tenantOrgAccountId,
+      orgAccountId: effectiveOrgId,
       userId: userId ? Number(userId) : null,
       startDate: startDate || null,
       endDate: endDate || null,

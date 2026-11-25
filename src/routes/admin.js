@@ -13,16 +13,21 @@ const exceljs = require("exceljs");
 function getCellValue(cell) {
   if (!cell || cell.value === null || cell.value === undefined) return null;
   const val = cell.value;
-  if (typeof val === "object" && val.text !== undefined)
-    return String(val.text).trim();
-  if (val.richText && Array.isArray(val.richText)) {
-    return val.richText
-      .map((rt) => rt.text || "")
-      .join("")
-      .trim();
+  if (typeof val === "object") {
+    if (val.text !== undefined) return String(val.text).trim();
+    if (val.richText && Array.isArray(val.richText)) {
+      return val.richText
+        .map((rt) => rt.text || "")
+        .join("")
+        .trim();
+    }
+    if (val.formula !== undefined) {
+      if (val.result !== undefined && val.result !== null) {
+        return String(val.result).trim();
+      }
+      return null;
+    }
   }
-  if (val.formula !== undefined && val.result !== undefined)
-    return String(val.result).trim();
   return String(val).trim();
 }
 
@@ -14566,6 +14571,18 @@ router.post(
   },
 );
 
+function getColumnLetter(colIndex) {
+  let temp, letter = '';
+  while (colIndex > 0) {
+    temp = (colIndex - 1) % 26;
+    letter = String.fromCharCode(temp + 65) + letter;
+    colIndex = Math.floor((colIndex - temp - 1) / 26);
+  }
+  return letter;
+}
+
+const stripParens = (s) => String(s || '').replace(/\s*\([^)]*\)\s*$/, '').trim().toUpperCase();
+
 router.get("/staff/import-template", requireStaffTabAccess("staff_management_tab"), async (req, res) => {
   try {
     const orgId = requireOrg(req, res);
@@ -14603,21 +14620,53 @@ router.get("/staff/import-template", requireStaffTabAccess("staff_management_tab
     }
 
     const autoCalcCols = [];
+    const percentFormulaCols = [];
+
     if (tpl) {
-      const earnings = typeof tpl.earnings === "string" ? JSON.parse(tpl.earnings) : tpl.earnings || [];
-      const allDeductions = typeof tpl.deductions === "string" ? JSON.parse(tpl.deductions) : tpl.deductions || [];
+      let meta = tpl.metadata;
+      if (typeof meta === "string") {
+        try { meta = JSON.parse(meta); } catch (_) { meta = {}; }
+      }
+      let earnings = typeof tpl.earnings === "string" ? JSON.parse(tpl.earnings) : tpl.earnings || [];
+      if (!Array.isArray(earnings)) earnings = [];
+      let allDeductions = typeof tpl.deductions === "string" ? JSON.parse(tpl.deductions) : tpl.deductions || [];
+      if (!Array.isArray(allDeductions)) allDeductions = [];
+
+      const isPercentTpl = meta?.calculationType === "percentage" || earnings.some(e => e?.type === "percent" || e?.type === "percentage");
+
       const deductions = allDeductions.filter(d => {
         const keyUpper = String(d.key || "").toUpperCase();
         const labelLower = String(d.label || "").toLowerCase();
         const isEmployer = keyUpper.includes("EMPLOYER") || labelLower.includes("employer");
         return !isEmployer;
       });
-      
-      let currentCol = shiftTemplate ? 8 : 7;
-      earnings.forEach(e => {
-        STAFF_IMPORT_HEADERS.push(`Earning: ${e.label || e.key}`);
+
+      // Find Basic Salary column index
+      let basicEarningsIdx = earnings.findIndex(e => {
+        const k = String(e.key || e.label || "").toUpperCase().replace(/[\s_]/g, "");
+        return k === "BASICSALARY";
+      });
+      if (basicEarningsIdx === -1) basicEarningsIdx = 0;
+
+      const earningsStartCol = shiftTemplate ? 8 : 7;
+      const basicColIdx = earningsStartCol + basicEarningsIdx;
+      const basicColLetter = getColumnLetter(basicColIdx);
+
+      let currentCol = earningsStartCol;
+      earnings.forEach((e, idx) => {
+        const isBasic = idx === basicEarningsIdx;
+        const isPct = isPercentTpl && !isBasic && (e.type === "percent" || e.type === "percentage");
+        const pctVal = Number(e.valueNumber || 0);
+
+        if (isPct && pctVal > 0) {
+          STAFF_IMPORT_HEADERS.push(`Earning: ${e.label || e.key} (${pctVal}%)`);
+          percentFormulaCols.push({ colIdx: currentCol, percent: pctVal, basicColLetter });
+        } else {
+          STAFF_IMPORT_HEADERS.push(`Earning: ${e.label || e.key}`);
+        }
         currentCol++;
       });
+
       deductions.forEach(d => {
         const keyUpper = String(d.key || "").toUpperCase();
         const isPF = keyUpper.includes("PROVIDENT_FUND") || keyUpper === "PF";
@@ -14652,18 +14701,43 @@ router.get("/staff/import-template", requireStaffTabAccess("staff_management_tab
     }
 
     if (tpl) {
-      const earnings = typeof tpl.earnings === "string" ? JSON.parse(tpl.earnings) : tpl.earnings || [];
-      const allDeductions = typeof tpl.deductions === "string" ? JSON.parse(tpl.deductions) : tpl.deductions || [];
+      let meta = tpl.metadata;
+      if (typeof meta === "string") {
+        try { meta = JSON.parse(meta); } catch (_) { meta = {}; }
+      }
+      let earnings = typeof tpl.earnings === "string" ? JSON.parse(tpl.earnings) : tpl.earnings || [];
+      if (!Array.isArray(earnings)) earnings = [];
+      let allDeductions = typeof tpl.deductions === "string" ? JSON.parse(tpl.deductions) : tpl.deductions || [];
+      if (!Array.isArray(allDeductions)) allDeductions = [];
+
+      const isPercentTpl = meta?.calculationType === "percentage" || earnings.some(e => e?.type === "percent" || e?.type === "percentage");
+
       const deductions = allDeductions.filter(d => {
         const keyUpper = String(d.key || "").toUpperCase();
         const labelLower = String(d.label || "").toLowerCase();
         const isEmployer = keyUpper.includes("EMPLOYER") || labelLower.includes("employer");
         return !isEmployer;
       });
+
       let colIdx = shiftTemplate ? 7 : 6;
-      earnings.forEach(() => {
-        sampleRow[`col_${colIdx++}`] = 10000;
+      const sampleBasicSalary = 25000;
+
+      earnings.forEach((e) => {
+        const k = String(e.key || e.label || "").toUpperCase().replace(/[\s_]/g, "");
+        const isBasic = k === "BASICSALARY";
+        const isPct = isPercentTpl && !isBasic && (e.type === "percent" || e.type === "percentage");
+        const pctVal = Number(e.valueNumber || 0);
+
+        if (isBasic) {
+          sampleRow[`col_${colIdx++}`] = sampleBasicSalary;
+        } else if (isPct && pctVal > 0) {
+          const calculatedVal = Math.round(sampleBasicSalary * (pctVal / 100) * 100) / 100;
+          sampleRow[`col_${colIdx++}`] = calculatedVal;
+        } else {
+          sampleRow[`col_${colIdx++}`] = Number(e.valueNumber || 10000) || 10000;
+        }
       });
+
       deductions.forEach(d => {
         const keyUpper = String(d.key || "").toUpperCase();
         const isPF = keyUpper.includes("PROVIDENT_FUND") || keyUpper === "PF";
@@ -14673,12 +14747,27 @@ router.get("/staff/import-template", requireStaffTabAccess("staff_management_tab
         if (isPF || isESI || isPT) {
           sampleRow[`col_${colIdx++}`] = "Auto-Calculated";
         } else {
-          sampleRow[`col_${colIdx++}`] = 500;
+          sampleRow[`col_${colIdx++}`] = Number(d.valueNumber || 0) || 500;
         }
       });
     }
 
     worksheet.addRow(sampleRow);
+
+    // Apply formulas to percentage columns
+    percentFormulaCols.forEach(({ colIdx, percent, basicColLetter }) => {
+      const sampleResult = Math.round(25000 * (percent / 100) * 100) / 100;
+      worksheet.getCell(2, colIdx).value = {
+        formula: `ROUND(${basicColLetter}2 * ${percent} / 100, 2)`,
+        result: sampleResult
+      };
+
+      for (let r = 3; r <= 200; r++) {
+        worksheet.getCell(r, colIdx).value = {
+          formula: `IF(${basicColLetter}${r}>0, ROUND(${basicColLetter}${r} * ${percent} / 100, 2), "")`
+        };
+      }
+    });
 
     // Apply data validation to auto-calculated columns for rows 2 to 200
     autoCalcCols.forEach(colIdx => {
@@ -14795,9 +14884,9 @@ router.post("/staff/import", requireStaffTabAccess("staff_management_tab"), uplo
         tEarnings.forEach(e => tHeaders.push(`Earning: ${e.label || e.key}`));
         tDeductions.forEach(d => tHeaders.push(`Deduction: ${d.label || d.key}`));
 
-        const tExpected = tHeaders.map(h => String(h).trim());
+        const tExpected = tHeaders.map(h => stripParens(h));
         if (tExpected.length === allUploadedHeaders.length) {
-          const match = tExpected.every((h, idx) => allUploadedHeaders[idx] === h);
+          const match = tExpected.every((h, idx) => stripParens(allUploadedHeaders[idx]) === h);
           if (match) {
             tpl = t;
             break;
@@ -14838,9 +14927,11 @@ router.post("/staff/import", requireStaffTabAccess("staff_management_tab"), uplo
     }
 
     const expectedHeadersClean = expectedHeaders.map((h) => String(h).trim());
-    const headersMatch = expectedHeadersClean.every(
-      (h, idx) => allUploadedHeaders[idx] === h,
-    );
+    const headersMatch = expectedHeadersClean.every((h, idx) => {
+      const up = allUploadedHeaders[idx];
+      if (!up) return false;
+      return stripParens(h) === stripParens(up) || String(h).trim().toUpperCase() === String(up).trim().toUpperCase();
+    });
 
     let hasExtraHeaders = false;
     if (!tpl) {
@@ -14858,7 +14949,12 @@ router.post("/staff/import", requireStaffTabAccess("staff_management_tab"), uplo
 
     const headerToColIndex = {};
     allUploadedHeaders.forEach((h, idx) => {
-      headerToColIndex[h.toUpperCase()] = idx + 1;
+      const raw = String(h || "").trim().toUpperCase();
+      headerToColIndex[raw] = idx + 1;
+      const stripped = stripParens(raw);
+      if (stripped && !headerToColIndex[stripped]) {
+        headerToColIndex[stripped] = idx + 1;
+      }
     });
 
     const results = {
@@ -15006,11 +15102,45 @@ router.post("/staff/import", requireStaffTabAccess("staff_management_tab"), uplo
           let totalEarnings = 0;
           let totalDeductions = 0;
 
+          let meta = tpl.metadata;
+          if (typeof meta === "string") {
+            try { meta = JSON.parse(meta); } catch (_) { meta = {}; }
+          }
+          const isPercentTpl = meta?.calculationType === "percentage" || (Array.isArray(earnings) && earnings.some(e => e?.type === "percent" || e?.type === "percentage"));
+
+          // Extract basic salary from row first
+          let rowBasicSalary = 0;
+          const basicItem = earnings.find(e => {
+            const k = String(e.key || e.label || "").toUpperCase().replace(/[\s_]/g, "");
+            return k === "BASICSALARY";
+          });
+          if (basicItem) {
+            const basicH = `EARNING: ${String(basicItem.label || basicItem.key).toUpperCase()}`;
+            const basicCol = headerToColIndex[basicH] || headerToColIndex[stripParens(basicH)];
+            if (basicCol) {
+              rowBasicSalary = Number(getCellValue(row.getCell(basicCol)) || 0);
+            }
+          }
+
           earnings.forEach((item) => {
             const fieldName = item.key;
-            const headerName = `EARNING: ${String(item.label || item.key).toUpperCase()}`;
-            const colIdx = headerToColIndex[headerName];
-            const fieldValue = colIdx ? Number(getCellValue(row.getCell(colIdx)) || 0) : Number(item.valueNumber || 0);
+            const rawHeader = `EARNING: ${String(item.label || item.key).toUpperCase()}`;
+            const colIdx = headerToColIndex[rawHeader] || headerToColIndex[stripParens(rawHeader)];
+            const rawVal = colIdx ? getCellValue(row.getCell(colIdx)) : null;
+            let fieldValue = rawVal !== null && rawVal !== "" && !isNaN(Number(rawVal))
+              ? Number(rawVal)
+              : 0;
+
+            const isPct = isPercentTpl && (item.type === "percent" || item.type === "percentage");
+            const pctVal = Number(item.valueNumber || 0);
+
+            if (isPct && pctVal > 0 && rowBasicSalary > 0) {
+              if (fieldValue <= 0) {
+                fieldValue = Math.round(rowBasicSalary * (pctVal / 100) * 100) / 100;
+              }
+            } else if (fieldValue <= 0 && item.valueNumber && !isPct) {
+              fieldValue = Number(item.valueNumber || 0);
+            }
 
             salaryValues.earnings[fieldName] = fieldValue;
             const attr = toUserAttr(fieldName);
@@ -15020,9 +15150,12 @@ router.post("/staff/import", requireStaffTabAccess("staff_management_tab"), uplo
 
           deductions.forEach((item) => {
             const fieldName = item.key;
-            const headerName = `DEDUCTION: ${String(item.label || item.key).toUpperCase()}`;
-            const colIdx = headerToColIndex[headerName];
-            const fieldValue = colIdx ? Number(getCellValue(row.getCell(colIdx)) || 0) : Number(item.valueNumber || 0);
+            const rawHeader = `DEDUCTION: ${String(item.label || item.key).toUpperCase()}`;
+            const colIdx = headerToColIndex[rawHeader] || headerToColIndex[stripParens(rawHeader)];
+            const rawVal = colIdx ? getCellValue(row.getCell(colIdx)) : null;
+            const fieldValue = rawVal !== null && rawVal !== "" && !isNaN(Number(rawVal))
+              ? Number(rawVal)
+              : Number(item.valueNumber || 0);
 
             salaryValues.deductions[fieldName] = fieldValue;
             const attr = toUserAttr(fieldName);
@@ -15054,8 +15187,18 @@ router.post("/staff/import", requireStaffTabAccess("staff_management_tab"), uplo
               pfVal = Number(pfRule.valueNumber || 0);
             } else if (pfRule.type === 'percent') {
               const baseAttr = pfRule.meta?.basedOn || 'basic_salary';
-              const baseVal = salaryValues.earnings[baseAttr] || salaryValues.earnings['basic_salary'] || 0;
-              pfVal = Number((baseVal * (pfRule.valueNumber || 12) / 100).toFixed(2));
+              const baseAttrNorm = String(baseAttr).toUpperCase().replace(/[\s_]/g, "");
+              let baseVal = 0;
+              for (const [ek, ev] of Object.entries(salaryValues.earnings)) {
+                if (String(ek).toUpperCase().replace(/[\s_]/g, "") === baseAttrNorm) {
+                  baseVal = Number(ev || 0);
+                  break;
+                }
+              }
+              if (baseVal === 0) {
+                baseVal = rowBasicSalary || Number(userSalaryUpdate.basicSalary || 0);
+              }
+              pfVal = Number((baseVal * (Number(pfRule.valueNumber || 12) / 100)).toFixed(2));
             }
             salaryValues.deductions[pfRule.key] = pfVal;
             const attr = toUserAttr(pfRule.key);
@@ -16220,8 +16363,13 @@ router.post(
 // Download or view Consolidated Expense Summary Report PDF by Admin
 router.get("/expenses/report/pdf", async (req, res) => {
   try {
-    const orgId = requireOrg(req, res);
-    if (!orgId) return;
+    let orgId = req.tenantOrgAccountId;
+    if (!orgId && req.query.orgId) orgId = Number(req.query.orgId);
+    if (!orgId && req.headers['x-org-id']) orgId = Number(req.headers['x-org-id']);
+    if (!orgId) {
+      orgId = requireOrg(req, res);
+      if (!orgId) return;
+    }
 
     const { startDate, endDate, status, category, userId } = req.query || {};
     const { generateExpenseReportPDF } = require("../services/expensePdfService");
@@ -16256,8 +16404,13 @@ router.get("/expenses/report/pdf", async (req, res) => {
 // Download or view Expense Claim PDF by Admin
 router.get("/expenses/:claimId/pdf", async (req, res) => {
   try {
-    const orgId = requireOrg(req, res);
-    if (!orgId) return;
+    let orgId = req.tenantOrgAccountId;
+    if (!orgId && req.query.orgId) orgId = Number(req.query.orgId);
+    if (!orgId && req.headers['x-org-id']) orgId = Number(req.headers['x-org-id']);
+    if (!orgId) {
+      orgId = requireOrg(req, res);
+      if (!orgId) return;
+    }
 
     const id = Number(req.params.claimId);
     if (!id) {

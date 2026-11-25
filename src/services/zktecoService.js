@@ -477,7 +477,7 @@ class ZktecoService {
         if (!config || !config.url) {
             try {
                 const { AppSetting } = require('../models');
-                const masterSetting = await AppSetting.findOne({ where: { key: 'master_zkteco_config' } });
+                const masterSetting = await AppSetting.findOne({ where: { key: 'master_zkteco_config' }, order: [['id', 'DESC']] });
                 if (masterSetting && masterSetting.value) {
                     config = JSON.parse(masterSetting.value);
                 }

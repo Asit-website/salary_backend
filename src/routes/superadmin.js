@@ -2744,7 +2744,10 @@ async function getMasterZktecoConfig() {
     companyId: ''
   };
   try {
-    const setting = await AppSetting.findOne({ where: { key: 'master_zkteco_config', orgAccountId: null } });
+    const setting = await AppSetting.findOne({
+      where: { key: 'master_zkteco_config', orgAccountId: null },
+      order: [['id', 'DESC']]
+    });
     if (!setting || !setting.value) return DEFAULT_MASTER;
     const parsed = typeof setting.value === 'string' ? JSON.parse(setting.value) : setting.value;
     return { ...DEFAULT_MASTER, ...parsed };
@@ -2825,19 +2828,60 @@ router.put('/zkteco/master-config', async (req, res) => {
       companyId: companyId !== undefined ? companyId : current.companyId
     };
 
-    await AppSetting.upsert({
-      key: 'master_zkteco_config',
-      orgAccountId: null,
-      value: JSON.stringify(updated)
+    let existing = await AppSetting.findOne({
+      where: { key: 'master_zkteco_config', orgAccountId: null },
+      order: [['id', 'DESC']]
     });
+
+    if (existing) {
+      await existing.update({ value: JSON.stringify(updated) });
+      // Clean up any older duplicate rows
+      const { Op } = require('sequelize');
+      await AppSetting.destroy({
+        where: {
+          key: 'master_zkteco_config',
+          orgAccountId: null,
+          id: { [Op.ne]: existing.id }
+        }
+      });
+    } else {
+      await AppSetting.create({
+        key: 'master_zkteco_config',
+        orgAccountId: null,
+        value: JSON.stringify(updated)
+      });
+    }
+
+    // Propagate the updated credentials and password to all organization rules in attendance_automation_rules
+    const allZkRules = await AttendanceAutomationRule.findAll({
+      where: { key: 'zkteco_integration' }
+    });
+
+    for (const rule of allZkRules) {
+      let cfg = {};
+      if (rule.config) {
+        try {
+          cfg = typeof rule.config === 'string' ? JSON.parse(rule.config) : rule.config;
+        } catch (_) {
+          cfg = {};
+        }
+      }
+      cfg.url = updated.url;
+      cfg.username = updated.username;
+      cfg.password = updated.password;
+      if (updated.companyId !== undefined) {
+        cfg.companyId = updated.companyId;
+      }
+      await rule.update({ config: JSON.stringify(cfg) });
+    }
 
     return res.json({
       success: true,
-      message: 'Master ZKTeco configuration saved successfully',
-      masterConfig: { ...updated, password: '••••••••' }
+      message: 'Master ZKTeco configuration saved and synced to all organizations successfully',
+      masterConfig: { ...updated, password: finalPassword }
     });
   } catch (e) {
-    return res.status(500).json({ success: false, message: 'Failed to save master configuration' });
+    return res.status(500).json({ success: false, message: 'Failed to save master configuration: ' + e.message });
   }
 });
 

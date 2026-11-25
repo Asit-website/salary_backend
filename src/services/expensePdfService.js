@@ -95,9 +95,11 @@ async function generateExpenseClaimPDF(claimId, requestedUserId = null, orgAccou
 
   if (orgId) {
     try {
-      const orgInfo = await OrgBusinessInfo.findOne({ where: { orgAccountId: orgId } });
       const orgAcc = await OrgAccount.findByPk(orgId);
-      companyName = orgInfo?.companyName || orgAcc?.companyName || orgAcc?.name || 'ThinkTech Solutions';
+      const orgInfo = await OrgBusinessInfo.findOne({ where: { orgAccountId: orgId } });
+      const { OrgBrand } = require('../models');
+      const orgBrand = await OrgBrand.findOne({ where: { orgAccountId: orgId } });
+      companyName = orgAcc?.name || orgInfo?.companyName || orgBrand?.displayName || 'ThinkTech Solutions';
       companyAddress = [orgInfo?.address, orgInfo?.city, orgInfo?.state, orgInfo?.pincode].filter(Boolean).join(', ');
       companyGst = orgInfo?.gstin || '';
       companyPhone = orgInfo?.phone || orgAcc?.phone || '';
@@ -685,7 +687,10 @@ async function generateExpenseReportPDF({ userId, orgAccountId = null, startDate
     include: [{ model: StaffProfile, as: 'profile' }]
   }) : null;
 
-  const orgId = orgAccountId || user?.orgAccountId;
+  let orgId = orgAccountId || user?.orgAccountId;
+  if (!orgId && expenses.length > 0 && expenses[0].orgAccountId) {
+    orgId = expenses[0].orgAccountId;
+  }
   let companyName = 'ThinkTech Solutions';
   let companyAddress = '';
   let companyGst = '';
@@ -694,9 +699,11 @@ async function generateExpenseReportPDF({ userId, orgAccountId = null, startDate
 
   if (orgId) {
     try {
-      const orgInfo = await OrgBusinessInfo.findOne({ where: { orgAccountId: orgId } });
       const orgAcc = await OrgAccount.findByPk(orgId);
-      companyName = orgInfo?.companyName || orgAcc?.companyName || orgAcc?.name || 'ThinkTech Solutions';
+      const orgInfo = await OrgBusinessInfo.findOne({ where: { orgAccountId: orgId } });
+      const { OrgBrand } = require('../models');
+      const orgBrand = await OrgBrand.findOne({ where: { orgAccountId: orgId } });
+      companyName = orgAcc?.name || orgInfo?.companyName || orgBrand?.displayName || 'ThinkTech Solutions';
       companyAddress = [orgInfo?.address, orgInfo?.city, orgInfo?.state, orgInfo?.pincode].filter(Boolean).join(', ');
       companyGst = orgInfo?.gstin || '';
       companyPhone = orgInfo?.phone || orgAcc?.phone || '';

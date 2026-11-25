@@ -30,6 +30,43 @@ function getDayRuleFullLabel(rule) {
   return rule;
 }
 
+function isActivityDue(item) {
+  if (!item) return false;
+  if (item.status === 'DONE' || item.isClosed) return false;
+  const taskDate = item.date || item.turnAroundDate;
+  if (!taskDate) return false;
+
+  try {
+    const now = new Date();
+    const pad = (n) => String(n).padStart(2, '0');
+    const todayStr = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
+    const itemDateStr = typeof taskDate === 'string'
+      ? taskDate.slice(0, 10)
+      : `${taskDate.getFullYear()}-${pad(taskDate.getMonth() + 1)}-${pad(taskDate.getDate())}`;
+
+    if (itemDateStr < todayStr) return true;
+
+    if (itemDateStr === todayStr && item.turnAroundTime) {
+      const parts = String(item.turnAroundTime).trim().split(' ');
+      if (parts.length === 2) {
+        const [time, period] = parts;
+        let [hours, minutes] = time.split(':').map(Number);
+        if (period.toUpperCase() === 'PM' && hours < 12) hours += 12;
+        if (period.toUpperCase() === 'AM' && hours === 12) hours = 0;
+
+        const currentHours = now.getHours();
+        const currentMinutes = now.getMinutes();
+        if (currentHours > hours || (currentHours === hours && currentMinutes > minutes)) {
+          return true;
+        }
+      }
+    }
+    return false;
+  } catch (_) {
+    return false;
+  }
+}
+
 /**
  * Generate high-quality corporate PDF for Activities & Tasks
  * @param {Object} options
@@ -37,7 +74,7 @@ function getDayRuleFullLabel(rule) {
  * @param {number|null} options.userId - If provided, scopes to specific staff
  * @param {string|null} options.startDate - YYYY-MM-DD
  * @param {string|null} options.endDate - YYYY-MM-DD
- * @param {string|null} options.status - SCHEDULE, IN_PROGRESS, REVIEW, DONE
+ * @param {string|null} options.status - SCHEDULE, IN_PROGRESS, REVIEW, DONE, DUE
  * @param {string|null} options.jobType - ROUTINE, SINGLE
  */
 async function generateActivityReportPDF({
@@ -61,7 +98,17 @@ async function generateActivityReportPDF({
   }
 
   if (status && status !== 'ALL') {
-    where.status = status;
+    if (status === 'DUE') {
+      where.status = { [Op.ne]: 'DONE' };
+      where[Op.and] = [
+        ...(where[Op.and] || []),
+        { [Op.or]: [{ isClosed: false }, { isClosed: null }] }
+      ];
+    } else if (status === 'CLOSED') {
+      where.isClosed = true;
+    } else {
+      where.status = status;
+    }
   }
 
   if (jobType && jobType !== 'ALL') {
@@ -69,7 +116,7 @@ async function generateActivityReportPDF({
   }
 
   // Fetch activities with related models
-  const activities = await Activity.findAll({
+  let activities = await Activity.findAll({
     where,
     include: [
       {
@@ -94,6 +141,23 @@ async function generateActivityReportPDF({
     order: [['date', 'ASC'], ['id', 'ASC']]
   });
 
+  if (status === 'DUE') {
+    activities = activities.filter(a => isActivityDue(a));
+  } else if (status === 'CLOSED') {
+    activities = activities.filter(a => !!a.isClosed);
+  }
+
+  // If orgAccountId is missing, infer from userId or activities
+  if (!orgAccountId && userId) {
+    try {
+      const u = await User.findByPk(userId);
+      if (u && u.orgAccountId) orgAccountId = u.orgAccountId;
+    } catch (_) {}
+  }
+  if (!orgAccountId && activities.length > 0 && activities[0].orgAccountId) {
+    orgAccountId = activities[0].orgAccountId;
+  }
+
   // Fetch company info
   let companyName = 'ThinkTech Software Solutions';
   let companyAddress = '';
@@ -103,9 +167,11 @@ async function generateActivityReportPDF({
 
   if (orgAccountId) {
     try {
-      const orgInfo = await OrgBusinessInfo.findOne({ where: { orgAccountId } });
       const orgAcc = await OrgAccount.findByPk(orgAccountId);
-      companyName = orgInfo?.companyName || orgAcc?.companyName || orgAcc?.name || 'ThinkTech Software Solutions';
+      const orgInfo = await OrgBusinessInfo.findOne({ where: { orgAccountId } });
+      const { OrgBrand } = require('../models');
+      const orgBrand = await OrgBrand.findOne({ where: { orgAccountId } });
+      companyName = orgAcc?.name || orgInfo?.companyName || orgBrand?.displayName || 'ThinkTech Software Solutions';
       companyAddress = [orgInfo?.address, orgInfo?.city, orgInfo?.state, orgInfo?.pincode].filter(Boolean).join(', ');
       companyGst = orgInfo?.gstin || '';
       companyPhone = orgInfo?.phone || orgAcc?.phone || '';
@@ -476,6 +542,7 @@ async function generateActivityReportPDF({
         const transName = a.transferredTo?.profile?.name || a.transferredTo?.name || null;
 
         const isRoutine = a.jobType === 'ROUTINE' || !!a.dayRule;
+        const isDue = isActivityDue(a);
         const statusBadgeClass =
           a.status === 'DONE' ? 'badge-done' :
           a.status === 'IN_PROGRESS' ? 'badge-progress' :
@@ -514,6 +581,11 @@ async function generateActivityReportPDF({
             <span class="badge ${statusBadgeClass}">
               ${a.status}
             </span>
+            ${isDue ? `
+            <div style="margin-top: 3px;">
+              <span class="badge" style="background: #fee2e2; color: #b91c1c; border: 1px solid #fca5a5;">DUE</span>
+            </div>
+            ` : ''}
           </td>
           <td style="font-size: 9px; color: #475467;">
             ${allocName}

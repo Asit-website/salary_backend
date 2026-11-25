@@ -10521,3 +10521,7 @@
 [Admin-Bonus] SKIP: User 195, Rule Active=true, RuleMonth=2026-07, TargetMonth=2026-11
 [2026-11-20T06:22:41.610Z] [Late-Dbg] User 196 Final: LateCount=0, Amt=0, Days=0
 [Admin-Bonus] SKIP: User 196, Rule Active=true, RuleMonth=2026-07, TargetMonth=2026-11
+[2026-11-24T11:26:28.597Z] [Late-Dbg] User 197 Final: LateCount=0, Amt=0, Days=0
+[2026-11-24T11:26:28.650Z] [Late-Dbg] User 198 Final: LateCount=0, Amt=0, Days=0
+[2026-11-24T11:26:28.685Z] [Late-Dbg] User 199 Final: LateCount=0, Amt=0, Days=0
+[2026-11-24T11:26:28.719Z] [Late-Dbg] User 200 Final: LateCount=0, Amt=0, Days=0

@@ -26,11 +26,6 @@ async function continuousVerify(req, res, next) {
       if (!org) {
         return res.status(403).json({ success: false, message: 'Organization not found' });
       }
-      if (org.status !== 'ACTIVE') {
-        return res.status(403).json({ success: false, message: 'Organization is disabled' });
-      }
-
-      // 3. Verify Subscription plan is not expired (Skip for superadmins and channel partners)
       let perms = dbUser.permissions;
       if (typeof perms === 'string') {
         try { perms = JSON.parse(perms); } catch (_) {}
@@ -38,6 +33,11 @@ async function continuousVerify(req, res, next) {
       const isSuper = dbUser.role === 'superadmin' || role === 'superadmin' || (perms && perms.superadmin_access === true);
       const isPartner = dbUser.role === 'channel_partner' || role === 'channel_partner';
 
+      if (org.status !== 'ACTIVE' && !isSuper) {
+        return res.status(403).json({ success: false, message: 'Organization is disabled' });
+      }
+
+      // 3. Verify Subscription plan is not expired (Skip for superadmins and channel partners)
       if (!isSuper && !isPartner) {
         const sub = await Subscription.findOne({
           where: { orgAccountId: org.id, status: 'ACTIVE' },
