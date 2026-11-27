@@ -11,6 +11,7 @@ module.exports = (sequelize) => {
       orderDate: { type: DataTypes.DATE, allowNull: false },
       paymentMethod: { type: DataTypes.STRING(20), allowNull: true },
       remarks: { type: DataTypes.TEXT, allowNull: true },
+      dealerName: { type: DataTypes.STRING(255), allowNull: true, field: 'dealer_name' },
       proofUrl: { type: DataTypes.STRING(255), allowNull: true },
       checkInLat: { type: DataTypes.DECIMAL(10, 7), allowNull: true },
       checkInLng: { type: DataTypes.DECIMAL(10, 7), allowNull: true },

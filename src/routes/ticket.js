@@ -169,4 +169,48 @@ router.get('/staff', async (req, res) => {
     }
 });
 
+// Export Tickets Report as PDF
+router.get('/report/pdf', async (req, res) => {
+  try {
+    const { startDate, endDate, status, priority, search, userId } = req.query || {};
+    const { generateTicketsReportPDF } = require('../services/meetingTicketPdfService');
+
+    const isAdmin = req.user.role === 'admin' || req.user.role === 'superadmin';
+    let targetUserId = req.user.id;
+    if (isAdmin) {
+      targetUserId = userId ? Number(userId) : null;
+    }
+
+    let effectiveOrgId = req.tenantOrgAccountId || req.user.orgAccountId;
+    if (!effectiveOrgId && req.query.orgId) effectiveOrgId = Number(req.query.orgId);
+    if (!effectiveOrgId && req.headers['x-org-id']) effectiveOrgId = Number(req.headers['x-org-id']);
+
+    const result = await generateTicketsReportPDF({
+      orgAccountId: effectiveOrgId,
+      userId: targetUserId,
+      startDate: startDate || null,
+      endDate: endDate || null,
+      status: status || null,
+      priority: priority || null,
+      search: search || null
+    });
+
+    if (!result || !result.pdfBuffer) {
+      return res.status(404).json({ success: false, message: 'Failed to generate tickets PDF' });
+    }
+
+    const isDownload = req.query.download === '1' || req.query.download === 'true';
+    const disposition = isDownload ? 'attachment' : 'inline';
+    const filename = `Tickets_Report_${new Date().toISOString().slice(0, 10)}.pdf`;
+
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `${disposition}; filename="${filename}"`);
+    res.setHeader('Content-Length', result.pdfBuffer.length);
+    return res.end(result.pdfBuffer);
+  } catch (err) {
+    console.error('Error generating tickets report PDF:', err);
+    return res.status(500).json({ success: false, message: 'Failed to generate tickets report PDF' });
+  }
+});
+
 module.exports = router;

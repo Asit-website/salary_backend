@@ -22,6 +22,11 @@ const {
   OrgAccount,
   User,
   ClientAssignment,
+  StaffProfile,
+  Role,
+  Permission,
+  Badge,
+  BadgePermission,
 } = require('../models');
 
 const router = express.Router();
@@ -152,6 +157,65 @@ router.use((req, res, next) => {
   next();
 });
 
+// Get staff who have sales access permission (for admin visit & order creation)
+router.get('/sales-staff', async (req, res) => {
+  try {
+    const orgAccountId = req.tenantOrgAccountId || req.user?.orgAccountId;
+    if (!orgAccountId) return res.status(403).json({ success: false, message: 'No organization in context' });
+
+    const allStaff = await User.findAll({
+      where: { orgAccountId, role: 'staff', active: true },
+      include: [
+        { model: StaffProfile, as: 'profile', attributes: ['name', 'phone', 'department'] },
+        {
+          model: Role,
+          as: 'roles',
+          through: { attributes: [] },
+          include: [{ model: Permission, as: 'permissions', through: { attributes: [] } }]
+        },
+        {
+          model: Badge,
+          as: 'badges',
+          where: { isActive: true },
+          required: false,
+          through: { where: { isActive: true }, attributes: [] },
+          include: [{ model: BadgePermission, as: 'permissions' }]
+        }
+      ],
+      order: [[{ model: StaffProfile, as: 'profile' }, 'name', 'ASC']]
+    });
+
+    const salesStaff = allStaff.filter(u => {
+      // 1. Role permissions
+      const hasRoleSale = (u.roles || []).some(r =>
+        (r.permissions || []).some(p => p.name === 'sales_access' || p.name === 'sales_tab')
+      );
+      // 2. Badge permissions
+      const hasBadgeSale = (u.badges || []).some(b =>
+        (b.permissions || []).some(p => p.permissionKey === 'sales_tab' || p.permissionKey === 'sales_access')
+      );
+      // 3. User direct permissions
+      let perms = u.permissions;
+      if (typeof perms === 'string') { try { perms = JSON.parse(perms); } catch (_) {} }
+      const hasDirectPerm = perms && (perms.sales_access || perms.sales_tab || perms.sales);
+
+      return hasRoleSale || hasBadgeSale || hasDirectPerm;
+    });
+
+    const list = salesStaff.map(u => ({
+      id: u.id,
+      name: u.profile?.name || u.phone || `Staff #${u.id}`,
+      phone: u.phone || u.profile?.phone || '',
+      department: u.profile?.department || ''
+    }));
+
+    return res.json({ success: true, staff: list });
+  } catch (err) {
+    console.error('Failed to get sales staff:', err);
+    return res.status(500).json({ success: false, message: 'Failed to fetch sales staff' });
+  }
+});
+
 // Order product options for the organization
 router.get('/order-products', async (req, res) => {
   try {
@@ -261,7 +325,17 @@ router.post('/visit', upload.single('clientSignature'), async (req, res) => {
       checkInAltitude,
       checkInAddress,
       assignedJobId,
+      staffUserId,
     } = req.body || {};
+
+    const isAdmin = req.user?.role === 'admin' || req.user?.role === 'superadmin';
+    let effectiveUserId = req.user.id;
+    if (isAdmin && staffUserId) {
+      const parsedStaffId = Number(staffUserId);
+      if (Number.isFinite(parsedStaffId)) {
+        effectiveUserId = parsedStaffId;
+      }
+    }
 
     
     // EMPLOYEE CAN ONLY SUBMIT THE FORM TO HIS ASSIGNED LOCATION
@@ -344,7 +418,7 @@ router.post('/visit', upload.single('clientSignature'), async (req, res) => {
     const hasValidGeo = Number.isFinite(parsedCheckInLat) && Number.isFinite(parsedCheckInLng);
 
     const visit = await SalesVisit.create({
-      userId: req.user.id,
+      userId: effectiveUserId,
       visitDate: visitDate ? new Date(visitDate) : new Date(),
       salesPerson: salesPerson || null,
       visitType: visitType || null,
@@ -451,9 +525,18 @@ router.post('/orders', upload.single('proof'), async (req, res) => {
     const assignedJobId = body.assignedJobId ? Number(body.assignedJobId) : null;
     let clientId = body.clientId ? Number(body.clientId) : null;
 
+    const isAdmin = req.user?.role === 'admin' || req.user?.role === 'superadmin';
+    let effectiveOrderUserId = req.user.id;
+    if (isAdmin && body.staffUserId) {
+      const parsedStaffId = Number(body.staffUserId);
+      if (Number.isFinite(parsedStaffId)) {
+        effectiveOrderUserId = parsedStaffId;
+      }
+    }
+
     if (assignedJobId) {
       const job = await AssignedJob.findByPk(assignedJobId);
-      if (!job || job.staffUserId !== req.user.id) {
+      if (!job || (!isAdmin && job.staffUserId !== req.user.id)) {
         return res.status(404).json({ success: false, message: 'Assignment not found' });
       }
       clientId = clientId || job.clientId;
@@ -462,6 +545,7 @@ router.post('/orders', upload.single('proof'), async (req, res) => {
     const orderDate = body.orderDate ? new Date(body.orderDate) : new Date();
     const paymentMethod = body.paymentMethod || null;
     const remarks = body.remarks || null;
+    const dealerName = body.dealerName ? String(body.dealerName).trim() : null;
     const checkInLat = body.checkInLat !== undefined && body.checkInLat !== null && body.checkInLat !== '' ? Number(body.checkInLat) : null;
     const checkInLng = body.checkInLng !== undefined && body.checkInLng !== null && body.checkInLng !== '' ? Number(body.checkInLng) : null;
     const checkInAltitude = body.checkInAltitude !== undefined && body.checkInAltitude !== null && body.checkInAltitude !== '' ? Number(body.checkInAltitude) : null;
@@ -481,12 +565,13 @@ router.post('/orders', upload.single('proof'), async (req, res) => {
 
     const order = await Order.create({
       orgAccountId: req.tenantOrgAccountId,
-      userId: req.user.id,
+      userId: effectiveOrderUserId,
       clientId: Number.isFinite(clientId) ? clientId : null,
       assignedJobId: Number.isFinite(assignedJobId) ? assignedJobId : null,
       orderDate,
       paymentMethod,
       remarks,
+      dealerName,
       phone: phoneNumber || null,
       checkInLat: Number.isFinite(checkInLat) ? checkInLat : null,
       checkInLng: Number.isFinite(checkInLng) ? checkInLng : null,
@@ -1087,5 +1172,139 @@ router.get('/my-clients', async (req, res) => {
     return res.status(500).json({ success: false, message: 'Failed to fetch your clients' });
   }
 });
+
+// PDF Reports for Visits
+router.get('/visits/report/pdf', async (req, res) => {
+  try {
+    const { startDate, endDate, verified, visitType, userId, search } = req.query || {};
+    const { generateVisitsReportPDF } = require('../services/salesPdfService');
+
+    const isAdmin = req.user.role === 'admin' || req.user.role === 'superadmin';
+    let targetUserId = req.user.id;
+    if (isAdmin) {
+      targetUserId = userId ? Number(userId) : null;
+    }
+
+    let effectiveOrgId = req.tenantOrgAccountId || req.user.orgAccountId;
+    if (!effectiveOrgId && req.query.orgId) effectiveOrgId = Number(req.query.orgId);
+    if (!effectiveOrgId && req.headers['x-org-id']) effectiveOrgId = Number(req.headers['x-org-id']);
+
+    const result = await generateVisitsReportPDF({
+      orgAccountId: effectiveOrgId,
+      userId: targetUserId,
+      startDate: startDate || null,
+      endDate: endDate || null,
+      verified: verified || null,
+      visitType: visitType || null,
+      search: search || null
+    });
+
+    if (!result || !result.pdfBuffer) {
+      return res.status(404).json({ success: false, message: 'Failed to generate visits PDF' });
+    }
+
+    const isDownload = req.query.download === '1' || req.query.download === 'true';
+    const disposition = isDownload ? 'attachment' : 'inline';
+    const filename = `Visits_Report_${new Date().toISOString().slice(0, 10)}.pdf`;
+
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `${disposition}; filename="${filename}"`);
+    res.setHeader('Content-Length', result.pdfBuffer.length);
+    return res.end(result.pdfBuffer);
+  } catch (err) {
+    console.error('Error generating visits report PDF:', err);
+    return res.status(500).json({ success: false, message: 'Failed to generate visits report PDF' });
+  }
+});
+
+// PDF Reports for Orders
+router.get('/orders/report/pdf', async (req, res) => {
+  try {
+    const { startDate, endDate, paymentMethod, userId, search } = req.query || {};
+    const { generateOrdersReportPDF } = require('../services/salesPdfService');
+
+    const isAdmin = req.user.role === 'admin' || req.user.role === 'superadmin';
+    let targetUserId = req.user.id;
+    if (isAdmin) {
+      targetUserId = userId ? Number(userId) : null;
+    }
+
+    let effectiveOrgId = req.tenantOrgAccountId || req.user.orgAccountId;
+    if (!effectiveOrgId && req.query.orgId) effectiveOrgId = Number(req.query.orgId);
+    if (!effectiveOrgId && req.headers['x-org-id']) effectiveOrgId = Number(req.headers['x-org-id']);
+
+    const result = await generateOrdersReportPDF({
+      orgAccountId: effectiveOrgId,
+      userId: targetUserId,
+      startDate: startDate || null,
+      endDate: endDate || null,
+      paymentMethod: paymentMethod || null,
+      search: search || null
+    });
+
+    if (!result || !result.pdfBuffer) {
+      return res.status(404).json({ success: false, message: 'Failed to generate orders PDF' });
+    }
+
+    const isDownload = req.query.download === '1' || req.query.download === 'true';
+    const disposition = isDownload ? 'attachment' : 'inline';
+    const filename = `Orders_Report_${new Date().toISOString().slice(0, 10)}.pdf`;
+
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `${disposition}; filename="${filename}"`);
+    res.setHeader('Content-Length', result.pdfBuffer.length);
+    return res.end(result.pdfBuffer);
+  } catch (err) {
+    console.error('Error generating orders report PDF:', err);
+    return res.status(500).json({ success: false, message: 'Failed to generate orders report PDF' });
+  }
+});
+
+
+// PDF Reports for Assigned Jobs
+const handleAssignedJobsReportPdf = async (req, res) => {
+  try {
+    const { startDate, endDate, status, userId, search } = req.query || {};
+    const { generateAssignedJobsReportPDF } = require('../services/salesPdfService');
+
+    const isAdmin = req.user.role === 'admin' || req.user.role === 'superadmin';
+    let targetUserId = req.user.id;
+    if (isAdmin) {
+      targetUserId = userId ? Number(userId) : null;
+    }
+
+    let effectiveOrgId = req.tenantOrgAccountId || req.user.orgAccountId;
+    if (!effectiveOrgId && req.query.orgId) effectiveOrgId = Number(req.query.orgId);
+    if (!effectiveOrgId && req.headers['x-org-id']) effectiveOrgId = Number(req.headers['x-org-id']);
+
+    const result = await generateAssignedJobsReportPDF({
+      orgAccountId: effectiveOrgId,
+      userId: targetUserId,
+      startDate: startDate || null,
+      endDate: endDate || null,
+      status: status || null,
+      search: search || null
+    });
+
+    if (!result || !result.pdfBuffer) {
+      return res.status(404).json({ success: false, message: 'Failed to generate assigned jobs PDF' });
+    }
+
+    const isDownload = req.query.download === '1' || req.query.download === 'true';
+    const disposition = isDownload ? 'attachment' : 'inline';
+    const filename = `Assigned_Jobs_Report_${new Date().toISOString().slice(0, 10)}.pdf`;
+
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `${disposition}; filename="${filename}"`);
+    res.setHeader('Content-Length', result.pdfBuffer.length);
+    return res.end(result.pdfBuffer);
+  } catch (err) {
+    console.error('Error generating assigned jobs report PDF:', err);
+    return res.status(500).json({ success: false, message: 'Failed to generate assigned jobs report PDF' });
+  }
+};
+
+router.get('/assigned-jobs/report/pdf', handleAssignedJobsReportPdf);
+router.get('/assigned_jobs/report/pdf', handleAssignedJobsReportPdf);
 
 module.exports = router;

@@ -3,7 +3,7 @@ process.env.TZ = process.env.TZ || 'Asia/Kolkata';
 const path = require('path');
 const fs = require('fs');
 
-require('dotenv').config();
+require('dotenv').config({ path: path.join(__dirname, '.env') });
 
 const express = require('express');
 const cors = require('cors');
@@ -147,6 +147,7 @@ app.use('/api/biometric/zkteco/webhook', require('./src/routes/zktecoWebhook'));
 app.use('/auth', authRoutes);
 app.use('/kiosk', kioskRoutes);
 app.use('/sales', salesRoutes);
+app.use('/admin/sales', salesRoutes);
 
 app.use('/admin/letters', letterRoutes);
 app.use('/admin/sales-incentives', salesIncentiveRoutes);

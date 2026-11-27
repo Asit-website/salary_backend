@@ -10276,6 +10276,42 @@ router.get("/sales/visits", async (req, res) => {
   }
 });
 
+// Export Sales Visits as PDF (org-scoped)
+router.get("/sales/visits/report/pdf", async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res);
+    if (!orgId) return;
+    const { startDate, endDate, verified, visitType, userId, search } = req.query || {};
+    const { generateVisitsReportPDF } = require('../services/salesPdfService');
+
+    const result = await generateVisitsReportPDF({
+      orgAccountId: orgId,
+      userId: userId ? Number(userId) : null,
+      startDate: startDate || null,
+      endDate: endDate || null,
+      verified: verified || null,
+      visitType: visitType || null,
+      search: search || null
+    });
+
+    if (!result || !result.pdfBuffer) {
+      return res.status(404).json({ success: false, message: 'Failed to generate visits PDF' });
+    }
+
+    const isDownload = req.query.download === '1' || req.query.download === 'true';
+    const disposition = isDownload ? 'attachment' : 'inline';
+    const filename = `Visits_Report_${new Date().toISOString().slice(0, 10)}.pdf`;
+
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `${disposition}; filename="${filename}"`);
+    res.setHeader('Content-Length', result.pdfBuffer.length);
+    return res.end(result.pdfBuffer);
+  } catch (err) {
+    console.error('Error generating admin visits report PDF:', err);
+    return res.status(500).json({ success: false, message: 'Failed to generate visits report PDF' });
+  }
+});
+
 // Export Sales Visits as Excel (org-scoped)
 router.get("/sales/visits/export", async (req, res) => {
   try {
@@ -10487,6 +10523,41 @@ router.get("/sales/visits/export", async (req, res) => {
     return res
       .status(500)
       .json({ success: false, message: "Failed to export visits" });
+  }
+});
+
+// Export Sales Orders as PDF (org-scoped)
+router.get("/sales/orders/report/pdf", async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res);
+    if (!orgId) return;
+    const { startDate, endDate, paymentMethod, userId, search } = req.query || {};
+    const { generateOrdersReportPDF } = require('../services/salesPdfService');
+
+    const result = await generateOrdersReportPDF({
+      orgAccountId: orgId,
+      userId: userId ? Number(userId) : null,
+      startDate: startDate || null,
+      endDate: endDate || null,
+      paymentMethod: paymentMethod || null,
+      search: search || null
+    });
+
+    if (!result || !result.pdfBuffer) {
+      return res.status(404).json({ success: false, message: 'Failed to generate orders PDF' });
+    }
+
+    const isDownload = req.query.download === '1' || req.query.download === 'true';
+    const disposition = isDownload ? 'attachment' : 'inline';
+    const filename = `Orders_Report_${new Date().toISOString().slice(0, 10)}.pdf`;
+
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `${disposition}; filename="${filename}"`);
+    res.setHeader('Content-Length', result.pdfBuffer.length);
+    return res.end(result.pdfBuffer);
+  } catch (err) {
+    console.error('Error generating admin orders report PDF:', err);
+    return res.status(500).json({ success: false, message: 'Failed to generate orders report PDF' });
   }
 });
 
@@ -11086,6 +11157,7 @@ router.get("/sales/orders", async (req, res) => {
       checkInAltitude: r.checkInAltitude || null,
 
       checkInAddress: r.checkInAddress || null,
+      dealerName: r.dealerName || r.dealer_name || null,
     }));
 
     return res.json({ success: true, orders: data });
@@ -11275,6 +11347,7 @@ router.get("/sales/orders/:id", async (req, res) => {
       paymentMethod: row.paymentMethod || null,
 
       remarks: row.remarks || null,
+      dealerName: row.dealerName || row.dealer_name || null,
 
       checkInLat: row.checkInLat || null,
 

@@ -1123,5 +1123,78 @@ router.get('/activities/report/pdf', async (req, res) => {
   }
 });
 
+router.get('/meetings/report/pdf', async (req, res) => {
+  try {
+    const { startDate, endDate, status, search, userId } = req.query || {};
+    const { generateMeetingsReportPDF } = require('../services/meetingTicketPdfService');
+
+    let effectiveOrgId = req.tenantOrgAccountId;
+    if (!effectiveOrgId && req.query.orgId) effectiveOrgId = Number(req.query.orgId);
+    if (!effectiveOrgId && req.headers['x-org-id']) effectiveOrgId = Number(req.headers['x-org-id']);
+
+    const result = await generateMeetingsReportPDF({
+      orgAccountId: effectiveOrgId,
+      userId: userId ? Number(userId) : null,
+      startDate: startDate || null,
+      endDate: endDate || null,
+      status: status || null,
+      search: search || null
+    });
+
+    if (!result || !result.pdfBuffer) {
+      return res.status(404).json({ success: false, message: 'Failed to generate meetings PDF' });
+    }
+
+    const isDownload = req.query.download === '1' || req.query.download === 'true';
+    const disposition = isDownload ? 'attachment' : 'inline';
+    const filename = `Meetings_Report_${new Date().toISOString().slice(0, 10)}.pdf`;
+
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `${disposition}; filename="${filename}"`);
+    res.setHeader('Content-Length', result.pdfBuffer.length);
+    return res.end(result.pdfBuffer);
+  } catch (err) {
+    console.error('Error generating admin meetings PDF report:', err);
+    return res.status(500).json({ success: false, message: 'Failed to generate meetings report PDF' });
+  }
+});
+
+router.get('/tickets/report/pdf', async (req, res) => {
+  try {
+    const { startDate, endDate, status, priority, search, userId } = req.query || {};
+    const { generateTicketsReportPDF } = require('../services/meetingTicketPdfService');
+
+    let effectiveOrgId = req.tenantOrgAccountId;
+    if (!effectiveOrgId && req.query.orgId) effectiveOrgId = Number(req.query.orgId);
+    if (!effectiveOrgId && req.headers['x-org-id']) effectiveOrgId = Number(req.headers['x-org-id']);
+
+    const result = await generateTicketsReportPDF({
+      orgAccountId: effectiveOrgId,
+      userId: userId ? Number(userId) : null,
+      startDate: startDate || null,
+      endDate: endDate || null,
+      status: status || null,
+      priority: priority || null,
+      search: search || null
+    });
+
+    if (!result || !result.pdfBuffer) {
+      return res.status(404).json({ success: false, message: 'Failed to generate tickets PDF' });
+    }
+
+    const isDownload = req.query.download === '1' || req.query.download === 'true';
+    const disposition = isDownload ? 'attachment' : 'inline';
+    const filename = `Tickets_Report_${new Date().toISOString().slice(0, 10)}.pdf`;
+
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `${disposition}; filename="${filename}"`);
+    res.setHeader('Content-Length', result.pdfBuffer.length);
+    return res.end(result.pdfBuffer);
+  } catch (err) {
+    console.error('Error generating admin tickets PDF report:', err);
+    return res.status(500).json({ success: false, message: 'Failed to generate tickets report PDF' });
+  }
+});
+
 module.exports = router;
 
