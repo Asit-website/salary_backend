@@ -731,6 +731,19 @@ async function generateExpenseReportPDF({ userId, orgAccountId = null, startDate
   }
 
   const totalCount = claims.length;
+  let totalLineItems = 0;
+  claims.forEach(c => {
+    if (c.items) {
+      try {
+        const its = typeof c.items === 'string' ? JSON.parse(c.items) : c.items;
+        if (Array.isArray(its) && its.length > 0) {
+          totalLineItems += its.length;
+          return;
+        }
+      } catch (_) {}
+    }
+    totalLineItems += 1;
+  });
   const totalClaimed = claims.reduce((sum, c) => sum + Number(c.amount || 0), 0);
   const totalApproved = claims.reduce((sum, c) => {
     if (c.status === 'approved' || c.status === 'settled') {
@@ -796,68 +809,108 @@ async function generateExpenseReportPDF({ userId, orgAccountId = null, startDate
     filterSummary.push(`Category: ${category}`);
   }
 
-  const rowsHtml = claims.length === 0
-    ? `<tr><td colspan="8" style="text-align: center; padding: 24px; color: #6B7280; font-size: 13px;">No expense claims found matching the criteria.</td></tr>`
-    : claims.map((c, idx) => {
-        let details = c.description || '-';
-        if (c.items) {
-          try {
-            const its = typeof c.items === 'string' ? JSON.parse(c.items) : c.items;
-            if (Array.isArray(its) && its.length > 0) {
-              const detailsList = its.map(it => {
-                if (it.travelFrom || it.travelTo) {
-                  return `${[it.travelFrom, it.travelTo].filter(Boolean).join(' → ')}${it.mode ? ` (${it.mode})` : ''}`;
-                }
-                return it.description || it.expenseType || '';
-              }).filter(Boolean);
-              if (detailsList.length > 0) {
-                details = detailsList.join(', ');
+      const rowsHtml = claims.length === 0
+      ? `<tr><td colspan="8" style="text-align: center; padding: 24px; color: #6B7280; font-size: 13px;">No expense claims found matching the criteria.</td></tr>`
+      : claims.map((c, idx) => {
+          let hasItemBreakdown = false;
+          let its = [];
+          if (c.items) {
+            try {
+              const parsed = typeof c.items === 'string' ? JSON.parse(c.items) : c.items;
+              if (Array.isArray(parsed) && parsed.length > 0) {
+                its = parsed;
+                hasItemBreakdown = true;
               }
+            } catch (_) {}
+          }
+
+          let itemBills = [];
+          if (hasItemBreakdown) {
+            itemBills = its.map(it => it.billNumber).filter(Boolean);
+          }
+          const billDisplay = c.billNumber || (itemBills.length > 0 ? itemBills.join(', ') : '-');
+
+          let detailsHtml = '';
+          if (hasItemBreakdown) {
+            detailsHtml = `
+              <table style="width: 100%; border-collapse: collapse; font-size: 9.5px;">
+                <tbody>
+                  ${its.map((it, i) => {
+                    let route = '';
+                    if (it.travelFrom || it.travelTo) {
+                      route = `${[it.travelFrom, it.travelTo].filter(Boolean).join(' → ')}`;
+                    }
+                    const label = route || it.description || it.expenseType || `Item #${i + 1}`;
+                    const isLast = i === its.length - 1;
+                    return `
+                      <tr style="border-bottom: ${isLast ? 'none' : '1px dashed #E2E8F0'};">
+                        <td style="padding: 3px 0; color: #1E293B; vertical-align: top;">
+                          <span style="font-weight: 700; color: #0F3B8C; margin-right: 4px;">#${i + 1}</span>
+                          ${it.expenseType && it.expenseType !== c.expenseType ? `<span style="background: #F1F5F9; color: #475569; padding: 1px 4px; border-radius: 3px; font-size: 8.5px; margin-right: 3px;">${it.expenseType}</span>` : ''}
+                          <span style="font-weight: 600;">${label}</span>
+                          ${it.mode ? `<span style="color: #0284C7; font-size: 8.5px; margin-left: 4px; background: #EFF6FF; padding: 1px 5px; border-radius: 3px; border: 0.5px solid #BFDBFE; font-weight: 600;">${it.mode}</span>` : ''}
+                          ${it.billNumber ? `<span style="color: #64748B; font-size: 8px; margin-left: 4px;">[Bill: ${it.billNumber}]</span>` : ''}
+                          ${it.description && route ? `<div style="font-size: 8.5px; color: #64748B; margin-left: 18px;">${it.description}</div>` : ''}
+                        </td>
+                        <td style="padding: 3px 0 3px 8px; text-align: right; font-weight: 700; font-size: 10.5px; color: #0F172A; white-space: nowrap; vertical-align: top;">
+                          ₹${formatCurrency(it.amount)}
+                        </td>
+                      </tr>
+                    `;
+                  }).join('')}
+                </tbody>
+              </table>
+              ${c.description ? `<div style="font-size: 8.5px; color: #64748B; margin-top: 3px; font-style: italic; border-top: 1px solid #F1F5F9; padding-top: 2px;">Note: ${c.description}</div>` : ''}
+            `;
+          } else {
+            let details = c.description || '-';
+            if (c.travelFrom || c.travelTo) {
+              details = `${[c.travelFrom, c.travelTo].filter(Boolean).join(' → ')}${c.mode ? ` (${c.mode})` : ''}`;
+              if (c.description) details += `<br/><span style="font-size: 8.5px; color: #64748B;">${c.description}</span>`;
             }
-          } catch (_) {}
-        } else if (c.travelFrom || c.travelTo) {
-          details = `${[c.travelFrom, c.travelTo].filter(Boolean).join(' → ')}${c.mode ? ` (${c.mode})` : ''}`;
-        }
+            detailsHtml = `<div style="font-size: 10.5px; color: #374151;">${details}</div>`;
+          }
 
-        const s = String(c.status || 'pending').toLowerCase();
-        let sColor = '#F59E0B', sBg = '#FEF3C7';
-        if (s === 'approved') { sColor = '#10B981'; sBg = '#D1FAE5'; }
-        else if (s === 'rejected') { sColor = '#EF4444'; sBg = '#FEE2E2'; }
-        else if (s === 'settled') { sColor = '#3B82F6'; sBg = '#DBEAFE'; }
+          const s = String(c.status || 'pending').toLowerCase();
+          let sColor = '#F59E0B', sBg = '#FEF3C7';
+          if (s === 'approved') { sColor = '#10B981'; sBg = '#D1FAE5'; }
+          else if (s === 'rejected') { sColor = '#EF4444'; sBg = '#FEE2E2'; }
+          else if (s === 'settled') { sColor = '#3B82F6'; sBg = '#DBEAFE'; }
 
-        const approvedAmt = (c.status === 'approved' || c.status === 'settled')
-          ? (c.approvedAmount !== null && c.approvedAmount !== undefined ? c.approvedAmount : c.amount)
-          : null;
+          const approvedAmt = (c.status === 'approved' || c.status === 'settled')
+            ? (c.approvedAmount !== null && c.approvedAmount !== undefined ? c.approvedAmount : c.amount)
+            : null;
 
-        return `
-          <tr>
-            <td style="text-align: center; padding: 8px 6px; border-bottom: 1px solid #E5E7EB; font-size: 11px; color: #4B5563;">${idx + 1}</td>
-            <td style="padding: 8px 10px; border-bottom: 1px solid #E5E7EB; font-size: 11px; color: #111827; white-space: nowrap;">
-              <strong>${c.claimId || `EC-${c.id}`}</strong><br/>
-              ${!userId && userMap[c.userId] ? `<span style="color: #0F3B8C; font-weight: 700; font-size: 10px;">${userMap[c.userId]}<br/></span>` : ''}
-              <span style="color: #6B7280; font-size: 10px;">${formatDate(c.expenseDate)}</span>
-            </td>
-            <td style="padding: 8px 10px; border-bottom: 1px solid #E5E7EB; font-size: 11px; color: #111827; font-weight: 600;">
-              ${c.expenseType || 'General'}
-            </td>
-            <td style="padding: 8px 10px; border-bottom: 1px solid #E5E7EB; font-size: 11px; color: #374151;">
-              ${details}
-            </td>
-            <td style="text-align: center; padding: 8px 6px; border-bottom: 1px solid #E5E7EB; font-size: 11px; color: #4B5563;">
-              ${c.billNumber || '-'}
-            </td>
-            <td style="text-align: center; padding: 8px 6px; border-bottom: 1px solid #E5E7EB;">
-              <span style="display: inline-block; padding: 2px 8px; border-radius: 9999px; font-size: 9px; font-weight: 700; text-transform: uppercase; background: ${sBg}; color: ${sColor}; border: 0.5px solid ${sColor};">${s}</span>
-            </td>
-            <td style="text-align: right; padding: 8px 10px; border-bottom: 1px solid #E5E7EB; font-size: 12px; font-weight: 700; color: #111827; white-space: nowrap;">
-              ₹${formatCurrency(c.amount)}
-            </td>
-            <td style="text-align: right; padding: 8px 10px; border-bottom: 1px solid #E5E7EB; font-size: 12px; font-weight: 700; color: ${approvedAmt !== null ? '#059669' : '#9CA3AF'}; white-space: nowrap;">
-              ${approvedAmt !== null ? `₹${formatCurrency(approvedAmt)}` : '-'}
-            </td>
-          </tr>
-        `;
-      }).join('');
+          return `
+            <tr>
+              <td style="text-align: center; padding: 8px 6px; border-bottom: 1px solid #E5E7EB; font-size: 11px; color: #4B5563; vertical-align: top;">${idx + 1}</td>
+              <td style="padding: 8px 10px; border-bottom: 1px solid #E5E7EB; font-size: 11px; color: #111827; white-space: nowrap; vertical-align: top;">
+                <strong>${c.claimId || `EC-${c.id}`}</strong><br/>
+                ${!userId && userMap[c.userId] ? `<span style="color: #0F3B8C; font-weight: 700; font-size: 10px;">${userMap[c.userId]}<br/></span>` : ''}
+                <span style="color: #6B7280; font-size: 10px;">${formatDate(c.expenseDate)}</span>
+              </td>
+              <td style="padding: 8px 10px; border-bottom: 1px solid #E5E7EB; font-size: 11px; color: #111827; font-weight: 600; vertical-align: top;">
+                ${c.expenseType || 'General'}
+              </td>
+              <td style="padding: 6px 10px; border-bottom: 1px solid #E5E7EB; vertical-align: top;">
+                ${detailsHtml}
+              </td>
+              <td style="text-align: center; padding: 8px 6px; border-bottom: 1px solid #E5E7EB; font-size: 11px; color: #4B5563; vertical-align: top;">
+                ${billDisplay}
+              </td>
+              <td style="text-align: center; padding: 8px 6px; border-bottom: 1px solid #E5E7EB; vertical-align: top;">
+                <span style="display: inline-block; padding: 2px 8px; border-radius: 9999px; font-size: 9px; font-weight: 700; text-transform: uppercase; background: ${sBg}; color: ${sColor}; border: 0.5px solid ${sColor};">${s}</span>
+              </td>
+              <td style="text-align: right; padding: 8px 10px; border-bottom: 1px solid #E5E7EB; font-size: 12px; font-weight: 800; color: #111827; white-space: nowrap; vertical-align: top;">
+                ₹${formatCurrency(c.amount)}
+                ${hasItemBreakdown && its.length > 1 ? `<div style="font-size: 8.5px; color: #6B7280; font-weight: 600; margin-top: 3px;">Total (${its.length} items)</div>` : ''}
+              </td>
+              <td style="text-align: right; padding: 8px 10px; border-bottom: 1px solid #E5E7EB; font-size: 12px; font-weight: 700; color: ${approvedAmt !== null ? '#059669' : '#9CA3AF'}; white-space: nowrap; vertical-align: top;">
+                ${approvedAmt !== null ? `₹${formatCurrency(approvedAmt)}` : '-'}
+              </td>
+            </tr>
+          `;
+        }).join('');
 
   const html = `
 <!DOCTYPE html>
@@ -1088,7 +1141,7 @@ async function generateExpenseReportPDF({ userId, orgAccountId = null, startDate
         <th style="text-align: center; width: 35px;">#</th>
         <th style="width: 130px;">Claim ID & Date</th>
         <th style="width: 100px;">Category</th>
-        <th>Particulars / Details</th>
+        <th>Particulars / Details & Line Items Breakdown</th>
         <th style="text-align: center; width: 85px;">Bill #</th>
         <th style="text-align: center; width: 75px;">Status</th>
         <th style="text-align: right; width: 95px;">Claimed (₹)</th>
