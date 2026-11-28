@@ -283,17 +283,13 @@ function getLeaveDaysSplitByMonth(startDateStr, endDateStr) {
   return splits;
 }
 
-async function getLeavesTakenInMonth(userId, categoryKey, yearMonthStr, excludeRequestId = null) {
-  const startOfMonth = `${yearMonthStr}-01`;
-  const [year, month] = yearMonthStr.split('-').map(Number);
-  const endOfMonth = formatDate(new Date(year, month, 0)); // last day of month
-  
+async function getLeavesTakenInWindow(userId, categoryKey, windowStartStr, windowEndStr, excludeRequestId = null, statuses = ['APPROVED']) {
   const whereClause = {
     userId,
     categoryKey: String(categoryKey).toLowerCase(),
-    status: { [Op.in]: ['APPROVED', 'PENDING'] },
-    startDate: { [Op.lte]: endOfMonth },
-    endDate: { [Op.gte]: startOfMonth }
+    status: { [Op.in]: statuses },
+    startDate: { [Op.lte]: windowEndStr },
+    endDate: { [Op.gte]: windowStartStr }
   };
   
   if (excludeRequestId) {
@@ -303,22 +299,87 @@ async function getLeavesTakenInMonth(userId, categoryKey, yearMonthStr, excludeR
   const reqs = await LeaveRequest.findAll({ where: whereClause });
   
   let totalDays = 0;
+  const winStart = new Date(`${windowStartStr}T00:00:00`);
+  const winEnd = new Date(`${windowEndStr}T00:00:00`);
+  
   for (const req of reqs) {
     const reqStart = new Date(`${req.startDate}T00:00:00`);
     const reqEnd = new Date(`${req.endDate}T00:00:00`);
     
-    const monthStart = new Date(`${startOfMonth}T00:00:00`);
-    const monthEnd = new Date(`${endOfMonth}T00:00:00`);
-    
-    const overlapStart = new Date(Math.max(reqStart, monthStart));
-    const overlapEnd = new Date(Math.min(reqEnd, monthEnd));
+    const overlapStart = new Date(Math.max(reqStart, winStart));
+    const overlapEnd = new Date(Math.min(reqEnd, winEnd));
     
     if (overlapEnd >= overlapStart) {
       const overlapDays = Math.round((overlapEnd - overlapStart) / (24 * 3600 * 1000)) + 1;
-      totalDays += overlapDays;
+      const fullReqDays = Math.round((reqEnd - reqStart) / (24 * 3600 * 1000)) + 1;
+      const actualDays = req.days != null ? Number(req.days) : fullReqDays;
+      if (fullReqDays > 0 && actualDays < fullReqDays) {
+        totalDays += (overlapDays / fullReqDays) * actualDays;
+      } else {
+        totalDays += overlapDays;
+      }
     }
   }
   return totalDays;
+}
+
+async function getLeavesTakenInMonth(userId, categoryKey, yearMonthStr, excludeRequestId = null, statuses = ['APPROVED']) {
+  const startOfMonth = `${yearMonthStr}-01`;
+  const [year, month] = yearMonthStr.split('-').map(Number);
+  const endOfMonth = formatDate(new Date(year, month, 0)); // last day of month
+  return await getLeavesTakenInWindow(userId, categoryKey, startOfMonth, endOfMonth, excludeRequestId, statuses);
+}
+
+async function validateMonthlyLimit({ userId, catKey, catCfg, tpl, startDate, endDate, excludeRequestId }) {
+  if (!catCfg || (tpl.cycle !== 'yearly' && tpl.cycle !== 'quarterly') || catCfg.maxLeavePerMonth == null) {
+    return { ok: true };
+  }
+  const maxLimit = Number(catCfg.maxLeavePerMonth);
+  if (maxLimit <= 0) return { ok: true };
+
+  const isAccumulation = !!(catCfg.accumulation === true || catCfg.accumulation === 1);
+  const split = getLeaveDaysSplitByMonth(startDate, endDate);
+  const monthKeys = Object.keys(split).sort();
+
+  let cumulativeSplitRequested = 0;
+  for (const monthKey of monthKeys) {
+    const currentMonthRequested = split[monthKey];
+    cumulativeSplitRequested += currentMonthRequested;
+
+    const [tYear, tMonth] = monthKey.split('-').map(Number);
+    const endOfMonth = formatDate(new Date(tYear, tMonth, 0));
+    const monthName = new Date(`${monthKey}-01T00:00:00`).toLocaleString('default', { month: 'long', year: 'numeric' });
+
+    if (isAccumulation) {
+      const { start: cycleStart } = getCycleRange(tpl.cycle, `${monthKey}-01`, tpl);
+      const cStart = new Date(`${cycleStart}T00:00:00`);
+      const monthsElapsed = (tYear - cStart.getFullYear()) * 12 + (tMonth - 1 - cStart.getMonth()) + 1;
+      const maxMonthsInCycle = tpl.cycle === 'quarterly' ? 3 : 12;
+      const effectiveMonths = Math.min(Math.max(monthsElapsed, 1), maxMonthsInCycle);
+      const cumulativeAllowed = effectiveMonths * maxLimit;
+
+      const alreadyTakenInCycle = await getLeavesTakenInWindow(userId, catKey, cycleStart, endOfMonth, excludeRequestId, ['APPROVED']);
+      const totalInCycle = alreadyTakenInCycle + cumulativeSplitRequested;
+
+      if (totalInCycle > cumulativeAllowed) {
+        return {
+          ok: false,
+          message: `Max limit exceeded for this staff. Accumulated limit up to ${monthName} is ${cumulativeAllowed} day(s), but total would be ${totalInCycle} day(s).`
+        };
+      }
+    } else {
+      const alreadyTaken = await getLeavesTakenInMonth(userId, catKey, monthKey, excludeRequestId, ['APPROVED']);
+      const totalInMonth = alreadyTaken + currentMonthRequested;
+
+      if (totalInMonth > maxLimit) {
+        return {
+          ok: false,
+          message: `Max limit exceeded for this staff. Monthly limit allowed is ${maxLimit} day(s) for ${monthName}, but total would be ${totalInMonth} day(s).`
+        };
+      }
+    }
+  }
+  return { ok: true };
 }
 
 // STAFF/ADMIN: create leave request
@@ -407,23 +468,21 @@ router.post('/', requireRole(['staff', 'admin', 'superadmin']), async (req, res)
           }
         }
 
-        // CHECK MONTHLY MAXIMUM LIMIT FOR YEARLY/QUARTERLY CYCLE
-        const catCfg = (tpl.categories || []).find((c) => String(c.key).toLowerCase() === catKey);
-        if (catCfg && (tpl.cycle === 'yearly' || tpl.cycle === 'quarterly') && catCfg.maxLeavePerMonth != null) {
-          const maxLimit = Number(catCfg.maxLeavePerMonth);
-          if (maxLimit > 0) {
-            const split = getLeaveDaysSplitByMonth(startDate, endDate);
-            for (const monthKey in split) {
-              const currentMonthRequested = split[monthKey];
-              const alreadyTaken = await getLeavesTakenInMonth(userId, catKey, monthKey);
-              if (alreadyTaken + currentMonthRequested > maxLimit) {
-                const monthName = new Date(`${monthKey}-01T00:00:00`).toLocaleString('default', { month: 'long', year: 'numeric' });
-                return res.status(400).json({
-                  success: false,
-                  message: `Monthly limit exceeded for ${monthName}. Maximum allowed per month is ${maxLimit} days, but requested/applied total is ${alreadyTaken + currentMonthRequested} days.`
-                });
-              }
-            }
+        // ONLY CHECK MONTHLY MAXIMUM LIMIT IF ADMIN IS DIRECTLY PRE-APPROVING
+        const finalStatusCandidate = (isAdmin && requestedStatus === 'APPROVED') ? 'APPROVED' : 'PENDING';
+        if (finalStatusCandidate === 'APPROVED') {
+          const catCfg = (tpl.categories || []).find((c) => String(c.key).toLowerCase() === catKey);
+          const limitCheck = await validateMonthlyLimit({
+            userId,
+            catKey,
+            catCfg,
+            tpl,
+            startDate,
+            endDate,
+            excludeRequestId: null
+          });
+          if (!limitCheck.ok) {
+            return res.status(400).json({ success: false, message: limitCheck.message });
           }
         }
       } else {
@@ -800,26 +859,21 @@ router.patch('/:id/status', requireLeaveAccess(['leave_tab', 'leave_requests_tab
       return res.status(400).json({ success: false, message: 'Unpaid leave is no longer allowed. Only company provided leaves can be approved.' });
     }
 
-    // CHECK MONTHLY MAXIMUM LIMIT FOR YEARLY/QUARTERLY CYCLE
+    // CHECK MONTHLY MAXIMUM LIMIT FOR YEARLY/QUARTERLY CYCLE ON APPROVAL (WITH ACCUMULATION LOGIC)
     const tpl = await getActiveLeaveTemplateForUser(record.userId, record.startDate);
     if (tpl) {
       const catCfg = (tpl.categories || []).find((c) => String(c.key).toLowerCase() === catKey);
-      if (catCfg && (tpl.cycle === 'yearly' || tpl.cycle === 'quarterly') && catCfg.maxLeavePerMonth != null) {
-        const maxLimit = Number(catCfg.maxLeavePerMonth);
-        if (maxLimit > 0) {
-          const split = getLeaveDaysSplitByMonth(record.startDate, record.endDate);
-          for (const monthKey in split) {
-            const currentMonthRequested = split[monthKey];
-            const alreadyTaken = await getLeavesTakenInMonth(record.userId, catKey, monthKey, record.id);
-            if (alreadyTaken + currentMonthRequested > maxLimit) {
-              const monthName = new Date(`${monthKey}-01T00:00:00`).toLocaleString('default', { month: 'long', year: 'numeric' });
-              return res.status(400).json({
-                success: false,
-                message: `Monthly limit exceeded for ${monthName}. Maximum allowed per month is ${maxLimit} days, but requested/applied total is ${alreadyTaken + currentMonthRequested} days.`
-              });
-            }
-          }
-        }
+      const limitCheck = await validateMonthlyLimit({
+        userId: record.userId,
+        catKey,
+        catCfg,
+        tpl,
+        startDate: record.startDate,
+        endDate: record.endDate,
+        excludeRequestId: record.id
+      });
+      if (!limitCheck.ok) {
+        return res.status(400).json({ success: false, message: limitCheck.message });
       }
     }
 

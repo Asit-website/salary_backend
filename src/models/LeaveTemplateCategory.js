@@ -15,6 +15,7 @@ module.exports = (sequelize) => {
       carryForward: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: false },
       maxLeavePerMonth: { type: DataTypes.DECIMAL(10, 2), allowNull: true, field: 'max_leave_per_month' },
       payAsHalfDay: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: false, field: 'pay_as_half_day' },
+      accumulation: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: false, field: 'accumulation' },
     },
     { tableName: 'leave_template_categories', underscored: true }
   );

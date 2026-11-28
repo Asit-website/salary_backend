@@ -13187,6 +13187,7 @@ router.get("/leave/templates", async (req, res) => {
           carryForward: !!c.carryForward,
           maxLeavePerMonth: c.maxLeavePerMonth,
           payAsHalfDay: !!c.payAsHalfDay,
+          accumulation: !!c.accumulation,
         })),
 
         assignedCount: (t.assignments || []).length,
@@ -13265,6 +13266,7 @@ router.post("/leave/templates", async (req, res) => {
           carryForward: !!(c.carryForward ?? c.carry_forward),
           maxLeavePerMonth: c.maxLeavePerMonth == null || c.maxLeavePerMonth === "" ? null : Number(c.maxLeavePerMonth),
           payAsHalfDay: !!(c.payAsHalfDay ?? c.pay_as_half_day),
+          accumulation: !!(c.accumulation ?? false),
         }));
 
       if (payload.length) await LeaveTemplateCategory.bulkCreate(payload);
@@ -13372,6 +13374,7 @@ router.put("/leave/templates/:id", async (req, res) => {
           carryForward: !!(c.carryForward ?? c.carry_forward),
           maxLeavePerMonth: c.maxLeavePerMonth == null || c.maxLeavePerMonth === "" ? null : Number(c.maxLeavePerMonth),
           payAsHalfDay: !!(c.payAsHalfDay ?? c.pay_as_half_day),
+          accumulation: !!(c.accumulation ?? false),
         }));
 
       if (payload.length) await LeaveTemplateCategory.bulkCreate(payload);
@@ -19682,6 +19685,7 @@ router.post("/leave/templates", async (req, res) => {
               ? null
               : Number(c.maxLeavePerMonth),
           payAsHalfDay: !!(c.payAsHalfDay ?? c.pay_as_half_day),
+          accumulation: !!(c.accumulation ?? false),
         });
       }
     }
@@ -19786,6 +19790,7 @@ router.post("/leave/templates/:id/categories-bulk", async (req, res) => {
               ? null
               : Number(c.maxLeavePerMonth),
           payAsHalfDay: !!(c.payAsHalfDay ?? c.pay_as_half_day),
+          accumulation: !!(c.accumulation ?? false),
         });
     }
     const out = await LeaveTemplate.findByPk(id, {
@@ -32522,6 +32527,451 @@ router.get("/reports/org-leave-balance", async (req, res) => {
     res.status(500).json({
       success: false,
       message: "Failed to generate leave balance report",
+    });
+  }
+});
+
+// Organization-based Leave Accumulation & Monthly Limit Report
+router.get("/reports/org-leave-accumulation", async (req, res) => {
+  try {
+    const orgId = requireOrg(req, res);
+    if (!orgId) return;
+
+    let { month, year, monthKey, format, employeeIds, department } = req.query;
+
+    if (monthKey && /^\d{4}-\d{2}$/.test(monthKey)) {
+      const [y, m] = monthKey.split("-").map(Number);
+      year = y;
+      month = m;
+    }
+
+    const mNum = month ? parseInt(month) : dayjs().month() + 1;
+    const yNum = year ? parseInt(year) : dayjs().year();
+
+    const targetDateStr = `${yNum}-${String(mNum).padStart(2, "0")}-01`;
+    const targetMonthStr = `${yNum}-${String(mNum).padStart(2, "0")}`;
+    const targetMonthName = dayjs(targetDateStr).format("MMMM YYYY");
+    const targetMonthEnd = dayjs(targetDateStr).endOf("month").format("YYYY-MM-DD");
+
+    let staffWhereClause = { orgAccountId: orgId, role: "staff" };
+    if (employeeIds) {
+      const empIds = employeeIds
+        .split(",")
+        .map((id) => parseInt(id.trim()))
+        .filter((id) => !isNaN(id));
+      if (empIds.length > 0) staffWhereClause.id = { [Op.in]: empIds };
+    }
+
+    const { User, StaffProfile, LeaveTemplate, LeaveTemplateCategory, StaffLeaveAssignment, LeaveBalance, LeaveRequest, OrgAccount } = require("../models");
+
+    const staffList = await User.findAll({
+      where: staffWhereClause,
+      include: [{ model: StaffProfile, as: "profile" }]
+    });
+
+    if (!staffList.length) return res.json({ success: true, data: [] });
+
+    const staffIds = staffList.map(s => s.id);
+
+    // Fetch assignments active around targetDateStr
+    const assignments = await StaffLeaveAssignment.findAll({
+      where: {
+        userId: { [Op.in]: staffIds },
+        effectiveFrom: { [Op.lte]: targetMonthEnd },
+        [Op.or]: [
+          { effectiveTo: null },
+          { effectiveTo: { [Op.gte]: targetDateStr } }
+        ]
+      },
+      order: [["effectiveFrom", "DESC"], ["id", "DESC"]],
+      include: [
+        {
+          model: LeaveTemplate,
+          as: "template",
+          include: [{ model: LeaveTemplateCategory, as: "categories" }]
+        }
+      ]
+    });
+
+    function computeCycleRange(cycle, forDate, tpl) {
+      const d = new Date(`${forDate}T00:00:00`);
+      const y = d.getFullYear();
+      const m = d.getMonth();
+      const dt = d.getDate();
+
+      if (cycle === "yearly") {
+        let startMonth = 0;
+        let startDay = 1;
+        if (tpl && tpl.cycleStartDate) {
+          const csd = new Date(tpl.cycleStartDate);
+          startMonth = csd.getMonth();
+          startDay = csd.getDate();
+        }
+        let start = new Date(y, startMonth, startDay);
+        if (d < start) {
+          start = new Date(y - 1, startMonth, startDay);
+        }
+        const end = new Date(start.getFullYear() + 1, startMonth, startDay - 1);
+        const sMonth = String(start.getMonth() + 1).padStart(2, "0");
+        const sDate = String(start.getDate()).padStart(2, "0");
+        const eMonth = String(end.getMonth() + 1).padStart(2, "0");
+        const eDate = String(end.getDate()).padStart(2, "0");
+        return {
+          start: `${start.getFullYear()}-${sMonth}-${sDate}`,
+          end: `${end.getFullYear()}-${eMonth}-${eDate}`,
+          startDateObj: start,
+          endDateObj: end
+        };
+      }
+
+      if (cycle === "quarterly") {
+        let startMonth = 0;
+        let startDay = 1;
+        if (tpl && tpl.cycleStartDate) {
+          const csd = new Date(tpl.cycleStartDate);
+          startMonth = csd.getMonth();
+          startDay = csd.getDate();
+        }
+        const monthDiff = (m - startMonth + 12) % 12;
+        const qIndex = Math.floor(monthDiff / 3);
+        const cycleStartMonth = (startMonth + qIndex * 3) % 12;
+        let cycleStartYear = y;
+        if (m < startMonth && cycleStartMonth >= startMonth) cycleStartYear--;
+        const start = new Date(cycleStartYear, cycleStartMonth, startDay);
+        const end = new Date(start.getFullYear(), start.getMonth() + 3, startDay - 1);
+        const sMonth = String(start.getMonth() + 1).padStart(2, "0");
+        const sDate = String(start.getDate()).padStart(2, "0");
+        const eMonth = String(end.getMonth() + 1).padStart(2, "0");
+        const eDate = String(end.getDate()).padStart(2, "0");
+        return {
+          start: `${start.getFullYear()}-${sMonth}-${sDate}`,
+          end: `${end.getFullYear()}-${eMonth}-${eDate}`,
+          startDateObj: start,
+          endDateObj: end
+        };
+      }
+
+      // monthly
+      let startDay = 1;
+      if (tpl && tpl.cycleStartDay) startDay = Number(tpl.cycleStartDay);
+      let start = new Date(y, m, startDay);
+      if (dt < startDay) start = new Date(y, m - 1, startDay);
+      const end = new Date(start.getFullYear(), start.getMonth() + 1, startDay - 1);
+      const sMonth = String(start.getMonth() + 1).padStart(2, "0");
+      const sDate = String(start.getDate()).padStart(2, "0");
+      const eMonth = String(end.getMonth() + 1).padStart(2, "0");
+      const eDate = String(end.getDate()).padStart(2, "0");
+      return {
+        start: `${start.getFullYear()}-${sMonth}-${sDate}`,
+        end: `${end.getFullYear()}-${eMonth}-${eDate}`,
+        startDateObj: start,
+        endDateObj: end
+      };
+    }
+
+    const allApprovedLeaves = await LeaveRequest.findAll({
+      where: {
+        userId: { [Op.in]: staffIds },
+        status: "APPROVED"
+      }
+    });
+
+    const allBalances = await LeaveBalance.findAll({
+      where: {
+        userId: { [Op.in]: staffIds },
+        orgAccountId: orgId
+      }
+    });
+
+    const reportRows = [];
+
+    for (const staff of staffList) {
+      const profile = staff.profile || (await StaffProfile.findOne({ where: { userId: staff.id } }));
+      const empName = profile?.name || staff.phone || "N/A";
+      const empPhone = staff.phone || "N/A";
+      const empDept = profile?.department || "N/A";
+
+      const asg = assignments.find(a => a.userId === staff.id);
+      const template = asg?.template;
+      const categories = template?.categories || [];
+
+      if (!categories.length) {
+        continue;
+      }
+
+      const cycleRange = computeCycleRange(template.cycle || "yearly", targetDateStr, template);
+      const cycleStart = cycleRange.start;
+      const cycleEnd = cycleRange.end;
+      const cStart = cycleRange.startDateObj;
+      const cEnd = cycleRange.endDateObj;
+
+      const cycleMonths = [];
+      let curMonthCursor = new Date(cStart.getFullYear(), cStart.getMonth(), 1);
+      const endMonthCursor = new Date(cEnd.getFullYear(), cEnd.getMonth(), 1);
+
+      while (curMonthCursor <= endMonthCursor) {
+        const yCur = curMonthCursor.getFullYear();
+        const mCur = curMonthCursor.getMonth() + 1;
+        const keyCur = `${yCur}-${String(mCur).padStart(2, "0")}`;
+        const nameCur = curMonthCursor.toLocaleString("default", { month: "short" });
+        cycleMonths.push({
+          key: keyCur,
+          name: nameCur,
+          year: yCur,
+          month: mCur,
+          start: `${keyCur}-01`,
+          end: dayjs(`${keyCur}-01`).endOf("month").format("YYYY-MM-DD")
+        });
+        curMonthCursor.setMonth(curMonthCursor.getMonth() + 1);
+      }
+
+      const targetMonthIdx = cycleMonths.findIndex(cm => cm.key === targetMonthStr);
+      const elapsedMonths = targetMonthIdx >= 0 ? targetMonthIdx + 1 : 1;
+      const totalMonthsInCycle = cycleMonths.length || (template.cycle === "quarterly" ? 3 : 12);
+
+      const staffLeaves = allApprovedLeaves.filter(l => l.userId === staff.id);
+
+      for (const cat of categories) {
+        const catKeyLower = String(cat.key || "").toLowerCase();
+        const catName = cat.name || catKeyLower.toUpperCase();
+        const maxLimit = cat.maxLeavePerMonth != null ? Number(cat.maxLeavePerMonth) : null;
+        const isAccumulation = !!(cat.accumulation === true || cat.accumulation === 1);
+        const allocated = Number(cat.leaveCount || 0);
+
+        const monthBreakdown = [];
+        let takenThisMonth = 0;
+        let takenInCycleToDate = 0;
+        let totalTakenInFullCycle = 0;
+
+        for (let i = 0; i < cycleMonths.length; i++) {
+          const cm = cycleMonths[i];
+          const mStart = new Date(`${cm.start}T00:00:00`);
+          const mEnd = new Date(`${cm.end}T23:59:59`);
+
+          let daysInMonth = 0;
+          for (const req of staffLeaves) {
+            if (String(req.categoryKey || "").toLowerCase() !== catKeyLower) continue;
+            const rStart = new Date(`${req.startDate}T00:00:00`);
+            const rEnd = new Date(`${req.endDate}T23:59:59`);
+
+            const oStart = Math.max(rStart, mStart);
+            const oEnd = Math.min(rEnd, mEnd);
+
+            if (oEnd >= oStart) {
+              const fullReqDays = Math.round((new Date(`${req.endDate}T00:00:00`) - new Date(`${req.startDate}T00:00:00`)) / 86400000) + 1;
+              const overlapDays = Math.round((new Date(dayjs(oEnd).format("YYYY-MM-DD")) - new Date(dayjs(oStart).format("YYYY-MM-DD"))) / 86400000) + 1;
+              const actualDays = req.days != null ? Number(req.days) : fullReqDays;
+              if (fullReqDays > 0 && actualDays < fullReqDays) {
+                daysInMonth += (overlapDays / fullReqDays) * actualDays;
+              } else {
+                daysInMonth += overlapDays;
+              }
+            }
+          }
+
+          daysInMonth = Math.round(daysInMonth * 10) / 10;
+          totalTakenInFullCycle += daysInMonth;
+
+          const isCurrent = cm.key === targetMonthStr;
+          const isPastOrCurrent = i <= targetMonthIdx;
+
+          if (isCurrent) {
+            takenThisMonth = daysInMonth;
+          }
+          if (isPastOrCurrent) {
+            takenInCycleToDate += daysInMonth;
+          }
+
+          const cumAllowedForMonth = isAccumulation && maxLimit != null ? Math.min(allocated, (i + 1) * maxLimit) : (maxLimit || allocated);
+
+          monthBreakdown.push({
+            monthKey: cm.key,
+            monthName: cm.name,
+            monthIndex: i + 1,
+            taken: daysInMonth,
+            isCurrent,
+            isPastOrCurrent,
+            accumulatedQuotaToMonth: cumAllowedForMonth
+          });
+        }
+
+        takenInCycleToDate = Math.round(takenInCycleToDate * 10) / 10;
+        totalTakenInFullCycle = Math.round(totalTakenInFullCycle * 10) / 10;
+
+        const bal = allBalances.find(b => b.userId === staff.id && String(b.categoryKey || "").toLowerCase() === catKeyLower);
+        const actualAllocated = bal?.allocated != null ? Number(bal.allocated) : allocated;
+        const remainingTotalBalance = Math.max(0, actualAllocated - totalTakenInFullCycle);
+
+        let cumulativeAllowed = allocated;
+        if (maxLimit != null) {
+          if (isAccumulation) {
+            cumulativeAllowed = Math.min(actualAllocated, elapsedMonths * maxLimit);
+          } else {
+            cumulativeAllowed = maxLimit;
+          }
+        }
+
+        let availableThisMonth = 0;
+        if (maxLimit != null) {
+          if (isAccumulation) {
+            const priorMonthsTaken = Math.max(0, takenInCycleToDate - takenThisMonth);
+            const remainingAccCap = Math.max(0, cumulativeAllowed - priorMonthsTaken);
+            availableThisMonth = Math.min(remainingTotalBalance, Math.max(0, remainingAccCap - takenThisMonth));
+          } else {
+            const remainingMonthly = Math.max(0, maxLimit - takenThisMonth);
+            availableThisMonth = Math.min(remainingTotalBalance, remainingMonthly);
+          }
+        } else {
+          availableThisMonth = remainingTotalBalance;
+        }
+
+        availableThisMonth = Math.round(availableThisMonth * 10) / 10;
+
+        reportRows.push({
+          id: `${staff.id}_${catKeyLower}`,
+          userId: staff.id,
+          employeeName: empName,
+          employeeId: empPhone,
+          department: empDept,
+          templateName: template.name,
+          cycle: template.cycle,
+          cycleRangeText: `${dayjs(cycleStart).format("DD MMM YYYY")} to ${dayjs(cycleEnd).format("DD MMM YYYY")}`,
+          categoryKey: catKeyLower,
+          categoryName: catName,
+          maxLeavePerMonth: maxLimit,
+          accumulation: isAccumulation,
+          elapsedMonths,
+          totalMonthsInCycle,
+          cycleProgressText: `Month ${elapsedMonths} of ${totalMonthsInCycle}`,
+          cumulativeAllowed,
+          takenThisMonth,
+          takenInCycleToDate,
+          availableThisMonth,
+          allocated: actualAllocated,
+          totalUsed: totalTakenInFullCycle,
+          remainingTotalBalance,
+          monthBreakdown,
+          selectedMonth: targetMonthStr,
+          selectedMonthName: targetMonthName
+        });
+      }
+    }
+
+    if (format === "excel") {
+      const workbook = new exceljs.Workbook();
+      const worksheet = workbook.addWorksheet("Leave Accumulation Report");
+
+      const baseColumns = [
+        { header: "Employee Name", key: "employeeName", width: 22 },
+        { header: "Phone / ID", key: "employeeId", width: 16 },
+        { header: "Department", key: "department", width: 16 },
+        { header: "Category", key: "categoryName", width: 16 },
+        { header: "Template (Cycle)", key: "templateCycle", width: 20 },
+        { header: "Max / Month", key: "maxPerMonth", width: 14 },
+        { header: "Accumulation", key: "accumulation", width: 16 },
+        { header: "Cycle Month", key: "cycleProgress", width: 16 },
+        { header: "Accumulated Quota to Date", key: "cumulativeAllowed", width: 24 },
+        { header: "Taken This Month", key: "takenThisMonth", width: 16 },
+        { header: "Taken in Cycle to Date", key: "takenInCycleToDate", width: 22 },
+        { header: "Available This Month", key: "availableThisMonth", width: 20 },
+        { header: "Annual Allocated", key: "allocated", width: 16 },
+        { header: "Annual Remaining", key: "remainingTotalBalance", width: 16 },
+      ];
+
+      const sampleMonths = reportRows[0]?.monthBreakdown || [];
+      sampleMonths.forEach(m => {
+        baseColumns.push({
+          header: `${m.monthName} Taken`,
+          key: `m_${m.monthKey}`,
+          width: 13
+        });
+      });
+
+      worksheet.columns = baseColumns;
+
+      const org = await OrgAccount.findByPk(orgId);
+      const companyRow = worksheet.getRow(1);
+      worksheet.mergeCells(1, 1, 1, baseColumns.length);
+      companyRow.getCell(1).value = (org?.name || "Organization").toUpperCase();
+      companyRow.getCell(1).font = { size: 16, bold: true };
+      companyRow.getCell(1).alignment = { horizontal: "center" };
+
+      const titleRow = worksheet.getRow(3);
+      worksheet.mergeCells(3, 1, 3, baseColumns.length);
+      titleRow.getCell(1).value = `LEAVE ACCUMULATION & MONTHLY LIMIT REPORT - ${targetMonthName.toUpperCase()}`;
+      titleRow.getCell(1).font = { size: 13, bold: true };
+      titleRow.getCell(1).alignment = { horizontal: "center" };
+
+      const infoRow = worksheet.getRow(4);
+      worksheet.mergeCells(4, 1, 4, baseColumns.length);
+      infoRow.getCell(1).value = `Generated On: ${new Date().toLocaleString()}`;
+      infoRow.getCell(1).alignment = { horizontal: "center" };
+      infoRow.getCell(1).font = { italic: true };
+
+      const headerRow = worksheet.getRow(6);
+      baseColumns.forEach((col, i) => {
+        const cell = headerRow.getCell(i + 1);
+        cell.value = col.header;
+        cell.font = { bold: true, color: { argb: "FFFFFFFF" } };
+        cell.fill = {
+          type: "pattern",
+          pattern: "solid",
+          fgColor: { argb: "FF1E40AF" },
+        };
+        cell.alignment = { horizontal: "center", vertical: "middle" };
+        cell.border = {
+          top: { style: "thin" },
+          left: { style: "thin" },
+          bottom: { style: "thin" },
+          right: { style: "thin" },
+        };
+      });
+
+      reportRows.forEach((row) => {
+        const rowData = {
+          employeeName: row.employeeName,
+          employeeId: row.employeeId,
+          department: row.department,
+          categoryName: row.categoryName,
+          templateCycle: `${row.templateName} (${row.cycle})`,
+          maxPerMonth: row.maxLeavePerMonth != null ? `${row.maxLeavePerMonth} days/mo` : "No Limit",
+          accumulation: row.accumulation ? "YES (Accumulating)" : "NO (Strict Monthly)",
+          cycleProgress: row.cycleProgressText,
+          cumulativeAllowed: row.cumulativeAllowed,
+          takenThisMonth: row.takenThisMonth,
+          takenInCycleToDate: row.takenInCycleToDate,
+          availableThisMonth: row.availableThisMonth,
+          allocated: row.allocated,
+          remainingTotalBalance: row.remainingTotalBalance,
+        };
+
+        (row.monthBreakdown || []).forEach(m => {
+          rowData[`m_${m.monthKey}`] = m.taken;
+        });
+
+        const r = worksheet.addRow(rowData);
+        r.alignment = { horizontal: "center" };
+      });
+
+      res.setHeader(
+        "Content-Type",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      );
+      res.setHeader(
+        "Content-Disposition",
+        `attachment; filename=leave-accumulation-report-${targetMonthStr}.xlsx`,
+      );
+
+      await workbook.xlsx.write(res);
+      return;
+    }
+
+    res.json({ success: true, data: reportRows });
+  } catch (error) {
+    console.error("Org leave accumulation report error:", error);
+    res.status(500).json({
+      success: false,
+      message: "Failed to generate leave accumulation report",
     });
   }
 });

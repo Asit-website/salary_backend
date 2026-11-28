@@ -1076,6 +1076,12 @@ async function runAggressiveSchemaFix() {
       // Ignore
     }
     try {
+      await sequelize.query(`ALTER TABLE leave_template_categories ADD COLUMN accumulation TINYINT(1) NOT NULL DEFAULT 0`);
+      console.log('[DB FIX] Successfully added column accumulation to leave_template_categories');
+    } catch (e) {
+      // Ignore
+    }
+    try {
       await sequelize.query(`ALTER TABLE org_business_info ADD COLUMN signature_url TEXT NULL DEFAULT NULL`);
       console.log('[DB FIX] Successfully added column signature_url to org_business_info');
     } catch (e) {
